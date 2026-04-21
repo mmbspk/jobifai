@@ -93,17 +93,17 @@ export function JobsSkipped() {
       </div>
 
       <div className="rounded-xl border border-[var(--color-border)] overflow-hidden">
-        <table className="w-full table-fixed text-sm">
+        <table className="w-full table-auto text-sm">
           <thead className="hidden sm:table-header-group">
             <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-              <th className="w-28 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Company</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Company</th>
               <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Role</th>
-              <th className="w-20 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Location</th>
-              <th className="w-20 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Platform</th>
-              <th className="w-14 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Score</th>
-              {halalEnabled && <th className="w-16 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Halal</th>}
-              <th className="w-24 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Date</th>
-              <th className="w-28 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]"></th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Location</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Platform</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Score</th>
+              {halalEnabled && <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Halal</th>}
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Date</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]"></th>
             </tr>
           </thead>
           <tbody>
@@ -126,7 +126,7 @@ export function JobsSkipped() {
                     )}
                     onClick={() => (job.suitability_reasoning || (halalEnabled && job.halal_verdict)) && toggleExpand(job.id)}
                   >
-                    <td className="px-4 py-3 font-medium text-[var(--color-text)]">
+                    <td className="px-4 py-3 align-top font-medium text-[var(--color-text)]">
                       <span className="flex items-center gap-1">
                         {(job.suitability_reasoning || (halalEnabled && job.halal_verdict)) && (
                           <ChevronRight size={12} className={cn('text-[var(--color-text-dim)] transition-transform shrink-0', isExpanded && 'rotate-90')} />
@@ -134,12 +134,12 @@ export function JobsSkipped() {
                         <span className="truncate" title={job.company}>{job.company}</span>
                       </span>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 align-top">
                       <div className="line-clamp-2 text-[var(--color-text-muted)] leading-snug text-sm" title={job.role}>{job.role}</div>
                     </td>
-                    <td className="px-4 py-3 text-xs text-[var(--color-text-dim)] whitespace-nowrap">{job.location || '—'}</td>
-                    <td className="px-4 py-3"><PlatformBadge platform={job.platform} size="sm" /></td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 align-top text-xs text-[var(--color-text-dim)] break-words">{job.location || '—'}</td>
+                    <td className="px-4 py-3 align-top whitespace-nowrap"><PlatformBadge platform={job.platform} size="sm" /></td>
+                    <td className="px-4 py-3 align-top whitespace-nowrap">
                       {job.suitability_score != null && job.suitability_score > 0
                         ? <ScorePill score={job.suitability_score} />
                         : <span className="text-[var(--color-text-dim)]">—</span>
@@ -159,7 +159,7 @@ export function JobsSkipped() {
                         ) : <span className="text-[var(--color-text-dim)]">—</span>}
                       </td>
                     )}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 align-top whitespace-nowrap">
                       <div className="flex items-center gap-2">
                         <span title={formatDate(job.viewed_at)} className="text-xs text-[var(--color-text-dim)] whitespace-nowrap cursor-default">{relativeTime(job.viewed_at)}</span>
                         <a href={job.link} target="_blank" rel="noopener noreferrer" className="text-[var(--color-text-dim)] hover:text-violet-400">
@@ -167,7 +167,7 @@ export function JobsSkipped() {
                         </a>
                       </div>
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <td className="px-4 py-3 align-top whitespace-nowrap">
                       {pendingDelete === job.id ? (
                         <span className="flex items-center gap-1">
                           <button onClick={e => { e.stopPropagation(); deleteMutation.mutate(job.id) }} disabled={deleteMutation.isPending} className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40 font-medium">Delete</button>

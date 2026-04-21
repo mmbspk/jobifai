@@ -77,19 +77,19 @@ export function TopMatches() {
       </div>
 
       <div className="rounded-xl border border-[var(--color-border)] overflow-hidden">
-        <table className="w-full table-fixed text-sm">
+        <table className="w-full table-auto text-sm">
           <thead className="hidden sm:table-header-group">
             <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
               <th className="w-8 text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)]"></th>
-              <th className="w-28 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Date Posted</th>
-              <th className="w-28 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Company</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Date Posted</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Company</th>
               <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Role</th>
-              <th className="w-20 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Platform</th>
-              <th className="w-24 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Due Date</th>
-              <th className="w-14 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Score</th>
-              <th className="w-16 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Link</th>
-              <th className="w-16 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]">Applied</th>
-              <th className="w-16 text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]"></th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Platform</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Due Date</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Score</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Link</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Applied</th>
+              <th className="text-left px-4 py-2 text-xs font-normal text-[var(--color-text-dim)]"></th>
             </tr>
           </thead>
           <tbody>
@@ -119,38 +119,38 @@ export function TopMatches() {
                     )}
                     onClick={() => isExpandable && toggleExpand(job.job_id)}
                   >
-                    <td className="px-2 py-3 text-center">
+                    <td className="px-2 py-3 align-top text-center">
                       {job.easy_apply && (
                         <span title="Easy Apply / Quick Apply" className="text-amber-400 text-sm">⚡</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-xs text-[var(--color-text-dim)] whitespace-nowrap">
+                    <td className="px-4 py-3 align-top text-xs text-[var(--color-text-dim)] whitespace-nowrap">
                       <span title={formatDate(job.posted_date || job.created_at)} className="cursor-default">
                         {relativeTime(job.posted_date || job.created_at)}
                       </span>
                     </td>
-                    <td className="px-4 py-3 font-medium text-[var(--color-text)]">
-                      <span className="flex items-center gap-1 truncate" title={job.company}>
+                    <td className="px-4 py-3 align-top font-medium text-[var(--color-text)]">
+                      <span className="flex items-center gap-1" title={job.company}>
                         {isExpandable && (
                           <ChevronRight size={12} className={cn('text-[var(--color-text-dim)] transition-transform shrink-0', isExpanded && 'rotate-90')} />
                         )}
-                        <span className="truncate">{job.company || '—'}</span>
+                        <span>{job.company || '—'}</span>
                       </span>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 align-top">
                       <div className="line-clamp-2 text-[var(--color-text-muted)] leading-snug text-sm" title={job.role}>{job.role}</div>
                     </td>
-                    <td className="px-4 py-3"><PlatformBadge platform={job.platform} size="sm" /></td>
-                    <td className="px-4 py-3 text-xs text-[var(--color-text-dim)] whitespace-nowrap">
+                    <td className="px-4 py-3 align-top whitespace-nowrap"><PlatformBadge platform={job.platform} size="sm" /></td>
+                    <td className="px-4 py-3 align-top text-xs text-[var(--color-text-dim)] whitespace-nowrap">
                       {job.due_date || '—'}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 align-top whitespace-nowrap">
                       {job.suitability_score != null && job.suitability_score > 0
                         ? <ScorePill score={job.suitability_score} />
                         : <span className="text-[var(--color-text-dim)]">—</span>
                       }
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 align-top whitespace-nowrap">
                       {job.link ? (
                         <a
                           href={job.link}
@@ -165,7 +165,7 @@ export function TopMatches() {
                         <span className="text-[var(--color-text-dim)]">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 align-top whitespace-nowrap">
                       <button
                         onClick={e => { e.stopPropagation(); applyMutation.mutate(job.job_id) }}
                         disabled={applyMutation.isPending}
@@ -175,7 +175,7 @@ export function TopMatches() {
                         <CheckCheck size={13} />
                       </button>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 align-top whitespace-nowrap">
                       {pendingDelete === job.job_id ? (
                         <span className="flex items-center gap-1">
                           <button onClick={e => { e.stopPropagation(); deleteMutation.mutate(job.job_id) }} disabled={deleteMutation.isPending} className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40 font-medium">Delete</button>

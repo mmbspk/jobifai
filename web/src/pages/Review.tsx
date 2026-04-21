@@ -72,15 +72,15 @@ function ReviewCard({ review, halalEnabled, onApprove, onReject }: {
         dismissed && 'scale-95 opacity-0',
       )}
     >
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <div>
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <div className="min-w-0">
           <div className="font-medium text-[var(--color-text)]">{review.company || '—'}</div>
           <div className="text-sm text-[var(--color-text-muted)]">{review.role}</div>
           {review.location && (
             <div className="text-xs text-[var(--color-text-dim)] mt-0.5">{review.location}</div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0 pt-0.5">
           {(review.suitability_score ?? 0) > 0
             ? <ScorePill score={review.suitability_score!} />
             : <span className="text-xs text-[var(--color-text-dim)]">—</span>
