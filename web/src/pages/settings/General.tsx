@@ -1,0 +1,250 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState, useEffect } from 'react'
+import { Check } from 'lucide-react'
+import { settingsApi } from '../../api/settings'
+import { cn } from '../../lib'
+import type { GeneralSettings } from '../../types'
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
+      <div className="px-4 py-3 border-b border-[var(--color-border)] text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">
+        {title}
+      </div>
+      <div className="p-4 space-y-4">{children}</div>
+    </div>
+  )
+}
+
+function Field({ label, sub, children }: { label: string; sub?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <div className="text-sm text-[var(--color-text)]">{label}</div>
+        {sub && <div className="text-xs text-[var(--color-text-dim)]">{sub}</div>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  )
+}
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        'relative w-10 h-5 rounded-full transition-colors',
+        checked ? 'bg-violet-500' : 'bg-zinc-700',
+      )}
+    >
+      <span
+        className={cn(
+          'absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform',
+          checked && 'translate-x-5',
+        )}
+      />
+    </button>
+  )
+}
+
+function TextInput({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <input
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="w-48 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-violet-500/50"
+    />
+  )
+}
+
+function NumInput({ value, onChange, min, max }: { value: number; onChange: (v: number) => void; min?: number; max?: number }) {
+  return (
+    <input
+      type="number"
+      value={value}
+      min={min}
+      max={max}
+      onChange={e => onChange(Number(e.target.value))}
+      className="w-24 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-violet-500/50 tabular-nums"
+    />
+  )
+}
+
+const DEFAULT: GeneralSettings = {
+  llm: { provider: 'claude', model: 'claude-sonnet-4-6', use_proxy: false, proxy_url: '' },
+  browser: { show_browser: true, use_chrome_profile: true, chrome_profile_path: '', remote_debug_port: 0 },
+  human_behavior: {
+    daily_application_limit: 40, job_read_time_min: 10, job_read_time_max: 30,
+    pause_between_jobs_min: 5, pause_between_jobs_max: 15,
+    interaction_pause_min: 0.4, interaction_pause_max: 1.8,
+    typing_speed_min: 0.04, typing_speed_max: 0.12,
+    business_hours_start: 0, business_hours_end: 0,
+  },
+  default_resume_market: '',
+  require_review_before_submit: true,
+  job_suitability_score: 7,
+  max_jobs_per_keyword: 25,
+  halal_job_filter: false,
+}
+
+export function GeneralSettingsPage() {
+  const qc = useQueryClient()
+  const { data } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
+  const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
+  const [form, setForm] = useState<GeneralSettings>(DEFAULT)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => { if (data) setForm(data) }, [data])
+
+  const save = useMutation({
+    mutationFn: () => settingsApi.general.set(form),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings-general'] })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    },
+  })
+
+  function set<K extends keyof GeneralSettings>(key: K, value: GeneralSettings[K]) {
+    setForm(f => ({ ...f, [key]: value }))
+  }
+
+  function llm<K extends keyof NonNullable<GeneralSettings['llm']>>(key: K, value: NonNullable<GeneralSettings['llm']>[K]) {
+    setForm(f => ({ ...f, llm: { ...f.llm, [key]: value } }))
+  }
+
+  function browser<K extends keyof NonNullable<GeneralSettings['browser']>>(key: K, value: NonNullable<GeneralSettings['browser']>[K]) {
+    setForm(f => ({ ...f, browser: { ...f.browser, [key]: value } }))
+  }
+
+  function hb<K extends keyof NonNullable<GeneralSettings['human_behavior']>>(key: K, value: NonNullable<GeneralSettings['human_behavior']>[K]) {
+    setForm(f => ({ ...f, human_behavior: { ...f.human_behavior, [key]: value } }))
+  }
+
+  const llmCfg = form.llm ?? {}
+  const browserCfg = form.browser ?? {}
+  const hbCfg = form.human_behavior ?? {}
+
+  return (
+    <div className="space-y-4">
+      <Section title="LLM Configuration">
+        <Field label="Provider">
+          <select value={llmCfg.provider ?? ''} onChange={e => llm('provider', e.target.value)}
+            className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-violet-500/50">
+            <option value="claude">Claude (Anthropic)</option>
+            <option value="openai">OpenAI</option>
+            <option value="ollama">Ollama (local)</option>
+          </select>
+        </Field>
+        <Field label="Model">
+          <TextInput value={llmCfg.model ?? ''} onChange={v => llm('model', v)} placeholder="claude-sonnet-4-6" />
+        </Field>
+        <Field label="Use Proxy" sub="Route LLM calls through a proxy server">
+          <Toggle checked={llmCfg.use_proxy ?? false} onChange={v => llm('use_proxy', v)} />
+        </Field>
+        {llmCfg.use_proxy && (
+          <Field label="Proxy URL">
+            <TextInput value={llmCfg.proxy_url ?? ''} onChange={v => llm('proxy_url', v)} placeholder="http://localhost:6655/anthropic" />
+          </Field>
+        )}
+        <Field label="Max Tokens" sub="Maximum tokens per LLM response (0 = model default)">
+          <TextInput
+            value={llmCfg.max_tokens != null && llmCfg.max_tokens > 0 ? String(llmCfg.max_tokens) : ''}
+            onChange={v => llm('max_tokens', v === '' ? 0 : Number.parseInt(v, 10) || 0)}
+            placeholder="0 (model default)"
+          />
+        </Field>
+      </Section>
+
+      <Section title="Resume Defaults">
+        <Field label="Market" sub="Target job market — adjusts prompts and resume styling">
+          <select value={form.default_resume_market ?? ''} onChange={e => set('default_resume_market', e.target.value)}
+            className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-violet-500/50">
+            <option value="">None</option>
+            {markets.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
+          </select>
+        </Field>
+      </Section>
+
+      <Section title="Job Filtering">
+        <Field label="Suitability Threshold" sub={`Skip jobs scoring below ${form.job_suitability_score ?? 7}/10`}>
+          <div className="flex items-center gap-3">
+            <input type="range" min={0} max={10} step={1} value={form.job_suitability_score ?? 7}
+              onChange={e => set('job_suitability_score', Number(e.target.value))}
+              className="w-28 accent-violet-500"
+            />
+            <span className="text-sm font-mono text-[var(--color-text)] w-4">{form.job_suitability_score ?? 7}</span>
+          </div>
+        </Field>
+        <Field label="Max Jobs Per Keyword" sub="How many jobs to collect per search keyword before processing (default 25)">
+          <NumInput value={form.max_jobs_per_keyword ?? 25} onChange={v => set('max_jobs_per_keyword', v)} min={1} max={200} />
+        </Field>
+        <Field label="Require Review Before Submit" sub="Pause for manual approval before each application">
+          <Toggle checked={form.require_review_before_submit ?? false} onChange={v => set('require_review_before_submit', v)} />
+        </Field>
+        <Field label="Halal Job Filter" sub="Automatically skip jobs that are impermissible or doubtful under Islamic employment ethics">
+          <Toggle checked={form.halal_job_filter ?? false} onChange={v => set('halal_job_filter', v)} />
+        </Field>
+      </Section>
+
+      <Section title="Browser">
+        <Field label="Show Browser Window">
+          <Toggle checked={browserCfg.show_browser ?? true} onChange={v => browser('show_browser', v)} />
+        </Field>
+        <Field label="Use Chrome Profile" sub="Reuse existing Chrome profile (stays logged in)">
+          <Toggle checked={browserCfg.use_chrome_profile ?? true} onChange={v => browser('use_chrome_profile', v)} />
+        </Field>
+        {browserCfg.use_chrome_profile && (
+          <Field label="Profile Path">
+            <TextInput value={browserCfg.chrome_profile_path ?? ''} onChange={v => browser('chrome_profile_path', v)} placeholder="/path/to/profile" />
+          </Field>
+        )}
+        <Field label="Remote Debug Port" sub="Chrome DevTools remote debugging port (0 = disabled)">
+          <NumInput value={browserCfg.remote_debug_port ?? 0} onChange={v => browser('remote_debug_port', v)} min={0} max={65535} />
+        </Field>
+      </Section>
+
+      <Section title="Human Behaviour">
+        <Field label="Daily Application Limit">
+          <NumInput value={hbCfg.daily_application_limit ?? 40} onChange={v => hb('daily_application_limit', v)} min={1} max={200} />
+        </Field>
+        <Field label="Job Read Time (s)" sub="Min / Max seconds to read a job before applying">
+          <div className="flex items-center gap-2">
+            <NumInput value={hbCfg.job_read_time_min ?? 10} onChange={v => hb('job_read_time_min', v)} min={1} />
+            <span className="text-[var(--color-text-dim)] text-xs">–</span>
+            <NumInput value={hbCfg.job_read_time_max ?? 30} onChange={v => hb('job_read_time_max', v)} min={1} />
+          </div>
+        </Field>
+        <Field label="Pause Between Jobs (s)">
+          <div className="flex items-center gap-2">
+            <NumInput value={hbCfg.pause_between_jobs_min ?? 5} onChange={v => hb('pause_between_jobs_min', v)} min={0} />
+            <span className="text-[var(--color-text-dim)] text-xs">–</span>
+            <NumInput value={hbCfg.pause_between_jobs_max ?? 15} onChange={v => hb('pause_between_jobs_max', v)} min={0} />
+          </div>
+        </Field>
+        <Field label="Business Hours" sub="Restrict to these hours (0 = disabled)">
+          <div className="flex items-center gap-2">
+            <NumInput value={hbCfg.business_hours_start ?? 0} onChange={v => hb('business_hours_start', v)} min={0} max={23} />
+            <span className="text-[var(--color-text-dim)] text-xs">–</span>
+            <NumInput value={hbCfg.business_hours_end ?? 0} onChange={v => hb('business_hours_end', v)} min={0} max={23} />
+          </div>
+        </Field>
+      </Section>
+
+      <button
+        onClick={() => save.mutate()}
+        disabled={save.isPending}
+        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-violet-500 text-white text-sm font-medium hover:bg-violet-400 disabled:opacity-60 transition-all shadow-[0_0_16px_var(--color-accent-glow)]"
+      >
+        {saved ? <><Check size={14} /> Saved</> : save.isPending ? 'Saving…' : 'Save Settings'}
+      </button>
+
+      {save.isError && (
+        <div className="text-xs text-red-400 text-center">{(save.error as Error).message}</div>
+      )}
+    </div>
+  )
+}

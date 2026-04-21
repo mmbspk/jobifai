@@ -1,0 +1,29 @@
+You are a resume parser. Extract all information from the resume text below into a structured JSON object.
+
+Return ONLY valid JSON matching this exact shape (omit any key you cannot find):
+{
+  "personal_information": {
+    "name": "", "surname": "", "email": "", "phone": "", "phone_prefix": "",
+    "country": "", "city": "", "address": "", "zip_code": "", "github": "", "linkedin": ""
+  },
+  "education": [
+    { "institution": "", "degree": "", "field_of_study": "", "start_date": "", "end_date": "", "gpa": "", "description": "" }
+  ],
+  "experience": [
+    { "company": "", "title": "", "location": "", "start_date": "", "end_date": "", "description": "", "technologies": [] }
+  ],
+  "projects": [
+    { "name": "", "description": "", "link": "", "technologies": [] }
+  ],
+  "certifications": [
+    { "name": "", "issuer": "", "date": "", "link": "" }
+  ],
+  "languages": [
+    { "language": "", "proficiency": "" }
+  ],
+  "skills": [],
+  "interests": [],
+  "summary": ""
+}
+
+Resume text:

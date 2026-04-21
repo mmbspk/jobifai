@@ -1,0 +1,1121 @@
+openapi: "3.1.0"
+info:
+  title: jobifai API
+  description: AI-powered job application automation — REST API
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:8080
+
+tags:
+  - name: auth
+    description: Job-site session management
+  - name: bot
+    description: Bot lifecycle control
+  - name: jobs
+    description: Job application history
+  - name: resume
+    description: Resume and cover letter generation
+  - name: settings
+    description: Configuration management
+  - name: ws
+    description: WebSocket streams
+
+paths:
+
+  # ── Auth placeholder (JWT-ready, no impl now) ─────────────────────────
+  /auth/login:
+    post:
+      operationId: authLogin
+      summary: Login placeholder for future JWT auth
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "501":
+          description: Not implemented
+
+  # ── Job-site session management ───────────────────────────────────────
+  /api/auth/launch-browser:
+    post:
+      operationId: authLaunchBrowser
+      summary: Open a visible Chrome window for manual login
+      description: |
+        Launches a non-headless Chrome window so the user can log in manually
+        (email/password, Google OAuth, Passkey, etc.). After logging in, call
+        /api/auth/save-session to capture and persist the cookies.
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LaunchBrowserRequest"
+      responses:
+        "200":
+          description: Browser launched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LaunchBrowserResponse"
+        "409":
+          description: A browser session is already open
+
+  /api/auth/save-session:
+    post:
+      operationId: authSaveSession
+      summary: Capture cookies from open browser and persist to DB
+      tags: [auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveSessionRequest"
+      responses:
+        "200":
+          description: Session saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SaveSessionResponse"
+        "404":
+          description: No open browser session with that ID
+
+  /api/auth/{platform}/status:
+    get:
+      operationId: authPlatformStatus
+      summary: Check if a valid session exists for a platform
+      tags: [auth]
+      parameters:
+        - $ref: "#/components/parameters/PlatformPath"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformAuthStatus"
+
+  /api/auth/{platform}/session:
+    delete:
+      operationId: authDeleteSession
+      summary: Clear stored cookies for a platform
+      tags: [auth]
+      parameters:
+        - $ref: "#/components/parameters/PlatformPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+        "404":
+          description: No session found
+
+  # ── Bot control ────────────────────────────────────────────────────────
+  /api/bot/start:
+    post:
+      operationId: botStart
+      summary: Start the job application bot
+      tags: [bot]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BotStartRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+        "409":
+          description: Bot is already running
+
+  /api/bot/stop:
+    post:
+      operationId: botStop
+      summary: Send graceful stop signal to the running bot
+      tags: [bot]
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+        "404":
+          description: Bot is not running
+
+  /api/bot/status:
+    get:
+      operationId: botStatus
+      summary: Get current bot status and activity
+      tags: [bot]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotStatus"
+
+  # ── Review gate ────────────────────────────────────────────────────────
+  /api/bot/review/pending:
+    get:
+      operationId: reviewListPending
+      summary: List jobs currently awaiting human review
+      tags: [bot]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PendingReview"
+
+  /api/bot/review/{job_id}/approve:
+    post:
+      operationId: reviewApprove
+      summary: Approve a pending application — bot will submit it
+      tags: [bot]
+      parameters:
+        - $ref: "#/components/parameters/JobIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+        "404":
+          description: No pending review for this job_id
+
+  /api/bot/review/{job_id}/reject:
+    post:
+      operationId: reviewReject
+      summary: Reject a pending application — bot will skip it
+      tags: [bot]
+      parameters:
+        - $ref: "#/components/parameters/JobIdPath"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+        "404":
+          description: No pending review for this job_id
+
+  # ── Job history ────────────────────────────────────────────────────────
+  /api/jobs/applied:
+    get:
+      operationId: jobsApplied
+      summary: List applied jobs, newest first
+      tags: [jobs]
+      parameters:
+        - name: platform
+          in: query
+          schema:
+            $ref: "#/components/schemas/Platform"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AppliedJob"
+
+  /api/jobs/skipped:
+    get:
+      operationId: jobsSkipped
+      summary: List skipped/viewed jobs with skip reasons
+      tags: [jobs]
+      parameters:
+        - name: skip_reason
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SkippedJob"
+
+  /api/jobs/stats:
+    get:
+      operationId: jobsStats
+      summary: Aggregate application counts
+      tags: [jobs]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStats"
+
+  /api/jobs/{job_id}:
+    get:
+      operationId: jobGet
+      summary: Get a single job detail by ID
+      tags: [jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobIdPath"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobDetail"
+        "404":
+          description: Not found
+
+  # ── Resume generation ──────────────────────────────────────────────────
+  /api/resume/generate:
+    post:
+      operationId: resumeGenerate
+      summary: Generate a base (non-tailored) resume PDF
+      description: |
+        All fields are optional. LLM uses whatever is supplied plus the stored
+        resume profile. Returns 422 if no profile exists and no file is uploaded.
+      tags: [resume]
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/ResumeGenerateForm"
+      responses:
+        "200":
+          description: PDF file
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "422":
+          description: No resume profile found and no file uploaded
+
+  /api/resume/generate-tailored:
+    post:
+      operationId: resumeGenerateTailored
+      summary: Generate a resume tailored to a specific job posting
+      tags: [resume]
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/TailoredResumeForm"
+      responses:
+        "200":
+          description: Tailored PDF file
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "422":
+          description: No resume profile found and no file uploaded
+
+  /api/resume/generate-cover-letter:
+    post:
+      operationId: resumeGenerateCoverLetter
+      summary: Generate a cover letter for a specific job posting
+      tags: [resume]
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/TailoredResumeForm"
+      responses:
+        "200":
+          description: Cover letter PDF
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "422":
+          description: No resume profile found and no file uploaded
+
+  # ── Resume profile settings ────────────────────────────────────────────
+  /api/settings/resume:
+    get:
+      operationId: settingsResumeGet
+      summary: Get structured resume profile
+      tags: [settings]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResumeProfile"
+        "404":
+          description: No profile saved yet
+    post:
+      operationId: settingsResumeSet
+      summary: Save (or update) resume profile
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResumeProfile"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+
+  /api/settings/resume/upload:
+    post:
+      operationId: settingsResumeUpload
+      summary: Upload existing resume — LLM extracts structured profile (does NOT auto-save)
+      description: |
+        Accepts a PDF, DOCX, or plain text resume. Extracts structured fields via
+        LLM and returns a ResumeProfile for the user to review and edit. Call
+        POST /api/settings/resume to save after review.
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [resume_file]
+              properties:
+                resume_file:
+                  type: string
+                  format: binary
+                  description: PDF, DOCX, or plain text resume file
+      responses:
+        "200":
+          description: Extracted profile (not yet saved)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResumeProfile"
+        "422":
+          description: Could not extract profile from file
+
+  /api/settings/resume/download:
+    get:
+      operationId: settingsResumeDownload
+      summary: Download current resume profile as YAML
+      tags: [settings]
+      responses:
+        "200":
+          content:
+            application/x-yaml:
+              schema:
+                type: string
+        "404":
+          description: No profile saved yet
+
+  # ── General settings ───────────────────────────────────────────────────
+  /api/settings/general:
+    get:
+      operationId: settingsGeneralGet
+      tags: [settings]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GeneralSettings"
+    post:
+      operationId: settingsGeneralSet
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GeneralSettings"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+
+  /api/settings/preferences:
+    get:
+      operationId: settingsPreferencesGet
+      tags: [settings]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkPreferences"
+    post:
+      operationId: settingsPreferencesSet
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkPreferences"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+
+  /api/settings/secrets:
+    get:
+      operationId: settingsSecretsGet
+      summary: Get masked secrets (keys shown as asterisks)
+      tags: [settings]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretsConfig"
+
+  /api/settings/secrets/api-key:
+    post:
+      operationId: settingsSecretsSetApiKey
+      summary: Save LLM API key or proxy key
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetApiKeyRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+
+  /api/settings/secrets/credentials:
+    post:
+      operationId: settingsSecretsSetCredentials
+      summary: Save encrypted job-site credentials (email + password)
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlatformCredentialsRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkResponse"
+
+  /api/settings/styles:
+    get:
+      operationId: settingsStylesList
+      summary: List available resume styles
+      tags: [settings]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ResumeStyle"
+
+  # ── WebSocket ──────────────────────────────────────────────────────────
+  /ws/logs:
+    get:
+      operationId: wsLogs
+      summary: WebSocket — live structured log stream
+      tags: [ws]
+      responses:
+        "101":
+          description: Switching Protocols
+
+components:
+  parameters:
+    PlatformPath:
+      name: platform
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Platform"
+    JobIdPath:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 500
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+
+  responses:
+    OkResponse:
+      description: Success
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/OkMessage"
+
+  schemas:
+    # ── Enums ──────────────────────────────────────────────────────────
+    Platform:
+      type: string
+      enum: [linkedin, seek, indeed, all]
+
+    BotState:
+      type: string
+      enum: [idle, running, pending_review, stopped, error]
+
+    LoginMethod:
+      type: string
+      enum: [email_password, google_oauth, profile_reuse, manual]
+
+    # ── Utility ────────────────────────────────────────────────────────
+    OkMessage:
+      type: object
+      properties:
+        message:
+          type: string
+      required: [message]
+
+    LoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required: [username, password]
+
+    # ── Auth ───────────────────────────────────────────────────────────
+    LaunchBrowserRequest:
+      type: object
+      properties:
+        platform:
+          $ref: "#/components/schemas/Platform"
+        use_profile:
+          type: boolean
+          default: false
+          description: Load an existing Chrome profile directory
+        profile_path:
+          type: string
+          description: Path to Chrome --user-data-dir (required if use_profile=true)
+      required: [platform]
+
+    LaunchBrowserResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+        message:
+          type: string
+      required: [session_id, message]
+
+    SaveSessionRequest:
+      type: object
+      properties:
+        session_id:
+          type: string
+        platform:
+          $ref: "#/components/schemas/Platform"
+      required: [session_id, platform]
+
+    SaveSessionResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        cookies_saved:
+          type: integer
+      required: [success, cookies_saved]
+
+    PlatformAuthStatus:
+      type: object
+      properties:
+        platform:
+          $ref: "#/components/schemas/Platform"
+        has_session:
+          type: boolean
+        login_method:
+          $ref: "#/components/schemas/LoginMethod"
+        created_at:
+          type: string
+          format: date-time
+      required: [platform, has_session]
+
+    # ── Bot ────────────────────────────────────────────────────────────
+    BotStartRequest:
+      type: object
+      properties:
+        platform:
+          $ref: "#/components/schemas/Platform"
+      required: [platform]
+
+    JobSummary:
+      type: object
+      properties:
+        job_id:
+          type: string
+        company:
+          type: string
+        role:
+          type: string
+        platform:
+          $ref: "#/components/schemas/Platform"
+
+    BotStatus:
+      type: object
+      properties:
+        state:
+          $ref: "#/components/schemas/BotState"
+        platform:
+          $ref: "#/components/schemas/Platform"
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        error:
+          type: string
+        current_job:
+          $ref: "#/components/schemas/JobSummary"
+        today_count:
+          type: integer
+        daily_limit:
+          type: integer
+      required: [state, today_count, daily_limit]
+
+    PendingReview:
+      type: object
+      properties:
+        job_id:
+          type: string
+        company:
+          type: string
+        role:
+          type: string
+        platform:
+          $ref: "#/components/schemas/Platform"
+        resume_path:
+          type: string
+        cover_letter_path:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+      required: [job_id, company, role, platform, created_at]
+
+    # ── Jobs ───────────────────────────────────────────────────────────
+    AppliedJob:
+      type: object
+      properties:
+        id:
+          type: string
+        platform:
+          $ref: "#/components/schemas/Platform"
+        company:
+          type: string
+        role:
+          type: string
+        location:
+          type: string
+        link:
+          type: string
+        resume_path:
+          type: string
+        cover_letter_path:
+          type: string
+        applied_at:
+          type: string
+          format: date-time
+      required: [id, platform, company, role, link, applied_at]
+
+    SkippedJob:
+      type: object
+      properties:
+        id:
+          type: string
+        platform:
+          $ref: "#/components/schemas/Platform"
+        company:
+          type: string
+        role:
+          type: string
+        location:
+          type: string
+        link:
+          type: string
+        skip_reason:
+          type: string
+        suitability_score:
+          type: integer
+          minimum: 1
+          maximum: 10
+        suitability_reasoning:
+          type: string
+        viewed_at:
+          type: string
+          format: date-time
+      required: [id, platform, company, role, link, skip_reason, viewed_at]
+
+    JobStats:
+      type: object
+      properties:
+        total_applied:
+          type: integer
+        applied_today:
+          type: integer
+        total_skipped:
+          type: integer
+      required: [total_applied, applied_today, total_skipped]
+
+    JobDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [applied, skipped]
+        applied_job:
+          $ref: "#/components/schemas/AppliedJob"
+        skipped_job:
+          $ref: "#/components/schemas/SkippedJob"
+      required: [id, status]
+
+    # ── Resume generation forms ────────────────────────────────────────
+    ResumeGenerateForm:
+      type: object
+      properties:
+        style:
+          type: string
+          description: Resume style name (e.g. "Australian Clean Professional")
+        resume_file:
+          type: string
+          format: binary
+          description: Reference resume PDF/DOCX for additional LLM context
+        prompt_hint:
+          type: string
+          description: Free-text instructions appended to the LLM prompt
+        linkedin_url:
+          type: string
+          format: uri
+          description: LinkedIn profile URL for LLM context
+        github_url:
+          type: string
+          format: uri
+          description: GitHub profile URL for LLM context
+
+    TailoredResumeForm:
+      type: object
+      required: [job_url]
+      properties:
+        job_url:
+          type: string
+          format: uri
+          description: Job posting URL to tailor the resume/cover letter for
+        style:
+          type: string
+        resume_file:
+          type: string
+          format: binary
+        prompt_hint:
+          type: string
+        linkedin_url:
+          type: string
+          format: uri
+        github_url:
+          type: string
+          format: uri
+
+    # ── Resume profile ─────────────────────────────────────────────────
+    PersonalInformation:
+      type: object
+      properties:
+        name: { type: string }
+        surname: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        phone_prefix: { type: string }
+        country: { type: string }
+        city: { type: string }
+        address: { type: string }
+        zip_code: { type: string }
+        github: { type: string, format: uri }
+        linkedin: { type: string, format: uri }
+
+    EducationDetail:
+      type: object
+      properties:
+        institution: { type: string }
+        degree: { type: string }
+        field_of_study: { type: string }
+        start_date: { type: string }
+        end_date: { type: string }
+        gpa: { type: string }
+        description: { type: string }
+
+    ExperienceDetail:
+      type: object
+      properties:
+        company: { type: string }
+        title: { type: string }
+        location: { type: string }
+        start_date: { type: string }
+        end_date: { type: string }
+        description: { type: string }
+        technologies:
+          type: array
+          items: { type: string }
+
+    Project:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        link: { type: string, format: uri }
+        technologies:
+          type: array
+          items: { type: string }
+
+    Certification:
+      type: object
+      properties:
+        name: { type: string }
+        issuer: { type: string }
+        date: { type: string }
+        link: { type: string, format: uri }
+
+    Language:
+      type: object
+      properties:
+        language: { type: string }
+        proficiency: { type: string }
+
+    ResumeProfile:
+      type: object
+      properties:
+        personal_information:
+          $ref: "#/components/schemas/PersonalInformation"
+        education:
+          type: array
+          items:
+            $ref: "#/components/schemas/EducationDetail"
+        experience:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExperienceDetail"
+        projects:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+        certifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/Certification"
+        languages:
+          type: array
+          items:
+            $ref: "#/components/schemas/Language"
+        skills:
+          type: array
+          items:
+            type: string
+        interests:
+          type: array
+          items:
+            type: string
+        summary:
+          type: string
+
+    # ── Settings ───────────────────────────────────────────────────────
+    LLMConfig:
+      type: object
+      properties:
+        provider:
+          type: string
+          enum: [claude, openai, ollama, gemini]
+        model:
+          type: string
+          description: "e.g. claude-opus-4-6, gpt-4o"
+        use_proxy:
+          type: boolean
+          description: Route LLM calls through a proxy (e.g. Hai proxy)
+        proxy_url:
+          type: string
+          format: uri
+          description: Proxy base URL (required when use_proxy=true)
+      required: [provider, model, use_proxy]
+
+    BrowserConfig:
+      type: object
+      properties:
+        show_browser:
+          type: boolean
+          description: Show Chrome window during automation (headless if false)
+        use_chrome_profile:
+          type: boolean
+          description: Load an existing Chrome profile on bot start
+        chrome_profile_path:
+          type: string
+          description: Path to Chrome --user-data-dir
+        remote_debug_port:
+          type: integer
+          default: 9222
+
+    HumanBehaviorConfig:
+      type: object
+      properties:
+        daily_application_limit:
+          type: integer
+          minimum: 1
+        job_read_time_min:
+          type: integer
+          description: Seconds
+        job_read_time_max:
+          type: integer
+          description: Seconds
+        pause_between_jobs_min:
+          type: integer
+          description: Seconds
+        pause_between_jobs_max:
+          type: integer
+          description: Seconds
+
+    GeneralSettings:
+      type: object
+      properties:
+        llm:
+          $ref: "#/components/schemas/LLMConfig"
+        browser:
+          $ref: "#/components/schemas/BrowserConfig"
+        human_behavior:
+          $ref: "#/components/schemas/HumanBehaviorConfig"
+        default_resume_style:
+          type: string
+        require_review:
+          type: boolean
+          description: When true, bot pauses before submitting each application
+        job_suitability_score:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Minimum LLM score required to apply
+
+    ExperienceLevelConfig:
+      type: object
+      properties:
+        internship: { type: boolean }
+        entry: { type: boolean }
+        associate: { type: boolean }
+        mid_senior_level: { type: boolean }
+        senior: { type: boolean }
+        director: { type: boolean }
+        executive: { type: boolean }
+
+    JobTypeConfig:
+      type: object
+      properties:
+        full_time: { type: boolean }
+        contract: { type: boolean }
+        part_time: { type: boolean }
+        temporary: { type: boolean }
+        internship: { type: boolean }
+        other: { type: boolean }
+        volunteer: { type: boolean }
+
+    DateFilterConfig:
+      type: object
+      properties:
+        all_time: { type: boolean }
+        month: { type: boolean }
+        week: { type: boolean }
+        hours_24: { type: boolean }
+
+    WorkPreferences:
+      type: object
+      properties:
+        remote: { type: boolean }
+        hybrid: { type: boolean }
+        onsite: { type: boolean }
+        experience_level:
+          $ref: "#/components/schemas/ExperienceLevelConfig"
+        job_types:
+          $ref: "#/components/schemas/JobTypeConfig"
+        date:
+          $ref: "#/components/schemas/DateFilterConfig"
+        positions:
+          type: array
+          items:
+            type: string
+        locations:
+          type: array
+          items:
+            type: string
+        distance:
+          type: integer
+        company_blacklist:
+          type: array
+          items:
+            type: string
+        title_blacklist:
+          type: array
+          items:
+            type: string
+        location_blacklist:
+          type: array
+          items:
+            type: string
+        apply_once_at_company:
+          type: boolean
+        max_applications:
+          type: integer
+
+    SecretsConfig:
+      type: object
+      description: All sensitive values are masked (shown as ****) on GET
+      properties:
+        llm_api_key:
+          type: string
+          description: Masked LLM provider API key
+        proxy_key:
+          type: string
+          description: Masked Hai proxy key
+        credential_platforms:
+          type: array
+          description: List of platforms that have stored encrypted credentials
+          items:
+            $ref: "#/components/schemas/Platform"
+
+    SetApiKeyRequest:
+      type: object
+      properties:
+        key_type:
+          type: string
+          enum: [llm_api_key, proxy_key]
+        value:
+          type: string
+      required: [key_type, value]
+
+    PlatformCredentialsRequest:
+      type: object
+      properties:
+        platform:
+          $ref: "#/components/schemas/Platform"
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+      required: [platform, email, password]
+
+    ResumeStyle:
+      type: object
+      properties:
+        name:
+          type: string
+        css_file:
+          type: string
+      required: [name, css_file]

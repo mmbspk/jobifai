@@ -1,0 +1,36 @@
+# Binary
+jobifai
+
+# Database
+*.db
+data/
+
+# User uploads and generated files
+job_applications/
+uploads/
+
+# Debug screenshots
+debug_*.png
+
+# Go build cache
+*.test
+
+# Node
+web/node_modules/
+web/dist/
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Air (hot reload)
+tmp/
+
+# Env files (never commit secrets)
+.env
+.env.*
