@@ -44,9 +44,6 @@ WORKDIR /app
 COPY --from=builder /jobifai ./jobifai
 COPY resume_style/ ./resume_style/
 
-# Data and uploads live on a mounted volume
-VOLUME ["/app/data", "/app/job_applications", "/app/uploads"]
-
 EXPOSE 8080
 
 ENTRYPOINT ["./jobifai"]
