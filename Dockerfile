@@ -42,7 +42,9 @@ ENV ROD_BROWSER_BIN=/usr/bin/chromium
 
 WORKDIR /app
 COPY --from=builder /jobifai ./jobifai
-COPY --from=builder /src/resume_style ./resume_style/
+
+# Create runtime directories (resume_style is populated by users via the app)
+RUN mkdir -p resume_style job_applications uploads
 
 EXPOSE 8080
 
