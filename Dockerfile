@@ -42,7 +42,7 @@ ENV ROD_BROWSER_BIN=/usr/bin/chromium
 
 WORKDIR /app
 COPY --from=builder /jobifai ./jobifai
-COPY resume_style/ ./resume_style/
+COPY --from=builder /src/resume_style ./resume_style/
 
 EXPOSE 8080
 
