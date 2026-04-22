@@ -49,8 +49,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, delay)
   }, [])
 
-  // On mount: if we have an access token, fetch /api/me to hydrate user state.
+  // On mount: restore session from OAuth redirect params or localStorage.
   useEffect(() => {
+    // Check for Google OAuth redirect tokens first to avoid a race where
+    // loading becomes false before the URL params are consumed, causing
+    // PrivateRoute to redirect to /login prematurely.
+    const params = new URLSearchParams(window.location.search)
+    const oauthAt = params.get('access_token')
+    const oauthRt = params.get('refresh_token')
+    if (oauthAt && oauthRt) {
+      saveTokens({ access_token: oauthAt, refresh_token: oauthRt, expires_in: 86400 })
+      scheduleRefresh(86400)
+      window.history.replaceState({}, '', '/')
+      apiGet<Me>('/me')
+        .then(me => setUser(me))
+        .catch(() => clearTokens())
+        .finally(() => setLoading(false))
+      return
+    }
+
     const token = localStorage.getItem(ACCESS_KEY)
     if (!token) {
       setLoading(false)
@@ -59,11 +76,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     apiGet<Me>('/me')
       .then(me => {
         setUser(me)
-        // Schedule a refresh; we don't know exact expiry so use 23h (near 24h TTL).
         scheduleRefresh(23 * 3600)
       })
       .catch(() => {
-        // Token invalid/expired — try refresh.
         const raw = localStorage.getItem(REFRESH_KEY)
         if (!raw) { clearTokens(); setLoading(false); return }
         userApi.refresh(raw)
@@ -78,20 +93,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return
       })
       .finally(() => setLoading(false))
-  }, [scheduleRefresh])
-
-  // Handle Google OAuth redirect: /?access_token=...&refresh_token=...
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const at = params.get('access_token')
-    const rt = params.get('refresh_token')
-    if (at && rt) {
-      saveTokens({ access_token: at, refresh_token: rt, expires_in: 86400 })
-      scheduleRefresh(86400)
-      // Clean up URL without triggering a reload.
-      window.history.replaceState({}, '', '/')
-      apiGet<Me>('/me').then(me => setUser(me)).catch(() => {})
-    }
   }, [scheduleRefresh])
 
   const login = useCallback(async (email: string, password: string) => {
