@@ -134,6 +134,21 @@ function CredsForm({ platform, hasCreds }: { readonly platform: string; readonly
   )
 }
 
+function VNCFrame() {
+  const token = localStorage.getItem('access_token') ?? ''
+  if (!token) return null
+  const wsPath = encodeURIComponent(`novnc/websockify?token=${encodeURIComponent(token)}`)
+  return (
+    <iframe
+      src={`/novnc/vnc.html?path=${wsPath}&autoconnect=1&resize=scale`}
+      className="w-full rounded-lg border border-[var(--color-border)]"
+      style={{ height: '500px' }}
+      title="Remote browser"
+      sandbox="allow-scripts allow-same-origin allow-forms"
+    />
+  )
+}
+
 function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
   const qc = useQueryClient()
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -194,15 +209,18 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
       </div>
 
       {sessionId && (
-        <div className="px-4 pb-4 border-t border-[var(--color-border-subtle)] pt-3 space-y-2">
-          <p className="text-xs text-[var(--color-text-muted)]">
-            A browser window has opened. Log in to <span className="capitalize">{platform}</span>, then click <strong>Save session</strong>.
-          </p>
-          <button onClick={() => saveSession.mutate()} disabled={saveSession.isPending}
-            className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium disabled:opacity-50 transition-colors"
-          >
-            {saveSession.isPending ? 'Saving…' : 'Save session'}
-          </button>
+        <div className="px-4 pb-4 border-t border-[var(--color-border-subtle)] pt-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-[var(--color-text-muted)]">
+              Log in to <span className="capitalize">{platform}</span> below, then click <strong>Save session</strong>.
+            </p>
+            <button onClick={() => saveSession.mutate()} disabled={saveSession.isPending}
+              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium disabled:opacity-50 transition-colors flex-shrink-0 ml-3"
+            >
+              {saveSession.isPending ? 'Saving…' : 'Save session'}
+            </button>
+          </div>
+          <VNCFrame />
         </div>
       )}
 

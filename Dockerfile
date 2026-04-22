@@ -36,18 +36,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxrandr2 \
         libgbm1 \
         libasound2 \
+        xvfb \
+        x11vnc \
+        novnc \
     && rm -rf /var/lib/apt/lists/*
 
 ENV ROD_BROWSER_BIN=/usr/bin/chromium
+ENV DISPLAY=:99
 
 WORKDIR /app
 COPY --from=builder /jobifai ./jobifai
 COPY --from=builder /src/web/dist ./web/dist
-
-# Create runtime directories (resume_style is populated by users via the app)
-RUN mkdir -p resume_style job_applications uploads
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+RUN chmod +x ./docker-entrypoint.sh \
+    && mkdir -p resume_style job_applications uploads
 
 EXPOSE 8080
 
-ENTRYPOINT ["./jobifai"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["-addr", ":8080", "-db", "/app/data/jobifai.db"]

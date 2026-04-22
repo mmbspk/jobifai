@@ -45,6 +45,16 @@ func NewRouter(svc *Services) *chi.Mux {
 	// ── WebSocket (public — auth is handled inside the handler) ──────────
 	r.Get("/ws/logs", ws.Logs)
 
+	// ── noVNC: websockify proxy (JWT validated inside) + static files ────
+	vncH := NewVNCHandlers(svc)
+	r.Get("/novnc/websockify", vncH.Websockify)
+	if fi, err := os.Stat("/usr/share/novnc"); err == nil && fi.IsDir() {
+		noVNCFS := http.StripPrefix("/novnc/", http.FileServer(http.Dir("/usr/share/novnc")))
+		r.Get("/novnc/*", func(w http.ResponseWriter, r *http.Request) {
+			noVNCFS.ServeHTTP(w, r)
+		})
+	}
+
 	// ── All /api/* routes require a valid JWT ────────────────────────────
 	r.Group(func(r chi.Router) {
 		if svc.TokenManager != nil {
@@ -125,24 +135,32 @@ func NewRouter(svc *Services) *chi.Mux {
 	})
 
 	// ── SPA static files ──────────────────────────────────────────────
+	if h := spaHandler(); h != nil {
+		r.Get("/*", h)
+	}
+
+	return r
+}
+
+func spaHandler() http.HandlerFunc {
 	webDist := os.Getenv("WEB_DIST")
 	if webDist == "" {
 		webDist = "web/dist"
 	}
-	if fi, err := os.Stat(webDist); err == nil && fi.IsDir() {
-		fs := http.FileServer(http.Dir(webDist))
-		r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
-			p := r.URL.Path
-			if p != "/" && strings.HasSuffix(p, "/") {
-				p = strings.TrimSuffix(p, "/")
-			}
-			if _, err := os.Stat(filepath.Join(webDist, p)); err == nil {
-				fs.ServeHTTP(w, r)
-				return
-			}
-			http.ServeFile(w, r, filepath.Join(webDist, "index.html"))
-		})
+	fi, err := os.Stat(webDist)
+	if err != nil || !fi.IsDir() {
+		return nil
 	}
-
-	return r
+	fs := http.FileServer(http.Dir(webDist))
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if p != "/" && strings.HasSuffix(p, "/") {
+			p = strings.TrimSuffix(p, "/")
+		}
+		if _, err := os.Stat(filepath.Join(webDist, p)); err == nil {
+			fs.ServeHTTP(w, r)
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(webDist, "index.html"))
+	}
 }

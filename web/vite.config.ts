@@ -10,6 +10,7 @@ export default defineConfig({
       '/api': 'http://localhost:8080',
       '/auth': 'http://localhost:8080',
       '/ws': { target: 'ws://localhost:8080', ws: true },
+      '/novnc': { target: 'http://localhost:8080', changeOrigin: true },
     },
   },
   build: {

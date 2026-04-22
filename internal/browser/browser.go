@@ -78,9 +78,11 @@ func (m *Manager) Launch(platform, profilePath string, useProfile bool) (*Sessio
 	}
 
 	l := launcher.New().
-		Headless(false).              // visible window
+		Headless(false).
 		Set("--disable-blink-features", "AutomationControlled").
-		Set("--no-sandbox")
+		Set("--no-sandbox").
+		Set("--disable-gpu").
+		Set("--disable-dev-shm-usage")
 
 	if useProfile && profilePath != "" {
 		l = l.UserDataDir(profilePath)
