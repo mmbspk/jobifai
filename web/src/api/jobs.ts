@@ -28,6 +28,7 @@ export const jobsApi = {
   topMatches: (q: JobsQuery = {}) => apiGet<PendingReview[]>(`/jobs/top-matches${qs(q)}`),
   deletePendingReview: (id: string) => apiDelete<{ status: string }>(`/jobs/pending-review/${id}`),
   markApplied: (id: string) => apiPost<{ status: string }>(`/jobs/pending-review/${id}/mark-applied`),
+  blacklistCompany: (id: string) => apiPost<{ status: string }>(`/jobs/pending-review/${id}/blacklist`),
   stats: () => apiGet<JobStats>(`/jobs/stats`),
   get: (id: string) => apiGet<{ id: string; status: string; applied_job?: AppliedJob; skipped_job?: SkippedJob }>(`/jobs/${id}`),
 }

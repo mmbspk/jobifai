@@ -42,7 +42,7 @@ func NewRouter(svc *Services) *chi.Mux {
 		}
 	})
 
-	// ── WebSocket (public — auth is handled inside the handler) ──────────
+	// ── WebSocket (public, auth is handled inside the handler) ──────────
 	r.Get("/ws/logs", ws.Logs)
 
 	// ── noVNC: websockify proxy (JWT validated inside) + static files ────
@@ -54,6 +54,12 @@ func NewRouter(svc *Services) *chi.Mux {
 			noVNCFS.ServeHTTP(w, r)
 		})
 	}
+
+	// ── OpenAPI spec (public) ────────────────────────────────────────────
+	r.Get("/api/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/yaml")
+		http.ServeFile(w, r, "api/openapi.yaml")
+	})
 
 	// ── All /api/* routes require a valid JWT ────────────────────────────
 	r.Group(func(r chi.Router) {
@@ -77,6 +83,8 @@ func NewRouter(svc *Services) *chi.Mux {
 		r.Route("/api/bot", func(r chi.Router) {
 			r.Post("/start", botH.Start)
 			r.Post("/stop", botH.Stop)
+			r.Post("/pause", botH.Pause)
+			r.Post("/resume", botH.Resume)
 			r.Get("/status", botH.Status)
 			r.Get("/review/pending", botH.ReviewListPending)
 			r.Post("/review/{job_id}/approve", botH.ReviewApprove)
@@ -94,6 +102,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/top-matches", jobs.TopMatches)
 			r.Delete("/pending-review/{job_id}", jobs.DeletePendingReview)
 			r.Post("/pending-review/{job_id}/mark-applied", jobs.MarkApplied)
+			r.Post("/pending-review/{job_id}/blacklist", jobs.BlacklistCompany)
 			r.Get("/stats", jobs.Stats)
 			r.Get("/{job_id}", jobs.GetJob)
 		})
@@ -105,6 +114,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/generate-cover-letter", resume.GenerateCoverLetter)
 			r.Post("/evaluate", resume.EvaluateJob)
 			r.Post("/check-halal", resume.CheckHalal)
+			r.Post("/answer-questions", resume.AnswerQuestions)
 		})
 
 		// ── Settings ─────────────────────────────────────────────────
@@ -122,16 +132,39 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/secrets/credentials", settings.SecretsSetCredentials)
 			r.Get("/styles", settings.StylesList)
 			r.Get("/markets", settings.MarketsList)
-		})
-
-		// ── Static file serving for generated PDFs ───────────────────────
-		r.Get("/api/files/*", func(w http.ResponseWriter, r *http.Request) {
-			p := chi.URLParam(r, "*")
-			http.ServeFile(w, r, filepath.Join("job_applications", p))
+			r.Get("/locations/suggest", settings.LocationSuggest)
 		})
 
 		// ── Usage ─────────────────────────────────────────────────────────
 		r.Get("/api/usage/session", usage.Session)
+	})
+
+	// ── Static file serving for generated PDFs ───────────────────────────
+	// Accepts JWT as ?token= (query param) so browser <a> links work without
+	// custom headers, or as the standard Authorization: Bearer header.
+	r.Get("/api/files/*", func(w http.ResponseWriter, r *http.Request) {
+		if svc.TokenManager != nil {
+			tokenStr := r.URL.Query().Get("token")
+			if tokenStr == "" {
+				tokenStr = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			}
+			if _, err := svc.TokenManager.Verify(tokenStr); err != nil {
+				http.Error(w, `{"message":"unauthorized"}`, http.StatusUnauthorized)
+				return
+			}
+		}
+		p := chi.URLParam(r, "*")
+		base, err := filepath.Abs("job_applications")
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		target, err := filepath.Abs(filepath.Join(base, p))
+		if err != nil || !strings.HasPrefix(target, base+string(filepath.Separator)) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		http.ServeFile(w, r, target)
 	})
 
 	// ── SPA static files ──────────────────────────────────────────────

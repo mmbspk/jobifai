@@ -1,27 +1,29 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState, useRef } from 'react'
-import { FileText, Download, Loader2, Upload, X, AlertTriangle, ChevronDown, ArrowRight } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { FileText, Download, Loader2, Upload, X, AlertTriangle, ChevronDown, ArrowRight, Plus, Trash2, Copy, Check } from 'lucide-react'
 import { cn, downloadBlob } from '../lib'
 import { resumeApi } from '../api/resume'
 import { settingsApi } from '../api/settings'
 import { ApiError } from '../api/client'
 import { ScorePill } from '../components/ScorePill'
-import type { HalalVerdict } from '../types'
+import type { HalalVerdict, QuestionAnswer } from '../types'
 
-type Tab = 'base' | 'tailored' | 'cover' | 'evaluate'
+type Tab = 'base' | 'tailored' | 'cover' | 'questions' | 'evaluate'
 
 const TABS: { key: Tab; label: string; desc: string }[] = [
-  { key: 'evaluate', label: 'Job Fit',         desc: 'Score how well a job matches your profile' },
-  { key: 'tailored', label: 'Tailored Resume', desc: 'AI-tailored to a job posting' },
-  { key: 'cover',    label: 'Cover Letter',    desc: 'AI-written cover letter' },
-  { key: 'base',     label: 'Base Resume',     desc: 'Generate from your saved profile' },
+  { key: 'evaluate',  label: 'Job Fit',         desc: 'Score how well a job matches your profile' },
+  { key: 'tailored',  label: 'Tailored Resume', desc: 'AI-tailored to a job posting' },
+  { key: 'cover',     label: 'Cover Letter',    desc: 'AI-written cover letter' },
+  { key: 'questions', label: 'Questions',       desc: 'Answer application or interview questions for a job' },
+  { key: 'base',      label: 'Base Resume',     desc: 'Generate from your saved profile' },
 ]
 
 const STEPS = {
-  tailored: ['Fetching job description…', 'Analysing requirements…', 'Tailoring your profile…', 'Rendering PDF…'],
-  cover:    ['Fetching job description…', 'Analysing requirements…', 'Writing cover letter…', 'Rendering PDF…'],
-  base:     ['Loading profile…', 'Rendering PDF…'],
-  evaluate: ['Fetching job description…', 'Evaluating fit…'],
+  tailored:  ['Fetching job description…', 'Analysing requirements…', 'Tailoring your profile…', 'Rendering PDF…'],
+  cover:     ['Fetching job description…', 'Analysing requirements…', 'Writing cover letter…', 'Rendering PDF…'],
+  base:      ['Loading profile…', 'Rendering PDF…'],
+  evaluate:  ['Fetching job description…', 'Evaluating fit…'],
+  questions: ['Fetching job description…', 'Answering questions…'],
 }
 
 const INPUT_CLS = 'w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50'
@@ -38,8 +40,14 @@ export function Generate() {
   const [loading, setLoading] = useState(false)
   const [step, setStep] = useState(0)
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
+  // Revoke previous blob URL whenever pdfUrl changes (prevents memory leak).
+  useEffect(() => () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl) }, [pdfUrl])
   const [scoreResult, setScoreResult] = useState<{ score: number; reasoning: string } | null>(null)
   const [halalResult, setHalalResult] = useState<HalalVerdict | null>(null)
+  const [questionAnswers, setQuestionAnswers] = useState<QuestionAnswer[] | null>(null)
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
+  const [questions, setQuestions] = useState<Array<{ id: number; value: string }>>([{ id: 0, value: '' }])
+  const nextQuestionId = useRef(1)
   const [error, setError] = useState<string | null>(null)
   const [urlAlert, setUrlAlert] = useState(false)
   const [optionsOpen, setOptionsOpen] = useState(false)
@@ -48,11 +56,24 @@ export function Generate() {
   const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
   const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
 
+  const visibleTabs = TABS.filter(t => t.key !== 'questions' || (generalSettings?.interview_questions_enabled ?? true))
+
   function clearAll() {
-    setPdfUrl(null); setScoreResult(null); setHalalResult(null); setError(null); setUrlAlert(false)
+    setPdfUrl(null); setScoreResult(null); setHalalResult(null); setQuestionAnswers(null)
+    setError(null); setUrlAlert(false)
     setPromptHint(''); setJobDesc('')
     setLinkedinUrl(''); setGithubUrl(''); setResumeFile(null)
     if (fileRef.current) fileRef.current.value = ''
+  }
+
+  async function runQuestionsTab() {
+    const nonEmpty = questions.filter(q => q.value.trim()).map(q => q.value.trim())
+    const answers = await resumeApi.answerQuestions({
+      jobUrl: jobUrl || undefined,
+      jobDescription: jobDesc || undefined,
+      questions: nonEmpty,
+    })
+    setQuestionAnswers(answers)
   }
 
   async function runTab(opts: Parameters<typeof resumeApi.generateTailored>[0], skipUrlFetch: boolean) {
@@ -63,6 +84,8 @@ export function Generate() {
       setPdfUrl(URL.createObjectURL(await resumeApi.generateTailored(opts)))
     } else if (tab === 'cover') {
       setPdfUrl(URL.createObjectURL(await resumeApi.generateCoverLetter(opts)))
+    } else if (tab === 'questions') {
+      await runQuestionsTab()
     } else {
       const halalOpts = { jobUrl: jobUrl || undefined, jobDescription: jobDesc || undefined, skipUrlFetch }
       const [result, halal] = await Promise.all([
@@ -80,6 +103,7 @@ export function Generate() {
     setPdfUrl(null)
     setScoreResult(null)
     setHalalResult(null)
+    setQuestionAnswers(null)
     setUrlAlert(false)
     setStep(0)
     const steps = STEPS[tab]
@@ -111,8 +135,10 @@ export function Generate() {
     }
   }
 
-  const needsUrl = tab === 'tailored' || tab === 'cover' || tab === 'evaluate'
-  const canGenerate = !loading && (!needsUrl || jobUrl.trim().startsWith('http') || jobDesc.trim().length > 20)
+  const needsUrl = tab === 'tailored' || tab === 'cover' || tab === 'evaluate' || tab === 'questions'
+  const hasJobInput = jobUrl.trim().startsWith('http') || jobDesc.trim().length > 20
+  const hasQuestions = questions.some(q => q.value.trim().length > 0)
+  const canGenerate = !loading && (!needsUrl || hasJobInput) && (tab !== 'questions' || hasQuestions)
   const filename = tab === 'cover' ? 'cover-letter.pdf' : 'resume.pdf'
 
   // Count active optional fields to show a badge on the collapsed panel
@@ -121,11 +147,11 @@ export function Generate() {
   // The collapsible extra options block (shared by all tabs; for base it's always inline)
   const extraOptions = (
     <div className="space-y-4">
-      {/* Resume File Override — not shown for evaluate tab */}
+      {/* Resume File Override, not shown for evaluate tab */}
       {tab !== 'evaluate' && (
         <div>
           <p className="text-xs text-[var(--color-text-dim)] mb-2">
-            Resume File <span className="opacity-50">(optional — uses saved profile if omitted)</span>
+            Resume File <span className="opacity-50">(optional, uses saved profile if omitted)</span>
           </p>
           <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.txt" className="hidden"
             onChange={e => setResumeFile(e.target.files?.[0] ?? null)} />
@@ -147,7 +173,7 @@ export function Generate() {
         </div>
       )}
 
-      {/* LinkedIn + GitHub — not shown for evaluate tab */}
+      {/* LinkedIn + GitHub, not shown for evaluate tab */}
       {tab !== 'evaluate' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
@@ -163,7 +189,7 @@ export function Generate() {
         </div>
       )}
 
-      {/* Additional Instructions — not shown for evaluate tab */}
+      {/* Additional Instructions, not shown for evaluate tab */}
       {tab !== 'evaluate' && (
         <div>
           <p className="text-xs text-[var(--color-text-dim)] mb-2">Additional Instructions <span className="opacity-50">(optional)</span></p>
@@ -177,13 +203,14 @@ export function Generate() {
     </div>
   )
 
-  const generateLabel = tab === 'evaluate' ? 'Evaluate' : 'Generate'
+  const GENERATE_LABEL: Record<Tab, string> = { evaluate: 'Evaluate', questions: 'Answer Questions', tailored: 'Generate', cover: 'Generate', base: 'Generate' }
+  const generateLabel = GENERATE_LABEL[tab]
 
   return (
     <div className="space-y-6">
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
-        {TABS.map(t => (
+        {visibleTabs.map(t => (
           <button key={t.key} onClick={() => { setTab(t.key); clearAll() }}
             className={cn('flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all',
               tab === t.key
@@ -195,7 +222,7 @@ export function Generate() {
 
       <div className="text-sm text-[var(--color-text-muted)]">{TABS.find(t => t.key === tab)?.desc}</div>
 
-      {/* Target Market — not relevant for Job Fit evaluation */}
+      {/* Target Market, not relevant for Job Fit evaluation */}
       {markets.length > 0 && tab !== 'evaluate' && (
         <div>
           <p className="text-xs text-[var(--color-text-dim)] mb-2">Target Market</p>
@@ -249,15 +276,53 @@ export function Generate() {
           {/* Job Description */}
           <div>
             <p className="text-xs text-[var(--color-text-dim)] mb-2">
-              Job Description <span className="opacity-50">(optional — paste if URL is inaccessible)</span>
+              Job Description <span className="opacity-50">(optional, paste if URL is inaccessible)</span>
             </p>
             <textarea value={jobDesc} onChange={e => { setJobDesc(e.target.value); setUrlAlert(false) }} rows={5}
               placeholder="Paste the full job description here…"
               className={cn(INPUT_CLS, 'resize-none', urlAlert && 'border-amber-500/50 focus:border-amber-400')} />
           </div>
 
-          {/* Collapsible options panel — only show for non-evaluate tabs that have options */}
-          {tab !== 'evaluate' && (
+          {/* Questions input — only shown for the questions tab */}
+          {tab === 'questions' && (
+            <div className="space-y-2">
+              <p className="text-xs text-[var(--color-text-dim)]">Questions</p>
+              {questions.map((q, i) => (
+                <div key={q.id} className="flex gap-2 items-start">
+                  <textarea
+                    value={q.value}
+                    onChange={e => {
+                      const next = [...questions]
+                      next[i] = { ...next[i], value: e.target.value }
+                      setQuestions(next)
+                    }}
+                    rows={2}
+                    placeholder={`Question ${i + 1}…`}
+                    className={cn(INPUT_CLS, 'resize-none flex-1')}
+                  />
+                  {questions.length > 1 && (
+                    <button
+                      onClick={() => setQuestions(questions.filter((_, idx) => idx !== i))}
+                      className="mt-1 text-[var(--color-text-dim)] hover:text-red-400 transition-colors shrink-0"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                onClick={() => {
+                  setQuestions([...questions, { id: nextQuestionId.current++, value: '' }])
+                }}
+                className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 transition-colors mt-1"
+              >
+                <Plus size={13} /> Add question
+              </button>
+            </div>
+          )}
+
+          {/* Collapsible options panel, only show for non-evaluate, non-questions tabs that have options */}
+          {tab !== 'evaluate' && tab !== 'questions' && (
             <div className="rounded-xl border border-[var(--color-border)] overflow-hidden">
               <button
                 onClick={() => setOptionsOpen(o => !o)}
@@ -282,7 +347,7 @@ export function Generate() {
           )}
         </>
       ) : (
-        /* Base tab — options always inline */
+        /* Base tab, options always inline */
         extraOptions
       )}
 
@@ -365,6 +430,34 @@ export function Generate() {
           {halalResult.scholar_note && (
             <p className="text-xs text-[var(--color-text-dim)]">Scholar note: {halalResult.scholar_note}</p>
           )}
+        </div>
+      )}
+
+      {/* Question answers result */}
+      {questionAnswers && !loading && (
+        <div className="space-y-3">
+          <p className="text-xs text-[var(--color-text-dim)] uppercase tracking-wider">Answers</p>
+          {questionAnswers.map((qa, i) => (
+            <div key={qa.question} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-[var(--color-border)] bg-[var(--color-surface-2)] flex items-start justify-between gap-3">
+                <p className="text-sm font-medium text-[var(--color-text)]">{qa.question}</p>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(qa.answer)
+                    setCopiedIdx(i)
+                    setTimeout(() => setCopiedIdx(null), 2000)
+                  }}
+                  className="shrink-0 text-[var(--color-text-dim)] hover:text-violet-400 transition-colors mt-0.5"
+                  title="Copy answer"
+                >
+                  {copiedIdx === i ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                </button>
+              </div>
+              <div className="px-4 py-3">
+                <p className="text-sm text-[var(--color-text-muted)] leading-relaxed whitespace-pre-wrap">{qa.answer}</p>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

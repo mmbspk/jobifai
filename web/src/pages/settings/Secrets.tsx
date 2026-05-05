@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Eye, EyeOff, Check, MonitorCheck, Trash2 } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { authApi } from '../../api/auth'
+import { getToken } from '../../api/client'
 import { PlatformBadge } from '../../components/PlatformBadge'
 
 interface MaskedInputProps {
@@ -67,7 +68,7 @@ function MaskedInput({ value, onSave, label }: MaskedInputProps) {
   )
 }
 
-const PLATFORMS = ['linkedin', 'seek', 'indeed'] as const
+const PLATFORMS = ['linkedin', 'seek'] as const
 
 interface CredentialsCardProps {
   readonly platform: string
@@ -135,7 +136,7 @@ function CredsForm({ platform, hasCreds }: { readonly platform: string; readonly
 }
 
 function VNCFrame() {
-  const token = localStorage.getItem('access_token') ?? ''
+  const token = getToken() ?? ''
   if (!token) return null
   const wsPath = encodeURIComponent(`novnc/websockify?token=${encodeURIComponent(token)}`)
   return (
@@ -266,7 +267,7 @@ export function Secrets() {
             <CredentialsCard
               key={p}
               platform={p}
-              hasCreds={secrets?.platforms?.includes(p) ?? false}
+              hasCreds={secrets?.credential_platforms?.includes(p) ?? false}
             />
           ))}
         </div>

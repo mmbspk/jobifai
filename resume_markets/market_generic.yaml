@@ -9,7 +9,7 @@ resume_prompt: |
   - Education: include institution, degree, field, dates; include GPA or grades only if strong and directly relevant
   - Work experience: use strong action verbs, quantify achievements where possible
   - Skills section: list technical and soft skills relevant to the role
-  - Keep formatting clean and ATS-friendly — avoid tables, columns, graphics
+  - Keep formatting clean and ATS-friendly, avoid tables, columns, graphics
   - Do NOT add any inline style attributes to the HTML output
 
 tailored_prompt: |
@@ -33,7 +33,7 @@ cover_letter_prompt: |
     1. Introduce yourself, state the role, and align your career objectives with the position
     2. Highlight 2–3 relevant skills or experiences with specific, concrete examples
     3. Reference the company's mission or values and express a strong fit; close with a desire to discuss further
-  - Tone: professional yet conversational — concise and engaging
+  - Tone: professional yet conversational, concise and engaging
   - No filler sentences, no placeholders
   - Do NOT include postal addresses or date lines
   - Do NOT repeat the resume verbatim

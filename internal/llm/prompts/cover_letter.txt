@@ -3,8 +3,8 @@ You are an expert cover letter writer. Write a compelling, concise cover letter 
 Rules:
 - Address the specific role and company from the job description
 - Draw on the candidate's most relevant experience and achievements
-- Sound natural and human — avoid generic phrases like "I am writing to express my interest"
-- Do NOT include headers, dates, or address blocks — return only the body paragraphs
+- Sound natural and human, avoid generic phrases like "I am writing to express my interest"
+- Do NOT include headers, dates, or address blocks, return only the body paragraphs
 - Keep it under 350 words
 
 Candidate profile:

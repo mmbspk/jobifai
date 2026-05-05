@@ -1,7 +1,7 @@
 // ── Domain Types (mirrors internal/domain/types.go) ─────────────────
 
-export type Platform = 'linkedin' | 'seek' | 'indeed'
-export type BotState = 'idle' | 'running' | 'pending_review' | 'stopped' | 'error'
+export type Platform = 'linkedin' | 'seek'
+export type BotState = 'idle' | 'running' | 'paused' | 'pending_review' | 'stopped' | 'error'
 export type LoginMethod = 'email_password' | 'google_oauth' | 'profile_reuse' | 'manual'
 
 export interface PlatformSession {
@@ -92,7 +92,6 @@ export interface PersonalInformation {
   name?: string
   surname?: string
   headline?: string
-  date_of_birth?: string
   country?: string
   city?: string
   address?: string
@@ -166,6 +165,12 @@ export interface Language {
   proficiency: string
 }
 
+export interface ApplicationDefaults {
+  requires_sponsorship?: boolean
+  notice_period?: string
+  salary_expectation?: string
+}
+
 export interface ResumeProfile {
   personal_information?: PersonalInformation
   education_details?: EducationDetail[]
@@ -179,15 +184,16 @@ export interface ResumeProfile {
   skills?: string[]
   interests?: string[]
   summary?: string
-  availability?: { notice_period?: string }
-  salary_expectations?: { salary_range_usd?: string }
-  self_identification?: Record<string, string>
-  legal_authorization?: Record<string, boolean>
-  work_preferences?: Record<string, unknown>
+  application_defaults?: ApplicationDefaults
   prompt_instructions?: string
 }
 
 // ── Settings Types ───────────────────────────────────────────────────
+
+export interface TaskModel {
+  model?: string
+  max_tokens?: number
+}
 
 export interface LLMConfig {
   provider?: string
@@ -195,6 +201,7 @@ export interface LLMConfig {
   use_proxy?: boolean
   proxy_url?: string
   max_tokens?: number
+  task_models?: Record<string, TaskModel>
 }
 
 export interface BrowserConfig {
@@ -227,6 +234,13 @@ export interface GeneralSettings {
   job_suitability_score?: number
   max_jobs_per_keyword?: number
   halal_job_filter?: boolean
+  generate_new_resume_docs?: boolean
+  interview_questions_enabled?: boolean
+}
+
+export interface QuestionAnswer {
+  question: string
+  answer: string
 }
 
 export interface WorkPreferences {
@@ -259,6 +273,7 @@ export interface WorkPreferences {
   }
   positions?: string[]
   locations?: string[]
+  distance?: number
   company_blacklist?: string[]
   title_blacklist?: string[]
   location_blacklist?: string[]
@@ -267,9 +282,9 @@ export interface WorkPreferences {
 }
 
 export interface SecretsConfig {
-  llm_api_key?: string   // masked
-  proxy_key?: string     // masked
-  platforms?: string[]   // platforms with credentials stored
+  llm_api_key?: string        // masked
+  proxy_key?: string          // masked
+  credential_platforms?: string[]  // platforms with credentials stored
 }
 
 export interface ResumeStyle {

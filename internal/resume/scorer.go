@@ -14,11 +14,11 @@ import (
 var scoreTempl = template.Must(template.New("score").Parse(`You are an expert recruiter evaluating how well a candidate's profile matches a job posting.
 
 Score the match from 0 to 10 where:
-  10 = perfect fit — nearly every requirement met, ideal background
-   7 = strong fit — most requirements met, minor gaps
-   5 = moderate fit — relevant background but notable gaps
-   3 = weak fit — some overlap but significant misalignment
-   0 = no fit — fundamentally wrong background or location
+  10 = perfect fit, nearly every requirement met, ideal background
+   7 = strong fit, most requirements met, minor gaps
+   5 = moderate fit, relevant background but notable gaps
+   3 = weak fit, some overlap but significant misalignment
+   0 = no fit, fundamentally wrong background or location
 
 Evaluate across: required skills & tech stack, years of experience, seniority level,
 domain/industry relevance, location/remote eligibility.
@@ -46,7 +46,8 @@ func NewScorer(client *llm.Client) *Scorer { return &Scorer{client: client} }
 
 // EvaluateJob scores how well the candidate's profile matches the given job description.
 func (s *Scorer) EvaluateJob(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (domain.JobScore, error) {
-	profileJSON, err := json.Marshal(profile)
+	trimmed := ForScoring(profile)
+	profileJSON, err := json.Marshal(trimmed)
 	if err != nil {
 		return domain.JobScore{}, fmt.Errorf("scorer: marshal: %w", err)
 	}
@@ -58,7 +59,7 @@ func (s *Scorer) EvaluateJob(ctx context.Context, profile *domain.ResumeProfile,
 	}); err != nil {
 		return domain.JobScore{}, fmt.Errorf("scorer: template: %w", err)
 	}
-	raw, err := s.client.Chat(ctx, []llm.Message{{Role: "user", Content: prompt.String()}})
+	raw, err := s.client.Chat(llm.WithTask(ctx, "evaluate job"), []llm.Message{{Role: "user", Content: prompt.String()}})
 	if err != nil {
 		return domain.JobScore{}, fmt.Errorf("scorer: llm: %w", err)
 	}

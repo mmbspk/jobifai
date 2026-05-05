@@ -149,7 +149,7 @@ func (h *UserHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		RefreshToken string `json:"refresh_token"`
 	}
-	// Best-effort decode — even if the body is missing we still return 200.
+	// Best-effort decode, even if the body is missing we still return 200.
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	userID := auth.UserIDFromCtx(r.Context())
 	if userID != "" {

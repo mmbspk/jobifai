@@ -1,4 +1,4 @@
-// Auth API — public endpoints (no Bearer header required)
+// Auth API, public endpoints (no Bearer header required)
 const BASE = (import.meta.env.VITE_API_BASE ?? '')
 
 async function authFetch<T>(path: string, body: unknown): Promise<T> {

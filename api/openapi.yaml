@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 info:
   title: jobifai API
-  description: AI-powered job application automation — REST API
+  description: AI-powered job application automation, REST API
   version: "1.0.0"
 
 servers:
@@ -172,7 +172,7 @@ paths:
   /api/bot/review/{job_id}/approve:
     post:
       operationId: reviewApprove
-      summary: Approve a pending application — bot will submit it
+      summary: Approve a pending application, bot will submit it
       tags: [bot]
       parameters:
         - $ref: "#/components/parameters/JobIdPath"
@@ -185,7 +185,7 @@ paths:
   /api/bot/review/{job_id}/reject:
     post:
       operationId: reviewReject
-      summary: Reject a pending application — bot will skip it
+      summary: Reject a pending application, bot will skip it
       tags: [bot]
       parameters:
         - $ref: "#/components/parameters/JobIdPath"
@@ -364,7 +364,7 @@ paths:
   /api/settings/resume/upload:
     post:
       operationId: settingsResumeUpload
-      summary: Upload existing resume — LLM extracts structured profile (does NOT auto-save)
+      summary: Upload existing resume, LLM extracts structured profile (does NOT auto-save)
       description: |
         Accepts a PDF, DOCX, or plain text resume. Extracts structured fields via
         LLM and returns a ResumeProfile for the user to review and edit. Call
@@ -513,7 +513,7 @@ paths:
   /ws/logs:
     get:
       operationId: wsLogs
-      summary: WebSocket — live structured log stream
+      summary: WebSocket, live structured log stream
       tags: [ws]
       responses:
         "101":
@@ -561,7 +561,7 @@ components:
     # ── Enums ──────────────────────────────────────────────────────────
     Platform:
       type: string
-      enum: [linkedin, seek, indeed, all]
+      enum: [linkedin, seek, all]
 
     BotState:
       type: string

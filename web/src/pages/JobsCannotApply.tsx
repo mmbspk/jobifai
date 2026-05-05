@@ -13,7 +13,6 @@ const PLATFORMS = [
   { value: '', label: 'All platforms' },
   { value: 'linkedin', label: 'LinkedIn' },
   { value: 'seek', label: 'Seek' },
-  { value: 'indeed', label: 'Indeed' },
 ]
 
 

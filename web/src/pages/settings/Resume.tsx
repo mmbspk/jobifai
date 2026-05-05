@@ -69,11 +69,26 @@ function CardHeader({ index, label, onRemove }: { index: number; label: string; 
 
 const EXTRACT_STEPS = ['Reading file…', 'Sending to AI…', 'Parsing response…']
 
+function genKeys(n: number): string[] {
+  return Array.from({ length: n }, () => crypto.randomUUID())
+}
+
 export function Resume() {
   const qc = useQueryClient()
   const { data } = useQuery({ queryKey: ['settings-resume'], queryFn: settingsApi.resume.get })
   const [form, setForm] = useState<ResumeProfile>({})
   const [saved, setSaved] = useState(false)
+
+  // Stable keys for list sections — prevents React from misaligning input state on delete/reorder
+  const [eduKeys, setEduKeys] = useState<string[]>([])
+  const [expKeys, setExpKeys] = useState<string[]>([])
+  const [projectKeys, setProjectKeys] = useState<string[]>([])
+  const [certKeys, setCertKeys] = useState<string[]>([])
+  const [pubKeys, setPubKeys] = useState<string[]>([])
+  const [presKeys, setPresKeys] = useState<string[]>([])
+  const [grantKeys, setGrantKeys] = useState<string[]>([])
+  const [langKeys, setLangKeys] = useState<string[]>([])
+  const [skillKeys, setSkillKeys] = useState<string[]>([])
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [extracting, setExtracting] = useState(false)
@@ -83,7 +98,20 @@ export function Resume() {
   const fileRef = useRef<HTMLInputElement>(null)
   const stepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  useEffect(() => { if (data) setForm(data) }, [data])
+  useEffect(() => {
+    if (data) {
+      setForm(data)
+      setEduKeys(genKeys((data.education_details ?? []).length))
+      setExpKeys(genKeys((data.experience_details ?? []).length))
+      setProjectKeys(genKeys((data.projects ?? []).length))
+      setCertKeys(genKeys((data.certifications ?? []).length))
+      setPubKeys(genKeys((data.publications ?? []).length))
+      setPresKeys(genKeys((data.presentations ?? []).length))
+      setGrantKeys(genKeys((data.grants ?? []).length))
+      setLangKeys(genKeys((data.languages ?? []).length))
+      setSkillKeys(genKeys((data.skills ?? []).length))
+    }
+  }, [data])
 
   const save = useMutation({
     mutationFn: () => settingsApi.resume.set(form),
@@ -102,16 +130,28 @@ export function Resume() {
 
   // ── education ──────────────────────────────────────────────────────────────
   const edu = form.education_details ?? []
-  function addEdu() { setForm(f => ({ ...f, education_details: [...(f.education_details ?? []), {}] })) }
-  function removeEdu(i: number) { setForm(f => ({ ...f, education_details: (f.education_details ?? []).filter((_, j) => j !== i) })) }
+  function addEdu() {
+    setForm(f => ({ ...f, education_details: [...(f.education_details ?? []), {}] }))
+    setEduKeys(k => [...k, crypto.randomUUID()])
+  }
+  function removeEdu(i: number) {
+    setForm(f => ({ ...f, education_details: (f.education_details ?? []).filter((_, j) => j !== i) }))
+    setEduKeys(k => k.filter((_, j) => j !== i))
+  }
   function setEdu(i: number, key: keyof EducationDetail, v: string) {
     setForm(f => { const a = [...(f.education_details ?? [])]; a[i] = { ...a[i], [key]: v }; return { ...f, education_details: a } })
   }
 
   // ── experience ────────────────────────────────────────────────────────────
   const exp = form.experience_details ?? []
-  function addExp() { setForm(f => ({ ...f, experience_details: [...(f.experience_details ?? []), {}] })) }
-  function removeExp(i: number) { setForm(f => ({ ...f, experience_details: (f.experience_details ?? []).filter((_, j) => j !== i) })) }
+  function addExp() {
+    setForm(f => ({ ...f, experience_details: [...(f.experience_details ?? []), {}] }))
+    setExpKeys(k => [...k, crypto.randomUUID()])
+  }
+  function removeExp(i: number) {
+    setForm(f => ({ ...f, experience_details: (f.experience_details ?? []).filter((_, j) => j !== i) }))
+    setExpKeys(k => k.filter((_, j) => j !== i))
+  }
   function setExp(i: number, key: keyof ExperienceDetail, v: string) {
     setForm(f => { const a = [...(f.experience_details ?? [])]; a[i] = { ...a[i], [key]: v }; return { ...f, experience_details: a } })
   }
@@ -122,8 +162,14 @@ export function Resume() {
 
   // ── projects ──────────────────────────────────────────────────────────────
   const projects = form.projects ?? []
-  function addProject() { setForm(f => ({ ...f, projects: [...(f.projects ?? []), {}] })) }
-  function removeProject(i: number) { setForm(f => ({ ...f, projects: (f.projects ?? []).filter((_, j) => j !== i) })) }
+  function addProject() {
+    setForm(f => ({ ...f, projects: [...(f.projects ?? []), {}] }))
+    setProjectKeys(k => [...k, crypto.randomUUID()])
+  }
+  function removeProject(i: number) {
+    setForm(f => ({ ...f, projects: (f.projects ?? []).filter((_, j) => j !== i) }))
+    setProjectKeys(k => k.filter((_, j) => j !== i))
+  }
   function setProject(i: number, key: keyof Project, v: string) {
     setForm(f => { const a = [...(f.projects ?? [])]; a[i] = { ...a[i], [key]: v }; return { ...f, projects: a } })
   }
@@ -133,48 +179,84 @@ export function Resume() {
 
   // ── certifications ────────────────────────────────────────────────────────
   const certs = form.certifications ?? []
-  function addCert() { setForm(f => ({ ...f, certifications: [...(f.certifications ?? []), {}] })) }
-  function removeCert(i: number) { setForm(f => ({ ...f, certifications: (f.certifications ?? []).filter((_, j) => j !== i) })) }
+  function addCert() {
+    setForm(f => ({ ...f, certifications: [...(f.certifications ?? []), {}] }))
+    setCertKeys(k => [...k, crypto.randomUUID()])
+  }
+  function removeCert(i: number) {
+    setForm(f => ({ ...f, certifications: (f.certifications ?? []).filter((_, j) => j !== i) }))
+    setCertKeys(k => k.filter((_, j) => j !== i))
+  }
   function setCert(i: number, key: keyof Certification, v: string) {
     setForm(f => { const a = [...(f.certifications ?? [])]; a[i] = { ...a[i], [key]: v }; return { ...f, certifications: a } })
   }
 
   // ── publications ──────────────────────────────────────────────────────────
   const pubs = form.publications ?? []
-  function addPub() { setForm(f => ({ ...f, publications: [...(f.publications ?? []), {}] })) }
-  function removePub(i: number) { setForm(f => ({ ...f, publications: (f.publications ?? []).filter((_, j) => j !== i) })) }
+  function addPub() {
+    setForm(f => ({ ...f, publications: [...(f.publications ?? []), {}] }))
+    setPubKeys(k => [...k, crypto.randomUUID()])
+  }
+  function removePub(i: number) {
+    setForm(f => ({ ...f, publications: (f.publications ?? []).filter((_, j) => j !== i) }))
+    setPubKeys(k => k.filter((_, j) => j !== i))
+  }
   function setPub(i: number, key: keyof Publication, v: string) {
     setForm(f => { const a = [...(f.publications ?? [])]; a[i] = { ...a[i], [key]: v }; return { ...f, publications: a } })
   }
 
   // ── presentations ─────────────────────────────────────────────────────────
   const pres = form.presentations ?? []
-  function addPres() { setForm(f => ({ ...f, presentations: [...(f.presentations ?? []), {}] })) }
-  function removePres(i: number) { setForm(f => ({ ...f, presentations: (f.presentations ?? []).filter((_, j) => j !== i) })) }
+  function addPres() {
+    setForm(f => ({ ...f, presentations: [...(f.presentations ?? []), {}] }))
+    setPresKeys(k => [...k, crypto.randomUUID()])
+  }
+  function removePres(i: number) {
+    setForm(f => ({ ...f, presentations: (f.presentations ?? []).filter((_, j) => j !== i) }))
+    setPresKeys(k => k.filter((_, j) => j !== i))
+  }
   function setPres(i: number, key: keyof Presentation, v: string) {
     setForm(f => { const a = [...(f.presentations ?? [])]; a[i] = { ...a[i], [key]: v }; return { ...f, presentations: a } })
   }
 
   // ── grants ────────────────────────────────────────────────────────────────
   const grants = form.grants ?? []
-  function addGrant() { setForm(f => ({ ...f, grants: [...(f.grants ?? []), {}] })) }
-  function removeGrant(i: number) { setForm(f => ({ ...f, grants: (f.grants ?? []).filter((_, j) => j !== i) })) }
+  function addGrant() {
+    setForm(f => ({ ...f, grants: [...(f.grants ?? []), {}] }))
+    setGrantKeys(k => [...k, crypto.randomUUID()])
+  }
+  function removeGrant(i: number) {
+    setForm(f => ({ ...f, grants: (f.grants ?? []).filter((_, j) => j !== i) }))
+    setGrantKeys(k => k.filter((_, j) => j !== i))
+  }
   function setGrant(i: number, key: keyof Grant, v: string) {
     setForm(f => { const a = [...(f.grants ?? [])]; a[i] = { ...a[i], [key]: v }; return { ...f, grants: a } })
   }
 
   // ── languages ────────────────────────────────────────────────────────────
   const lang = form.languages ?? []
-  function addLang() { setForm(f => ({ ...f, languages: [...(f.languages ?? []), { language: '', proficiency: '' }] })) }
-  function removeLang(i: number) { setForm(f => ({ ...f, languages: (f.languages ?? []).filter((_, j) => j !== i) })) }
+  function addLang() {
+    setForm(f => ({ ...f, languages: [...(f.languages ?? []), { language: '', proficiency: '' }] }))
+    setLangKeys(k => [...k, crypto.randomUUID()])
+  }
+  function removeLang(i: number) {
+    setForm(f => ({ ...f, languages: (f.languages ?? []).filter((_, j) => j !== i) }))
+    setLangKeys(k => k.filter((_, j) => j !== i))
+  }
   function setLang(i: number, key: keyof Language, v: string) {
     setForm(f => { const a = [...(f.languages ?? [])]; a[i] = { ...a[i], [key]: v }; return { ...f, languages: a } })
   }
 
   // ── skills ────────────────────────────────────────────────────────────────
   const skills = form.skills ?? []
-  function addSkill() { setForm(f => ({ ...f, skills: [...(f.skills ?? []), ''] })) }
-  function removeSkill(i: number) { setForm(f => ({ ...f, skills: (f.skills ?? []).filter((_, j) => j !== i) })) }
+  function addSkill() {
+    setForm(f => ({ ...f, skills: [...(f.skills ?? []), ''] }))
+    setSkillKeys(k => [...k, crypto.randomUUID()])
+  }
+  function removeSkill(i: number) {
+    setForm(f => ({ ...f, skills: (f.skills ?? []).filter((_, j) => j !== i) }))
+    setSkillKeys(k => k.filter((_, j) => j !== i))
+  }
   function setSkill(i: number, v: string) {
     setForm(f => { const a = [...(f.skills ?? [])]; a[i] = v; return { ...f, skills: a } })
   }
@@ -191,7 +273,17 @@ export function Resume() {
     stepTimerRef.current = setInterval(() => { setExtractStep(s => Math.min(s + 1, EXTRACT_STEPS.length - 1)) }, 1200)
     try {
       const profile = await settingsApi.resume.upload(selectedFile)
-      setForm(profile); setExtractSuccess(true); setSelectedFile(null)
+      setForm(profile)
+      setEduKeys(genKeys((profile.education_details ?? []).length))
+      setExpKeys(genKeys((profile.experience_details ?? []).length))
+      setProjectKeys(genKeys((profile.projects ?? []).length))
+      setCertKeys(genKeys((profile.certifications ?? []).length))
+      setPubKeys(genKeys((profile.publications ?? []).length))
+      setPresKeys(genKeys((profile.presentations ?? []).length))
+      setGrantKeys(genKeys((profile.grants ?? []).length))
+      setLangKeys(genKeys((profile.languages ?? []).length))
+      setSkillKeys(genKeys((profile.skills ?? []).length))
+      setExtractSuccess(true); setSelectedFile(null)
       if (fileRef.current) fileRef.current.value = ''
     } catch (err: unknown) {
       setExtractError(err instanceof Error ? err.message : 'Extraction failed')
@@ -253,7 +345,7 @@ export function Resume() {
         )}
         {extractSuccess && (
           <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-400">
-            <Check size={14} /> Profile extracted — review the fields below and save.
+            <Check size={14} /> Profile extracted, review the fields below and save.
           </div>
         )}
         {extractError && (
@@ -284,7 +376,7 @@ export function Resume() {
           <Textarea
             value={form.summary ?? ''}
             onChange={v => setForm(f => ({ ...f, summary: v }))}
-            placeholder="Brief professional summary — the AI will refine this for each application."
+            placeholder="Brief professional summary, the AI will refine this for each application."
             rows={4}
           />
         </div>
@@ -295,7 +387,7 @@ export function Resume() {
         <div className="space-y-2 pt-3">
           <p className="text-xs text-[var(--color-text-dim)]">Each row: <span className="font-mono">Category: item1, item2, item3</span></p>
           {skills.map((s, i) => (
-            <div key={i} className="flex items-center gap-2">
+            <div key={skillKeys[i]} className="flex items-center gap-2">
               <Input value={s} onChange={v => setSkill(i, v)} placeholder="e.g. Cloud & Infrastructure: AWS, Docker, Kubernetes" />
               <button onClick={() => removeSkill(i)} className="text-[var(--color-text-dim)] hover:text-red-400 shrink-0 transition-colors"><Trash2 size={13} /></button>
             </div>
@@ -308,7 +400,7 @@ export function Resume() {
       <Section title={`Education (${edu.length})`}>
         <div className="space-y-4 pt-3">
           {edu.map((e, i) => (
-            <div key={i} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
+            <div key={eduKeys[i]} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
               <CardHeader index={i} label="Entry" onRemove={() => removeEdu(i)} />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Field label="Institution"><Input value={e.institution ?? ''} onChange={v => setEdu(i, 'institution', v)} /></Field>
@@ -320,7 +412,7 @@ export function Resume() {
                 </div>
               </div>
               <Field label="Thesis / Dissertation Title">
-                <Input value={e.thesis ?? ''} onChange={v => setEdu(i, 'thesis', v)} placeholder="Optional — thesis or dissertation title" />
+                <Input value={e.thesis ?? ''} onChange={v => setEdu(i, 'thesis', v)} placeholder="Optional, thesis or dissertation title" />
               </Field>
             </div>
           ))}
@@ -332,7 +424,7 @@ export function Resume() {
       <Section title={`Experience (${exp.length})`}>
         <div className="space-y-4 pt-3">
           {exp.map((e, i) => (
-            <div key={i} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
+            <div key={expKeys[i]} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
               <CardHeader index={i} label="Role" onRemove={() => removeExp(i)} />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Field label="Job Title / Position"><Input value={e.position ?? ''} onChange={v => setExp(i, 'position', v)} /></Field>
@@ -358,7 +450,7 @@ export function Resume() {
       <Section title={`Projects / Portfolio (${projects.length})`}>
         <div className="space-y-4 pt-3">
           {projects.map((pr, i) => (
-            <div key={i} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
+            <div key={projectKeys[i]} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
               <CardHeader index={i} label="Project" onRemove={() => removeProject(i)} />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Field label="Name"><Input value={pr.name ?? ''} onChange={v => setProject(i, 'name', v)} /></Field>
@@ -384,7 +476,7 @@ export function Resume() {
       <Section title={`Certifications & Professional Development (${certs.length})`}>
         <div className="space-y-4 pt-3">
           {certs.map((c, i) => (
-            <div key={i} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
+            <div key={certKeys[i]} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
               <CardHeader index={i} label="Entry" onRemove={() => removeCert(i)} />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Field label="Name / Title"><Input value={c.name ?? ''} onChange={v => setCert(i, 'name', v)} /></Field>
@@ -402,7 +494,7 @@ export function Resume() {
       <Section title={`Publications (${pubs.length})`}>
         <div className="space-y-4 pt-3">
           {pubs.map((pub, i) => (
-            <div key={i} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
+            <div key={pubKeys[i]} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
               <CardHeader index={i} label="Publication" onRemove={() => removePub(i)} />
               <Field label="Title">
                 <Input value={pub.title ?? ''} onChange={v => setPub(i, 'title', v)} />
@@ -426,7 +518,7 @@ export function Resume() {
       <Section title={`Conference Presentations (${pres.length})`}>
         <div className="space-y-4 pt-3">
           {pres.map((pr, i) => (
-            <div key={i} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
+            <div key={presKeys[i]} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
               <CardHeader index={i} label="Presentation" onRemove={() => removePres(i)} />
               <Field label="Title">
                 <Input value={pr.title ?? ''} onChange={v => setPres(i, 'title', v)} />
@@ -446,7 +538,7 @@ export function Resume() {
       <Section title={`Grants & Funding (${grants.length})`}>
         <div className="space-y-4 pt-3">
           {grants.map((g, i) => (
-            <div key={i} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
+            <div key={grantKeys[i]} className="rounded-lg border border-[var(--color-border)] p-3 space-y-3">
               <CardHeader index={i} label="Grant" onRemove={() => removeGrant(i)} />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Field label="Funder / Body"><Input value={g.funder ?? ''} onChange={v => setGrant(i, 'funder', v)} /></Field>
@@ -464,7 +556,7 @@ export function Resume() {
       <Section title={`Languages (${lang.length})`}>
         <div className="space-y-3 pt-3">
           {lang.map((l, i) => (
-            <div key={i} className="flex items-center gap-2">
+            <div key={langKeys[i]} className="flex items-center gap-2">
               <Input value={l.language ?? ''} onChange={v => setLang(i, 'language', v)} placeholder="e.g. English" />
               <Input value={l.proficiency ?? ''} onChange={v => setLang(i, 'proficiency', v)} placeholder="e.g. Native / Fluent / Intermediate" />
               <button onClick={() => removeLang(i)} className="text-[var(--color-text-dim)] hover:text-red-400 shrink-0 transition-colors"><Trash2 size={13} /></button>

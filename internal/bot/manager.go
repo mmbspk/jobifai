@@ -9,9 +9,20 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
-	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/resume"
 )
+
+// ConfigReader is the subset of config.Store the Manager needs.
+type ConfigReader interface {
+	Get(userID, key string, dst any) error
+}
+
+// SecretsReader is the subset of config.SecretsStore the Manager needs.
+type SecretsReader interface {
+	Get(userID, key string) (string, error)
+}
 
 type botEntry struct {
 	bot    *Bot
@@ -25,20 +36,22 @@ type Manager struct {
 	mu        sync.Mutex
 	bots      map[string]*botEntry // key = userID
 	db        *sql.DB
-	cfgStore  *config.Store
-	secrets   *config.SecretsStore
+	cfgStore  ConfigReader
+	secrets   SecretsReader
 	sessions  *browser.SessionStore
 	tailor    ResumeTailor
 	scorer    JobScorer
 	halal     JobHalalChecker
 	renderer  ResumeRenderer
 	marketDir string
+	ctx       context.Context // lifetime context; cancelled on server shutdown
 }
 
 func NewManager(
+	ctx context.Context,
 	db *sql.DB,
-	cfgStore *config.Store,
-	secrets *config.SecretsStore,
+	cfgStore ConfigReader,
+	secrets SecretsReader,
 	sessions *browser.SessionStore,
 	tailor ResumeTailor,
 	scorer JobScorer,
@@ -47,6 +60,7 @@ func NewManager(
 	marketDir string,
 ) *Manager {
 	return &Manager{
+		ctx:       ctx,
 		db:        db,
 		cfgStore:  cfgStore,
 		secrets:   secrets,
@@ -84,7 +98,7 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 		return err
 	}
 
-	botCtx, cancel := context.WithCancel(context.Background())
+	botCtx, cancel := context.WithCancel(m.ctx)
 	e.cancel = cancel
 	e.bot = New(*cfg)
 	now := time.Now()
@@ -133,6 +147,30 @@ func (m *Manager) Stop(userID string) {
 	e.status.FinishedAt = &fin
 }
 
+// Pause suspends the bot at the next job boundary for userID.
+func (m *Manager) Pause(userID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.bots[userID]
+	if !ok || e.bot == nil {
+		return
+	}
+	e.bot.Pause()
+	e.status.State = domain.BotStatePaused
+}
+
+// Resume unblocks a paused bot for userID.
+func (m *Manager) Resume(userID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.bots[userID]
+	if !ok || e.bot == nil {
+		return
+	}
+	e.bot.Resume()
+	e.status.State = domain.BotStateRunning
+}
+
 // Status returns the current bot status for userID.
 func (m *Manager) Status(userID string) domain.BotStatus {
 	m.mu.Lock()
@@ -151,26 +189,49 @@ func (m *Manager) Status(userID string) domain.BotStatus {
 			e.status.DailyLimit = gs.HumanBehavior.DailyApplicationLimit
 		}
 	}
+	s := e.status
 	if e.bot != nil {
-		e.status.Keyword = e.bot.Keyword()
+		s.Keyword = e.bot.Keyword()
+		if e.bot.IsPaused() {
+			s.State = domain.BotStatePaused
+		}
 	}
-	return e.status
+	return s
 }
 
 // SubmitNow immediately submits a job from the approved queue for userID.
 func (m *Manager) SubmitNow(userID string, req SubmitRequest) {
 	go func() {
-		ctx := context.Background()
+		ctx := m.ctx
 		var gs domain.GeneralSettings
-		_ = m.cfgStore.Get(userID, "general_settings", &gs)
+		if err := m.cfgStore.Get(userID, "general_settings", &gs); err != nil {
+			log.Warn().Err(err).Str("user_id", userID).Msg("SubmitNow: failed to load general settings")
+		}
 
 		var profile domain.ResumeProfile
-		_ = m.cfgStore.Get(userID, "resume_profile", &profile)
+		if err := m.cfgStore.Get(userID, "resume_profile", &profile); err != nil {
+			log.Warn().Err(err).Str("user_id", userID).Msg("SubmitNow: failed to load resume profile")
+		}
 
 		cookies, err := m.sessions.Load(userID, req.Platform)
 		if err != nil {
 			log.Error().Err(err).Str("job", req.Role).Msg("approve: no session for platform")
 			return
+		}
+
+		tailor := m.tailor
+		scorer := m.scorer
+		var tracker *llm.UsageTracker
+		if client := m.userLLMClient(userID, gs); client != nil {
+			tracker = &llm.UsageTracker{}
+			client = client.WithTracker(tracker)
+			tm := gs.LLM.TaskModels
+			tailor = resume.NewTailor(
+				taskClient(client, tm, "tailoring"),
+				taskClient(client, tm, "cover_letter"),
+				taskClient(client, tm, "form_filling"),
+			)
+			scorer = resume.NewScorer(taskClient(client, tm, "scoring"))
 		}
 
 		b := &Bot{
@@ -180,12 +241,13 @@ func (m *Manager) SubmitNow(userID string, req SubmitRequest) {
 				Cookies:      cookies,
 				DB:           m.db,
 				UserID:       userID,
-				Tailor:       m.tailor,
-				Scorer:       m.scorer,
+				Tailor:       tailor,
+				Scorer:       scorer,
 				HalalChecker: m.halalCheckerFor(gs),
 				Renderer:     m.renderer,
 				Profile:      &profile,
 				MarketDir:    m.marketDir,
+				LLMTracker:   tracker,
 			},
 			state:  domain.BotStateIdle,
 			stopCh: make(chan struct{}),
@@ -208,49 +270,80 @@ func (m *Manager) SubmitNow(userID string, req SubmitRequest) {
 		defer jobPage.Close()
 
 		var score int
-		_ = m.db.QueryRow(
+		if err := m.db.QueryRow(
 			`SELECT COALESCE(suitability_score,0) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
 			req.JobID, userID,
-		).Scan(&score)
+		).Scan(&score); err != nil {
+			log.Warn().Err(err).Str("job_id", req.JobID).Msg("SubmitNow: failed to fetch score from pending review")
+		}
 
-		if err := b.easyApply(ctx, jobPage, req.ResumePath, req.CoverPath); err != nil {
-			if errors.Is(err, errAlreadyApplied) {
+		var managerLazy *lazyDocGen
+		if req.Platform == "seek" {
+			seekDetails := b.fetchSeekJobDetails(ctx, br, &seekJob{ID: req.JobID, URL: req.Link, Company: req.Company, Title: req.Role})
+			managerLazy = &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: seekDetails.Description}
+		} else {
+			managerDetails := b.fetchJob(ctx, linkedInJob{URL: req.Link, Company: req.Company, Title: req.Role})
+			managerLazy = &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description}
+		}
+
+		var applyErr error
+		if req.Platform == "seek" {
+			applyErr = b.seekApply(ctx, jobPage, managerLazy)
+		} else {
+			applyErr = b.easyApply(ctx, jobPage, managerLazy)
+		}
+		if applyErr != nil {
+			if errors.Is(applyErr, errAlreadyApplied) {
 				log.Info().Str("company", req.Company).Str("job", req.Role).Msg("approve: already applied, recording ✓")
 			} else {
-				log.Error().Err(err).Str("company", req.Company).Str("job", req.Role).Msg("approve: easy apply failed")
-				_, _ = m.db.Exec(
+				applyLabel := "easy apply"
+				if req.Platform == "seek" {
+					applyLabel = "quick apply"
+				}
+				log.Error().Err(applyErr).Str("company", req.Company).Str("job", req.Role).Msgf("approve: %s failed", applyLabel)
+				if _, err := m.db.Exec(
 					`INSERT OR IGNORE INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,viewed_at)
-					 VALUES(?,?,?,?,?,?,?,'easy apply: '||?,?,?,datetime('now'))`,
-					req.JobID, userID, req.Platform, req.Company, req.Role, req.Location, req.Link, err.Error(), score, "",
-				)
+					 VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
+					req.JobID, userID, req.Platform, req.Company, req.Role, req.Location, req.Link, applyLabel+": "+applyErr.Error(), score, "",
+				); err != nil {
+					log.Error().Err(err).Str("job_id", req.JobID).Msg("SubmitNow: failed to record skipped job")
+				}
 				return
 			}
 		}
 
-		_, _ = m.db.Exec(
+		if _, err := m.db.Exec(
 			`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,applied_at)
 			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
 			req.JobID, userID, req.Platform, req.Company, req.Role, req.Location, req.Link, req.ResumePath, req.CoverPath,
 			time.Now().UTC().Format(time.RFC3339),
-		)
-		_, _ = m.db.Exec(`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, req.JobID, userID)
+		); err != nil {
+			log.Error().Err(err).Str("job_id", req.JobID).Msg("SubmitNow: failed to record applied job")
+		}
+		if _, err := m.db.Exec(`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, req.JobID, userID); err != nil {
+			log.Error().Err(err).Str("job_id", req.JobID).Msg("SubmitNow: failed to delete from approved queue")
+		}
 		log.Info().Str("company", req.Company).Str("job", req.Role).Msg("approve: submitted ✓")
 	}()
 }
 
 func (m *Manager) buildConfig(ctx context.Context, userID string, platform domain.Platform) (*Config, error) {
 	var gs domain.GeneralSettings
-	_ = m.cfgStore.Get(userID, "general_settings", &gs)
+	if err := m.cfgStore.Get(userID, "general_settings", &gs); err != nil {
+		log.Warn().Err(err).Str("user_id", userID).Msg("buildConfig: failed to load general settings, using defaults")
+	}
 	if gs.HumanBehavior.DailyApplicationLimit == 0 {
 		gs.HumanBehavior.DailyApplicationLimit = 40
 	}
 
 	var prefs domain.WorkPreferences
-	_ = m.cfgStore.Get(userID, "work_preferences", &prefs)
+	if err := m.cfgStore.Get(userID, "work_preferences", &prefs); err != nil {
+		log.Warn().Err(err).Str("user_id", userID).Msg("buildConfig: failed to load work preferences, using defaults")
+	}
 
 	var profile domain.ResumeProfile
 	if err := m.cfgStore.Get(userID, "resume_profile", &profile); err != nil {
-		return nil, errors.New("no resume profile saved — add one at /api/settings/resume first")
+		return nil, errors.New("no resume profile saved, add one at /api/settings/resume first")
 	}
 
 	resolved := platform
@@ -267,7 +360,24 @@ func (m *Manager) buildConfig(ctx context.Context, userID string, platform domai
 
 	cookies, err := m.sessions.Load(userID, string(resolved))
 	if err != nil {
-		return nil, errors.New("no saved session for " + string(resolved) + " — log in via Settings → Secrets first")
+		return nil, errors.New("no saved session for " + string(resolved) + ", log in via Settings → Secrets first")
+	}
+
+	// Build per-user LLM components respecting task-model overrides.
+	// Falls back to startup-time components when no API key is available.
+	tailor := m.tailor
+	scorer := m.scorer
+	var tracker *llm.UsageTracker
+	if client := m.userLLMClient(userID, gs); client != nil {
+		tracker = &llm.UsageTracker{}
+		client = client.WithTracker(tracker)
+		tm := gs.LLM.TaskModels
+		tailor = resume.NewTailor(
+			taskClient(client, tm, "tailoring"),
+			taskClient(client, tm, "cover_letter"),
+			taskClient(client, tm, "form_filling"),
+		)
+		scorer = resume.NewScorer(taskClient(client, tm, "scoring"))
 	}
 
 	return &Config{
@@ -283,14 +393,15 @@ func (m *Manager) buildConfig(ctx context.Context, userID string, platform domai
 			return &p
 		},
 		Cookies:       cookies,
-		Tailor:        m.tailor,
-		Scorer:        m.scorer,
+		Tailor:        tailor,
+		Scorer:        scorer,
 		HalalChecker:  m.halalCheckerFor(gs),
 		Renderer:      m.renderer,
 		DB:            m.db,
 		UserID:        userID,
 		RequireReview: gs.RequireReview,
 		MarketDir:     m.marketDir,
+		LLMTracker:    tracker,
 	}, nil
 }
 
@@ -300,4 +411,31 @@ func (m *Manager) halalCheckerFor(gs domain.GeneralSettings) JobHalalChecker {
 		return m.halal
 	}
 	return nil
+}
+
+// userLLMClient resolves the API key for userID and returns a ready client, or
+// nil if no key is stored. Prefers proxy_key when proxy is enabled.
+func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.Client {
+	var apiKey string
+	if gs.LLM.UseProxy {
+		if pk, err := m.secrets.Get(userID, "proxy_key"); err == nil && pk != "" {
+			apiKey = pk
+		}
+	}
+	if apiKey == "" {
+		pk, err := m.secrets.Get(userID, "llm_api_key")
+		if err != nil || pk == "" {
+			return nil
+		}
+		apiKey = pk
+	}
+	return llm.New(gs.LLM, apiKey)
+}
+
+// taskClient returns a client with model/token overrides for the given task key.
+func taskClient(base *llm.Client, tm map[string]domain.TaskModel, task string) *llm.Client {
+	if m, ok := tm[task]; ok && m.Model != "" {
+		return base.WithModel(m.Model, m.MaxTokens)
+	}
+	return base
 }

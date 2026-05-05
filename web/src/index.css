@@ -8,7 +8,7 @@
   --radius-lg: 0.75rem;
 }
 
-/* Default (dark) theme — plain CSS, outside Tailwind layers so it wins cleanly */
+/* Default (dark) theme, plain CSS, outside Tailwind layers so it wins cleanly */
 html {
   --color-background: oklch(8% 0 0);
   --color-surface: oklch(11% 0 0);

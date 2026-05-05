@@ -25,7 +25,7 @@ Evaluate the provided job title, description, and/or company context, then retur
 ## Evaluation Criteria
 Classify the job as HALAL, HARAM, or DOUBTFUL (mashbooh) based on the following:
 
-**Clearly HARAM — automatic disqualification if the role directly involves:**
+**Clearly HARAM, automatic disqualification if the role directly involves:**
 - Riba (interest/usury): e.g. structuring loans, setting interest rates, selling interest-based financial products
 - Alcohol: production, distribution, sales, or promotion
 - Pork or non-halal meat: production, processing, or sales
@@ -34,8 +34,8 @@ Classify the job as HALAL, HARAM, or DOUBTFUL (mashbooh) based on the following:
 - Weapons of mass destruction or clearly offensive military arms
 - Witchcraft, astrology sold as guidance, or occult services
 
-**DOUBTFUL — flag for the user's own judgment if:**
-- The role is in a mixed-industry company (e.g. a logistics manager at a brewery — indirect involvement)
+**DOUBTFUL, flag for the user's own judgment if:**
+- The role is in a mixed-industry company (e.g. a logistics manager at a brewery, indirect involvement)
 - The role touches conventional finance but not directly riba (e.g. a software engineer at a bank)
 - The role involves music, entertainment, or media in a grey area
 - Significant uncertainty exists about what the role actually entails
@@ -52,8 +52,8 @@ Respond ONLY with a valid JSON object in this exact structure:
   "confidence": "HIGH" | "MEDIUM" | "LOW",
   "summary": "<one sentence plain-English verdict>",
   "reasons": ["<reason 1>", "<reason 2>"],
-  "caveats": "<any nuance, scholarly disagreement, or conditions the user should know — or null if none>",
-  "scholar_note": "<brief note on which Islamic ruling or principle applies — or null>"
+  "caveats": "<any nuance, scholarly disagreement, or conditions the user should know, or null if none>",
+  "scholar_note": "<brief note on which Islamic ruling or principle applies, or null>"
 }
 
 Job title: {{.Title}}
@@ -72,6 +72,9 @@ func NewHalalChecker(client *llm.Client) *HalalChecker {
 
 // CheckHalal evaluates whether the given job is halal, haram, or doubtful.
 func (h *HalalChecker) CheckHalal(ctx context.Context, title, company, description string) (domain.HalalVerdict, error) {
+	if len(description) > 2000 {
+		description = description[:2000]
+	}
 	var prompt bytes.Buffer
 	if err := halalTempl.Execute(&prompt, halalData{
 		Title:       title,
@@ -81,7 +84,7 @@ func (h *HalalChecker) CheckHalal(ctx context.Context, title, company, descripti
 		return domain.HalalVerdict{}, fmt.Errorf("halal: render prompt: %w", err)
 	}
 
-	raw, err := h.client.Chat(ctx, []llm.Message{{Role: "user", Content: prompt.String()}})
+	raw, err := h.client.Chat(llm.WithTask(ctx, "halal check"), []llm.Message{{Role: "user", Content: prompt.String()}})
 	if err != nil {
 		return domain.HalalVerdict{}, fmt.Errorf("halal: llm: %w", err)
 	}

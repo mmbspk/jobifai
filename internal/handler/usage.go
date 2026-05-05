@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/domain"
 )
 
 // modelCost holds per-million-token prices for a model.
@@ -42,12 +43,7 @@ type UsageHandlers struct{ svc *Services }
 
 func NewUsageHandlers(svc *Services) *UsageHandlers { return &UsageHandlers{svc: svc} }
 
-type sessionUsageResponse struct {
-	InputTokens      int64    `json:"input_tokens"`
-	OutputTokens     int64    `json:"output_tokens"`
-	Calls            int      `json:"calls"`
-	EstimatedCostUSD *float64 `json:"estimated_cost_usd"`
-}
+type sessionUsageResponse = domain.SessionUsage
 
 // GET /api/usage/session
 func (h *UsageHandlers) Session(w http.ResponseWriter, r *http.Request) {

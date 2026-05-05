@@ -5,9 +5,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/browser"
@@ -39,6 +44,7 @@ type Services struct {
 	Logs         *ws.Broadcaster
 	Bot          BotController
 	MarketDir    string // directory containing market_*.yaml files
+	StylesDir    string // directory containing style_*.css files
 	Users        *auth.UserStore
 	TokenManager *auth.TokenManager
 	Google       GoogleOAuthHandler
@@ -52,8 +58,23 @@ type Services struct {
 	// HalalCheckerFactory builds a fresh HalalChecker for the given user.
 	// Returns nil if no API key is configured.
 	HalalCheckerFactory func(userID string) JobHalalChecker
+	// QuestionAnswererFactory builds a fresh QuestionAnswerer for the given user.
+	// Returns nil if no API key is configured.
+	QuestionAnswererFactory func(userID string) JobQuestionAnswerer
 	// UsageStore accumulates per-user LLM token usage for the lifetime of the process.
 	UsageStore *llm.UserUsageStore
+	// FileToText extracts plain text from a file reader (e.g. PDF, DOCX).
+	FileToText func(r io.Reader, filename string) (string, error)
+	// FetchJobPage retrieves the text content of a job posting URL.
+	FetchJobPage func(ctx context.Context, url string) (string, error)
+	// MarketLoader loads market metadata from a YAML file path.
+	// Returns the domain.ResumeMarket (Name, YAMLFile, HasCSS) or an error.
+	MarketLoader func(path, yamlFile string) (*domain.ResumeMarket, error)
+	// MarketPrefixLookup returns the raw prompt prefix for a named market and section.
+	// section is "resume", "tailored", or "cover". Returns "" if not found.
+	MarketPrefixLookup func(marketDir, name, section string) string
+	// MarketCSSFileLookup returns the CSS file path for a named market, or "".
+	MarketCSSFileLookup func(marketDir, name string) string
 }
 
 // GoogleOAuthHandler handles the Google OAuth2 redirect + callback.
@@ -66,6 +87,8 @@ type GoogleOAuthHandler interface {
 type BotController interface {
 	Start(ctx context.Context, userID string, platform domain.Platform) error
 	Stop(userID string)
+	Pause(userID string)
+	Resume(userID string)
 	Status(userID string) domain.BotStatus
 	SubmitNow(userID string, req bot.SubmitRequest)
 }
@@ -79,6 +102,11 @@ type ResumeTailor interface {
 // JobHalalChecker evaluates whether a job is permissible under Islamic employment ethics.
 type JobHalalChecker interface {
 	CheckHalal(ctx context.Context, title, company, description string) (domain.HalalVerdict, error)
+}
+
+// JobQuestionAnswerer answers a list of application/interview questions using the candidate's profile.
+type JobQuestionAnswerer interface {
+	AnswerQuestions(ctx context.Context, profile *domain.ResumeProfile, jobContext string, questions []string) ([]domain.QuestionAnswer, error)
 }
 
 // ResumeRenderer turns a profile into a PDF byte slice.
@@ -106,7 +134,9 @@ type SecretsStore interface {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Error().Err(err).Msg("writeJSON encode failed")
+	}
 }
 
 func okMsg(w http.ResponseWriter, msg string) {
@@ -127,6 +157,16 @@ func conflict(w http.ResponseWriter, msg string) {
 
 func unprocessable(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": msg})
+}
+
+// wsOptions returns WebSocket accept options that validate the Origin header
+// against the request host. Set WS_ALLOWED_ORIGINS (comma-separated) to
+// override when the app runs behind a reverse proxy.
+func wsOptions(r *http.Request) *websocket.AcceptOptions {
+	if env := os.Getenv("WS_ALLOWED_ORIGINS"); env != "" {
+		return &websocket.AcceptOptions{OriginPatterns: strings.Split(env, ",")}
+	}
+	return &websocket.AcceptOptions{OriginPatterns: []string{r.Host}}
 }
 
 func parseTime(s string) (time.Time, error) {

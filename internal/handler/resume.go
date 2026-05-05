@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -9,14 +10,13 @@ import (
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
-	resumepkg "github.com/user/jobifai/internal/resume"
 )
 
 const (
 	msgNoRenderer   = "PDF renderer not available"
-	msgNoProfile    = "no resume profile found — save one at /api/settings/resume first"
+	msgNoProfile    = "no resume profile found, save one at /api/settings/resume first"
 	msgBadMultipart = "invalid multipart form"
-	msgNoLLM        = "LLM not configured — set an API key in Settings → Secrets first"
+	msgNoLLM        = "LLM not configured, set an API key in Settings → Secrets first"
 )
 
 func writeURLUnreachable(w http.ResponseWriter) {
@@ -69,35 +69,23 @@ func extraContext(r *http.Request) string {
 // returns the appropriate prompt section. Returns empty string if not found.
 func (h *ResumeHandlers) marketPrefix(r *http.Request, section string) string {
 	market := strings.TrimSpace(r.FormValue("market"))
-	if market == "" || h.svc.MarketDir == "" {
+	if market == "" || h.svc.MarketDir == "" || h.svc.MarketPrefixLookup == nil {
 		return ""
 	}
-	m := resumepkg.LoadMarketByName(h.svc.MarketDir, market)
-	if m == nil {
+	raw := h.svc.MarketPrefixLookup(h.svc.MarketDir, market, section)
+	if raw == "" {
 		return ""
 	}
-	switch section {
-	case "resume":
-		return strings.TrimSpace(m.ResumePrompt) + "\n\n"
-	case "tailored":
-		return strings.TrimSpace(m.TailoredPrompt) + "\n\n"
-	case "cover":
-		return strings.TrimSpace(m.CoverLetterPrompt) + "\n\n"
-	}
-	return ""
+	return strings.TrimSpace(raw) + "\n\n"
 }
 
 // marketCSSFile returns the CSS file path for the selected market, or empty string.
 func (h *ResumeHandlers) marketCSSFile(r *http.Request) string {
 	market := strings.TrimSpace(r.FormValue("market"))
-	if market == "" || h.svc.MarketDir == "" {
+	if market == "" || h.svc.MarketDir == "" || h.svc.MarketCSSFileLookup == nil {
 		return ""
 	}
-	m := resumepkg.LoadMarketByName(h.svc.MarketDir, market)
-	if m == nil {
-		return ""
-	}
-	return m.CSSFile
+	return h.svc.MarketCSSFileLookup(h.svc.MarketDir, market)
 }
 
 // POST /api/resume/generate
@@ -123,7 +111,7 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 		defer f.Close()
 		extractor, _ := h.svc.LLMFactory(userID)
 		if extractor != nil {
-			text, _ := resumepkg.TextFromReader(f, fh.Filename)
+			text, _ := h.svc.FileToText(f, fh.Filename)
 			if extracted, llmErr := extractor.ExtractFromText(r.Context(), text); llmErr == nil {
 				profile = extracted
 			}
@@ -185,7 +173,7 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 
 	// Try to fetch job page content if no manual description provided
 	if jobDesc == "" && jobURL != "" && !skipFetch {
-		fetched, fetchErr := resumepkg.FetchJobPage(r.Context(), jobURL)
+		fetched, fetchErr := h.svc.FetchJobPage(r.Context(), jobURL)
 		if fetchErr != nil {
 			writeURLUnreachable(w)
 			return
@@ -254,7 +242,7 @@ func (h *ResumeHandlers) EvaluateJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if jobDesc == "" && jobURL != "" && !skipFetch {
-		fetched, err := resumepkg.FetchJobPage(r.Context(), jobURL)
+		fetched, err := h.svc.FetchJobPage(r.Context(), jobURL)
 		if err != nil {
 			writeURLUnreachable(w)
 			return
@@ -307,7 +295,7 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 
 	// Try to fetch job page content if no manual description provided
 	if jobDesc == "" && jobURL != "" && !skipFetch {
-		fetched, fetchErr := resumepkg.FetchJobPage(r.Context(), jobURL)
+		fetched, fetchErr := h.svc.FetchJobPage(r.Context(), jobURL)
 		if fetchErr != nil {
 			writeURLUnreachable(w)
 			return
@@ -378,7 +366,7 @@ func (h *ResumeHandlers) CheckHalal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if jobDesc == "" && jobURL != "" && !skipFetch {
-		fetched, err := resumepkg.FetchJobPage(r.Context(), jobURL)
+		fetched, err := h.svc.FetchJobPage(r.Context(), jobURL)
 		if err != nil {
 			writeURLUnreachable(w)
 			return
@@ -392,4 +380,75 @@ func (h *ResumeHandlers) CheckHalal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, verdict)
+}
+
+// POST /api/resume/answer-questions
+func (h *ResumeHandlers) AnswerQuestions(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+
+	var req domain.AnswerQuestionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid JSON body"})
+		return
+	}
+
+	var nonEmpty []string
+	for _, q := range req.Questions {
+		if s := strings.TrimSpace(q); s != "" {
+			nonEmpty = append(nonEmpty, s)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "at least one question is required"})
+		return
+	}
+	if req.JobURL == "" && req.JobDesc == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "job_url or job_description is required"})
+		return
+	}
+
+	if h.svc.QuestionAnswererFactory == nil {
+		unprocessable(w, msgNoLLM)
+		return
+	}
+	answerer := h.svc.QuestionAnswererFactory(userID)
+	if answerer == nil {
+		unprocessable(w, msgNoLLM)
+		return
+	}
+
+	jobDesc := req.JobDesc
+	if jobDesc == "" && req.JobURL != "" {
+		fetched, err := h.svc.FetchJobPage(r.Context(), req.JobURL)
+		if err != nil {
+			writeURLUnreachable(w)
+			return
+		}
+		jobDesc = fetched
+	}
+
+	profile, err := h.loadProfile(userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	if profile == nil {
+		unprocessable(w, msgNoProfile)
+		return
+	}
+
+	var jobContext strings.Builder
+	if req.JobURL != "" {
+		jobContext.WriteString("Job URL: " + req.JobURL + "\n")
+	}
+	if jobDesc != "" {
+		jobContext.WriteString("Job Description:\n" + jobDesc + "\n")
+	}
+
+	answers, err := answerer.AnswerQuestions(r.Context(), profile, jobContext.String(), nonEmpty)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, answers)
 }

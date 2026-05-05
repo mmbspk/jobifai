@@ -28,7 +28,7 @@ func FetchJobPage(ctx context.Context, rawURL string) (string, error) {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		// Fresh timeout per attempt — cold-start TLS/DNS on attempt 0
+		// Fresh timeout per attempt, cold-start TLS/DNS on attempt 0
 		// must not consume the retry budget for attempt 1.
 		aCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		text, err := fetchJobPageOnce(aCtx, rawURL)
@@ -37,7 +37,7 @@ func FetchJobPage(ctx context.Context, rawURL string) (string, error) {
 			return text, nil
 		}
 		lastErr = err
-		// HTTP errors (login required, not found) are deliberate — no point retrying.
+		// HTTP errors (login required, not found) are deliberate, no point retrying.
 		if strings.Contains(err.Error(), "HTTP ") {
 			break
 		}

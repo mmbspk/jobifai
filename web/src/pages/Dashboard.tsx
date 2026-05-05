@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Play, Square, Zap, FileText, Star } from 'lucide-react'
+import { Play, Square, Pause, RotateCcw, Zap, FileText, Star } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useBot } from '../hooks/useBot'
 import { useLogs } from '../hooks/useLogs'
@@ -14,45 +14,45 @@ import type { BotState, Platform } from '../types'
 const PLATFORMS: { value: Platform; label: string }[] = [
   { value: 'linkedin', label: 'LinkedIn' },
   { value: 'seek',     label: 'Seek' },
-  { value: 'indeed',   label: 'Indeed' },
 ]
 
 const STATE_STYLE: Record<BotState, { ring: string; dot: string; label: string; pulse: boolean }> = {
   idle:           { ring: 'border-[var(--color-border)]',  dot: 'bg-[var(--color-text-dim)]',  label: 'Idle',           pulse: false },
   running:        { ring: 'border-violet-500',             dot: 'bg-violet-400',               label: 'Running',        pulse: true  },
+  paused:         { ring: 'border-amber-500',              dot: 'bg-amber-400',                label: 'Paused',         pulse: false },
   pending_review: { ring: 'border-amber-500',              dot: 'bg-amber-400',                label: 'Pending Review', pulse: true  },
   stopped:        { ring: 'border-[var(--color-border)]',  dot: 'bg-[var(--color-text-dim)]',  label: 'Stopped',        pulse: false },
   error:          { ring: 'border-red-500',                dot: 'bg-red-400',                  label: 'Error',          pulse: false },
 }
 
 export function Dashboard() {
-  const { status, start, stop, startError } = useBot()
+  const { status, start, stop, pause, resume, startError } = useBot()
   const { lines, connected, clear } = useLogs()
   const [platform, setPlatform] = useState<Platform>('linkedin')
+
+  const isActive = status?.state === 'running' || status?.state === 'paused' || status?.state === 'pending_review'
 
   const { data: stats } = useQuery({
     queryKey: ['jobs-stats'],
     queryFn: jobsApi.stats,
-    refetchInterval: 10000,
+    staleTime: 10_000,
+    refetchInterval: isActive ? 10_000 : false,
   })
 
   const { data: pending } = useQuery({
     queryKey: ['review-pending'],
     queryFn: botApi.reviewPending,
-    refetchInterval: 30000,
+    staleTime: 30_000,
+    refetchInterval: isActive ? 30_000 : false,
   })
 
   const state = status?.state ?? 'idle'
   const stateStyle = STATE_STYLE[state]
   const isRunning = state === 'running' || state === 'pending_review'
+  const isPaused = state === 'paused'
   const todayCount = status?.today_count ?? 0
   const dailyLimit = status?.daily_limit ?? 0
   const progress = dailyLimit > 0 ? Math.min((todayCount / dailyLimit) * 100, 100) : 0
-
-  function handleStartStop() {
-    if (isRunning) stop.mutate()
-    else start.mutate(platform)
-  }
 
   return (
     <div className="space-y-6">
@@ -109,7 +109,7 @@ export function Dashboard() {
 
         {/* Controls */}
         <div className="flex items-center gap-2">
-          {!isRunning && (
+          {!isActive && (
             <div className="flex gap-1">
               {PLATFORMS.map(p => (
                 <button
@@ -127,19 +127,47 @@ export function Dashboard() {
               ))}
             </div>
           )}
+          {isRunning && (
+            <button
+              onClick={() => pause.mutate()}
+              disabled={pause.isPending}
+              className={cn(
+                'flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+                'bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 border border-amber-500/30',
+                pause.isPending && 'opacity-60 cursor-not-allowed',
+              )}
+            >
+              <Pause size={14} fill="currentColor" />
+              Pause
+            </button>
+          )}
+          {isPaused && (
+            <button
+              onClick={() => resume.mutate()}
+              disabled={resume.isPending}
+              className={cn(
+                'flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+                'bg-violet-500 text-white hover:bg-violet-400 shadow-[0_0_16px_var(--color-accent-glow)]',
+                resume.isPending && 'opacity-60 cursor-not-allowed',
+              )}
+            >
+              <RotateCcw size={14} />
+              Resume
+            </button>
+          )}
           <button
-            onClick={handleStartStop}
+            onClick={() => (isActive ? stop.mutate() : start.mutate(platform))}
             disabled={start.isPending || stop.isPending}
             className={cn(
               'flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all',
-              isRunning
+              isActive
                 ? 'bg-red-500/15 text-red-400 hover:bg-red-500/25 border border-red-500/30'
                 : 'bg-violet-500 text-white hover:bg-violet-400 shadow-[0_0_16px_var(--color-accent-glow)]',
               (start.isPending || stop.isPending) && 'opacity-60 cursor-not-allowed',
             )}
           >
-            {isRunning ? <Square size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
-            {isRunning ? 'Stop' : 'Start'}
+            {isActive ? <Square size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
+            {isActive ? 'Stop' : 'Start'}
           </button>
         </div>
       </div>

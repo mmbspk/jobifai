@@ -4,7 +4,6 @@ import type { Platform } from '../types'
 const PLATFORM_STYLES: Record<Platform | string, { bg: string; text: string; label: string }> = {
   linkedin: { bg: 'bg-[#0077b5]/15', text: 'text-[#0aa3e0]', label: 'LinkedIn' },
   seek:     { bg: 'bg-emerald-500/10', text: 'text-emerald-400', label: 'Seek' },
-  indeed:   { bg: 'bg-blue-500/10',   text: 'text-blue-400',    label: 'Indeed' },
   all:      { bg: 'bg-violet-500/10', text: 'text-violet-400',  label: 'All' },
 }
 

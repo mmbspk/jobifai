@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import { Check } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { TagInput } from '../../components/TagInput'
+import { LocationTagInput } from '../../components/LocationTagInput'
 import type { WorkPreferences } from '../../types'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -113,7 +114,7 @@ export function Preferences() {
           <div>
             <div className="text-xs text-[var(--color-text-dim)] mb-1.5">Locations</div>
             <div className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg p-2.5 min-h-10">
-              <TagInput values={form.locations ?? []} onChange={v => setForm(f => ({ ...f, locations: v }))} placeholder="Add location…" />
+              <LocationTagInput values={form.locations ?? []} onChange={v => setForm(f => ({ ...f, locations: v }))} />
             </div>
           </div>
         </div>

@@ -14,7 +14,7 @@ import (
 
 const extractPrompt = `You are an expert resume parser. Extract ALL information from the resume text at the bottom of this message and return it as a single JSON object.
 
-Return ONLY the JSON — no markdown fences, no explanation, no text before or after.
+Return ONLY the JSON, no markdown fences, no explanation, no text before or after.
 
 Extraction rules:
 - Phone: if the number starts with a country code like "+61 412 345 678", put "+61" in phone_prefix and "412 345 678" in phone. If there is no country code, put the whole number in phone.
@@ -24,12 +24,12 @@ Extraction rules:
 - employment_period: combine the start and end date into one string e.g. "Jan 2020 – Mar 2023" or "2019 – Present".
 - key_responsibilities: split bullet points into separate list items.
 - thesis: if an education entry includes a thesis or dissertation title, extract it into the thesis field.
-- publications: extract all peer-reviewed papers, books, book chapters, reports — put all authors as a single string, extract year, journal/venue name, DOI or URL if present, and status (Published, In Preparation, Submitted, etc.).
-- presentations: extract conference talks, posters, and invited talks — year, full conference name, presentation title, and role (Oral Presenter, Poster Presenter, Invited Speaker, etc.).
-- grants: extract research grants and funding awards — year or period, funding body/funder name, project title, and amount if stated.
+- publications: extract all peer-reviewed papers, books, book chapters, reports, put all authors as a single string, extract year, journal/venue name, DOI or URL if present, and status (Published, In Preparation, Submitted, etc.).
+- presentations: extract conference talks, posters, and invited talks, year, full conference name, presentation title, and role (Oral Presenter, Poster Presenter, Invited Speaker, etc.).
+- grants: extract research grants and funding awards, year or period, funding body/funder name, project title, and amount if stated.
 - certifications: use for professional certifications, licences, professional development courses, and professional memberships.
 - interests: use for research interests, areas of expertise, or stated personal interests.
-- Omit any key whose value you cannot find — do not include empty strings.
+- Omit any key whose value you cannot find, do not include empty strings.
 
 JSON schema (fill every field you can find):
 {
@@ -83,7 +83,7 @@ func (e *Extractor) ExtractFromText(ctx context.Context, resumeText string) (*do
 	msgs := []llm.Message{
 		{Role: "user", Content: extractPrompt + resumeText},
 	}
-	raw, err := e.client.Chat(ctx, msgs)
+	raw, err := e.client.Chat(llm.WithTask(ctx, "extract resume"), msgs)
 	if err != nil {
 		return nil, fmt.Errorf("extract resume: %w", err)
 	}

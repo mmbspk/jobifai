@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 type Theme = 'dark' | 'light'
 type Listener = (t: Theme) => void
 
-// Module-level state — survives React re-renders and context changes.
+// Module-level state, survives React re-renders and context changes.
 let current: Theme = (() => {
   const saved = localStorage.getItem('theme')
   if (saved === 'dark' || saved === 'light') return saved

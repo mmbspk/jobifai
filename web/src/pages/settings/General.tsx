@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import { Check } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { cn } from '../../lib'
-import type { GeneralSettings } from '../../types'
+import type { GeneralSettings, TaskModel } from '../../types'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -74,7 +74,7 @@ function NumInput({ value, onChange, min, max }: { value: number; onChange: (v: 
 }
 
 const DEFAULT: GeneralSettings = {
-  llm: { provider: 'claude', model: 'claude-sonnet-4-6', use_proxy: false, proxy_url: '' },
+  llm: { provider: 'claude', model: 'claude-sonnet-4-6', use_proxy: false, proxy_url: '', task_models: {} },
   browser: { show_browser: true, use_chrome_profile: true, chrome_profile_path: '', remote_debug_port: 0 },
   human_behavior: {
     daily_application_limit: 40, job_read_time_min: 10, job_read_time_max: 30,
@@ -88,6 +88,7 @@ const DEFAULT: GeneralSettings = {
   job_suitability_score: 7,
   max_jobs_per_keyword: 25,
   halal_job_filter: false,
+  interview_questions_enabled: true,
 }
 
 export function GeneralSettingsPage() {
@@ -102,7 +103,7 @@ export function GeneralSettingsPage() {
   const save = useMutation({
     mutationFn: () => settingsApi.general.set(form),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['settings-general'] })
+      qc.setQueryData(['settings-general'], form)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     },
@@ -114,6 +115,19 @@ export function GeneralSettingsPage() {
 
   function llm<K extends keyof NonNullable<GeneralSettings['llm']>>(key: K, value: NonNullable<GeneralSettings['llm']>[K]) {
     setForm(f => ({ ...f, llm: { ...f.llm, [key]: value } }))
+  }
+
+  function setTaskModel(task: string, key: keyof TaskModel, value: unknown) {
+    setForm(f => ({
+      ...f,
+      llm: {
+        ...f.llm,
+        task_models: {
+          ...f.llm?.task_models,
+          [task]: { ...f.llm?.task_models?.[task], [key]: value },
+        },
+      },
+    }))
   }
 
   function browser<K extends keyof NonNullable<GeneralSettings['browser']>>(key: K, value: NonNullable<GeneralSettings['browser']>[K]) {
@@ -159,13 +173,42 @@ export function GeneralSettingsPage() {
         </Field>
       </Section>
 
+      <Section title="Per-Task Model Overrides">
+        {[
+          { key: 'scoring',      label: 'Suitability Scoring',  hint: 'Once per job. Haiku recommended.' },
+          { key: 'halal',        label: 'Halal Filter',          hint: 'No profile sent. Haiku recommended.' },
+          { key: 'tailoring',    label: 'Resume Tailoring',      hint: 'Rewrites full profile. Sonnet+ recommended.' },
+          { key: 'cover_letter', label: 'Cover Letter',          hint: 'Prose writing. Haiku or Sonnet.' },
+          { key: 'form_filling', label: 'Form Q&A',              hint: 'Per question. Haiku recommended.' },
+          { key: 'questions',    label: 'Interview Questions',   hint: 'Batch question answering. Haiku or Sonnet.' },
+        ].map(t => (
+          <Field key={t.key} label={t.label} sub={t.hint}>
+            <TextInput
+              value={llmCfg.task_models?.[t.key]?.model ?? ''}
+              onChange={v => setTaskModel(t.key, 'model', v || undefined)}
+              placeholder={llmCfg.model ?? 'default model'}
+            />
+          </Field>
+        ))}
+      </Section>
+
       <Section title="Resume Defaults">
-        <Field label="Market" sub="Target job market — adjusts prompts and resume styling">
+        <Field label="Market" sub="Target job market, adjusts prompts and resume styling">
           <select value={form.default_resume_market ?? ''} onChange={e => set('default_resume_market', e.target.value)}
             className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-violet-500/50">
             <option value="">None</option>
             {markets.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
           </select>
+        </Field>
+        <Field
+          label="Generate New Resume / Cover Letter"
+          sub={
+            form.generate_new_resume_docs
+              ? 'A tailored resume (and cover letter when applicable) will be generated for each application using your profile and the job description.'
+              : 'Your existing resume on the job site will be used. No new documents are generated, saves tokens for large batches.'
+          }
+        >
+          <Toggle checked={form.generate_new_resume_docs ?? false} onChange={v => set('generate_new_resume_docs', v)} />
         </Field>
       </Section>
 
@@ -187,6 +230,9 @@ export function GeneralSettingsPage() {
         </Field>
         <Field label="Halal Job Filter" sub="Automatically skip jobs that are impermissible or doubtful under Islamic employment ethics">
           <Toggle checked={form.halal_job_filter ?? false} onChange={v => set('halal_job_filter', v)} />
+        </Field>
+        <Field label="Interview Questions" sub="Show the Questions tab in Generate to answer application or interview questions using your profile">
+          <Toggle checked={form.interview_questions_enabled ?? true} onChange={v => set('interview_questions_enabled', v)} />
         </Field>
       </Section>
 

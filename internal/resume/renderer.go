@@ -61,14 +61,14 @@ func (r *PDFRenderer) loadCSS(styleName, cssOverride string) (string, error) {
 		if err == nil {
 			return string(data), nil
 		}
-		// file not found — fall through to style directory lookup
+		// file not found, fall through to style directory lookup
 	}
 	if r.styleDir == "" {
 		return defaultCSS, nil
 	}
 	entries, err := os.ReadDir(r.styleDir)
 	if err != nil {
-		return defaultCSS, nil // dir not found — use built-in
+		return defaultCSS, nil // dir not found, use built-in
 	}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".css") {
@@ -146,7 +146,7 @@ var resumeTempl = template.Must(
 
   {{if .P.Certifications}}<section id="certifications"><h2>Certifications</h2>
   <ul class="compact-list">
-    {{range .P.Certifications}}<li><strong>{{.Name}}</strong>{{if .Issuer}} — {{.Issuer}}{{end}}{{if .Date}}, {{.Date}}{{end}}</li>{{end}}
+    {{range .P.Certifications}}<li><strong>{{.Name}}</strong>{{if .Issuer}}, {{.Issuer}}{{end}}{{if .Date}}, {{.Date}}{{end}}</li>{{end}}
   </ul></section>{{end}}
 
   {{if .P.Publications}}<section id="publications"><h2>Publications</h2>
@@ -156,12 +156,12 @@ var resumeTempl = template.Must(
 
   {{if .P.Presentations}}<section id="presentations"><h2>Conference Presentations</h2>
   <ul class="compact-list">
-    {{range .P.Presentations}}<li>{{if .Year}}{{.Year}} — {{end}}<strong>{{.Title}}</strong>{{if .Conference}}, <em>{{.Conference}}</em>{{end}}{{if .Role}} ({{.Role}}){{end}}</li>{{end}}
+    {{range .P.Presentations}}<li>{{if .Year}}{{.Year}}, {{end}}<strong>{{.Title}}</strong>{{if .Conference}}, <em>{{.Conference}}</em>{{end}}{{if .Role}} ({{.Role}}){{end}}</li>{{end}}
   </ul></section>{{end}}
 
   {{if .P.Grants}}<section id="grants"><h2>Research Grants &amp; Funding</h2>
   <ul class="compact-list">
-    {{range .P.Grants}}<li>{{if .Year}}{{.Year}} — {{end}}<strong>{{.Funder}}</strong>{{if .Project}}: {{.Project}}{{end}}{{if .Amount}} ({{.Amount}}){{end}}</li>{{end}}
+    {{range .P.Grants}}<li>{{if .Year}}{{.Year}}, {{end}}<strong>{{.Funder}}</strong>{{if .Project}}: {{.Project}}{{end}}{{if .Amount}} ({{.Amount}}){{end}}</li>{{end}}
   </ul></section>{{end}}
 
   {{if .P.EducationDetails}}<section id="education"><h2>Education</h2>
@@ -192,10 +192,11 @@ func renderResumeHTML(p *domain.ResumeProfile, css string) (string, error) {
 }
 
 func renderCoverLetterHTML(body, css string) string {
+	escaped := template.HTMLEscapeString(body)
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><style>%s</style></head>
 <body><div id="cover-letter"><p>%s</p></div></body></html>`,
-		css, strings.ReplaceAll(body, "\n", "<br>"))
+		css, strings.ReplaceAll(escaped, "\n", "<br>"))
 }
 
 // ── go-rod PDF rendering ──────────────────────────────────────────────────

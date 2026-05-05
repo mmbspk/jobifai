@@ -13,12 +13,15 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/scraper"
 )
 
 func init() {
 	registerRunner(domain.PlatformSeek, platformRunnerFunc(runSeek))
 }
+
+const seekQuickApply = "quick apply"
 
 // ── Seek job struct ────────────────────────────────────────────────────────
 
@@ -31,6 +34,16 @@ type seekJob struct {
 	PostedDate     string // extracted from listing card time element
 	AlreadyApplied bool   // true when Seek shows an "Applied" indicator on the card
 	EasyApply      bool   // true when Seek shows a Quick Apply button (Seek-hosted form)
+}
+
+// ── Session helpers ───────────────────────────────────────────────────────
+
+// isSeekLoginPage returns true when the URL indicates Seek has redirected the
+// browser to a login or OAuth page — meaning the saved session is expired.
+func isSeekLoginPage(u string) bool {
+	return strings.Contains(u, "/login") ||
+		strings.Contains(u, "/oauth") ||
+		strings.Contains(u, "sign-in")
 }
 
 // ── Main runner ───────────────────────────────────────────────────────────
@@ -46,38 +59,68 @@ func runSeek(ctx context.Context, b *Bot) {
 	}
 	defer br.Close()
 
+	// Verify session is still valid after browser launch.
+	if info, e := page.Info(); e == nil && isSeekLoginPage(info.URL) {
+		log.Error().Msg("seek: session expired, re-login via Settings → Secrets")
+		b.mu.Lock()
+		b.state = domain.BotStateError
+		b.mu.Unlock()
+		return
+	}
+
 	limit := b.cfg.Settings.HumanBehavior.DailyApplicationLimit
 	if limit == 0 {
 		limit = 40
 	}
 	appliedToday := b.countAppliedToday()
-	log.Info().Int("applied_today", appliedToday).Int("limit", limit).Msg("seek: starting — daily progress")
+	log.Info().Int("applied_today", appliedToday).Int("limit", limit).Msg("seek: starting, daily progress")
 
 	// Process previously approved jobs first.
 	if appliedToday < limit {
 		appliedToday += b.processApprovedQueue(ctx, br, limit-appliedToday)
 	}
 
+	// Resolve location via Seek's autocomplete once before keyword loop.
+	resolvedLocation := ""
+	if len(b.cfg.Preferences.Locations) > 0 {
+		resolvedLocation = b.resolveSeekLocation(page, b.cfg.Preferences.Locations[0])
+	}
+
 	for _, keyword := range b.cfg.Preferences.Positions {
 		if reason := b.stopReason(ctx); reason != "" {
-			log.Info().Str("keyword", keyword).Msgf("seek: stopped — %s", reason)
+			log.Info().Str("keyword", keyword).Msgf("seek: stopped, %s", reason)
 			return
 		}
 		if appliedToday >= limit {
-			log.Info().Int("limit", limit).Msg("seek: stopped — daily application limit reached")
+			log.Info().Int("limit", limit).Msg("seek: stopped, daily application limit reached")
 			return
 		}
 		b.SetKeyword(keyword)
-		appliedToday += b.processSeekKeyword(ctx, br, page, keyword, limit-appliedToday)
+		n := b.processSeekKeyword(ctx, br, page, keyword, limit-appliedToday, resolvedLocation)
+		appliedToday += n
+
+		// Detect a dropped CDP connection (e.g. VPN reset) and reconnect.
+		if n == 0 && isCDPDead(page) {
+			log.Warn().Msg("seek: browser connection lost, attempting reconnect")
+			br.Close()
+			newBr, newPage, rerr := b.launchBrowser(ctx)
+			if rerr != nil {
+				log.Error().Err(rerr).Msg("seek: reconnect failed, stopping")
+				return
+			}
+			br, page = newBr, newPage
+			log.Info().Msg("seek: browser reconnected, retrying keyword")
+			appliedToday += b.processSeekKeyword(ctx, br, page, keyword, limit-appliedToday, resolvedLocation)
+		}
 	}
 	b.SetKeyword("")
-	log.Info().Int("applied_today", appliedToday).Msg("seek: stopped — all keywords processed, no more jobs found")
+	log.Info().Int("applied_today", appliedToday).Msg("seek: stopped, all keywords processed, no more jobs found")
 }
 
 // ── Keyword loop ──────────────────────────────────────────────────────────
 
-func (b *Bot) processSeekKeyword(ctx context.Context, br *rod.Browser, page *rod.Page, keyword string, remaining int) int {
-	jobs, err := b.scrapeSeekJobs(ctx, page, keyword)
+func (b *Bot) processSeekKeyword(ctx context.Context, br *rod.Browser, page *rod.Page, keyword string, remaining int, resolvedLocation string) int {
+	jobs, err := b.scrapeSeekJobs(ctx, page, keyword, resolvedLocation)
 	if err != nil {
 		log.Error().Err(err).Str("keyword", keyword).Msg("seek: scrape jobs failed")
 		return 0
@@ -86,15 +129,15 @@ func (b *Bot) processSeekKeyword(ctx context.Context, br *rod.Browser, page *rod
 		log.Info().Str("keyword", keyword).Msg("seek: no new jobs found for keyword")
 		return 0
 	}
-	log.Info().Msgf("seek: found %d jobs for %q — processing", len(jobs), keyword)
+	log.Info().Msgf("seek: found %d jobs for %q, processing", len(jobs), keyword)
 	applied := 0
 	for _, job := range jobs {
 		if reason := b.stopReason(ctx); reason != "" {
-			log.Info().Str("keyword", keyword).Msgf("seek: stopped mid-keyword — %s", reason)
+			log.Info().Str("keyword", keyword).Msgf("seek: stopped mid-keyword, %s", reason)
 			return applied
 		}
 		if applied >= remaining {
-			log.Info().Str("keyword", keyword).Int("remaining", remaining).Msg("seek: stopped mid-keyword — daily limit reached")
+			log.Info().Str("keyword", keyword).Int("remaining", remaining).Msg("seek: stopped mid-keyword, daily limit reached")
 			return applied
 		}
 		b.humanPause()
@@ -108,9 +151,10 @@ func (b *Bot) processSeekKeyword(ctx context.Context, br *rod.Browser, page *rod
 
 // ── Job scraping ──────────────────────────────────────────────────────────
 
-func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword string) ([]seekJob, error) {
-	searchURL := buildSeekSearchURL(keyword, b.cfg.Preferences)
-	log.Info().Str("url", searchURL).Msg("seek: searching")
+func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resolvedLocation string) ([]seekJob, error) {
+	searchURL := buildSeekSearchURL(keyword, b.cfg.Preferences, resolvedLocation)
+	log.Info().Str("keyword", keyword).Msg("seek: searching")
+	log.Debug().Str("url", searchURL).Msg("seek: navigating to search URL")
 
 	if err := page.Navigate(searchURL); err != nil {
 		return nil, fmt.Errorf("navigate: %w", err)
@@ -119,6 +163,7 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword string
 		return nil, fmt.Errorf("wait load: %w", err)
 	}
 	_ = page.WaitStable(500 * time.Millisecond)
+	log.Info().Str("keyword", keyword).Msg("seek: page loaded, scraping cards")
 
 	cap := b.cfg.Settings.MaxJobsPerKeyword
 	if cap <= 0 {
@@ -134,8 +179,13 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword string
 			cards, _ = page.Elements("[data-testid='job-card']")
 		}
 		if len(cards) == 0 && attempt == 0 {
-			log.Warn().Str("keyword", keyword).Msg("seek: no job cards found — selectors may need updating")
-			// Dump page HTML and a screenshot for selector debugging.
+			// Check if Seek is showing a genuine zero-results page.
+			if _, zrErr := page.Element("[data-automation='search-zero-results']"); zrErr == nil {
+				log.Info().Str("keyword", keyword).Msg("seek: search returned no results for keyword")
+				return nil, nil
+			}
+			// Unexpected: page loaded but no cards and no zero-results indicator — selector may need updating.
+			log.Warn().Str("keyword", keyword).Msg("seek: no job cards found, selectors may need updating")
 			if html, err := page.HTML(); err == nil {
 				_ = os.WriteFile("debug_seek_page.html", []byte(html), 0o644)
 				log.Warn().Msg("seek: page HTML saved to debug_seek_page.html")
@@ -155,6 +205,7 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword string
 				jobs = append(jobs, job)
 			}
 		}
+		log.Info().Msgf("seek: scroll %d, found %d cards (%d new)", attempt+1, len(cards), len(jobs)-prevCount)
 
 		// Stop if we hit the cap or no new cards appeared after scrolling.
 		if len(jobs) >= cap || (attempt > 0 && len(jobs) == prevCount) {
@@ -173,6 +224,7 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword string
 	if len(jobs) > cap {
 		jobs = jobs[:cap]
 	}
+
 	log.Info().Msgf("seek: search returned %d jobs for %q", len(jobs), keyword)
 	return jobs, nil
 }
@@ -185,49 +237,35 @@ func extractSeekJob(el *rod.Element) seekJob {
 		job.ID = *id
 	}
 
-	// Title — primary: data-automation, fallback: h3 > a
-	if t, err := el.Element("[data-automation='job-list-item-title']"); err == nil {
+	// Title
+	if t, err := el.Element("[data-automation='jobTitle']"); err == nil {
 		job.Title, _ = t.Text()
 	} else if t, err := el.Element("h3 a, h2 a"); err == nil {
 		job.Title, _ = t.Text()
 	}
 
-	// Company — try several Seek automation attributes and class-based fallbacks.
-	if c, err := el.Element("[data-automation='job-list-item-company-name']"); err == nil {
+	// Company
+	if c, err := el.Element("[data-automation='jobCompany']"); err == nil {
 		job.Company, _ = c.Text()
-	} else if c, err := el.Element("[data-automation='advertiser-name']"); err == nil {
-		job.Company, _ = c.Text()
-	} else if c, err := el.Element("[data-automation*='company'], [data-automation*='advertiser']"); err == nil {
-		job.Company, _ = c.Text()
-	} else if c, err := el.Element("[class*='company'], [class*='Company'], [class*='advertiser'], [class*='Advertiser']"); err == nil {
-		job.Company, _ = c.Text()
-	}
-	if job.Company == "" {
-		// Log outer HTML to diagnose selector mismatches.
-		if h, err := el.HTML(); err == nil {
-			log.Debug().Str("id", job.ID).Str("card_html", h[:min(len(h), 800)]).Msg("seek: company empty — card html sample")
-		}
 	}
 
-	// Location — primary: data-automation, fallback: class contains "location"
-	if l, err := el.Element("[data-automation='job-card-location']"); err == nil {
+	// Location
+	if l, err := el.Element("[data-automation='jobLocation']"); err == nil {
 		job.Location, _ = l.Text()
-	} else if l, err := el.Element("[class*='location'], [class*='Location']"); err == nil {
+	} else if l, err := el.Element("[data-automation='jobCardLocation']"); err == nil {
 		job.Location, _ = l.Text()
 	}
 
-	// PostedDate — extracted from the listing card time element.
-	if t, err := el.Element("time[datetime]"); err == nil {
+	// PostedDate
+	if t, err := el.Element("[data-automation='jobListingDate']"); err == nil {
+		job.PostedDate, _ = t.Text()
+	} else if t, err := el.Element("time[datetime]"); err == nil {
 		if dt, e := t.Attribute("datetime"); e == nil && dt != nil {
 			job.PostedDate = *dt
-		} else {
-			job.PostedDate, _ = t.Text()
 		}
-	} else if t, err := el.Element("[data-automation*='date'], [data-automation*='Date']"); err == nil {
-		job.PostedDate, _ = t.Text()
 	}
 
-	// Applied indicator — Seek shows a badge on cards for jobs already applied to.
+	// Applied indicator, Seek shows a badge on cards for jobs already applied to.
 	if _, err := el.Element("[data-automation='job-card-applied-label'], [data-automation*='applied']"); err == nil {
 		job.AlreadyApplied = true
 	} else if txt, err := el.Text(); err == nil {
@@ -239,18 +277,18 @@ func extractSeekJob(el *rod.Element) seekJob {
 	// Best-effort Quick Apply detection on listing card.
 	if _, err := el.Element("[data-automation='quick-apply-label']"); err == nil {
 		job.EasyApply = true
-	} else if txt, err := el.Text(); err == nil && strings.Contains(strings.ToLower(txt), "quick apply") {
+	} else if txt, err := el.Text(); err == nil && strings.Contains(strings.ToLower(txt), seekQuickApply) {
 		job.EasyApply = true
 	}
 
-	// URL — prefer canonical job URL built from ID; also try extracting from link href.
+	// URL, prefer canonical job URL built from ID; also try extracting from link href.
 	if job.ID != "" {
-		job.URL = "https://www.seek.com.au/job/" + job.ID
+		job.URL = "https://au.seek.com/job/" + job.ID
 	} else if a, err := el.Element("a[href*='/job/']"); err == nil {
 		if href, e := a.Attribute("href"); e == nil && href != nil {
 			h := *href
 			if strings.HasPrefix(h, "/") {
-				h = "https://www.seek.com.au" + h
+				h = "https://au.seek.com" + h
 			}
 			job.URL = strings.SplitN(h, "?", 2)[0] // drop query params
 			// Attempt to extract ID from URL path /job/XXXXXX
@@ -266,15 +304,104 @@ func extractSeekJob(el *rod.Element) seekJob {
 
 // ── Search URL builder ─────────────────────────────────────────────────────
 
-func buildSeekSearchURL(keyword string, prefs domain.WorkPreferences) string {
+// seekLocationSlug maps free-text location entries to Seek's path-based location slugs
+// used in URLs like https://au.seek.com/jobs/in-{slug}?keywords=...
+var seekLocationSlug = map[string]string{
+	"victoria":            "Victoria VIC",
+	"vic":                 "Victoria VIC",
+	"victoria, australia": "Victoria VIC",
+	"melbourne":           "Melbourne-VIC",
+	"new south wales":     "New-South-Wales",
+	"nsw":                 "New-South-Wales",
+	"sydney":              "Sydney-NSW",
+	"queensland":          "Queensland",
+	"qld":                 "Queensland",
+	"brisbane":            "Brisbane-QLD",
+	"western australia":   "Western-Australia",
+	"wa":                  "Western-Australia",
+	"perth":               "Perth-WA",
+	"south australia":     "South-Australia",
+	"sa":                  "South-Australia",
+	"adelaide":            "Adelaide-SA",
+	"tasmania":            "Tasmania",
+	"tas":                 "Tasmania",
+	"hobart":              "Hobart-TAS",
+	"northern territory":  "Northern-Territory",
+	"nt":                  "Northern-Territory",
+	"darwin":              "Darwin-NT",
+	"act":                 "Australian-Capital-Territory",
+	"canberra":            "Canberra-ACT",
+}
+
+func seekLocationPath(loc string) string {
+	if slug, ok := seekLocationSlug[strings.ToLower(strings.TrimSpace(loc))]; ok {
+		return "/jobs/in-" + url.PathEscape(slug)
+	}
+	if loc != "" && strings.ToLower(loc) != "all australia" {
+		return "/jobs/in-" + url.PathEscape(strings.TrimSpace(loc))
+	}
+	return "/jobs"
+}
+
+// resolveSeekLocation uses the browser to type the user's location into Seek's
+// autocomplete field and returns the first suggestion — the exact value Seek
+// accepts in the ?where= query parameter. Falls back to the raw input on error.
+func (b *Bot) resolveSeekLocation(page *rod.Page, locInput string) string {
+	if err := page.Navigate("https://au.seek.com/jobs"); err != nil {
+		return locInput
+	}
+	_ = page.WaitLoad()
+	_ = page.WaitStable(1 * time.Second)
+
+	whereEl, err := page.Element("#SearchBar__Where")
+	if err != nil {
+		log.Warn().Msg("seek: location input not found on page")
+		return locInput
+	}
+
+	// Click to focus the field.
+	if err := whereEl.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return locInput
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	// Clear any existing value.
+	_ = whereEl.SelectAllText()
+	time.Sleep(100 * time.Millisecond)
+
+	// Type one character at a time — Seek's autocomplete only fires on real keystroke events.
+	for _, r := range locInput {
+		_ = page.InsertText(string(r))
+		time.Sleep(60 * time.Millisecond)
+	}
+
+	// Wait for the first autocomplete suggestion to appear.
+	opt, err := page.Timeout(8 * time.Second).Element("#SearchBar__Where-menu [role='option']")
+	if err != nil {
+		// Fallback: generic listbox option
+		opt, err = page.Timeout(3 * time.Second).Element("[role='listbox'] [role='option']")
+		if err != nil {
+			log.Warn().Str("input", locInput).Msg("seek: location autocomplete did not appear, using path-based fallback")
+			return ""
+		}
+	}
+	text, err := opt.Text()
+	if err != nil || text == "" {
+		return ""
+	}
+	log.Info().Msgf("seek: resolved location %q → %q", locInput, text)
+	return text
+}
+
+func buildSeekSearchURL(keyword string, prefs domain.WorkPreferences, resolvedLocation string) string {
 	params := url.Values{}
 	params.Set("keywords", keyword)
 
-	// Location
-	if len(prefs.Locations) > 0 {
-		params.Set("where", prefs.Locations[0])
-	} else {
-		params.Set("where", "All Australia")
+	locationPath := "/jobs"
+	if resolvedLocation != "" {
+		params.Set("where", resolvedLocation)
+	} else if len(prefs.Locations) > 0 {
+		locationPath = seekLocationPath(prefs.Locations[0])
 	}
 
 	// Work type (Seek codes: 242=full-time, 243=part-time, 244=contract, 245=casual)
@@ -315,30 +442,30 @@ func buildSeekSearchURL(keyword string, prefs domain.WorkPreferences) string {
 		params.Set("daterange", "7")
 	case prefs.Date.Month:
 		params.Set("daterange", "30")
-	// AllTime: omit param
+		// AllTime: omit param
 	}
 
-	return "https://www.seek.com.au/jobs?" + params.Encode()
+	return "https://au.seek.com" + locationPath + "?" + params.Encode()
 }
 
 // ── Per-job pipeline ──────────────────────────────────────────────────────
 
 func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) bool {
-	log.Info().Msgf("seek: processing — %q @ %s", job.Title, job.Company)
+	log.Info().Msgf("seek: processing, %q @ %s", job.Title, job.Company)
 
-	if b.alreadyApplied(job.ID) {
-		log.Info().Msgf("seek: skip — already applied to %q @ %s", job.Title, job.Company)
+	if reason := b.alreadyAppliedReason(job.ID); reason != "" {
+		log.Info().Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
 	// Card-level applied indicator.
 	if job.AlreadyApplied {
 		b.recordSeekApplied(job, "", "", 0, nil)
-		log.Info().Msgf("seek: skip — already applied badge on card: %q @ %s", job.Title, job.Company)
+		log.Info().Msgf("seek: skip, already applied badge on card: %q @ %s", job.Title, job.Company)
 		return false
 	}
 	if b.isSeekJobBlacklisted(job) {
 		b.recordSeekSkipped(job, "blacklisted", 0, "", nil)
-		log.Info().Msgf("seek: skip — blacklisted: %q @ %s", job.Title, job.Company)
+		log.Info().Msgf("seek: skip, blacklisted: %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -346,16 +473,18 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	// Detail page may have updated AlreadyApplied (covers manual applications).
 	if job.AlreadyApplied {
 		b.recordSeekApplied(job, "", "", 0, nil)
-		log.Info().Msgf("seek: skip — already applied (page indicator): %q @ %s", job.Title, job.Company)
+		log.Info().Msgf("seek: skip, already applied (page indicator): %q @ %s", job.Title, job.Company)
 		return false
 	}
 
+	llmBefore := b.llmSnapshot()
 	score, reasoning, halalVerdict, ok := b.checkSeekScore(ctx, job, details.Description)
 	if !ok {
 		return false
 	}
 
-	resumePath, coverPath := b.generateSeekDocs(ctx, job, details.Description)
+	// Docs generated lazily at the file-upload step, only when toggle is on.
+	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: job.Company, Title: job.Title}, jobDesc: details.Description}
 
 	if b.cfg.RequireReview {
 		b.saveSeekPendingReview(&domain.PendingReview{
@@ -365,8 +494,8 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 			Location:             job.Location,
 			Platform:             domain.PlatformSeek,
 			Link:                 job.URL,
-			ResumePath:           resumePath,
-			CoverLetterPath:      coverPath,
+			ResumePath:           "",
+			CoverLetterPath:      "",
 			SuitabilityScore:     score,
 			SuitabilityReasoning: reasoning,
 			DueDate:              details.DueDate,
@@ -379,7 +508,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	}
 
 	if !job.EasyApply {
-		// Not a Quick Apply job — queue for manual application via Top Matches.
+		// Not a Quick Apply job, queue for manual application via Top Matches.
 		b.saveSeekPendingReview(&domain.PendingReview{
 			JobID:                job.ID,
 			Company:              job.Company,
@@ -387,8 +516,8 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 			Location:             job.Location,
 			Platform:             domain.PlatformSeek,
 			Link:                 job.URL,
-			ResumePath:           resumePath,
-			CoverLetterPath:      coverPath,
+			ResumePath:           "",
+			CoverLetterPath:      "",
 			SuitabilityScore:     score,
 			SuitabilityReasoning: reasoning,
 			DueDate:              details.DueDate,
@@ -400,7 +529,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 		return false
 	}
 
-	return b.submitSeekApplication(ctx, br, job, resumePath, coverPath, score, halalVerdict)
+	return b.submitSeekApplication(ctx, br, job, lazy, score, halalVerdict, llmBefore)
 }
 
 func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (score int, reasoning string, halalVerdict []byte, ok bool) {
@@ -418,12 +547,12 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 	}
 	if result.Score < minScore {
 		b.recordSeekSkipped(job, fmt.Sprintf("score %d < %d", result.Score, minScore), result.Score, result.Reasoning, nil)
-		log.Info().Msgf("seek: skip — score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
+		log.Info().Msgf("seek: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
 		return result.Score, result.Reasoning, nil, false
 	}
-	log.Info().Msgf("seek: score %d/10 — %q @ %s", result.Score, job.Title, job.Company)
+	log.Info().Msgf("seek: score %d/10, %q @ %s", result.Score, job.Title, job.Company)
 
-	// Halal check — only runs after score passes to avoid wasted LLM calls.
+	// Halal check, only runs after score passes to avoid wasted LLM calls.
 	// HARAM → skip; DOUBTFUL → let through but carry verdict for storage.
 	if b.cfg.HalalChecker != nil {
 		verdict, err := b.cfg.HalalChecker.CheckHalal(ctx, job.Title, job.Company, jobDesc)
@@ -436,7 +565,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 			return result.Score, result.Reasoning, nil, false
 		} else if verdict.Verdict == "DOUBTFUL" {
 			halalVerdict, _ = json.Marshal(verdict)
-			log.Info().Msgf("seek: halal DOUBTFUL — letting through %q @ %s", job.Title, job.Company)
+			log.Info().Msgf("seek: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
 		}
 	}
 
@@ -453,13 +582,23 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 		return scraper.JobDetails{Description: job.Title + " at " + job.Company, PostedDate: job.PostedDate}
 	}
 	defer page.Close()
+	page = page.Timeout(30 * time.Second)
 
 	if err := page.WaitLoad(); err != nil {
 		return scraper.JobDetails{Description: job.Title + " at " + job.Company, PostedDate: job.PostedDate}
 	}
 	_ = page.WaitStable(500 * time.Millisecond)
 
-	// Extract company from the detail page — more reliable than listing card selectors.
+	// Log the actual URL — catches session-expired redirects to login.
+	if info, err := page.Info(); err == nil {
+		log.Debug().Str("url", info.URL).Msgf("seek: detail page loaded for %q", job.Title)
+		if isSeekLoginPage(info.URL) {
+			log.Warn().Msgf("seek: detail page redirected to login for %q — session may be expired", job.Title)
+		}
+	}
+
+	// Extract company from the detail page, more reliable than listing card selectors.
+	// Use Elements() (immediate querySelectorAll) to avoid polling on non-existent selectors.
 	if job.Company == "" {
 		for _, sel := range []string{
 			"[data-automation='advertiser-name']",
@@ -467,8 +606,8 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 			"[data-automation*='advertiser']",
 			"h3[data-automation]",
 		} {
-			if c, err := page.Element(sel); err == nil {
-				if txt, err := c.Text(); err == nil && txt != "" {
+			if elems, err := page.Elements(sel); err == nil && len(elems) > 0 {
+				if txt, err := elems[0].Text(); err == nil && txt != "" {
 					job.Company = txt
 					break
 				}
@@ -477,21 +616,23 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 	}
 
 	// Check detail page for applied indicator (covers manual applications not yet in our DB).
+	// Elements() is immediate — no polling — so non-existent selectors return instantly.
 	if !job.AlreadyApplied {
 		appliedSelectors := []string{
 			"[data-automation='job-detail-applied-label']",
 			"[data-automation*='applied-label']",
 			"[data-automation*='already-applied']",
+			"#applied-date-message", // "Visited employer's application site on …"
 		}
 		for _, sel := range appliedSelectors {
-			if _, err := page.Element(sel); err == nil {
+			if elems, err := page.Elements(sel); err == nil && len(elems) > 0 {
 				job.AlreadyApplied = true
 				break
 			}
 		}
 		if !job.AlreadyApplied {
-			if btn, err := page.Element("[data-automation='job-detail-apply'], button[data-automation*='apply']"); err == nil {
-				if txt, err := btn.Text(); err == nil {
+			if elems, err := page.Elements("[data-automation='job-detail-apply'], button[data-automation*='apply']"); err == nil && len(elems) > 0 {
+				if txt, err := elems[0].Text(); err == nil {
 					lower := strings.ToLower(strings.TrimSpace(txt))
 					if lower == "applied" || strings.Contains(lower, "you applied") {
 						job.AlreadyApplied = true
@@ -502,25 +643,46 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 	}
 
 	// Authoritative Quick Apply detection: Seek-hosted form = Quick Apply; external href = manual apply.
+	// Both strategies use Elements() (immediate querySelectorAll) — no polling, no shared context expiry.
 	if !job.EasyApply {
-		if btn, err := page.Element("[data-automation='job-detail-apply']"); err == nil {
+		// Strategy 1: data-automation attribute — present on all standard Seek apply buttons.
+		if elems, err := page.Elements("[data-automation='job-detail-apply'], [data-automation='job-detail-apply-link'], button[data-automation*='apply']"); err == nil && len(elems) > 0 {
+			btn := elems[0]
 			if txt, err := btn.Text(); err == nil {
-				lower := strings.ToLower(strings.TrimSpace(txt))
-				if strings.Contains(lower, "quick apply") || lower == "apply" {
+				if strings.Contains(strings.ToLower(strings.TrimSpace(txt)), seekQuickApply) {
 					job.EasyApply = true
 				}
 			}
-			// <button> with no href is always a Seek-hosted form (Quick Apply).
-			if href, e := btn.Attribute("href"); e != nil {
-				job.EasyApply = true // no href attr = <button> = Quick Apply
-			} else if href != nil {
-				h := *href
-				// Relative or seek.com.au href = Seek-hosted.
-				if h == "" || strings.HasPrefix(h, "/") || strings.Contains(h, "seek.com.au") {
-					job.EasyApply = true
+			if !job.EasyApply {
+				if href, _ := btn.Attribute("href"); href == nil {
+					job.EasyApply = true // no href = Seek-hosted modal
+				} else {
+					h := *href
+					// Relative or seek.com href = Seek-hosted.
+					if h == "" || strings.HasPrefix(h, "/") || strings.Contains(h, "seek.com") {
+						job.EasyApply = true
+					}
+					// External http(s) link to another domain = manual apply only.
 				}
-				// External http(s) link to another domain = manual apply only.
 			}
+		}
+
+		// Strategy 2: text-scan fallback — catches UI changes where data-automation differs.
+		if !job.EasyApply {
+			if btns, err := page.Elements("button, a[href]"); err == nil {
+				for _, el := range btns {
+					if txt, err := el.Text(); err == nil && strings.Contains(strings.ToLower(txt), seekQuickApply) {
+						job.EasyApply = true
+						break
+					}
+				}
+			}
+		}
+
+		if job.EasyApply {
+			log.Info().Msgf("seek: Quick Apply detected: %q @ %s", job.Title, job.Company)
+		} else {
+			log.Info().Msgf("seek: no Quick Apply on detail page, routing to Top Matches: %q @ %s", job.Title, job.Company)
 		}
 	}
 
@@ -554,11 +716,11 @@ func (b *Bot) generateSeekDocs(ctx context.Context, job seekJob, jobDesc string)
 		resumePath = b.savePDF(pdf, job.Company, job.Title, "resume")
 	}
 	if b.cfg.Tailor != nil {
-		context := jobDesc
+		promptCtx := jobDesc
 		if market != nil && market.CoverLetterPrompt != "" {
-			context = market.CoverLetterPrompt + "\n" + jobDesc
+			promptCtx = market.CoverLetterPrompt + "\n" + jobDesc
 		}
-		if body, err := b.cfg.Tailor.WriteCoverLetter(ctx, profile, context); err == nil {
+		if body, err := b.cfg.Tailor.WriteCoverLetter(ctx, profile, promptCtx); err == nil {
 			if pdf, err := b.cfg.Renderer.RenderCoverLetter(ctx, body, "", cssOverride); err == nil {
 				coverPath = b.savePDF(pdf, job.Company, job.Title, "cover_letter")
 			}
@@ -570,15 +732,15 @@ func (b *Bot) generateSeekDocs(ctx context.Context, job seekJob, jobDesc string)
 func (b *Bot) saveSeekPendingReview(p *domain.PendingReview) {
 	b.savePendingReview(p)
 	if p.EasyApply {
-		log.Info().Msgf("seek: queued for review — %q @ %s", p.Role, p.Company)
+		log.Info().Msgf("seek: queued for review, %q @ %s", p.Role, p.Company)
 	} else {
-		log.Info().Msgf("seek: added to Top Matches (manual apply) — %q @ %s", p.Role, p.Company)
+		log.Info().Msgf("seek: added to Top Matches (manual apply), %q @ %s", p.Role, p.Company)
 	}
 }
 
 // ── Application submission ─────────────────────────────────────────────────
 
-func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job seekJob, resumePath, coverPath string, score int, halalVerdict []byte) bool {
+func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job seekJob, lazy *lazyDocGen, score int, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
 		log.Error().Err(err).Msg("seek: open job page")
@@ -586,13 +748,14 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	}
 	defer jobPage.Close()
 
-	if err := b.seekApply(ctx, jobPage, resumePath, coverPath); err != nil {
+	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
 		log.Error().Err(err).Str("job", job.Title).Msg("seek: apply failed")
 		b.recordSeekSkipped(job, "seek apply: "+err.Error(), 0, "", nil)
 		return false
 	}
-	b.recordSeekApplied(job, resumePath, coverPath, score, halalVerdict)
-	log.Info().Str("company", job.Company).Str("title", job.Title).Msg("seek: applied ✓")
+	resume, cover := lazy.get()
+	b.recordSeekApplied(job, resume, cover, score, halalVerdict)
+	b.logApplied(job.Title, job.Company, domain.PlatformSeek, llmBefore)
 	return true
 }
 
@@ -603,9 +766,14 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 //  2. Click apply → wait for application form to load
 //  3. Upload resume PDF (and cover letter if provided)
 //  4. Submit the form
-func (b *Bot) seekApply(ctx context.Context, page *rod.Page, resumePath, coverPath string) error {
+func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) error {
 	if err := page.WaitLoad(); err != nil {
 		return fmt.Errorf("wait load: %w", err)
+	}
+
+	// Detect redirect to login page — saved session is expired or wrong domain.
+	if info, err := page.Info(); err == nil && isSeekLoginPage(info.URL) {
+		return fmt.Errorf("seek session expired, re-login via Settings → Secrets")
 	}
 
 	// Find the apply button.
@@ -621,7 +789,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, resumePath, coverPa
 	// Check if this is an external application link (non-automatable).
 	if href, e := applyBtn.Attribute("href"); e == nil && href != nil {
 		h := *href
-		if h != "" && !strings.Contains(h, "seek.com.au") && strings.HasPrefix(h, "http") {
+		if h != "" && !strings.Contains(h, "seek.com") && strings.HasPrefix(h, "http") {
 			return fmt.Errorf("external application")
 		}
 	}
@@ -629,6 +797,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, resumePath, coverPa
 	if err := applyBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		return fmt.Errorf("click apply: %w", err)
 	}
+	log.Info().Msg("seek: Quick Apply button clicked, waiting for form")
 	b.humanPause()
 
 	if err := page.WaitLoad(); err != nil {
@@ -636,11 +805,14 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, resumePath, coverPa
 	}
 	_ = page.WaitStable(500 * time.Millisecond)
 
+	// Upload resume and cover letter lazily, generates docs on first call if toggle is on.
+	resumePath, coverPath := lazy.get()
+
 	// Upload resume if path is provided.
 	if resumePath != "" {
 		if err := b.seekUploadFile(page, resumePath, "resume"); err != nil {
 			log.Warn().Err(err).Msg("seek: resume upload failed")
-			// Non-fatal — the user's stored profile resume may be used by default.
+			// Non-fatal, the user's stored profile resume may be used by default.
 		}
 	}
 
@@ -654,7 +826,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, resumePath, coverPa
 	b.humanPause()
 
 	// Fill any unanswered form questions before submitting.
-	b.fillFormStep(ctx, page, resumePath, coverPath)
+	b.fillFormStep(ctx, page, lazy)
 
 	// Submit the application.
 	submitBtn, err := page.Element("[data-automation='review-submit-button']")
@@ -667,9 +839,10 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, resumePath, coverPa
 	if err := submitBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		return fmt.Errorf("click submit: %w", err)
 	}
+	log.Info().Msg("seek: submit clicked, verifying confirmation")
 	b.humanPause()
 
-	// Verify success — look for a confirmation element or URL change.
+	// Verify success, look for a confirmation element or URL change.
 	if _, err := page.Element("[data-automation='application-success'], [data-automation='confirmation-page']"); err != nil {
 		// Also accept a URL containing "application-confirmation" or "success".
 		info, _ := page.Info()
@@ -678,6 +851,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, resumePath, coverPa
 		}
 	}
 
+	log.Info().Msg("seek: Quick Apply submitted successfully ✓")
 	return nil
 }
 
@@ -704,26 +878,30 @@ func (b *Bot) recordSeekApplied(job seekJob, resumePath, coverPath string, score
 	if b.cfg.DB == nil {
 		return
 	}
-	_, _ = b.cfg.DB.Exec(
+	if _, err := b.cfg.DB.Exec(
 		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, b.cfg.UserID, string(domain.PlatformSeek), job.Company, job.Title,
 		job.Location, job.URL, resumePath, coverPath, score, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
-	)
+	); err != nil {
+		log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record applied job")
+	}
 }
 
 func (b *Bot) recordSeekSkipped(job seekJob, reason string, score int, reasoning string, halalVerdict []byte) {
 	if b.cfg.DB == nil {
 		return
 	}
-	_, _ = b.cfg.DB.Exec(
+	if _, err := b.cfg.DB.Exec(
 		`INSERT OR IGNORE INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,halal_verdict,viewed_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, b.cfg.UserID, string(domain.PlatformSeek), job.Company, job.Title,
 		job.Location, job.URL, reason, score, reasoning, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
-	)
+	); err != nil {
+		log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record skipped job")
+	}
 }
 
 func (b *Bot) isSeekJobBlacklisted(job seekJob) bool {

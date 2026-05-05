@@ -4,11 +4,25 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/domain"
 )
+
+const msgQueryError = "query error"
+
+// logParseTime parses an RFC3339 timestamp string, logging a warning on failure.
+func logParseTime(s, field string) time.Time {
+	t, err := parseTime(s)
+	if err != nil {
+		log.Warn().Str("field", field).Str("value", s).Msg("jobs: failed to parse timestamp")
+	}
+	return t
+}
 
 // JobHandlers groups job history handlers.
 type JobHandlers struct{ svc *Services }
@@ -61,10 +75,16 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 		var appliedStr string
 		if err := rows.Scan(&j.ID, &j.Platform, &j.Company, &j.Role, &j.Location,
 			&j.Link, &j.ResumePath, &j.CoverLetterPath, &j.SuitabilityScore, &appliedStr); err != nil {
+			log.Error().Err(err).Msg("applied jobs: scan row")
 			continue
 		}
-		j.AppliedAt, _ = parseTime(appliedStr)
+		j.AppliedAt = logParseTime(appliedStr, "applied_at")
 		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("applied jobs row iteration error")
+		http.Error(w, msgQueryError, http.StatusInternalServerError)
+		return
 	}
 	if out == nil {
 		out = []domain.AppliedJob{}
@@ -105,6 +125,7 @@ func (h *JobHandlers) Skipped(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&j.ID, &j.Platform, &j.Company, &j.Role, &j.Location,
 			&j.Link, &j.SkipReason, &j.SuitabilityScore, &j.SuitabilityReasoning,
 			&halalRaw, &viewedStr); err != nil {
+			log.Error().Err(err).Msg("skipped jobs: scan row")
 			continue
 		}
 		if len(halalRaw) > 0 {
@@ -113,8 +134,13 @@ func (h *JobHandlers) Skipped(w http.ResponseWriter, r *http.Request) {
 				j.HalalVerdict = &v
 			}
 		}
-		j.ViewedAt, _ = parseTime(viewedStr)
+		j.ViewedAt = logParseTime(viewedStr, "viewed_at")
 		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("skipped jobs row iteration error")
+		http.Error(w, msgQueryError, http.StatusInternalServerError)
+		return
 	}
 	if out == nil {
 		out = []domain.SkippedJob{}
@@ -165,6 +191,11 @@ func (h *JobHandlers) CannotApply(w http.ResponseWriter, r *http.Request) {
 		}
 		j.ViewedAt, _ = parseTime(viewedStr)
 		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("cannot-apply jobs row iteration error")
+		http.Error(w, msgQueryError, http.StatusInternalServerError)
+		return
 	}
 	if out == nil {
 		out = []domain.SkippedJob{}
@@ -241,9 +272,10 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 			&p.SuitabilityScore, &p.SuitabilityReasoning, &p.DueDate, &p.PostedDate,
 			&p.EasyApply, &halalJSON, &createdStr,
 		); err != nil {
+			log.Error().Err(err).Msg("top matches: scan row")
 			continue
 		}
-		p.CreatedAt, _ = parseTime(createdStr)
+		p.CreatedAt = logParseTime(createdStr, "created_at")
 		if halalJSON != "" {
 			var hv domain.HalalVerdict
 			if json.Unmarshal([]byte(halalJSON), &hv) == nil {
@@ -251,6 +283,11 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("top matches row iteration error")
+		http.Error(w, msgQueryError, http.StatusInternalServerError)
+		return
 	}
 	if out == nil {
 		out = []domain.PendingReview{}
@@ -261,12 +298,18 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 func (h *JobHandlers) Stats(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	var stats domain.JobStats
-	_ = h.svc.DB.QueryRowContext(r.Context(),
-		"SELECT COUNT(*) FROM jobs_applied WHERE user_id = ?", userID).Scan(&stats.TotalApplied)
-	_ = h.svc.DB.QueryRowContext(r.Context(),
-		"SELECT COUNT(*) FROM jobs_applied WHERE user_id = ? AND date(applied_at) = date('now')", userID).Scan(&stats.AppliedToday)
-	_ = h.svc.DB.QueryRowContext(r.Context(),
-		"SELECT COUNT(*) FROM jobs_skipped WHERE user_id = ?", userID).Scan(&stats.TotalSkipped)
+	if err := h.svc.DB.QueryRowContext(r.Context(),
+		"SELECT COUNT(*) FROM jobs_applied WHERE user_id = ?", userID).Scan(&stats.TotalApplied); err != nil {
+		log.Error().Err(err).Msg("stats: total_applied query failed")
+	}
+	if err := h.svc.DB.QueryRowContext(r.Context(),
+		"SELECT COUNT(*) FROM jobs_applied WHERE user_id = ? AND date(applied_at) = date('now')", userID).Scan(&stats.AppliedToday); err != nil {
+		log.Error().Err(err).Msg("stats: applied_today query failed")
+	}
+	if err := h.svc.DB.QueryRowContext(r.Context(),
+		"SELECT COUNT(*) FROM jobs_skipped WHERE user_id = ?", userID).Scan(&stats.TotalSkipped); err != nil {
+		log.Error().Err(err).Msg("stats: total_skipped query failed")
+	}
 	writeJSON(w, http.StatusOK, stats)
 }
 
@@ -284,7 +327,7 @@ func (h *JobHandlers) GetJob(w http.ResponseWriter, r *http.Request) {
 	).Scan(&aj.ID, &aj.Platform, &aj.Company, &aj.Role, &aj.Location,
 		&aj.Link, &aj.ResumePath, &aj.CoverLetterPath, &appliedStr)
 	if err == nil {
-		aj.AppliedAt, _ = parseTime(appliedStr)
+		aj.AppliedAt = logParseTime(appliedStr, "applied_at")
 		writeJSON(w, http.StatusOK, map[string]any{"id": jobID, "status": "applied", "applied_job": aj})
 		return
 	}
@@ -298,7 +341,7 @@ func (h *JobHandlers) GetJob(w http.ResponseWriter, r *http.Request) {
 	).Scan(&sj.ID, &sj.Platform, &sj.Company, &sj.Role, &sj.Location,
 		&sj.Link, &sj.SkipReason, &sj.SuitabilityScore, &sj.SuitabilityReasoning, &viewedStr)
 	if err == nil {
-		sj.ViewedAt, _ = parseTime(viewedStr)
+		sj.ViewedAt = logParseTime(viewedStr, "viewed_at")
 		writeJSON(w, http.StatusOK, map[string]any{"id": jobID, "status": "skipped", "skipped_job": sj})
 		return
 	}
@@ -344,16 +387,34 @@ func (h *JobHandlers) DeleteSkipped(w http.ResponseWriter, r *http.Request) {
 func (h *JobHandlers) DeletePendingReview(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	jobID := chi.URLParam(r, "job_id")
-	res, err := h.svc.DB.ExecContext(r.Context(),
+
+	var company, role, location, platform, link, reasoning string
+	var score int
+	var halalVerdict *string
+	err := h.svc.DB.QueryRowContext(r.Context(),
+		`SELECT company, role, COALESCE(location,''), platform, COALESCE(link,''),
+		        suitability_score, COALESCE(suitability_reasoning,''), halal_verdict
+		 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID).
+		Scan(&company, &role, &location, &platform, &link, &score, &reasoning, &halalVerdict)
+	if err != nil {
+		notFound(w, "job not found")
+		return
+	}
+
+	_, err = h.svc.DB.ExecContext(r.Context(),
 		`DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		notFound(w, "job not found")
-		return
-	}
+
+	_, _ = h.svc.DB.ExecContext(r.Context(),
+		`INSERT OR IGNORE INTO jobs_skipped
+		     (id, user_id, platform, company, role, location, link, skip_reason,
+		      suitability_score, suitability_reasoning, halal_verdict, viewed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'Manual skip', ?, ?, ?, datetime('now'))`,
+		jobID, userID, platform, company, role, location, link, score, reasoning, halalVerdict)
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -386,4 +447,41 @@ func (h *JobHandlers) MarkApplied(w http.ResponseWriter, r *http.Request) {
 	_, _ = h.svc.DB.ExecContext(r.Context(),
 		`DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
+}
+
+// POST /api/jobs/pending-review/{job_id}/blacklist
+func (h *JobHandlers) BlacklistCompany(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	jobID := chi.URLParam(r, "job_id")
+
+	var company string
+	err := h.svc.DB.QueryRowContext(r.Context(),
+		`SELECT company FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
+		jobID, userID).Scan(&company)
+	if err != nil {
+		notFound(w, "job not found in top matches")
+		return
+	}
+
+	var prefs domain.WorkPreferences
+	_ = h.svc.Config.Get(userID, keyWorkPreferences, &prefs)
+
+	already := false
+	for _, c := range prefs.CompanyBlacklist {
+		if strings.EqualFold(c, company) {
+			already = true
+			break
+		}
+	}
+	if !already {
+		prefs.CompanyBlacklist = append(prefs.CompanyBlacklist, company)
+		if err := h.svc.Config.Set(userID, keyWorkPreferences, prefs); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+			return
+		}
+	}
+
+	_, _ = h.svc.DB.ExecContext(r.Context(),
+		`DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "blacklisted"})
 }

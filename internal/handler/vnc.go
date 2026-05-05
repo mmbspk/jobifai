@@ -35,10 +35,9 @@ func (h *VNCHandlers) Websockify(w http.ResponseWriter, r *http.Request) {
 	}
 	defer vnc.Close()
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols:       []string{"binary"},
-		InsecureSkipVerify: true,
-	})
+	opts := wsOptions(r)
+	opts.Subprotocols = []string{"binary"}
+	conn, err := websocket.Accept(w, r, opts)
 	if err != nil {
 		return
 	}

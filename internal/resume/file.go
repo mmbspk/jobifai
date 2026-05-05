@@ -30,20 +30,20 @@ func TextFromReader(r io.Reader, filename string) (string, error) {
 	case ".docx", ".doc":
 		text, err := extractDocxText(data)
 		if err != nil {
-			return "", fmt.Errorf("could not extract text from DOCX: %w — try saving as .txt", err)
+			return "", fmt.Errorf("could not extract text from DOCX: %w, try saving as .txt", err)
 		}
 		if len(strings.TrimSpace(text)) < 50 {
-			return "", fmt.Errorf("DOCX appears empty or has no readable text — try saving as .txt")
+			return "", fmt.Errorf("DOCX appears empty or has no readable text, try saving as .txt")
 		}
 		return text, nil
 
 	case ".pdf":
 		text, err := extractPDFText(data)
 		if err != nil {
-			return "", fmt.Errorf("could not extract text from PDF: %w — try uploading a .docx or .txt", err)
+			return "", fmt.Errorf("could not extract text from PDF: %w, try uploading a .docx or .txt", err)
 		}
 		if len(strings.TrimSpace(text)) < 50 {
-			return "", fmt.Errorf("PDF appears to be image-only (scanned) — please upload a .docx or .txt version")
+			return "", fmt.Errorf("PDF appears to be image-only (scanned), please upload a .docx or .txt version")
 		}
 		return text, nil
 

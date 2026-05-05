@@ -17,6 +17,7 @@ func NewAuthHandlers(svc *Services) *AuthHandlers { return &AuthHandlers{svc: sv
 
 // POST /api/auth/launch-browser
 func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
 	var req struct {
 		Platform    string `json:"platform"`
 		UseProfile  bool   `json:"use_profile"`
@@ -31,7 +32,7 @@ func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, err := h.svc.BrowserMgr.Launch(req.Platform, req.ProfilePath, req.UseProfile)
+	sess, err := h.svc.BrowserMgr.Launch(userID, req.Platform, req.ProfilePath, req.UseProfile)
 	if errors.Is(err, browser.ErrAlreadyOpen) {
 		conflict(w, "a browser session is already open for "+req.Platform)
 		return
@@ -43,7 +44,7 @@ func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"session_id": sess.ID,
-		"message":    "Chrome opened — log in manually then call /api/auth/save-session",
+		"message":    "Chrome opened, log in manually then call /api/auth/save-session",
 	})
 }
 
@@ -59,9 +60,13 @@ func (h *AuthHandlers) SaveSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookies, err := h.svc.BrowserMgr.CaptureCookies(r.Context(), req.SessionID)
+	cookies, err := h.svc.BrowserMgr.CaptureCookies(r.Context(), userID, req.SessionID)
 	if errors.Is(err, browser.ErrNotFound) {
 		notFound(w, "no open browser session with id "+req.SessionID)
+		return
+	}
+	if errors.Is(err, browser.ErrSessionOwnership) {
+		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	if err != nil {

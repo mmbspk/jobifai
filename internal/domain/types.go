@@ -8,12 +8,11 @@ type Platform string
 const (
 	PlatformLinkedIn Platform = "linkedin"
 	PlatformSeek     Platform = "seek"
-	PlatformIndeed   Platform = "indeed"
 )
 
 // SupportedPlatforms lists every platform the bot can run against.
-// Add new platforms here — the rest of the system picks them up automatically.
-var SupportedPlatforms = []Platform{PlatformLinkedIn, PlatformSeek, PlatformIndeed}
+// Add new platforms here, the rest of the system picks them up automatically.
+var SupportedPlatforms = []Platform{PlatformLinkedIn, PlatformSeek}
 
 // BotState represents the current state of the automation bot.
 type BotState string
@@ -21,6 +20,7 @@ type BotState string
 const (
 	BotStateIdle          BotState = "idle"
 	BotStateRunning       BotState = "running"
+	BotStatePaused        BotState = "paused"
 	BotStatePendingReview BotState = "pending_review"
 	BotStateStopped       BotState = "stopped"
 	BotStateError         BotState = "error"
@@ -62,8 +62,8 @@ type AppliedJob struct {
 
 // HalalVerdict holds the result of an Islamic employment ethics evaluation.
 type HalalVerdict struct {
-	Verdict     string   `json:"verdict"`      // "HALAL" | "HARAM" | "DOUBTFUL"
-	Confidence  string   `json:"confidence"`   // "HIGH" | "MEDIUM" | "LOW"
+	Verdict     string   `json:"verdict"`    // "HALAL" | "HARAM" | "DOUBTFUL"
+	Confidence  string   `json:"confidence"` // "HIGH" | "MEDIUM" | "LOW"
 	Summary     string   `json:"summary"`
 	Reasons     []string `json:"reasons"`
 	Caveats     *string  `json:"caveats"`
@@ -220,7 +220,7 @@ type Language struct {
 // These are used by the form-filler before falling back to LLM.
 type ApplicationDefaults struct {
 	RequiresSponsorship bool   `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
-	NoticePeriod        string `json:"notice_period,omitempty" yaml:"notice_period,omitempty"`         // e.g. "2 weeks", "1 month", "Immediately"
+	NoticePeriod        string `json:"notice_period,omitempty" yaml:"notice_period,omitempty"`           // e.g. "2 weeks", "1 month", "Immediately"
 	SalaryExpectation   string `json:"salary_expectation,omitempty" yaml:"salary_expectation,omitempty"` // e.g. "90000" or "90,000 AUD"
 }
 
@@ -234,21 +234,29 @@ type ResumeProfile struct {
 	Presentations       []Presentation      `json:"presentations,omitempty" yaml:"presentations,omitempty"`
 	Grants              []Grant             `json:"grants,omitempty" yaml:"grants,omitempty"`
 	Languages           []Language          `json:"languages,omitempty" yaml:"languages,omitempty"`
-	Skills                []string            `json:"skills,omitempty" yaml:"skills,omitempty"`
-	Interests             []string            `json:"interests,omitempty" yaml:"interests,omitempty"`
-	Summary               string              `json:"summary,omitempty" yaml:"summary,omitempty"`
-	ApplicationDefaults   ApplicationDefaults `json:"application_defaults,omitempty" yaml:"application_defaults,omitempty"`
-	PromptInstructions    string              `json:"prompt_instructions,omitempty" yaml:"prompt_instructions,omitempty"`
+	Skills              []string            `json:"skills,omitempty" yaml:"skills,omitempty"`
+	Interests           []string            `json:"interests,omitempty" yaml:"interests,omitempty"`
+	Summary             string              `json:"summary,omitempty" yaml:"summary,omitempty"`
+	ApplicationDefaults ApplicationDefaults `json:"application_defaults,omitempty" yaml:"application_defaults,omitempty"`
+	PromptInstructions  string              `json:"prompt_instructions,omitempty" yaml:"prompt_instructions,omitempty"`
 }
 
 // ─── Settings ──────────────────────────────────────────────────────────────
 
+// TaskModel overrides the model and token limit for a specific LLM task.
+// Keys: "scoring", "halal", "tailoring", "cover_letter", "form_filling".
+type TaskModel struct {
+	Model     string `json:"model,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
 type LLMConfig struct {
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	UseProxy  bool   `json:"use_proxy"`
-	ProxyURL  string `json:"proxy_url,omitempty"`
-	MaxTokens int    `json:"max_tokens,omitempty"` // 0 = use model default (8192 for Claude)
+	Provider   string               `json:"provider"`
+	Model      string               `json:"model"`
+	UseProxy   bool                 `json:"use_proxy"`
+	ProxyURL   string               `json:"proxy_url,omitempty"`
+	MaxTokens  int                  `json:"max_tokens,omitempty"` // 0 = use model default (8192 for Claude)
+	TaskModels map[string]TaskModel `json:"task_models,omitempty"`
 }
 
 type BrowserConfig struct {
@@ -273,24 +281,39 @@ type HumanBehaviorConfig struct {
 }
 
 type GeneralSettings struct {
-	LLM                 LLMConfig           `json:"llm,omitempty"`
-	Browser             BrowserConfig       `json:"browser,omitempty"`
-	HumanBehavior       HumanBehaviorConfig `json:"human_behavior,omitempty"`
-	DefaultResumeMarket string              `json:"default_resume_market,omitempty"`
-	RequireReview       bool                `json:"require_review_before_submit,omitempty"`
-	JobSuitabilityScore int                 `json:"job_suitability_score,omitempty"`
-	MaxJobsPerKeyword   int                 `json:"max_jobs_per_keyword,omitempty"`
-	HalalJobFilter      bool                `json:"halal_job_filter,omitempty"`
+	LLM                        LLMConfig           `json:"llm,omitempty"`
+	Browser                    BrowserConfig       `json:"browser,omitempty"`
+	HumanBehavior              HumanBehaviorConfig `json:"human_behavior,omitempty"`
+	DefaultResumeMarket        string              `json:"default_resume_market,omitempty"`
+	RequireReview              bool                `json:"require_review_before_submit,omitempty"`
+	JobSuitabilityScore        int                 `json:"job_suitability_score,omitempty"`
+	MaxJobsPerKeyword          int                 `json:"max_jobs_per_keyword,omitempty"`
+	HalalJobFilter             bool                `json:"halal_job_filter,omitempty"`
+	GenerateNewResumeDocs      bool                `json:"generate_new_resume_docs,omitempty"`
+	InterviewQuestionsEnabled  bool                `json:"interview_questions_enabled,omitempty"`
+}
+
+// AnswerQuestionsRequest is the payload for POST /api/resume/answer-questions.
+type AnswerQuestionsRequest struct {
+	JobURL      string   `json:"job_url"`
+	JobDesc     string   `json:"job_description"`
+	Questions   []string `json:"questions"`
+}
+
+// QuestionAnswer holds a single question and its LLM-generated answer.
+type QuestionAnswer struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
 }
 
 type ExperienceLevelConfig struct {
-	Internship    bool `json:"internship,omitempty"`
-	Entry         bool `json:"entry,omitempty"`
-	Associate     bool `json:"associate,omitempty"`
-	MidSenior     bool `json:"mid_senior_level,omitempty"`
-	Senior        bool `json:"senior,omitempty"`
-	Director      bool `json:"director,omitempty"`
-	Executive     bool `json:"executive,omitempty"`
+	Internship bool `json:"internship,omitempty"`
+	Entry      bool `json:"entry,omitempty"`
+	Associate  bool `json:"associate,omitempty"`
+	MidSenior  bool `json:"mid_senior_level,omitempty"`
+	Senior     bool `json:"senior,omitempty"`
+	Director   bool `json:"director,omitempty"`
+	Executive  bool `json:"executive,omitempty"`
 }
 
 type JobTypeConfig struct {
@@ -304,10 +327,10 @@ type JobTypeConfig struct {
 }
 
 type DateFilterConfig struct {
-	AllTime  bool `json:"all_time,omitempty"`
-	Month    bool `json:"month,omitempty"`
-	Week     bool `json:"week,omitempty"`
-	Hours24  bool `json:"hours_24,omitempty"`
+	AllTime bool `json:"all_time,omitempty"`
+	Month   bool `json:"month,omitempty"`
+	Week    bool `json:"week,omitempty"`
+	Hours24 bool `json:"hours_24,omitempty"`
 }
 
 type WorkPreferences struct {
@@ -342,4 +365,12 @@ type ResumeMarket struct {
 	Name     string `json:"name"`
 	YAMLFile string `json:"yaml_file"`
 	HasCSS   bool   `json:"has_css"`
+}
+
+// SessionUsage holds LLM token usage accumulated during the current server session.
+type SessionUsage struct {
+	InputTokens      int64    `json:"input_tokens"`
+	OutputTokens     int64    `json:"output_tokens"`
+	Calls            int      `json:"calls"`
+	EstimatedCostUSD *float64 `json:"estimated_cost_usd"`
 }

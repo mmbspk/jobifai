@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/domain"
@@ -15,10 +16,12 @@ type BotHandlers struct{ svc *Services }
 
 func NewBotHandlers(svc *Services) *BotHandlers { return &BotHandlers{svc: svc} }
 
+const msgBotNotInit = "bot not initialised"
+
 // POST /api/bot/start
 func (h *BotHandlers) Start(w http.ResponseWriter, r *http.Request) {
 	if h.svc.Bot == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "bot not initialised"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msgBotNotInit})
 		return
 	}
 	userID := auth.UserIDFromCtx(r.Context())
@@ -39,7 +42,23 @@ func (h *BotHandlers) Start(w http.ResponseWriter, r *http.Request) {
 // POST /api/bot/stop
 func (h *BotHandlers) Stop(w http.ResponseWriter, r *http.Request) {
 	if h.svc.Bot == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "bot not initialised"})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msgBotNotInit})
+		return
+	}
+	userID := auth.UserIDFromCtx(r.Context())
+	status := h.svc.Bot.Status(userID)
+	if status.State != domain.BotStateRunning && status.State != domain.BotStatePaused {
+		notFound(w, "bot is not running")
+		return
+	}
+	h.svc.Bot.Stop(userID)
+	okMsg(w, "stop signal sent")
+}
+
+// POST /api/bot/pause
+func (h *BotHandlers) Pause(w http.ResponseWriter, r *http.Request) {
+	if h.svc.Bot == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msgBotNotInit})
 		return
 	}
 	userID := auth.UserIDFromCtx(r.Context())
@@ -48,8 +67,24 @@ func (h *BotHandlers) Stop(w http.ResponseWriter, r *http.Request) {
 		notFound(w, "bot is not running")
 		return
 	}
-	h.svc.Bot.Stop(userID)
-	okMsg(w, "stop signal sent")
+	h.svc.Bot.Pause(userID)
+	okMsg(w, "pause signal sent")
+}
+
+// POST /api/bot/resume
+func (h *BotHandlers) Resume(w http.ResponseWriter, r *http.Request) {
+	if h.svc.Bot == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msgBotNotInit})
+		return
+	}
+	userID := auth.UserIDFromCtx(r.Context())
+	status := h.svc.Bot.Status(userID)
+	if status.State != domain.BotStatePaused {
+		notFound(w, "bot is not paused")
+		return
+	}
+	h.svc.Bot.Resume(userID)
+	okMsg(w, "resume signal sent")
 }
 
 // GET /api/bot/status
@@ -85,6 +120,7 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 		var createdStr, halalJSON string
 		if err := rows.Scan(&p.JobID, &p.Company, &p.Role, &p.Location, &p.Platform,
 			&p.Link, &p.ResumePath, &p.CoverLetterPath, &p.SuitabilityScore, &p.EasyApply, &halalJSON, &createdStr); err != nil {
+			log.Error().Err(err).Msg("review pending: scan row")
 			continue
 		}
 		p.CreatedAt, _ = parseTime(createdStr)
@@ -95,6 +131,11 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("review pending: row iteration error")
+		http.Error(w, msgQueryError, http.StatusInternalServerError)
+		return
 	}
 	if out == nil {
 		out = []domain.PendingReview{}
@@ -118,8 +159,10 @@ func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = h.svc.DB.ExecContext(r.Context(),
-		"DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?", jobID, userID)
+	if _, err := h.svc.DB.ExecContext(r.Context(),
+		"DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?", jobID, userID); err != nil {
+		log.Error().Err(err).Str("job_id", jobID).Msg("review approve: failed to delete pending review")
+	}
 
 	h.svc.Bot.SubmitNow(userID, req)
 	okMsg(w, "submitting application in background")
@@ -139,15 +182,18 @@ func (h *BotHandlers) ReviewReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = h.svc.DB.ExecContext(r.Context(),
+	if _, err := h.svc.DB.ExecContext(r.Context(),
 		`INSERT OR IGNORE INTO jobs_skipped
 		 (id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,viewed_at)
 		 VALUES(?,?,?,?,?,'',?,'manual_reject',0,'',datetime('now'))`,
 		jobID, userID, platform, company, role, link,
-	)
-	_, _ = h.svc.DB.ExecContext(r.Context(),
-		"DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?", jobID, userID)
+	); err != nil {
+		log.Error().Err(err).Str("job_id", jobID).Msg("review reject: failed to insert skipped job")
+	}
+	if _, err := h.svc.DB.ExecContext(r.Context(),
+		"DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?", jobID, userID); err != nil {
+		log.Error().Err(err).Str("job_id", jobID).Msg("review reject: failed to delete pending review")
+	}
 
-	okMsg(w, "rejected — job will not be reprocessed")
+	okMsg(w, "rejected, job will not be reprocessed")
 }
-

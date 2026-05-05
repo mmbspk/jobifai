@@ -24,9 +24,6 @@ func NewBroadcaster() *Broadcaster {
 // Write implements io.Writer so it can be used as a zerolog output.
 // Each call is expected to be one complete JSON log line.
 func (b *Broadcaster) Write(p []byte) (int, error) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-
 	// Try to parse as JSON map; fall back to raw string.
 	var payload any
 	var msg map[string]any
@@ -36,8 +33,17 @@ func (b *Broadcaster) Write(p []byte) (int, error) {
 		payload = string(p)
 	}
 
-	ctx := context.Background()
+	// Snapshot connected clients under the read lock, then write outside it.
+	// This prevents a slow or stalled WebSocket client from blocking all log writes.
+	b.mu.RLock()
+	conns := make([]*websocket.Conn, 0, len(b.clients))
 	for conn := range b.clients {
+		conns = append(conns, conn)
+	}
+	b.mu.RUnlock()
+
+	ctx := context.Background()
+	for _, conn := range conns {
 		_ = wsjson.Write(ctx, conn, payload)
 	}
 	return len(p), nil

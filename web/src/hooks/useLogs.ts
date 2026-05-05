@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { wsUrl } from '../api/client'
+import { wsUrl, getToken } from '../api/client'
 
 export type LogLevel = 'debug' | 'info' | 'success' | 'warning' | 'error' | 'critical'
 
 export interface LogLine {
+  id: number
   level: LogLevel
   message: string
   time: string
   raw: string
+  llmCall: boolean
 }
 
 const MAX_LINES = 500
 const BATCH_MS = 80
+
+let nextId = 0
 
 function parseLogLine(raw: string): LogLine {
   try {
@@ -21,9 +25,10 @@ function parseLogLine(raw: string): LogLine {
     const base: string = obj.message ?? obj.msg ?? obj.m ?? raw
     const detail: string = obj.error ?? obj.err ?? ''
     const message = detail ? `${base}: ${detail}` : base
-    return { level, message, time, raw }
+    const llmCall: boolean = obj.llm_call === true
+    return { id: nextId++, level, message, time, raw, llmCall }
   } catch {
-    return { level: 'info', message: raw, time: new Date().toISOString(), raw }
+    return { id: nextId++, level: 'info', message: raw, time: new Date().toISOString(), raw, llmCall: false }
   }
 }
 
@@ -57,7 +62,9 @@ const store = {
 
   connect() {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
-    const ws = new WebSocket(wsUrl('/ws/logs'))
+    const token = getToken()
+    const url = token ? `${wsUrl('/ws/logs')}?token=${encodeURIComponent(token)}` : wsUrl('/ws/logs')
+    const ws = new WebSocket(url)
     this.ws = ws
 
     ws.onopen = () => {

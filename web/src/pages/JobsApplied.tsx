@@ -5,6 +5,7 @@ import { PlatformBadge } from '../components/PlatformBadge'
 import { ScorePill } from '../components/ScorePill'
 import { formatDate, relativeTime } from '../lib'
 import { jobsApi } from '../api/jobs'
+import { getToken } from '../api/client'
 
 const PAGE_SIZE = 50
 
@@ -12,7 +13,6 @@ const PLATFORMS: { value: string; label: string }[] = [
   { value: '', label: 'All platforms' },
   { value: 'linkedin', label: 'LinkedIn' },
   { value: 'seek', label: 'Seek' },
-  { value: 'indeed', label: 'Indeed' },
 ]
 
 export function JobsApplied() {
@@ -28,6 +28,7 @@ export function JobsApplied() {
     initialPageParam: 0,
     getNextPageParam: (last, all) =>
       last.length === PAGE_SIZE ? all.flat().length : undefined,
+    staleTime: 60_000,
   })
 
   const deleteMutation = useMutation({
@@ -102,13 +103,13 @@ export function JobsApplied() {
                 <td className="px-4 py-3 align-top">
                   <div className="flex items-center gap-2">
                     {job.resume_path && (
-                      <a href={`/api/files/${job.resume_path.replace(/^job_applications\//, '')}`} target="_blank" rel="noopener noreferrer"
+                      <a href={`/api/files/${job.resume_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`} target="_blank" rel="noopener noreferrer"
                         title="Resume" className="text-[var(--color-text-dim)] hover:text-violet-400">
                         <FileText size={13} />
                       </a>
                     )}
                     {job.cover_letter_path && (
-                      <a href={`/api/files/${job.cover_letter_path.replace(/^job_applications\//, '')}`} target="_blank" rel="noopener noreferrer"
+                      <a href={`/api/files/${job.cover_letter_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`} target="_blank" rel="noopener noreferrer"
                         title="Cover letter" className="text-[var(--color-text-dim)] hover:text-amber-400">
                         <FileText size={13} />
                       </a>

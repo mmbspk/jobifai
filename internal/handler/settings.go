@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,15 +13,13 @@ import (
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
-	resumepkg "github.com/user/jobifai/internal/resume"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	keyGeneralSettings  = "general_settings"
-	keyWorkPreferences  = "work_preferences"
-	keyResumeProfile    = "resume_profile"
-	keyResumeStylesDir  = "resume_style"
+	keyGeneralSettings = "general_settings"
+	keyWorkPreferences = "work_preferences"
+	keyResumeProfile   = "resume_profile"
 )
 
 // SettingsHandlers groups all settings/configuration handlers.
@@ -66,7 +66,7 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 	userID := auth.UserIDFromCtx(r.Context())
 	extractor, _ := h.svc.LLMFactory(userID)
 	if extractor == nil {
-		unprocessable(w, "LLM not configured — set an API key in Settings → Secrets first")
+		unprocessable(w, "LLM not configured, set an API key in Settings → Secrets first")
 		return
 	}
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
@@ -80,7 +80,7 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 	}
 	defer f.Close()
 
-	text, err := resumepkg.TextFromReader(f, fh.Filename)
+	text, err := h.svc.FileToText(f, fh.Filename)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not read file: " + err.Error()})
 		return
@@ -125,9 +125,9 @@ var defaultGeneralSettings = domain.GeneralSettings{
 		UseProxy: false,
 	},
 	Browser: domain.BrowserConfig{
-		ShowBrowser:     true,
+		ShowBrowser:      true,
 		UseChromeProfile: true,
-		RemoteDebugPort: 9222,
+		RemoteDebugPort:  9222,
 	},
 	HumanBehavior: domain.HumanBehaviorConfig{
 		DailyApplicationLimit: 40,
@@ -136,8 +136,9 @@ var defaultGeneralSettings = domain.GeneralSettings{
 		PauseBetweenJobsMin:   5,
 		PauseBetweenJobsMax:   15,
 	},
-	JobSuitabilityScore: 7,
-	MaxJobsPerKeyword:   25,
+	JobSuitabilityScore:       7,
+	MaxJobsPerKeyword:         25,
+	InterviewQuestionsEnabled: true,
 }
 
 // GET /api/settings/general
@@ -212,7 +213,7 @@ func (h *SettingsHandlers) SecretsGet(w http.ResponseWriter, r *http.Request) {
 	if h.svc.Secrets.Has(userID, "proxy_key") {
 		out.ProxyKey = "****"
 	}
-	for _, p := range []domain.Platform{domain.PlatformLinkedIn, domain.PlatformSeek, domain.PlatformIndeed} {
+	for _, p := range []domain.Platform{domain.PlatformLinkedIn, domain.PlatformSeek} {
 		if h.svc.Secrets.Has(userID, "cred:"+string(p)) {
 			out.CredentialPlatforms = append(out.CredentialPlatforms, p)
 		}
@@ -270,9 +271,14 @@ func (h *SettingsHandlers) SecretsSetCredentials(w http.ResponseWriter, r *http.
 
 // GET /api/settings/styles
 func (h *SettingsHandlers) StylesList(w http.ResponseWriter, r *http.Request) {
-	entries, err := os.ReadDir(keyResumeStylesDir)
+	stylesDir := h.svc.StylesDir
+	if stylesDir == "" {
+		writeJSON(w, http.StatusOK, []domain.ResumeStyle{})
+		return
+	}
+	entries, err := os.ReadDir(stylesDir)
 	if err != nil {
-		// dir doesn't exist yet — return empty list
+		// dir doesn't exist yet, return empty list
 		writeJSON(w, http.StatusOK, []domain.ResumeStyle{})
 		return
 	}
@@ -292,7 +298,7 @@ func (h *SettingsHandlers) StylesList(w http.ResponseWriter, r *http.Request) {
 		}
 		styles = append(styles, domain.ResumeStyle{
 			Name:    strings.Join(words, " "),
-			CSSFile: filepath.Join(keyResumeStylesDir, e.Name()),
+			CSSFile: filepath.Join(stylesDir, e.Name()),
 		})
 	}
 	if styles == nil {
@@ -315,18 +321,85 @@ func (h *SettingsHandlers) MarketsList(w http.ResponseWriter, r *http.Request) {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
 			continue
 		}
-		m, err := resumepkg.LoadMarket(filepath.Join(h.svc.MarketDir, e.Name()))
+		m, err := h.svc.MarketLoader(filepath.Join(h.svc.MarketDir, e.Name()), e.Name())
 		if err != nil {
 			continue
 		}
-		markets = append(markets, domain.ResumeMarket{
-			Name:     m.Name,
-			YAMLFile: filepath.Join(h.svc.MarketDir, e.Name()),
-			HasCSS:   m.CSSFile != "",
-		})
+		markets = append(markets, *m)
 	}
 	if markets == nil {
 		markets = []domain.ResumeMarket{}
 	}
 	writeJSON(w, http.StatusOK, markets)
+}
+
+// ── Location suggest ───────────────────────────────────────────────────────
+
+func (h *SettingsHandlers) LocationSuggest(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	if len(q) < 2 {
+		writeJSON(w, http.StatusOK, []string{})
+		return
+	}
+	results, err := fetchLocationSuggestions(r.Context(), q)
+	if err != nil || len(results) == 0 {
+		writeJSON(w, http.StatusOK, []string{})
+		return
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+func fetchLocationSuggestions(ctx context.Context, q string) ([]string, error) {
+	// fetch=10 so we have room to filter by importance; accept-language=en avoids Arabic-script display names
+	u := "https://nominatim.openstreetmap.org/search?format=json&limit=10&addressdetails=1&featuretype=city&accept-language=en&q=" + url.QueryEscape(q)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "jobifai/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var hits []struct {
+		DisplayName string  `json:"display_name"`
+		Importance  float64 `json:"importance"`
+		Address     struct {
+			City    string `json:"city"`
+			Town    string `json:"town"`
+			Village string `json:"village"`
+			State   string `json:"state"`
+			Country string `json:"country"`
+		} `json:"address"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&hits); err != nil {
+		return nil, err
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	for _, hit := range hits {
+		// Skip low-importance results (small villages, obscure places) — major cities like Adelaide score ~0.7+
+		if hit.Importance < 0.45 {
+			continue
+		}
+		city := hit.Address.City
+		if city == "" {
+			city = hit.Address.Town
+		}
+		if city == "" {
+			city = hit.Address.Village
+		}
+		label := hit.DisplayName
+		if city != "" && hit.Address.State != "" && hit.Address.Country != "" {
+			label = city + ", " + hit.Address.State + ", " + hit.Address.Country
+		}
+		if !seen[label] {
+			seen[label] = true
+			out = append(out, label)
+		}
+	}
+	return out, nil
 }

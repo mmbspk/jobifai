@@ -11,23 +11,23 @@ resume_prompt: |
   - Omit GitHub unless it is directly relevant to the role
   - Professional Summary: 3–5 sentence prose paragraph written in FIRST PERSON ("I am a [job title] with X+ years of experience...")
   - Under 80 words for the summary, no bullet points
-  - Keep the resume compact and scannable, but do not artificially limit pages — include all solid, relevant content
+  - Keep the resume compact and scannable, but do not artificially limit pages, include all solid, relevant content
   - Work experience bullets:
     - Start each bullet with a strong action verb: Led, Built, Designed, Delivered, Migrated, Owned, Shipped, Reduced, Scaled, Mentored
     - Emphasise measurable outcomes: percentages, team sizes, regional scope, scale indicators
     - Maximum 4–6 bullets per current/recent role; 1–2 bullets for older or less relevant roles
-    - Each bullet under 20 words — tight and scannable
-  - Education: no GPA, no grades, no coursework — institution, degree, field, and year only; most recent first
+    - Each bullet under 20 words, tight and scannable
+  - Education: no GPA, no grades, no coursework, institution, degree, field, and year only; most recent first
   - Do NOT include "References available on request" anywhere
   - Do NOT add any inline style attributes to the HTML output
 
-  SKILLS / EXPERTISE SECTION — MANDATORY FORMAT:
+  SKILLS / EXPERTISE SECTION, MANDATORY FORMAT:
   The "skills" field MUST be a list of strings, each in the exact format:
     "Category Label: item1, item2, item3"
   - Infer 5–9 category labels that naturally fit the candidate's field and experience.
     Examples: engineering → "Languages & Frameworks", "Cloud & Infrastructure"; finance → "Financial Modelling", "Regulatory Compliance"; design → "Design Tools", "UX Methods"; healthcare → "Clinical Skills", "Patient Care".
   - Put the most important or distinctive category first.
-  - Do NOT use a fixed list of categories — derive them from the candidate's actual skills and background.
+  - Do NOT use a fixed list of categories, derive them from the candidate's actual skills and background.
   - Each category is a single flat string. Do NOT use bullet sub-lists.
   - Keep each category string to 8 items or fewer.
   - If the candidate lists spoken languages, include them as the last category: "Languages: English (Fluent), ..."
@@ -39,25 +39,25 @@ tailored_prompt: |
   - No photo, no date of birth, no gender, no marital status
   - Contact: email and LinkedIn only
   - Professional Summary: 3–5 sentences, first person, highlight the 2–3 skills the job description emphasises most, under 80 words
-  - Keep the resume compact and scannable, but do not artificially limit pages — include all solid, relevant content
+  - Keep the resume compact and scannable, but do not artificially limit pages, include all solid, relevant content
 
   TAILORING RULES:
   - Optionally align the job title wording to the target role if it accurately reflects the candidate's experience
   - Mirror the job description's language and priorities where accurately applicable
   - Reorder skill categories so the most job-relevant appear first
-  - Reframe actual experience to align with the role — do NOT fabricate experience
+  - Reframe actual experience to align with the role, do NOT fabricate experience
   - Prioritise projects and certifications by relevance to the job description
   - Work experience: max 4–6 bullets per recent role, 1–2 for older; each under 20 words; quantify impact
   - Do NOT include "References available on request"
   - Do NOT add any inline style attributes
 
-  SKILLS / EXPERTISE SECTION — MANDATORY FORMAT:
+  SKILLS / EXPERTISE SECTION, MANDATORY FORMAT:
   The "skills" field MUST be a list of strings, each in the exact format:
     "Category Label: item1, item2, item3"
   - Infer 5–9 category labels that naturally fit the candidate's field and experience.
     Examples: engineering → "Languages & Frameworks", "Cloud & Infrastructure"; finance → "Financial Modelling", "Regulatory Compliance"; design → "Design Tools", "UX Methods"; healthcare → "Clinical Skills", "Patient Care".
   - Reorder categories so the most job-relevant appear first.
-  - Do NOT use a fixed list of categories — derive them from the candidate's actual skills and background.
+  - Do NOT use a fixed list of categories, derive them from the candidate's actual skills and background.
   - Each category is a single flat string. Do NOT use bullet sub-lists.
   - Keep each category string to 8 items or fewer.
   - If the candidate lists spoken languages, include them as the last category: "Languages: English (Fluent), ..."
@@ -71,7 +71,7 @@ cover_letter_prompt: |
     1. Opening: state the role you are applying for and your strongest credential (years + key domain). One sentence hook on why you are a great fit.
     2. Body: 2–3 specific connections between your experience and the job requirements. Use concrete examples with measurable outcomes (team sizes, regions, scale, percentages).
     3. Closing: express genuine interest in the company/team, state availability for an interview, end with "Kind regards, [Name]"
-  - Tone: professional but direct — Australian employers dislike over-the-top flattery
+  - Tone: professional but direct, Australian employers dislike over-the-top flattery
   - Length: 250–350 words maximum, no filler sentences
-  - Do NOT include postal addresses or date lines — this is an email-style cover letter
-  - Do NOT repeat the resume verbatim — reframe and connect to this specific role
+  - Do NOT include postal addresses or date lines, this is an email-style cover letter
+  - Do NOT repeat the resume verbatim, reframe and connect to this specific role

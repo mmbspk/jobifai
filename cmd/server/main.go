@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -28,6 +27,10 @@ func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	dbPath := flag.String("db", "data/jobifai.db", "SQLite database path")
 	flag.Parse()
+
+	// Lifetime context cancelled on graceful shutdown; passed to long-running goroutines.
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	defer shutdownCancel()
 
 	// ── Logger + WebSocket broadcaster ──────────────────────────────────
 	logBroadcaster := jobws.NewBroadcaster()
@@ -73,7 +76,7 @@ func main() {
 	tokenManager := auth.NewTokenManager(jwtSecret)
 	userStore := auth.NewUserStore(database)
 
-	// ── Google OAuth (optional — requires env vars) ──────────────────────
+	// ── Google OAuth (optional, requires env vars) ──────────────────────
 	var googleHandler handler.GoogleOAuthHandler
 	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
 	googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
@@ -119,10 +122,13 @@ func main() {
 		botRenderer = renderer.(bot.ResumeRenderer)
 	}
 	if llmClient != nil {
-		botScorer = resume.NewScorer(llmClient)
-		botHalalChecker = resume.NewHalalChecker(llmClient)
+		var gs domain.GeneralSettings
+		_ = cfgStore.Get("__default__", "general_settings", &gs)
+		tm := gs.LLM.TaskModels
+		botScorer = resume.NewScorer(taskClient(llmClient, tm, "scoring"))
+		botHalalChecker = resume.NewHalalChecker(taskClient(llmClient, tm, "halal"))
 	}
-	botMgr := bot.NewManager(database, cfgStore, secretsStore, sessionStore, botTailor, botScorer, botHalalChecker, botRenderer, "resume_markets")
+	botMgr := bot.NewManager(shutdownCtx, database, cfgStore, secretsStore, sessionStore, botTailor, botScorer, botHalalChecker, botRenderer, "resume_markets")
 
 	// ── Usage tracking ───────────────────────────────────────────────────
 	usageStore := llm.NewUserUsageStore()
@@ -140,6 +146,38 @@ func main() {
 		Logs:         logBroadcaster,
 		Bot:          botMgr,
 		MarketDir:    "resume_markets",
+		StylesDir:    "resume_style",
+		FileToText:   resume.TextFromReader,
+		FetchJobPage: resume.FetchJobPage,
+		MarketLoader: func(path, yamlFile string) (*domain.ResumeMarket, error) {
+			m, err := resume.LoadMarket(path)
+			if err != nil {
+				return nil, err
+			}
+			return &domain.ResumeMarket{Name: m.Name, YAMLFile: yamlFile, HasCSS: m.CSSFile != ""}, nil
+		},
+		MarketPrefixLookup: func(marketDir, name, section string) string {
+			m := resume.LoadMarketByName(marketDir, name)
+			if m == nil {
+				return ""
+			}
+			switch section {
+			case "resume":
+				return m.ResumePrompt
+			case "tailored":
+				return m.TailoredPrompt
+			case "cover":
+				return m.CoverLetterPrompt
+			}
+			return ""
+		},
+		MarketCSSFileLookup: func(marketDir, name string) string {
+			m := resume.LoadMarketByName(marketDir, name)
+			if m == nil {
+				return ""
+			}
+			return m.CSSFile
+		},
 		Users:        userStore,
 		TokenManager: tokenManager,
 		Google:       googleHandler,
@@ -153,14 +191,27 @@ func main() {
 			if client == nil {
 				return nil
 			}
-			return resume.NewScorer(client)
+			var gs domain.GeneralSettings
+			_ = cfgStore.Get(userID, "general_settings", &gs)
+			return resume.NewScorer(taskClient(client, gs.LLM.TaskModels, "scoring"))
 		},
 		HalalCheckerFactory: func(userID string) handler.JobHalalChecker {
 			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID))
 			if client == nil {
 				return nil
 			}
-			return resume.NewHalalChecker(client)
+			var gs domain.GeneralSettings
+			_ = cfgStore.Get(userID, "general_settings", &gs)
+			return resume.NewHalalChecker(taskClient(client, gs.LLM.TaskModels, "halal"))
+		},
+		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID))
+			if client == nil {
+				return nil
+			}
+			var gs domain.GeneralSettings
+			_ = cfgStore.Get(userID, "general_settings", &gs)
+			return resume.NewQuestionAnswerer(taskClient(client, gs.LLM.TaskModels, "questions"))
 		},
 	}
 	router := handler.NewRouter(svc)
@@ -186,8 +237,9 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	fmt.Println()
+	log.Info().Msg("")
 	log.Info().Msg("shutting down...")
+	shutdownCancel() // signal background goroutines (e.g. SubmitNow) to stop
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
@@ -229,5 +281,20 @@ func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.Secrets
 	if tracker != nil {
 		client = client.WithTracker(tracker)
 	}
-	return resume.NewExtractor(client), resume.NewTailor(client), renderer, client
+	tm := gs.LLM.TaskModels
+	tailor := resume.NewTailor(
+		taskClient(client, tm, "tailoring"),
+		taskClient(client, tm, "cover_letter"),
+		taskClient(client, tm, "form_filling"),
+	)
+	return resume.NewExtractor(client), tailor, renderer, client
+}
+
+// taskClient returns a client with model/token overrides for the given task key,
+// or the base client if no override is configured.
+func taskClient(base *llm.Client, tm map[string]domain.TaskModel, task string) *llm.Client {
+	if m, ok := tm[task]; ok && m.Model != "" {
+		return base.WithModel(m.Model, m.MaxTokens)
+	}
+	return base
 }

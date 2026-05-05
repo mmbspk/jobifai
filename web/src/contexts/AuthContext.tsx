@@ -51,10 +51,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // On mount: restore session from OAuth redirect params or localStorage.
   useEffect(() => {
-    // Check for Google OAuth redirect tokens first to avoid a race where
-    // loading becomes false before the URL params are consumed, causing
-    // PrivateRoute to redirect to /login prematurely.
-    const params = new URLSearchParams(window.location.search)
+    // Check for Google OAuth redirect tokens in the URL fragment (#) — never
+    // in query string, which would be logged by servers and leak into history.
+    const params = new URLSearchParams(window.location.hash.slice(1))
     const oauthAt = params.get('access_token')
     const oauthRt = params.get('refresh_token')
     if (oauthAt && oauthRt) {

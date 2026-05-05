@@ -6,6 +6,7 @@ import { ScorePill } from '../components/ScorePill'
 import { cn, relativeTime, formatDate } from '../lib'
 import { botApi } from '../api/bot'
 import { settingsApi } from '../api/settings'
+import { getToken } from '../api/client'
 import type { PendingReview } from '../types'
 
 function ReviewCard({ review, halalEnabled, onApprove, onReject }: {
@@ -45,7 +46,7 @@ function ReviewCard({ review, halalEnabled, onApprove, onReject }: {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  })
+  }, [onApprove, onReject])
 
   function triggerApprove() {
     setDismissed(true)
@@ -107,7 +108,7 @@ function ReviewCard({ review, halalEnabled, onApprove, onReject }: {
         <div className="flex gap-3 mb-4">
           {review.resume_path && (
             <a
-              href={`/api/files/${review.resume_path.replace(/^job_applications\//, '')}`}
+              href={`/api/files/${review.resume_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300"
@@ -118,7 +119,7 @@ function ReviewCard({ review, halalEnabled, onApprove, onReject }: {
           )}
           {review.cover_letter_path && (
             <a
-              href={`/api/files/${review.cover_letter_path.replace(/^job_applications\//, '')}`}
+              href={`/api/files/${review.cover_letter_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300"

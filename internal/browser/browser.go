@@ -19,8 +19,7 @@ import (
 // PlatformURL is the login page opened for each platform.
 var PlatformURL = map[string]string{
 	"linkedin": "https://www.linkedin.com/login",
-	"seek":     "https://www.seek.com.au/login",
-	"indeed":   "https://secure.indeed.com/account/login",
+	"seek":     "https://au.seek.com/login",
 }
 
 // Cookie is a serialisable browser cookie.
@@ -36,10 +35,11 @@ type Cookie struct {
 
 // Session represents an open browser window awaiting cookie capture.
 type Session struct {
-	ID          string
-	Platform    string
-	Browser     *rod.Browser
-	CreatedAt   time.Time
+	ID        string
+	Platform  string
+	UserID    string
+	Browser   *rod.Browser
+	CreatedAt time.Time
 }
 
 // Manager keeps track of open browser sessions (one per API call).
@@ -58,10 +58,13 @@ var ErrAlreadyOpen = errors.New("browser: a session is already open for this pla
 // ErrNotFound is returned when the session ID is unknown.
 var ErrNotFound = errors.New("browser: session not found")
 
+// ErrSessionOwnership is returned when a session belongs to a different user.
+var ErrSessionOwnership = errors.New("browser: session belongs to a different user")
+
 // Launch opens a visible (non-headless) Chrome window navigated to the
 // platform's login page. Returns a session ID the caller must pass to
 // CaptureCookies later.
-func (m *Manager) Launch(platform, profilePath string, useProfile bool) (*Session, error) {
+func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -101,6 +104,7 @@ func (m *Manager) Launch(platform, profilePath string, useProfile bool) (*Sessio
 	sess := &Session{
 		ID:        uuid.New().String(),
 		Platform:  platform,
+		UserID:    userID,
 		Browser:   b,
 		CreatedAt: time.Now(),
 	}
@@ -110,12 +114,17 @@ func (m *Manager) Launch(platform, profilePath string, useProfile bool) (*Sessio
 
 // CaptureCookies extracts all cookies from the open browser associated with
 // sessionID, closes that browser, and returns the cookies.
-func (m *Manager) CaptureCookies(ctx context.Context, sessionID string) ([]Cookie, error) {
+// Returns ErrSessionOwnership if the session belongs to a different user.
+func (m *Manager) CaptureCookies(ctx context.Context, userID, sessionID string) ([]Cookie, error) {
 	m.mu.Lock()
 	sess, ok := m.sessions[sessionID]
 	if !ok {
 		m.mu.Unlock()
 		return nil, ErrNotFound
+	}
+	if sess.UserID != userID {
+		m.mu.Unlock()
+		return nil, ErrSessionOwnership
 	}
 	delete(m.sessions, sessionID)
 	m.mu.Unlock()

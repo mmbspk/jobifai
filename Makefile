@@ -20,8 +20,10 @@ web-dev:
 web-build:
 	cd web && npm run build
 
-## run: build frontend + server then start (port 8080)
+## run: build frontend + server then start (port 8080), killing any existing instance first
 run: web-build build
+	@pkill -f '$(BINARY)' 2>/dev/null || true
+	@sleep 0.5
 	$(BINARY)
 
 ## start: run backend + frontend dev server together (Ctrl-C stops both)

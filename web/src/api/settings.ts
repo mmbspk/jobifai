@@ -32,4 +32,7 @@ export const settingsApi = {
   markets: {
     list: () => apiGet<ResumeMarket[]>('/settings/markets'),
   },
+  locations: {
+    suggest: (q: string) => apiGet<string[]>(`/settings/locations/suggest?q=${encodeURIComponent(q)}`),
+  },
 }

@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/rs/zerolog/log"
+	sqlite3 "modernc.org/sqlite"
 )
 
 // User represents a registered application user.
@@ -58,28 +61,32 @@ func (s *UserStore) UpsertGoogle(googleID, email, displayName, avatarURL string)
 	u, err := s.ByGoogleID(googleID)
 	if err == nil {
 		// Update profile fields.
-		_, _ = s.db.Exec(
+		if _, err := s.db.Exec(
 			`UPDATE users SET email=?, display_name=?, avatar_url=?, updated_at=? WHERE id=?`,
 			email, displayName, avatarURL, now, u.ID,
-		)
+		); err != nil {
+			log.Error().Err(err).Str("user_id", u.ID).Msg("upsert google: failed to update existing user")
+		}
 		u.Email = email
 		u.DisplayName = displayName
 		u.AvatarURL = avatarURL
 		return u, nil
 	}
-	// Maybe the user registered by email first — link the Google ID.
+	// Maybe the user registered by email first, link the Google ID.
 	u, err = s.ByEmail(email)
 	if err == nil {
-		_, _ = s.db.Exec(
+		if _, err := s.db.Exec(
 			`UPDATE users SET google_id=?, display_name=?, avatar_url=?, updated_at=? WHERE id=?`,
 			googleID, displayName, avatarURL, now, u.ID,
-		)
+		); err != nil {
+			log.Error().Err(err).Str("user_id", u.ID).Msg("upsert google: failed to link google id")
+		}
 		u.GoogleID = googleID
 		u.DisplayName = displayName
 		u.AvatarURL = avatarURL
 		return u, nil
 	}
-	// New user — create one.
+	// New user, create one.
 	id := newUUID()
 	_, err = s.db.Exec(
 		`INSERT INTO users (id, email, google_id, display_name, avatar_url, created_at, updated_at)
@@ -187,18 +194,7 @@ func hashRefreshToken(raw string) string {
 
 // isUniqueConstraint returns true for SQLite unique constraint violations.
 func isUniqueConstraint(err error) bool {
-	return err != nil && (containsStr(err.Error(), "UNIQUE constraint") || containsStr(err.Error(), "unique"))
-}
-
-func containsStr(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsStrHelper(s, sub))
-}
-
-func containsStrHelper(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
+	// SQLITE_CONSTRAINT_UNIQUE = 2067 (modernc.org/sqlite extended error code)
+	var sqlErr *sqlite3.Error
+	return errors.As(err, &sqlErr) && sqlErr.Code() == 2067
 }

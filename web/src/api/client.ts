@@ -1,4 +1,4 @@
-// Base API client — reads VITE_API_BASE for native/remote builds
+// Base API client, reads VITE_API_BASE for native/remote builds
 const BASE = (import.meta.env.VITE_API_BASE ?? '') + '/api'
 const WS_BASE = (import.meta.env.VITE_WS_BASE ?? (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host)
 
@@ -12,7 +12,7 @@ export class ApiError extends Error {
   }
 }
 
-function getToken(): string | null {
+export function getToken(): string | null {
   return localStorage.getItem('access_token')
 }
 

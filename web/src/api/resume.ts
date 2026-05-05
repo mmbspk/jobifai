@@ -1,6 +1,6 @@
 export { apiPost } from './client'
-import { apiPostForm } from './client'
-import type { HalalVerdict } from '../types'
+import { apiPost, apiPostForm } from './client'
+import type { HalalVerdict, QuestionAnswer } from '../types'
 
 export interface TailoredOptions {
   jobUrl?: string
@@ -54,4 +54,11 @@ export const resumeApi = {
     if (opts.company) form.set('company', opts.company)
     return apiPostForm<HalalVerdict>('/resume/check-halal', form)
   },
+
+  answerQuestions: (opts: { jobUrl?: string; jobDescription?: string; questions: string[] }) =>
+    apiPost<QuestionAnswer[]>('/resume/answer-questions', {
+      job_url: opts.jobUrl ?? '',
+      job_description: opts.jobDescription ?? '',
+      questions: opts.questions,
+    }),
 }

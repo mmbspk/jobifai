@@ -2,12 +2,12 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/oauth2"
@@ -51,7 +51,12 @@ func NewGoogleHandler(
 // Redirect redirects the user to Google's consent page.
 // GET /auth/google
 func (h *GoogleHandler) Redirect(w http.ResponseWriter, r *http.Request) {
-	state := generateState()
+	state, err := generateState()
+	if err != nil {
+		log.Error().Err(err).Msg("oauth: failed to generate state")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	// Store state in a short-lived cookie for CSRF protection.
 	http.SetCookie(w, &http.Cookie{
 		Name:     "oauth_state",
@@ -116,8 +121,8 @@ func (h *GoogleHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redirect to frontend with tokens in fragment (never in query string).
-	redirectURL := fmt.Sprintf("/?access_token=%s&refresh_token=%s", accessToken, refreshToken)
+	// Redirect to frontend with tokens in URL fragment — never in query string.
+	redirectURL := fmt.Sprintf("/#access_token=%s&refresh_token=%s", accessToken, refreshToken)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
@@ -142,7 +147,10 @@ func fetchGoogleProfile(ctx context.Context, cfg *oauth2.Config, token *oauth2.T
 	return &p, nil
 }
 
-func generateState() string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
-	return fmt.Sprintf("%x", h[:8])
+func generateState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto/rand unavailable: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
