@@ -3,20 +3,22 @@ import { useState } from 'react'
 import { Eye, EyeOff, Check, MonitorCheck, Trash2 } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { authApi } from '../../api/auth'
-import { getToken } from '../../api/client'
+import { getToken, apiGet } from '../../api/client'
 import { PlatformBadge } from '../../components/PlatformBadge'
 
 interface MaskedInputProps {
   readonly value: string
   readonly onSave: (v: string) => Promise<void>
+  readonly onDelete?: () => Promise<void>
   readonly label: string
 }
 
-function MaskedInput({ value, onSave, label }: MaskedInputProps) {
+function MaskedInput({ value, onSave, onDelete, label }: MaskedInputProps) {
   const [editing, setEditing] = useState(false)
   const [val, setVal] = useState('')
   const [show, setShow] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   async function save() {
     setSaving(true)
@@ -31,6 +33,13 @@ function MaskedInput({ value, onSave, label }: MaskedInputProps) {
     else if (e.key === 'Escape') { setEditing(false) }
   }
 
+  async function handleDelete() {
+    if (!onDelete) return
+    setDeleting(true)
+    await onDelete()
+    setDeleting(false)
+  }
+
   if (!editing) {
     return (
       <div className="flex items-center gap-3">
@@ -40,6 +49,11 @@ function MaskedInput({ value, onSave, label }: MaskedInputProps) {
         <button onClick={() => setEditing(true)} className="text-xs text-violet-400 hover:text-violet-300">
           {value ? 'Update' : 'Set'}
         </button>
+        {value && onDelete && (
+          <button onClick={handleDelete} disabled={deleting} className="text-xs text-[var(--color-danger)] hover:opacity-80 disabled:opacity-50">
+            {deleting ? '…' : 'Delete'}
+          </button>
+        )}
       </div>
     )
   }
@@ -155,6 +169,13 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sessionError, setSessionError] = useState<string | null>(null)
 
+  const { data: systemInfo } = useQuery({
+    queryKey: ['system-info'],
+    queryFn: () => apiGet<{ vnc_enabled: boolean }>('/system/info'),
+    staleTime: Infinity,
+  })
+  const vncEnabled = systemInfo?.vnc_enabled === true
+
   const { data: session } = useQuery({
     queryKey: ['platform-session', platform],
     queryFn: () => authApi.platformStatus(platform),
@@ -221,7 +242,7 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
               {saveSession.isPending ? 'Saving…' : 'Save session'}
             </button>
           </div>
-          <VNCFrame />
+          {vncEnabled && <VNCFrame />}
         </div>
       )}
 
@@ -247,14 +268,7 @@ export function Secrets() {
               label="API key"
               value={secrets?.llm_api_key ?? ''}
               onSave={v => settingsApi.secrets.setApiKey('llm_api_key', v).then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
-            />
-          </div>
-          <div>
-            <div className="text-sm text-[var(--color-text)] mb-2">Proxy Key <span className="text-xs text-[var(--color-text-dim)]">(optional)</span></div>
-            <MaskedInput
-              label="proxy key"
-              value={secrets?.proxy_key ?? ''}
-              onSave={v => settingsApi.secrets.setApiKey('proxy_key', v).then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
+              onDelete={() => settingsApi.secrets.deleteApiKey().then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
             />
           </div>
         </div>

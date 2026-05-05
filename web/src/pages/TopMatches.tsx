@@ -44,8 +44,7 @@ export function TopMatches() {
     },
   })
 
-  const blacklistMutation = useMutation({
-    mutationFn: jobsApi.blacklistCompany,
+  const blacklistMutation = useMutation({    mutationFn: jobsApi.blacklistCompany,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['jobs-top-matches'] })
       qc.invalidateQueries({ queryKey: ['settings-preferences'] })

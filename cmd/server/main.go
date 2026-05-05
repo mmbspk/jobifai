@@ -21,6 +21,7 @@ import (
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/resume"
 	jobws "github.com/user/jobifai/internal/ws"
+	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
 )
 
 func main() {
@@ -132,6 +133,11 @@ func main() {
 
 	// ── Usage tracking ───────────────────────────────────────────────────
 	usageStore := llm.NewUserUsageStore()
+	usageStore.OnAdd = func(userID string, input, output int64, calls int) {
+		if err := db.IncrementUsage(database, userID, input, output, calls); err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("persist usage")
+		}
+	}
 
 	// ── Router ──────────────────────────────────────────────────────────
 	svc := &handler.Services{

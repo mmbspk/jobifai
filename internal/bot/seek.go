@@ -750,7 +750,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 
 	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
 		log.Error().Err(err).Str("job", job.Title).Msg("seek: apply failed")
-		b.recordSeekSkipped(job, "seek apply: "+err.Error(), 0, "", nil)
+		b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, "", nil)
 		return false
 	}
 	resume, cover := lazy.get()
@@ -759,117 +759,293 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	return true
 }
 
-// seekApply navigates Seek's application form on the given job page.
+// seekApply navigates Seek's Quick Apply multi-step form on the given job page.
 //
 // Flow:
-//  1. Find the apply button and check it's a Seek-hosted form (not external ATS)
-//  2. Click apply → wait for application form to load
-//  3. Upload resume PDF (and cover letter if provided)
-//  4. Submit the form
+//  1. Find the apply button and verify it's a Seek-hosted form (not external ATS)
+//  2. Click apply → wait for the resume/cover-letter step to load
+//  3. Upload resume PDF and cover letter PDF (activating the upload radio first)
+//  4. Click Continue through any additional steps (screening questions etc.)
+//  5. On the review page click Submit and verify the confirmation
 func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) error {
 	if err := page.WaitLoad(); err != nil {
 		return fmt.Errorf("wait load: %w", err)
 	}
+	// Give auth0-spa-js time to complete its silent re-auth via hidden iframe.
+	_ = page.WaitStable(3 * time.Second)
 
-	// Detect redirect to login page — saved session is expired or wrong domain.
-	if info, err := page.Info(); err == nil && isSeekLoginPage(info.URL) {
-		return fmt.Errorf("seek session expired, re-login via Settings → Secrets")
-	}
-
-	// Find the apply button.
-	applyBtn, err := page.Element("[data-automation='job-detail-apply']")
-	if err != nil {
-		// Fallback selectors
-		applyBtn, err = page.Element("a[href*='/apply'], button[data-automation*='apply']")
-		if err != nil {
-			return fmt.Errorf("apply button not found: %w", err)
+	// Save job URL so we can re-navigate back after an auto-login.
+	if info, err := page.Info(); err == nil {
+		if isSeekLoginPage(info.URL) {
+			return fmt.Errorf("seek session expired, re-login via Settings → Secrets")
 		}
 	}
 
-	// Check if this is an external application link (non-automatable).
-	if href, e := applyBtn.Attribute("href"); e == nil && href != nil {
-		h := *href
-		if h != "" && !strings.Contains(h, "seek.com") && strings.HasPrefix(h, "http") {
-			return fmt.Errorf("external application")
-		}
-	}
-
-	if err := applyBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
-		return fmt.Errorf("click apply: %w", err)
+	if err := b.seekClickQuickApply(page); err != nil {
+		return err
 	}
 	log.Info().Msg("seek: Quick Apply button clicked, waiting for form")
 	b.humanPause()
 
-	if err := page.WaitLoad(); err != nil {
+	if onLogin, err := b.seekWaitPastLogin(page); err != nil {
 		return fmt.Errorf("wait form load: %w", err)
+	} else if onLogin {
+		// Auth0 could not silently redirect back — session is genuinely expired.
+		return fmt.Errorf("seek session expired — Quick Apply redirected to login, re-add your Seek session in Settings → Secrets")
 	}
-	_ = page.WaitStable(500 * time.Millisecond)
 
-	// Upload resume and cover letter lazily, generates docs on first call if toggle is on.
+	// Generate docs (lazy — cached, only if the toggle is on).
 	resumePath, coverPath := lazy.get()
 
-	// Upload resume if path is provided.
+	// Upload resume: activate the "Upload a resumé" radio then set file.
 	if resumePath != "" {
-		if err := b.seekUploadFile(page, resumePath, "resume"); err != nil {
-			log.Warn().Err(err).Msg("seek: resume upload failed")
-			// Non-fatal, the user's stored profile resume may be used by default.
+		if err := b.seekUploadResume(page, resumePath); err != nil {
+			log.Warn().Err(err).Msg("seek: resume upload failed, Seek profile resume will be used")
 		}
 	}
 
-	// Upload cover letter if path is provided.
+	// Upload cover letter: activate the "Upload a cover letter" radio then set file.
 	if coverPath != "" {
-		if err := b.seekUploadFile(page, coverPath, "cover"); err != nil {
+		if err := b.seekUploadCoverLetter(page, coverPath); err != nil {
 			log.Warn().Err(err).Msg("seek: cover letter upload failed, continuing without it")
 		}
 	}
 
 	b.humanPause()
 
-	// Fill any unanswered form questions before submitting.
-	b.fillFormStep(ctx, page, lazy)
+	// Multi-step form: click Continue/Next until we reach and complete the review page.
+	for step := 0; step < 10; step++ {
+		// Fill any screening questions visible on the current page.
+		b.fillFormStep(ctx, page, lazy)
+		b.humanPause()
 
-	// Submit the application.
-	submitBtn, err := page.Element("[data-automation='review-submit-button']")
-	if err != nil {
-		submitBtn, err = page.Element("button[type='submit']")
-		if err != nil {
-			return fmt.Errorf("submit button not found: %w", err)
+		// Find the action button for this step — either the submit button on the
+		// final review page, or a Continue/Next button on intermediate steps.
+		actionBtn, isSubmit := b.seekFindActionButton(page)
+		if actionBtn == nil {
+			// Save a debug snapshot to help diagnose what's on the page.
+			if shot, err := page.Screenshot(false, nil); err == nil {
+				_ = os.WriteFile("debug_seek_apply_stuck.png", shot, 0o644)
+				log.Warn().Msg("seek: screenshot saved to debug_seek_apply_stuck.png")
+			}
+			return fmt.Errorf("no continue or submit button found at form step %d", step+1)
 		}
-	}
-	if err := submitBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
-		return fmt.Errorf("click submit: %w", err)
-	}
-	log.Info().Msg("seek: submit clicked, verifying confirmation")
-	b.humanPause()
 
-	// Verify success, look for a confirmation element or URL change.
-	if _, err := page.Element("[data-automation='application-success'], [data-automation='confirmation-page']"); err != nil {
-		// Also accept a URL containing "application-confirmation" or "success".
-		info, _ := page.Info()
-		if !strings.Contains(info.URL, "confirm") && !strings.Contains(info.URL, "success") && !strings.Contains(info.URL, "thank") {
+		btnText, _ := actionBtn.Text()
+		btnText = strings.TrimSpace(btnText)
+		if err := actionBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return fmt.Errorf("click %q step %d: %w", btnText, step+1, err)
+		}
+
+		if isSubmit {
+			log.Info().Msgf("seek: submit clicked (%q), verifying confirmation", btnText)
+			b.humanPause()
+			_ = page.WaitLoad()
+			if _, verr := page.Timeout(5 * time.Second).Element("[data-automation='application-success'], [data-automation='confirmation-page']"); verr == nil {
+				log.Info().Msg("seek: Quick Apply submitted successfully ✓")
+				return nil
+			}
+			if info, _ := page.Info(); strings.Contains(info.URL, "confirm") || strings.Contains(info.URL, "success") || strings.Contains(info.URL, "thank") || strings.Contains(info.URL, "applied") {
+				log.Info().Msg("seek: Quick Apply submitted successfully ✓")
+				return nil
+			}
+			// Check for a visible "application submitted" style heading.
+			if elems, err := page.Elements("[data-automation='application-success-title'], h1, h2"); err == nil {
+				for _, el := range elems {
+					if txt, err := el.Text(); err == nil {
+						lower := strings.ToLower(txt)
+						if strings.Contains(lower, "submitted") || strings.Contains(lower, "applied") || strings.Contains(lower, "success") {
+							log.Info().Msgf("seek: Quick Apply submitted successfully ✓ (heading: %q)", txt)
+							return nil
+						}
+					}
+				}
+			}
 			return fmt.Errorf("could not confirm submission")
 		}
+
+		log.Info().Msgf("seek: form step %d, clicked %q", step+1, btnText)
+		b.humanPause()
+		_ = page.WaitLoad()
+		_ = page.WaitStable(500 * time.Millisecond)
 	}
 
-	log.Info().Msg("seek: Quick Apply submitted successfully ✓")
+	return fmt.Errorf("could not complete Quick Apply: exceeded maximum form steps")
+}
+
+// seekWaitPastLogin waits for the page to load after a Quick Apply click.
+// If the browser lands on a login page, it polls for up to 15 s to see if
+// auth0 silently redirects back (it does when the session is still valid).
+// Returns (true, nil) if still on a login page after the timeout — meaning
+// the session is genuinely expired. Returns (false, nil) on success.
+func (b *Bot) seekWaitPastLogin(page *rod.Page) (onLogin bool, err error) {
+	if err := page.WaitLoad(); err != nil {
+		return false, err
+	}
+	_ = page.WaitStable(2 * time.Second)
+
+	info, err := page.Info()
+	if err != nil || !isSeekLoginPage(info.URL) {
+		return false, nil // landed directly on the form
+	}
+
+	log.Debug().Msgf("seek: post-click URL: %s", info.URL)
+	log.Info().Msg("seek: Quick Apply landed on login page, waiting for auth0 silent redirect (up to 15s)")
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		cur, err := page.Info()
+		if err != nil {
+			continue
+		}
+		if !isSeekLoginPage(cur.URL) {
+			log.Info().Msgf("seek: auth0 silently redirected to form (%s)", cur.URL)
+			_ = page.WaitLoad()
+			_ = page.WaitStable(2 * time.Second)
+			return false, nil
+		}
+	}
+	return true, nil // session expired — no silent redirect happened
+}
+
+// seekClickQuickApply finds the Quick Apply button, checks it's not external,
+// and clicks it. Extracted so seekApply can call it twice (initial + post-login retry).
+func (b *Bot) seekClickQuickApply(page *rod.Page) error {
+	applyBtn, err := page.Element("[data-automation='job-detail-apply']")
+	if err != nil {
+		applyBtn, err = page.Element("a[href*='/apply'], button[data-automation*='apply']")
+		if err != nil {
+			return fmt.Errorf("apply button not found: %w", err)
+		}
+	}
+	if href, e := applyBtn.Attribute("href"); e == nil && href != nil {
+		h := *href
+		if h != "" && !strings.Contains(h, "seek.com") && strings.HasPrefix(h, "http") {
+			return fmt.Errorf("external application")
+		}
+	}
+	if err := applyBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return fmt.Errorf("click apply: %w", err)
+	}
 	return nil
 }
 
-// seekUploadFile finds a file input matching the hint ("resume" or "cover") and uploads the file.
-func (b *Bot) seekUploadFile(page *rod.Page, filePath, hint string) error {
-	// Try specific selectors first, then generic file inputs.
-	selectors := []string{
-		fmt.Sprintf("input[type='file'][name*='%s']", hint),
-		fmt.Sprintf("input[type='file'][id*='%s']", hint),
-		fmt.Sprintf("input[type='file'][accept*='pdf']"),
-		"input[type='file']",
+// seekAutoLogin fills the auth0 login form at login.seek.com using stored
+// credentials. Returns nil once the browser has been redirected back to seek.
+func (b *Bot) seekAutoLogin(page *rod.Page) error {
+	log.Info().Msg("seek: auto-login with stored credentials")
+
+	// Wait for email field (auth0 uses name="username" for the email input).
+	emailInput, err := page.Timeout(10 * time.Second).Element(
+		"input[name='username'], input[type='email'], input[name='email']",
+	)
+	if err != nil {
+		return fmt.Errorf("login form: email input not found: %w", err)
 	}
-	for _, sel := range selectors {
-		if input, err := page.Element(sel); err == nil {
-			return input.SetFiles([]string{filePath})
+	if err := emailInput.SelectAllText(); err != nil {
+		_ = err
+	}
+	if err := emailInput.Input(b.cfg.SeekEmail); err != nil {
+		return fmt.Errorf("fill email: %w", err)
+	}
+	b.humanPause()
+
+	// Try to find password on same screen; if absent, click Continue first.
+	pwdInput, pwdErr := page.Timeout(500 * time.Millisecond).Element("input[type='password']")
+	if pwdErr != nil {
+		if btn, e := page.Element("button[type='submit'], button[data-action='default']"); e == nil {
+			_ = btn.Click(proto.InputMouseButtonLeft, 1)
+		}
+		pwdInput, pwdErr = page.Timeout(10 * time.Second).Element("input[type='password']")
+		if pwdErr != nil {
+			return fmt.Errorf("login form: password input not found")
 		}
 	}
-	return fmt.Errorf("file input not found for %s", hint)
+	if err := pwdInput.Input(b.cfg.SeekPassword); err != nil {
+		return fmt.Errorf("fill password: %w", err)
+	}
+	b.humanPause()
+
+	if btn, e := page.Element("button[type='submit'], button[data-action='default']"); e == nil {
+		_ = btn.Click(proto.InputMouseButtonLeft, 1)
+	}
+
+	_ = page.WaitLoad()
+	_ = page.WaitStable(3 * time.Second)
+	return nil
+}
+
+// seekFindActionButton scans the current Quick Apply page for the next action button.
+// Returns (button, isSubmit): isSubmit=true when it's the final "Submit application"
+// button, false when it's a Continue/Next button.
+// Returns (nil, false) when neither is found.
+func (b *Bot) seekFindActionButton(page *rod.Page) (*rod.Element, bool) {
+	// Check explicit submit selectors first.
+	for _, sel := range []string{
+		"button[data-testid='review-submit-application']",
+		"[data-automation='review-submit-button']",
+		"button[data-testid='review-submit-button']",
+		"button[data-testid='submit-application']",
+	} {
+		if elems, err := page.Elements(sel); err == nil && len(elems) > 0 {
+			return elems[0], true
+		}
+	}
+
+	// Continue/Next button (intermediate steps).
+	if elems, err := page.Elements("button[data-testid='continue-button']"); err == nil && len(elems) > 0 {
+		return elems[0], false
+	}
+
+	// Text-based fallback: scan all visible buttons for submit or continue keywords.
+	if btns, err := page.Elements("button"); err == nil {
+		for _, btn := range btns {
+			txt, err := btn.Text()
+			if err != nil {
+				continue
+			}
+			lower := strings.ToLower(strings.TrimSpace(txt))
+			if strings.Contains(lower, "submit") {
+				return btn, true
+			}
+		}
+		for _, btn := range btns {
+			txt, err := btn.Text()
+			if err != nil {
+				continue
+			}
+			lower := strings.ToLower(strings.TrimSpace(txt))
+			if strings.Contains(lower, "continue") || strings.Contains(lower, "next") {
+				return btn, false
+			}
+		}
+	}
+	return nil, false
+}
+
+// seekUploadResume activates the "Upload a resumé" radio and sets the resume file.
+func (b *Bot) seekUploadResume(page *rod.Page, filePath string) error {
+	if radios, err := page.Elements("input[data-testid='resume-method-upload']"); err == nil && len(radios) > 0 {
+		_ = radios[0].Click(proto.InputMouseButtonLeft, 1)
+		time.Sleep(400 * time.Millisecond)
+	}
+	if inputs, err := page.Elements("[data-testid='resumeFileInput'] input[type='file']"); err == nil && len(inputs) > 0 {
+		return inputs[0].SetFiles([]string{filePath})
+	}
+	return fmt.Errorf("resume file input not found")
+}
+
+// seekUploadCoverLetter activates the "Upload a cover letter" radio and sets the cover letter file.
+func (b *Bot) seekUploadCoverLetter(page *rod.Page, filePath string) error {
+	if radios, err := page.Elements("input[data-testid='coverLetter-method-upload']"); err == nil && len(radios) > 0 {
+		_ = radios[0].Click(proto.InputMouseButtonLeft, 1)
+		time.Sleep(400 * time.Millisecond)
+	}
+	if inputs, err := page.Elements("[data-testid='coverLetterFileInput'] input[type='file']"); err == nil && len(inputs) > 0 {
+		return inputs[0].SetFiles([]string{filePath})
+	}
+	return fmt.Errorf("cover letter file input not found")
 }
 
 // ── DB helpers (Seek-specific wrappers) ───────────────────────────────────

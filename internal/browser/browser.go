@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 // PlatformURL is the login page opened for each platform.
 var PlatformURL = map[string]string{
 	"linkedin": "https://www.linkedin.com/login",
-	"seek":     "https://au.seek.com/login",
+	"seek":     "https://au.seek.com",
 }
 
 // Cookie is a serialisable browser cookie.
@@ -31,6 +32,7 @@ type Cookie struct {
 	Expires  float64 `json:"expires"`
 	HTTPOnly bool    `json:"http_only"`
 	Secure   bool    `json:"secure"`
+	SameSite string  `json:"same_site"`
 }
 
 // Session represents an open browser window awaiting cookie capture.
@@ -139,31 +141,26 @@ func (m *Manager) CaptureCookies(ctx context.Context, userID, sessionID string) 
 		return nil, fmt.Errorf("browser: no pages open")
 	}
 
-	// Collect cookies from all open pages
-	seen := map[string]bool{}
-	var out []Cookie
+	// NetworkGetAllCookies returns every cookie in the browser regardless of domain,
+	// including subdomains (id.seek.com, api.seek.com, etc.) that page.Cookies(nil)
+	// would miss since that only returns cookies matching the current page URL.
+	result, err := proto.NetworkGetAllCookies{}.Call(pages[0])
+	if err != nil {
+		return nil, fmt.Errorf("browser: get all cookies: %w", err)
+	}
 
-	for _, page := range pages {
-		raw, err := page.Cookies(nil)
-		if err != nil {
-			continue
-		}
-		for _, c := range raw {
-			key := c.Name + "|" + c.Domain
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			out = append(out, Cookie{
-				Name:     c.Name,
-				Value:    c.Value,
-				Domain:   string(c.Domain),
-				Path:     c.Path,
-				Expires:  float64(c.Expires),
-				HTTPOnly: c.HTTPOnly,
-				Secure:   bool(c.Secure),
-			})
-		}
+	var out []Cookie
+	for _, c := range result.Cookies {
+		out = append(out, Cookie{
+			Name:     c.Name,
+			Value:    c.Value,
+			Domain:   string(c.Domain),
+			Path:     c.Path,
+			Expires:  float64(c.Expires),
+			HTTPOnly: c.HTTPOnly,
+			Secure:   bool(c.Secure),
+			SameSite: string(c.SameSite),
+		})
 	}
 	return out, nil
 }
@@ -184,18 +181,27 @@ func UnmarshalCookies(data []byte) ([]Cookie, error) {
 
 // ToCookieParams converts our Cookie type to go-rod's SetCookiesParams so
 // the bot can inject them into a new browser session.
+// Seek migrated from seek.com.au to seek.com — rewrite legacy domains so
+// old saved sessions still work on the new domain.
 func ToCookieParams(cookies []Cookie) []*proto.NetworkCookieParam {
 	out := make([]*proto.NetworkCookieParam, 0, len(cookies))
 	for i := range cookies {
 		c := &cookies[i]
-		out = append(out, &proto.NetworkCookieParam{
+		domain := c.Domain
+		if strings.Contains(domain, "seek.com.au") {
+			domain = strings.ReplaceAll(domain, "seek.com.au", "seek.com")
+		}
+		p := &proto.NetworkCookieParam{
 			Name:     c.Name,
 			Value:    c.Value,
-			Domain:   c.Domain,
+			Domain:   domain,
 			Path:     c.Path,
 			HTTPOnly: c.HTTPOnly,
 			Secure:   c.Secure,
-		})
+			Expires:  proto.TimeSinceEpoch(c.Expires),
+			SameSite: proto.NetworkCookieSameSite(c.SameSite),
+		}
+		out = append(out, p)
 	}
 	return out
 }

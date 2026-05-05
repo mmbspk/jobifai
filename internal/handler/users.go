@@ -181,6 +181,7 @@ func (h *UserHandlers) Me(w http.ResponseWriter, r *http.Request) {
 		"avatar_url":   user.AvatarURL,
 		"has_password": user.PasswordHash != "",
 		"has_google":   user.GoogleID != "",
+		"is_admin":     user.IsAdmin,
 	})
 }
 

@@ -113,6 +113,9 @@ type Config struct {
 	RequireReview bool
 	MarketDir     string // path to resume_markets/ directory
 	LLMTracker    *llm.UsageTracker // optional; tracks per-job token usage for success log
+	SeekEmail     string            // stored credentials for auto-login on session expiry
+	SeekPassword  string
+	Sessions      *browser.SessionStore // if set, updated with fresh cookies after each auth
 }
 
 // SubmitRequest bundles the fields needed to submit a single approved job.
@@ -411,12 +414,46 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	}
 	homeURL := "https://www.linkedin.com"
 	if b.cfg.Platform == domain.PlatformSeek {
-		homeURL = "https://au.seek.com"
+		homeURL = "https://au.seek.com/jobs"
 	}
 	if err := page.Navigate(homeURL); err != nil {
 		br.Close()
 		return nil, nil, fmt.Errorf("navigate %s: %w", b.cfg.Platform, err)
 	}
+	// Wait for the page to fully load and for Auth0 silent re-auth to complete.
+	// Seek uses Auth0 SPA which refreshes the access token via a hidden iframe on
+	// first load — navigating away before this finishes leaves the session without
+	// an access token and Quick Apply redirects to login.
+	_ = page.WaitLoad()
+	_ = page.WaitStable(2 * time.Second)
+
+	// After auth0 completes silent re-auth, the browser's cookie jar contains
+	// fresh rotated tokens. Save them back so the next browser launch starts
+	// with valid tokens instead of the original (now-rotated/invalid) ones.
+	if b.cfg.Sessions != nil && b.cfg.Platform == domain.PlatformSeek {
+		result, cookieErr := proto.NetworkGetAllCookies{}.Call(page)
+		if cookieErr == nil {
+			var fresh []browser.Cookie
+			for _, c := range result.Cookies {
+				fresh = append(fresh, browser.Cookie{
+					Name:     c.Name,
+					Value:    c.Value,
+					Domain:   string(c.Domain),
+					Path:     c.Path,
+					Expires:  float64(c.Expires),
+					HTTPOnly: c.HTTPOnly,
+					Secure:   bool(c.Secure),
+					SameSite: string(c.SameSite),
+				})
+			}
+			if err := b.cfg.Sessions.Save(b.cfg.UserID, string(b.cfg.Platform), "session", fresh); err != nil {
+				log.Warn().Err(err).Msg("browser: failed to refresh session cookies")
+			} else {
+				log.Debug().Msg("browser: session cookies refreshed after auth0 re-auth")
+			}
+		}
+	}
+
 	return br, page, nil
 }
 
@@ -999,7 +1036,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			return true
 		}
 		log.Error().Err(err).Str("job", job.Title).Msg("linkedin: easy apply failed")
-		b.recordSkipped(job, "easy apply: "+err.Error(), 0, "", nil)
+		b.recordSkipped(job, "easy apply: "+err.Error(), score, "", nil)
 		return false
 	}
 	resume, cover := lazy.get()

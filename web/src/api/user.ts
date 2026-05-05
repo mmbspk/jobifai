@@ -25,6 +25,7 @@ export interface Me {
   avatar_url: string
   has_password: boolean
   has_google: boolean
+  is_admin?: boolean
 }
 
 export const userApi = {

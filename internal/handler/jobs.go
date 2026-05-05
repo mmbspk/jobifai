@@ -101,7 +101,7 @@ func (h *JobHandlers) Skipped(w http.ResponseWriter, r *http.Request) {
 	q := `SELECT id,platform,company,role,COALESCE(location,''),link,skip_reason,
 	             COALESCE(suitability_score,0),COALESCE(suitability_reasoning,''),halal_verdict,viewed_at
 	      FROM jobs_skipped
-	      WHERE user_id = ? AND skip_reason NOT LIKE 'easy apply:%' AND skip_reason NOT LIKE 'seek apply:%'`
+	      WHERE user_id = ? AND skip_reason NOT LIKE 'easy apply:%' AND skip_reason NOT LIKE 'seek apply:%' AND skip_reason NOT LIKE 'quick apply:%'`
 	args := []any{userID}
 	if reason != "" {
 		q += " AND skip_reason LIKE ?"
@@ -157,7 +157,7 @@ func (h *JobHandlers) CannotApply(w http.ResponseWriter, r *http.Request) {
 	q := `SELECT id,platform,company,role,COALESCE(location,''),link,skip_reason,
 	             COALESCE(suitability_score,0),COALESCE(suitability_reasoning,''),halal_verdict,viewed_at
 	      FROM jobs_skipped
-	      WHERE user_id = ? AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%')`
+	      WHERE user_id = ? AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`
 	args := []any{userID}
 	if platform != "" {
 		q += " AND platform = ?"
@@ -213,7 +213,7 @@ func (h *JobHandlers) RequeueCannotApply(w http.ResponseWriter, r *http.Request)
 	err := h.svc.DB.QueryRowContext(r.Context(),
 		`SELECT company, role, platform, link, COALESCE(location,''), COALESCE(suitability_score, 0)
 		 FROM jobs_skipped
-		 WHERE id = ? AND user_id = ? AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%')`,
+		 WHERE id = ? AND user_id = ? AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`,
 		jobID, userID).Scan(&company, &role, &platform, &link, &location, &score)
 	if err != nil {
 		notFound(w, "job not found in cannot-apply list")

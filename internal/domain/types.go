@@ -352,7 +352,6 @@ type WorkPreferences struct {
 
 type SecretsConfig struct {
 	LLMAPIKey           string     `json:"llm_api_key,omitempty"`
-	ProxyKey            string     `json:"proxy_key,omitempty"`
 	CredentialPlatforms []Platform `json:"credential_platforms,omitempty"`
 }
 

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { Check, X, FileText } from 'lucide-react'
+import { Check, X, FileText, ChevronDown } from 'lucide-react'
 import { PlatformBadge } from '../components/PlatformBadge'
 import { ScorePill } from '../components/ScorePill'
 import { cn, relativeTime, formatDate } from '../lib'
@@ -19,6 +19,7 @@ function ReviewCard({ review, halalEnabled, onApprove, onReject }: {
   const touchStartX = useRef<number | null>(null)
   const [swipeDir, setSwipeDir] = useState<'approve' | 'reject' | null>(null)
   const [dismissed, setDismissed] = useState(false)
+  const [halalExpanded, setHalalExpanded] = useState(false)
 
   // Touch swipe handlers
   function onTouchStart(e: React.TouchEvent) {
@@ -93,14 +94,22 @@ function ReviewCard({ review, halalEnabled, onApprove, onReject }: {
       <div className="text-xs text-[var(--color-text-dim)] mb-4" title={formatDate(review.created_at)}>{relativeTime(review.created_at)}</div>
 
       {isDoubtful && review.halal_verdict && (
-        <div className="mb-4 space-y-1">
-          <p className="text-xs font-medium text-orange-300/80">
+        <div className="mb-4">
+          <button
+            onClick={() => setHalalExpanded(v => !v)}
+            className="flex items-center gap-1.5 text-xs font-medium text-orange-300/80 hover:text-orange-300 transition-colors w-full text-left"
+          >
+            <ChevronDown size={12} className={cn('shrink-0 transition-transform', halalExpanded && 'rotate-180')} />
             Islamic ethics: DOUBTFUL ({review.halal_verdict.confidence} confidence)
-          </p>
-          <p className="text-xs text-[var(--color-text-muted)]">{review.halal_verdict.summary}</p>
-          {review.halal_verdict.reasons.map(r => (
-            <p key={r} className="text-xs text-[var(--color-text-dim)]">· {r}</p>
-          ))}
+          </button>
+          {halalExpanded && (
+            <div className="mt-2 pl-4 space-y-1">
+              <p className="text-xs text-[var(--color-text-muted)]">{review.halal_verdict.summary}</p>
+              {review.halal_verdict.reasons.map(r => (
+                <p key={r} className="text-xs text-[var(--color-text-dim)]">· {r}</p>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

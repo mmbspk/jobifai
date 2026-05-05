@@ -210,9 +210,6 @@ func (h *SettingsHandlers) SecretsGet(w http.ResponseWriter, r *http.Request) {
 	if h.svc.Secrets.Has(userID, "llm_api_key") {
 		out.LLMAPIKey = "****"
 	}
-	if h.svc.Secrets.Has(userID, "proxy_key") {
-		out.ProxyKey = "****"
-	}
 	for _, p := range []domain.Platform{domain.PlatformLinkedIn, domain.PlatformSeek} {
 		if h.svc.Secrets.Has(userID, "cred:"+string(p)) {
 			out.CredentialPlatforms = append(out.CredentialPlatforms, p)
@@ -232,8 +229,8 @@ func (h *SettingsHandlers) SecretsSetAPIKey(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
-	if req.KeyType != "llm_api_key" && req.KeyType != "proxy_key" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "key_type must be llm_api_key or proxy_key"})
+	if req.KeyType != "llm_api_key" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "key_type must be llm_api_key"})
 		return
 	}
 	if err := h.svc.Secrets.Set(userID, req.KeyType, req.Value); err != nil {
@@ -241,6 +238,16 @@ func (h *SettingsHandlers) SecretsSetAPIKey(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	okMsg(w, "API key saved")
+}
+
+// DELETE /api/settings/secrets/api-key
+func (h *SettingsHandlers) SecretsDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	if err := h.svc.Secrets.Delete(userID, "llm_api_key"); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	okMsg(w, "API key deleted")
 }
 
 // POST /api/settings/secrets/credentials

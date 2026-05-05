@@ -283,7 +283,6 @@ export interface WorkPreferences {
 
 export interface SecretsConfig {
   llm_api_key?: string        // masked
-  proxy_key?: string          // masked
   credential_platforms?: string[]  // platforms with credentials stored
 }
 

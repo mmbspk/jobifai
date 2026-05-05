@@ -11,6 +11,7 @@ import { GeneralSettingsPage } from './pages/settings/General'
 import { Preferences } from './pages/settings/Preferences'
 import { Resume } from './pages/settings/Resume'
 import { Secrets } from './pages/settings/Secrets'
+import { UsagePage } from './pages/settings/Usage'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
@@ -21,22 +22,23 @@ const SETTINGS_TABS = [
   { to: '/settings/preferences', label: 'Preferences' },
   { to: '/settings/resume',      label: 'Profile' },
   { to: '/settings/secrets',     label: 'Secrets' },
+  { to: '/settings/usage',       label: 'Usage' },
 ]
 
 function SettingsLayout() {
   return (
     <div className="space-y-5">
-      <div className="flex gap-1 border-b border-[var(--color-border)] overflow-x-auto">
+      <div className="flex gap-1 p-1 bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
         {SETTINGS_TABS.map(t => (
           <NavLink
             key={t.to}
             to={t.to}
             className={({ isActive }) =>
               cn(
-                'px-4 py-2 text-sm border-b-2 -mb-px transition-colors whitespace-nowrap',
+                'flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all text-center whitespace-nowrap',
                 isActive
-                  ? 'border-violet-500 text-violet-300'
-                  : 'border-transparent text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]',
+                  ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
+                  : 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]',
               )
             }
           >
@@ -49,6 +51,7 @@ function SettingsLayout() {
         <Route path="preferences" element={<Preferences />} />
         <Route path="resume"      element={<Resume />} />
         <Route path="secrets"     element={<Secrets />} />
+        <Route path="usage"       element={<UsagePage />} />
         <Route index element={<Navigate to="general" replace />} />
       </Routes>
     </div>

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 )
 
@@ -45,6 +46,42 @@ func NewUsageHandlers(svc *Services) *UsageHandlers { return &UsageHandlers{svc:
 
 type sessionUsageResponse = domain.SessionUsage
 
+// costForUser returns the model cost for the given user, or false for Ollama/unknown.
+func (h *UsageHandlers) costForUser(userID string) (modelCost, bool) {
+	var gs struct {
+		LLM struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"llm"`
+	}
+	if err := h.svc.Config.Get(userID, "general_settings", &gs); err != nil {
+		return modelCost{}, false
+	}
+	if gs.LLM.Provider == "ollama" {
+		return modelCost{}, false
+	}
+	return lookupCost(gs.LLM.Model)
+}
+
+// GET /api/usage/totals — persistent cumulative usage from the database.
+func (h *UsageHandlers) Totals(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+
+	totals, err := db.TotalUsage(h.svc.DB, userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+
+	if c, ok := h.costForUser(userID); ok {
+		cost := float64(totals.InputTokens)/1_000_000*c.InputPerM +
+			float64(totals.OutputTokens)/1_000_000*c.OutputPerM
+		totals.EstimatedCostUSD = &cost
+	}
+
+	writeJSON(w, http.StatusOK, totals)
+}
+
 // GET /api/usage/session
 func (h *UsageHandlers) Session(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
@@ -57,21 +94,10 @@ func (h *UsageHandlers) Session(w http.ResponseWriter, r *http.Request) {
 		Calls:        snap.Calls,
 	}
 
-	// Estimate cost if we know the model.
-	var gs struct {
-		LLM struct {
-			Provider string `json:"provider"`
-			Model    string `json:"model"`
-		} `json:"llm"`
-	}
-	if err := h.svc.Config.Get(userID, "general_settings", &gs); err == nil {
-		if gs.LLM.Provider != "ollama" {
-			if c, ok := lookupCost(gs.LLM.Model); ok {
-				cost := float64(snap.InputTokens)/1_000_000*c.InputPerM +
-					float64(snap.OutputTokens)/1_000_000*c.OutputPerM
-				resp.EstimatedCostUSD = &cost
-			}
-		}
+	if c, ok := h.costForUser(userID); ok {
+		cost := float64(snap.InputTokens)/1_000_000*c.InputPerM +
+			float64(snap.OutputTokens)/1_000_000*c.OutputPerM
+		resp.EstimatedCostUSD = &cost
 	}
 
 	writeJSON(w, http.StatusOK, resp)

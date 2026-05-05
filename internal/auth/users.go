@@ -21,6 +21,7 @@ type User struct {
 	PasswordHash string // empty for Google-only accounts
 	GoogleID     string // empty for email/password accounts
 	AvatarURL    string
+	IsAdmin      bool
 	CreatedAt    time.Time
 }
 
@@ -103,7 +104,7 @@ func (s *UserStore) UpsertGoogle(googleID, email, displayName, avatarURL string)
 func (s *UserStore) ByID(id string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, created_at
 		 FROM users WHERE id = ?`, id,
 	))
 }
@@ -112,7 +113,7 @@ func (s *UserStore) ByID(id string) (*User, error) {
 func (s *UserStore) ByEmail(email string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, created_at
 		 FROM users WHERE email = ?`, email,
 	))
 }
@@ -121,7 +122,7 @@ func (s *UserStore) ByEmail(email string) (*User, error) {
 func (s *UserStore) ByGoogleID(googleID string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, created_at
 		 FROM users WHERE google_id = ?`, googleID,
 	))
 }
@@ -137,7 +138,7 @@ func (s *UserStore) Update(userID, displayName, avatarURL string) error {
 
 func (s *UserStore) scan(row *sql.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &u.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}

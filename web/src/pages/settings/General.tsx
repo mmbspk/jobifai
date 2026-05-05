@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect } from 'react'
 import { Check } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
+import { useAuth } from '../../contexts/AuthContext'
 import { cn } from '../../lib'
 import type { GeneralSettings, TaskModel } from '../../types'
 
@@ -93,6 +94,8 @@ const DEFAULT: GeneralSettings = {
 
 export function GeneralSettingsPage() {
   const qc = useQueryClient()
+  const { user } = useAuth()
+  const isAdmin = user?.is_admin === true
   const { data } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
   const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
   const [form, setForm] = useState<GeneralSettings>(DEFAULT)
@@ -156,10 +159,12 @@ export function GeneralSettingsPage() {
         <Field label="Model">
           <TextInput value={llmCfg.model ?? ''} onChange={v => llm('model', v)} placeholder="claude-sonnet-4-6" />
         </Field>
-        <Field label="Use Proxy" sub="Route LLM calls through a proxy server">
-          <Toggle checked={llmCfg.use_proxy ?? false} onChange={v => llm('use_proxy', v)} />
-        </Field>
-        {llmCfg.use_proxy && (
+        {isAdmin && (
+          <Field label="Use Proxy" sub="Route LLM calls through a proxy server">
+            <Toggle checked={llmCfg.use_proxy ?? false} onChange={v => llm('use_proxy', v)} />
+          </Field>
+        )}
+        {isAdmin && llmCfg.use_proxy && (
           <Field label="Proxy URL">
             <TextInput value={llmCfg.proxy_url ?? ''} onChange={v => llm('proxy_url', v)} placeholder="http://localhost:6655/anthropic" />
           </Field>
@@ -236,6 +241,7 @@ export function GeneralSettingsPage() {
         </Field>
       </Section>
 
+      {isAdmin && (
       <Section title="Browser">
         <Field label="Show Browser Window">
           <Toggle checked={browserCfg.show_browser ?? true} onChange={v => browser('show_browser', v)} />
@@ -252,6 +258,7 @@ export function GeneralSettingsPage() {
           <NumInput value={browserCfg.remote_debug_port ?? 0} onChange={v => browser('remote_debug_port', v)} min={0} max={65535} />
         </Field>
       </Section>
+      )}
 
       <Section title="Human Behaviour">
         <Field label="Daily Application Limit">

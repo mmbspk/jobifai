@@ -78,7 +78,6 @@ func TestSettings_Secrets_EmptyResponse(t *testing.T) {
 	var out domain.SecretsConfig
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&out))
 	assert.Empty(t, out.LLMAPIKey)
-	assert.Empty(t, out.ProxyKey)
 	assert.Empty(t, out.CredentialPlatforms)
 }
 

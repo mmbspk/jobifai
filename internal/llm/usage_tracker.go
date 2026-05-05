@@ -15,6 +15,8 @@ type UsageTracker struct {
 	inputTokens  int64
 	outputTokens int64
 	calls        int
+	userID       string
+	onAdd        func(userID string, input, output int64, calls int) // optional persist hook
 }
 
 // Add accumulates usage from a single call. No-op if u is nil.
@@ -22,11 +24,18 @@ func (t *UsageTracker) Add(u *Usage) {
 	if u == nil {
 		return
 	}
+	in := int64(u.InputTokens)
+	out := int64(u.OutputTokens)
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.inputTokens += int64(u.InputTokens)
-	t.outputTokens += int64(u.OutputTokens)
+	t.inputTokens += in
+	t.outputTokens += out
 	t.calls++
+	onAdd := t.onAdd
+	userID := t.userID
+	t.mu.Unlock()
+	if onAdd != nil {
+		go onAdd(userID, in, out, 1)
+	}
 }
 
 // Snapshot returns a point-in-time copy of the accumulated totals.
@@ -52,6 +61,9 @@ type UsageSnapshot struct {
 type UserUsageStore struct {
 	mu       sync.Mutex
 	trackers map[string]*UsageTracker
+	// OnAdd is called asynchronously after each LLM call with the per-call delta.
+	// Set this once before any calls are made (e.g. in main.go) to persist usage to DB.
+	OnAdd func(userID string, input, output int64, calls int)
 }
 
 // NewUserUsageStore creates an empty store.
@@ -66,7 +78,7 @@ func (s *UserUsageStore) For(userID string) *UsageTracker {
 	if t, ok := s.trackers[userID]; ok {
 		return t
 	}
-	t := &UsageTracker{}
+	t := &UsageTracker{userID: userID, onAdd: s.OnAdd}
 	s.trackers[userID] = t
 	return t
 }

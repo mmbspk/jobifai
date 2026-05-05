@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -215,8 +216,19 @@ func (m *Manager) SubmitNow(userID string, req SubmitRequest) {
 
 		cookies, err := m.sessions.Load(userID, req.Platform)
 		if err != nil {
-			log.Error().Err(err).Str("job", req.Role).Msg("approve: no session for platform")
-			return
+			// For Seek, credentials can substitute for a saved session — seekAutoLogin
+			// will authenticate via the login form when Quick Apply redirects.
+			if req.Platform == "seek" {
+				if raw, credErr := m.secrets.Get(userID, "cred:seek"); credErr != nil || raw == "" {
+					log.Error().Err(err).Str("job", req.Role).Msg("approve: no session and no credentials for seek")
+					return
+				}
+				log.Info().Str("job", req.Role).Msg("approve: no session, will authenticate with stored credentials")
+				cookies = nil
+			} else {
+				log.Error().Err(err).Str("job", req.Role).Msg("approve: no session for platform")
+				return
+			}
 		}
 
 		tailor := m.tailor
@@ -248,9 +260,23 @@ func (m *Manager) SubmitNow(userID string, req SubmitRequest) {
 				Profile:      &profile,
 				MarketDir:    m.marketDir,
 				LLMTracker:   tracker,
+				Sessions:     m.sessions,
 			},
 			state:  domain.BotStateIdle,
 			stopCh: make(chan struct{}),
+		}
+
+		if req.Platform == "seek" {
+			if raw, err := m.secrets.Get(userID, "cred:seek"); err == nil {
+				var cred struct {
+					Email    string `json:"email"`
+					Password string `json:"password"`
+				}
+				if json.Unmarshal([]byte(raw), &cred) == nil {
+					b.cfg.SeekEmail = cred.Email
+					b.cfg.SeekPassword = cred.Password
+				}
+			}
 		}
 
 		br, jobPage, err := b.launchBrowser(ctx)
@@ -380,7 +406,7 @@ func (m *Manager) buildConfig(ctx context.Context, userID string, platform domai
 		scorer = resume.NewScorer(taskClient(client, tm, "scoring"))
 	}
 
-	return &Config{
+	cfg := &Config{
 		Platform:    resolved,
 		Settings:    gs,
 		Preferences: prefs,
@@ -402,7 +428,23 @@ func (m *Manager) buildConfig(ctx context.Context, userID string, platform domai
 		RequireReview: gs.RequireReview,
 		MarketDir:     m.marketDir,
 		LLMTracker:    tracker,
-	}, nil
+		Sessions:      m.sessions,
+	}
+
+	if platform == domain.PlatformSeek {
+		if raw, err := m.secrets.Get(userID, "cred:seek"); err == nil {
+			var cred struct {
+				Email    string `json:"email"`
+				Password string `json:"password"`
+			}
+			if json.Unmarshal([]byte(raw), &cred) == nil {
+				cfg.SeekEmail = cred.Email
+				cfg.SeekPassword = cred.Password
+			}
+		}
+	}
+
+	return cfg, nil
 }
 
 // halalCheckerFor returns the halal checker when the setting is enabled, or nil.
@@ -414,22 +456,13 @@ func (m *Manager) halalCheckerFor(gs domain.GeneralSettings) JobHalalChecker {
 }
 
 // userLLMClient resolves the API key for userID and returns a ready client, or
-// nil if no key is stored. Prefers proxy_key when proxy is enabled.
+// nil if no key is stored.
 func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.Client {
-	var apiKey string
-	if gs.LLM.UseProxy {
-		if pk, err := m.secrets.Get(userID, "proxy_key"); err == nil && pk != "" {
-			apiKey = pk
-		}
+	pk, err := m.secrets.Get(userID, "llm_api_key")
+	if err != nil || pk == "" {
+		return nil
 	}
-	if apiKey == "" {
-		pk, err := m.secrets.Get(userID, "llm_api_key")
-		if err != nil || pk == "" {
-			return nil
-		}
-		apiKey = pk
-	}
-	return llm.New(gs.LLM, apiKey)
+	return llm.New(gs.LLM, pk)
 }
 
 // taskClient returns a client with model/token overrides for the given task key.

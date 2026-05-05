@@ -48,12 +48,19 @@ func NewRouter(svc *Services) *chi.Mux {
 	// ── noVNC: websockify proxy (JWT validated inside) + static files ────
 	vncH := NewVNCHandlers(svc)
 	r.Get("/novnc/websockify", vncH.Websockify)
+	vncEnabled := false
 	if fi, err := os.Stat("/usr/share/novnc"); err == nil && fi.IsDir() {
+		vncEnabled = true
 		noVNCFS := http.StripPrefix("/novnc/", http.FileServer(http.Dir("/usr/share/novnc")))
 		r.Get("/novnc/*", func(w http.ResponseWriter, r *http.Request) {
 			noVNCFS.ServeHTTP(w, r)
 		})
 	}
+
+	// ── System info (public) ─────────────────────────────────────────────
+	r.Get("/api/system/info", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]bool{"vnc_enabled": vncEnabled})
+	})
 
 	// ── OpenAPI spec (public) ────────────────────────────────────────────
 	r.Get("/api/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +136,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/preferences", settings.PreferencesSet)
 			r.Get("/secrets", settings.SecretsGet)
 			r.Post("/secrets/api-key", settings.SecretsSetAPIKey)
+				r.Delete("/secrets/api-key", settings.SecretsDeleteAPIKey)
 			r.Post("/secrets/credentials", settings.SecretsSetCredentials)
 			r.Get("/styles", settings.StylesList)
 			r.Get("/markets", settings.MarketsList)
@@ -137,6 +145,7 @@ func NewRouter(svc *Services) *chi.Mux {
 
 		// ── Usage ─────────────────────────────────────────────────────────
 		r.Get("/api/usage/session", usage.Session)
+		r.Get("/api/usage/totals", usage.Totals)
 	})
 
 	// ── Static file serving for generated PDFs ───────────────────────────

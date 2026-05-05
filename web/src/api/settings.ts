@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiPostForm } from './client'
+import { apiGet, apiPost, apiPostForm, apiDelete } from './client'
 import type { GeneralSettings, WorkPreferences, ResumeProfile, SecretsConfig, ResumeStyle, ResumeMarket } from '../types'
 
 export const settingsApi = {
@@ -23,6 +23,7 @@ export const settingsApi = {
   secrets: {
     get: () => apiGet<SecretsConfig>('/settings/secrets'),
     setApiKey: (keyType: string, value: string) => apiPost<void>('/settings/secrets/api-key', { key_type: keyType, value }),
+    deleteApiKey: () => apiDelete<void>('/settings/secrets/api-key'),
     setCredentials: (platform: string, email: string, password: string) =>
       apiPost<void>('/settings/secrets/credentials', { platform, email, password }),
   },
