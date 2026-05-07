@@ -90,9 +90,12 @@ HUMAN WRITING RULES, NON-NEGOTIABLE:
 
 Candidate profile:
 {{.Profile}}
-
+{{if .JobDescription}}
 Job description:
-{{.JobDescription}}`))
+{{.JobDescription}}
+{{- else}}
+No job description provided. Write a strong general cover letter suitable for an open or speculative application, showcasing the candidate's strongest experience and value. Do NOT ask for a job description — write the best possible letter using the profile alone.
+{{- end}}`))
 
 // Tailor uses an LLM to rewrite a ResumeProfile for a specific job description.
 // Three separate clients allow per-task model overrides.

@@ -248,7 +248,7 @@ export function Generate() {
       <div className="text-sm text-[var(--color-text-muted)]">{tabDesc}</div>
 
       {/* Target Market, not relevant for Job Fit evaluation */}
-      {markets.length > 0 && tab !== 'evaluate' && (
+      {markets.length > 0 && tab !== 'evaluate' && tab !== 'questions' && (
         <div>
           <p className="text-xs text-[var(--color-text-dim)] mb-2">Target Market</p>
           <div className="flex flex-wrap gap-2">
@@ -257,8 +257,8 @@ export function Generate() {
                 market === ''
                   ? 'border-violet-500/60 bg-violet-500/15 text-violet-300'
                   : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] bg-[var(--color-surface)]')}
-            >None</button>
-            {markets.map(m => (
+            >Generic</button>
+            {markets.filter(m => m.name !== 'Generic').map(m => (
               <button key={m.yaml_file} onClick={() => setMarket(m.name)}
                 className={cn('px-3 py-1.5 rounded-lg text-xs border transition-all',
                   market === m.name
