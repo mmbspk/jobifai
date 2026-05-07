@@ -53,7 +53,11 @@ func (l *lazyDocGen) get() (resume, cover string) {
 	return l.resume, l.cover
 }
 
-// formProfileJSON serializes a trimmed profile for form-filling LLM calls.
+// preload kicks off doc generation in the background so the LLM calls run
+// concurrently with form loading rather than sequentially after it.
+func (l *lazyDocGen) preload() {
+	go l.get()
+}
 // It is computed once per job session and cached.
 func (l *lazyDocGen) formProfileJSON() []byte {
 	l.formOnce.Do(func() {

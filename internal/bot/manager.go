@@ -5,14 +5,19 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/resume"
+	"github.com/user/jobifai/internal/scraper"
 )
 
 // ConfigReader is the subset of config.Store the Manager needs.
@@ -34,18 +39,20 @@ type botEntry struct {
 // Manager is the long-lived bot controller exposed to HTTP handlers.
 // It supports concurrent bots, one per user, and satisfies handler.BotController.
 type Manager struct {
-	mu        sync.Mutex
-	bots      map[string]*botEntry // key = userID
-	db        *sql.DB
-	cfgStore  ConfigReader
-	secrets   SecretsReader
-	sessions  *browser.SessionStore
-	tailor    ResumeTailor
-	scorer    JobScorer
-	halal     JobHalalChecker
-	renderer  ResumeRenderer
-	marketDir string
-	ctx       context.Context // lifetime context; cancelled on server shutdown
+	mu           sync.Mutex
+	bots         map[string]*botEntry // key = userID
+	db           *sql.DB
+	cfgStore     ConfigReader
+	secrets      SecretsReader
+	sessions     *browser.SessionStore
+	tailor       ResumeTailor
+	scorer       JobScorer
+	halal        JobHalalChecker
+	renderer     ResumeRenderer
+	marketDir    string
+	ctx          context.Context // lifetime context; cancelled on server shutdown
+	seekBrowsers map[string]*rod.Browser // persistent Seek browser per user
+	browserMu    sync.Mutex              // protects seekBrowsers
 }
 
 func NewManager(
@@ -61,17 +68,18 @@ func NewManager(
 	marketDir string,
 ) *Manager {
 	return &Manager{
-		ctx:       ctx,
-		db:        db,
-		cfgStore:  cfgStore,
-		secrets:   secrets,
-		sessions:  sessions,
-		tailor:    tailor,
-		scorer:    scorer,
-		halal:     halal,
-		renderer:  renderer,
-		marketDir: marketDir,
-		bots:      make(map[string]*botEntry),
+		ctx:          ctx,
+		db:           db,
+		cfgStore:     cfgStore,
+		secrets:      secrets,
+		sessions:     sessions,
+		tailor:       tailor,
+		scorer:       scorer,
+		halal:        halal,
+		renderer:     renderer,
+		marketDir:    marketDir,
+		bots:         make(map[string]*botEntry),
+		seekBrowsers: make(map[string]*rod.Browser),
 	}
 }
 
@@ -216,19 +224,13 @@ func (m *Manager) SubmitNow(userID string, req SubmitRequest) {
 
 		cookies, err := m.sessions.Load(userID, req.Platform)
 		if err != nil {
-			// For Seek, credentials can substitute for a saved session — seekAutoLogin
-			// will authenticate via the login form when Quick Apply redirects.
-			if req.Platform == "seek" {
-				if raw, credErr := m.secrets.Get(userID, "cred:seek"); credErr != nil || raw == "" {
-					log.Error().Err(err).Str("job", req.Role).Msg("approve: no session and no credentials for seek")
-					return
-				}
-				log.Info().Str("job", req.Role).Msg("approve: no session, will authenticate with stored credentials")
-				cookies = nil
-			} else {
+			if req.Platform != "seek" {
+				// For non-Seek platforms a saved session is required.
 				log.Error().Err(err).Str("job", req.Role).Msg("approve: no session for platform")
 				return
 			}
+			// For Seek: getSeekBrowser handles session loading; proceed with nil cookies.
+			cookies = nil
 		}
 
 		tailor := m.tailor
@@ -279,21 +281,49 @@ func (m *Manager) SubmitNow(userID string, req SubmitRequest) {
 			}
 		}
 
-		br, jobPage, err := b.launchBrowser(ctx)
-		if err != nil {
-			log.Error().Err(err).Str("job", req.Role).Msg("approve: launch browser")
-			return
-		}
-		if gs.Browser.RemoteDebugPort == 0 {
-			defer br.Close()
-		}
-
-		if err := jobPage.Navigate(req.Link); err != nil {
-			log.Error().Err(err).Str("job", req.Role).Msg("approve: navigate to job")
-			jobPage.Close()
-			return
+		// Seek: reuse a persistent browser per user so auth0 session state (including
+		// the post-PKCE cookies from each Quick Apply) is preserved naturally between
+		// consecutive approvals — no token-rotation issues.
+		// LinkedIn (and remote-debug mode): new browser per job, same as before.
+		var br *rod.Browser
+		var jobPage *rod.Page
+		ownsBr := false
+		if req.Platform == "seek" && gs.Browser.RemoteDebugPort == 0 {
+			seekBr, brErr := m.getSeekBrowser(ctx, userID, gs)
+			if brErr != nil {
+				log.Error().Err(brErr).Str("job", req.Role).Msg("approve: seek browser")
+				return
+			}
+			p, pageErr := seekBr.Page(proto.TargetCreateTarget{URL: req.Link})
+			if pageErr != nil {
+				m.InvalidateSeekBrowser(userID)
+				log.Error().Err(pageErr).Str("job", req.Role).Msg("approve: open seek job tab")
+				return
+			}
+			br, jobPage = seekBr, p
+		} else {
+			newBr, newPage, launchErr := b.launchBrowser(ctx)
+			if launchErr != nil {
+				log.Error().Err(launchErr).Str("job", req.Role).Msg("approve: launch browser")
+				return
+			}
+			if gs.Browser.RemoteDebugPort == 0 {
+				ownsBr = true
+			}
+			if navErr := newPage.Navigate(req.Link); navErr != nil {
+				log.Error().Err(navErr).Str("job", req.Role).Msg("approve: navigate to job")
+				newPage.Close()
+				if ownsBr {
+					newBr.Close()
+				}
+				return
+			}
+			br, jobPage = newBr, newPage
 		}
 		defer jobPage.Close()
+		if ownsBr {
+			defer br.Close()
+		}
 
 		var score int
 		if err := m.db.QueryRow(
@@ -305,8 +335,17 @@ func (m *Manager) SubmitNow(userID string, req SubmitRequest) {
 
 		var managerLazy *lazyDocGen
 		if req.Platform == "seek" {
-			seekDetails := b.fetchSeekJobDetails(ctx, br, &seekJob{ID: req.JobID, URL: req.Link, Company: req.Company, Title: req.Role})
-			managerLazy = &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: seekDetails.Description}
+			// Read description directly from the already-open jobPage tab — avoids
+			// opening a second tab at the same URL just to extract text.
+			_ = jobPage.WaitLoad()
+			_ = jobPage.WaitStable(500 * time.Millisecond)
+			jobDesc := req.Role + " at " + req.Company
+			if rawHTML, err := jobPage.HTML(); err == nil {
+				if d := scraper.ParseHTML(rawHTML); len(strings.TrimSpace(d.Description)) >= 100 {
+					jobDesc = d.Description
+				}
+			}
+			managerLazy = &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: jobDesc}
 		} else {
 			managerDetails := b.fetchJob(ctx, linkedInJob{URL: req.Link, Company: req.Company, Title: req.Role})
 			managerLazy = &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description}
@@ -351,6 +390,101 @@ func (m *Manager) SubmitNow(userID string, req SubmitRequest) {
 		}
 		log.Info().Str("company", req.Company).Str("job", req.Role).Msg("approve: submitted ✓")
 	}()
+}
+
+// getSeekBrowser returns the persistent Seek browser for userID, creating it if needed.
+// The browser is kept alive across consecutive SubmitNow calls so auth0 session state
+// (including post-PKCE cookies) is preserved naturally — no token rotation issues.
+func (m *Manager) getSeekBrowser(ctx context.Context, userID string, gs domain.GeneralSettings) (*rod.Browser, error) {
+	m.browserMu.Lock()
+	defer m.browserMu.Unlock()
+
+	if br, ok := m.seekBrowsers[userID]; ok {
+		if _, err := br.Pages(); err == nil {
+			return br, nil // still alive
+		}
+		delete(m.seekBrowsers, userID)
+		log.Info().Str("user_id", userID).Msg("seek: persistent browser was dead, recreating")
+	}
+
+	cookies, err := m.sessions.Load(userID, "seek")
+	if err != nil {
+		return nil, errors.New("no saved Seek session, log in via Settings → Secrets first")
+	}
+
+	l := launcher.New().Headless(!gs.Browser.ShowBrowser)
+	if gs.Browser.UseChromeProfile && gs.Browser.ChromeProfilePath != "" {
+		l = l.UserDataDir(gs.Browser.ChromeProfilePath)
+	}
+	wsURL, launchErr := l.Launch()
+	if launchErr != nil {
+		return nil, errors.New("launch chrome: " + launchErr.Error())
+	}
+	br := rod.New().ControlURL(wsURL)
+	if connErr := br.Connect(); connErr != nil {
+		return nil, errors.New("connect chrome: " + connErr.Error())
+	}
+
+	warmPage, pageErr := br.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if pageErr != nil {
+		_ = br.Close()
+		return nil, errors.New("open warm-up page: " + pageErr.Error())
+	}
+	if len(cookies) > 0 {
+		_ = warmPage.SetCookies(browser.ToCookieParams(cookies))
+	}
+	if navErr := warmPage.Navigate("https://au.seek.com/jobs"); navErr != nil {
+		_ = br.Close()
+		return nil, errors.New("seek warm-up navigate: " + navErr.Error())
+	}
+	_ = warmPage.WaitLoad()
+	_ = warmPage.WaitStable(2 * time.Second)
+
+	// Persist warm-up rotated tokens so the next server restart loads a valid
+	// (unconsumed) refresh token — getSeekBrowser rotates on navigate but unlike
+	// launchBrowser it must save explicitly here.
+	if m.sessions != nil {
+		warmCookies, cookieErr := proto.NetworkGetAllCookies{}.Call(warmPage)
+		if cookieErr == nil {
+			var fresh []browser.Cookie
+			for _, c := range warmCookies.Cookies {
+				fresh = append(fresh, browser.Cookie{
+					Name:     c.Name,
+					Value:    c.Value,
+					Domain:   string(c.Domain),
+					Path:     c.Path,
+					Expires:  float64(c.Expires),
+					HTTPOnly: c.HTTPOnly,
+					Secure:   bool(c.Secure),
+					SameSite: string(c.SameSite),
+				})
+			}
+			if saveErr := m.sessions.Save(userID, "seek", "session", fresh); saveErr != nil {
+				log.Warn().Err(saveErr).Msg("seek: warm-up cookie save failed")
+			} else {
+				log.Debug().Str("user_id", userID).Msg("seek: session cookies saved after warm-up")
+			}
+		}
+	}
+
+	_ = warmPage.Close()
+
+	m.seekBrowsers[userID] = br
+	log.Info().Str("user_id", userID).Msg("seek: persistent browser initialized")
+	return br, nil
+}
+
+// InvalidateSeekBrowser closes and removes the persistent Seek browser for userID.
+// Should be called when the user's Seek session is deleted so the next approval
+// starts fresh with the new session cookies.
+func (m *Manager) InvalidateSeekBrowser(userID string) {
+	m.browserMu.Lock()
+	defer m.browserMu.Unlock()
+	if br, ok := m.seekBrowsers[userID]; ok {
+		_ = br.Close()
+		delete(m.seekBrowsers, userID)
+		log.Info().Str("user_id", userID).Msg("seek: persistent browser closed")
+	}
 }
 
 func (m *Manager) buildConfig(ctx context.Context, userID string, platform domain.Platform) (*Config, error) {
@@ -456,13 +590,23 @@ func (m *Manager) halalCheckerFor(gs domain.GeneralSettings) JobHalalChecker {
 }
 
 // userLLMClient resolves the API key for userID and returns a ready client, or
-// nil if no key is stored.
+// nil if no key is stored. When UseProxy is true, proxy_key takes precedence
+// over llm_api_key — matching the same logic used by the handler layer.
 func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.Client {
-	pk, err := m.secrets.Get(userID, "llm_api_key")
-	if err != nil || pk == "" {
-		return nil
+	var apiKey string
+	if gs.LLM.UseProxy {
+		if pk, err := m.secrets.Get(userID, "proxy_key"); err == nil && pk != "" {
+			apiKey = pk
+		}
 	}
-	return llm.New(gs.LLM, pk)
+	if apiKey == "" {
+		pk, err := m.secrets.Get(userID, "llm_api_key")
+		if err != nil || pk == "" {
+			return nil
+		}
+		apiKey = pk
+	}
+	return llm.New(gs.LLM, apiKey)
 }
 
 // taskClient returns a client with model/token overrides for the given task key.

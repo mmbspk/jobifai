@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
-import { Check, X, FileText, ChevronDown } from 'lucide-react'
+import { Check, X, FileText, ChevronDown, ExternalLink } from 'lucide-react'
 import { PlatformBadge } from '../components/PlatformBadge'
 import { ScorePill } from '../components/ScorePill'
 import { cn, relativeTime, formatDate } from '../lib'
@@ -76,7 +76,14 @@ function ReviewCard({ review, halalEnabled, onApprove, onReject }: {
     >
       <div className="flex items-start justify-between gap-2 mb-3">
         <div className="min-w-0">
-          <div className="font-medium text-[var(--color-text)]">{review.company || '—'}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="font-medium text-[var(--color-text)]">{review.company || '—'}</span>
+            {review.link && (
+              <a href={review.link} target="_blank" rel="noopener noreferrer" className="text-[var(--color-text-dim)] hover:text-violet-400 transition-colors shrink-0">
+                <ExternalLink size={11} />
+              </a>
+            )}
+          </div>
           <div className="text-sm text-[var(--color-text-muted)]">{review.role}</div>
           {review.location && (
             <div className="text-xs text-[var(--color-text-dim)] mt-0.5">{review.location}</div>

@@ -73,9 +73,10 @@ const jsScanFields = `() => {
 		try {
 			const rect = el.getBoundingClientRect();
 			if (rect.width === 0 && rect.height === 0) return false;
-			// Must be within the viewport (not translated off-screen).
+			// Must not be translated off-screen horizontally (LinkedIn translateX pattern).
+			// Vertical position is intentionally NOT checked — Seek's Quick Apply is a
+			// scrollable full-page form and fields outside the viewport must still be detected.
 			if (rect.right <= 0 || rect.left >= window.innerWidth) return false;
-			if (rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
 			let node = el;
 			while (node && node !== document.documentElement) {
 				const s = window.getComputedStyle(node);
@@ -103,10 +104,12 @@ const jsScanFields = `() => {
 		const form = dialog ? dialog.querySelector('form') : document.querySelector('form');
 		const scope = form || dialog;
 		if (scope) {
-			const hasRequired = [...scope.querySelectorAll(
-				'input[required], input[aria-required="true"], select[required], textarea[required]'
+			// Match any non-hidden input — Seek doesn't set [required] even for
+			// mandatory fields, so we can't key off required alone.
+			const hasInputs = [...scope.querySelectorAll(
+				'input:not([type="hidden"]), select, textarea'
 			)].some(isVisible);
-			if (hasRequired) {
+			if (hasInputs) {
 				container = scope;
 				console.warn('jsScanFields: using semantic fallback container');
 			}
@@ -173,8 +176,22 @@ const jsScanFields = `() => {
 
 		const grp = r.closest('fieldset, [role="group"], .fb-form-element, [data-test-form-element], .artdeco-form-element')
 		            || r.parentElement?.parentElement;
-		const legend = grp && grp.querySelector('legend, span[class*="label"], div[class*="label"], label');
-		const question = legend ? legend.textContent.trim() : (r.name || r.id || '');
+
+		// Walk up to find a <legend> as a direct child of an ancestor.
+		// Seek puts the legend as a sibling of the options container (5+ levels up
+		// from the input), not inside the individual option wrapper that grp lands on.
+		let question = '';
+		{
+			let node = r.parentElement;
+			for (let i = 0; i < 8 && node && node !== document.body; i++, node = node.parentElement) {
+				const directLegend = [...(node.children || [])].find(c => c.tagName === 'LEGEND');
+				if (directLegend) { question = directLegend.textContent.trim(); break; }
+			}
+		}
+		if (!question) {
+			const fallback = grp && grp.querySelector('legend, span[class*="label"], div[class*="label"], label');
+			question = fallback ? fallback.textContent.trim() : (r.name || r.id || '');
+		}
 
 		const options = all.map(x => {
 			const lbl = labelFor(x.id) || x.closest('label') || x.parentElement;
@@ -255,7 +272,9 @@ const jsFillRadio = `(name, value) => {
 		return lbl && lbl.textContent.toLowerCase().includes(lower);
 	}) || radios[0]; // fallback to first if no match
 	if (isSelected(target)) return true; // already selected, don't toggle
-	target.click();
+	// Prefer label click — custom radio UIs respond more reliably than input.click().
+	const lbl = [...document.querySelectorAll('label[for]')].find(l => l.htmlFor === target.id);
+	if (lbl) { lbl.click(); } else { target.click(); }
 	target.dispatchEvent(new Event('change', { bubbles: true }));
 	target.dispatchEvent(new Event('input',  { bubbles: true }));
 	return true;
@@ -276,8 +295,11 @@ const jsFillRadioByID = `(id) => {
 	}
 	const el = allInDOM(document, 'input[type="radio"]').find(r => r.id === id);
 	if (!el) return false;
-	if (el.checked || el.getAttribute('aria-checked') === 'true') return true; // already selected, don't toggle
-	el.click();
+	if (el.checked || el.getAttribute('aria-checked') === 'true') return true;
+	// Prefer clicking the associated label — custom radio UIs (Seek) build their
+	// visual from label-adjacent elements and respond more reliably to label clicks.
+	const lbl = [...document.querySelectorAll('label[for]')].find(l => l.htmlFor === id);
+	if (lbl) { lbl.click(); } else { el.click(); }
 	el.dispatchEvent(new Event('change', { bubbles: true }));
 	el.dispatchEvent(new Event('input',  { bubbles: true }));
 	return true;
@@ -516,6 +538,16 @@ func extractFirstNumber(s string) string {
 //   - filled=true  when at least one field was successfully written
 //   - hasFields=true when the scan found at least one field (even if none could be filled)
 func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (filled bool, hasFields bool) {
+	// Scroll to top so questions above the current scroll position are visible
+	// to jsScanFields. Seek's Quick Apply is a full-page scrollable form; for
+	// LinkedIn's fixed modal this is effectively a no-op.
+	_, _ = page.Eval(`() => {
+		window.scrollTo(0, 0);
+		const f = document.querySelector('form');
+		if (f && f !== document.body) f.scrollTop = 0;
+	}`)
+	time.Sleep(150 * time.Millisecond)
+
 	res, err := page.Eval(jsScanFields)
 	if err != nil {
 		log.Debug().Err(err).Msg("form: scan fields eval failed")

@@ -79,6 +79,12 @@ func (h *AuthHandlers) SaveSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Invalidate the cached browser for this platform so the next SubmitNow
+	// picks up the fresh cookies rather than reusing the old browser session.
+	if req.Platform == "seek" {
+		h.svc.Bot.InvalidateSeekBrowser(userID)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":       true,
 		"cookies_saved": len(cookies),
@@ -122,6 +128,10 @@ func (h *AuthHandlers) DeleteSession(w http.ResponseWriter, r *http.Request) {
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
+	}
+
+	if platform == "seek" {
+		h.svc.Bot.InvalidateSeekBrowser(userID)
 	}
 
 	okMsg(w, "session cleared for "+platform)

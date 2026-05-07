@@ -91,6 +91,9 @@ type BotController interface {
 	Resume(userID string)
 	Status(userID string) domain.BotStatus
 	SubmitNow(userID string, req bot.SubmitRequest)
+	// InvalidateSeekBrowser closes the cached persistent Seek browser for a user
+	// so the next SubmitNow creates a fresh browser with the latest saved cookies.
+	InvalidateSeekBrowser(userID string)
 }
 
 // ResumeTailor rewrites a profile for a job and writes cover letters.
