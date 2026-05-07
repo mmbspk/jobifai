@@ -3,13 +3,14 @@ import { useState, useEffect } from 'react'
 import { Check } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { useAuth } from '../../contexts/AuthContext'
+import { Button } from '../../components/Button'
 import { cn } from '../../lib'
 import type { GeneralSettings, TaskModel } from '../../types'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
-      <div className="px-4 py-3 border-b border-[var(--color-border)] text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">
+      <div className="py-3 pr-4 pl-3 border-b border-[var(--color-border)] border-l-2 border-l-[var(--color-accent)] text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">
         {title}
       </div>
       <div className="p-4 space-y-4">{children}</div>
@@ -37,7 +38,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
       onClick={() => onChange(!checked)}
       className={cn(
         'relative w-10 h-5 rounded-full transition-colors',
-        checked ? 'bg-violet-500' : 'bg-zinc-700',
+        checked ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]',
       )}
     >
       <span
@@ -56,7 +57,7 @@ function TextInput({ value, onChange, placeholder }: { value: string; onChange: 
       value={value}
       onChange={e => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-48 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-violet-500/50"
+      className="w-48 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors"
     />
   )
 }
@@ -69,7 +70,7 @@ function NumInput({ value, onChange, min, max }: { value: number; onChange: (v: 
       min={min}
       max={max}
       onChange={e => onChange(Number(e.target.value))}
-      className="w-24 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-violet-500/50 tabular-nums"
+      className="w-24 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors tabular-nums"
     />
   )
 }
@@ -150,7 +151,7 @@ export function GeneralSettingsPage() {
       <Section title="LLM Configuration">
         <Field label="Provider">
           <select value={llmCfg.provider ?? ''} onChange={e => llm('provider', e.target.value)}
-            className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-violet-500/50">
+            className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors">
             <option value="claude">Claude (Anthropic)</option>
             <option value="openai">OpenAI</option>
             <option value="ollama">Ollama (local)</option>
@@ -200,7 +201,7 @@ export function GeneralSettingsPage() {
       <Section title="Resume Defaults">
         <Field label="Market" sub="Target job market, adjusts prompts and resume styling">
           <select value={form.default_resume_market ?? ''} onChange={e => set('default_resume_market', e.target.value)}
-            className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-violet-500/50">
+            className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors">
             <option value="">None</option>
             {markets.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
           </select>
@@ -287,13 +288,15 @@ export function GeneralSettingsPage() {
         </Field>
       </Section>
 
-      <button
+      <Button
+        variant="primary"
+        fullWidth
+        loading={save.isPending}
+        leftIcon={saved ? <Check size={14} /> : undefined}
         onClick={() => save.mutate()}
-        disabled={save.isPending}
-        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-violet-500 text-white text-sm font-medium hover:bg-violet-400 disabled:opacity-60 transition-all shadow-[0_0_16px_var(--color-accent-glow)]"
       >
-        {saved ? <><Check size={14} /> Saved</> : save.isPending ? 'Saving…' : 'Save Settings'}
-      </button>
+        {saved ? 'Saved' : 'Save Settings'}
+      </Button>
 
       {save.isError && (
         <div className="text-xs text-red-400 text-center">{(save.error as Error).message}</div>

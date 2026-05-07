@@ -8,22 +8,22 @@ import { ApiError } from '../api/client'
 import { ScorePill } from '../components/ScorePill'
 import type { HalalVerdict, QuestionAnswer } from '../types'
 
-type Tab = 'base' | 'tailored' | 'cover' | 'questions' | 'evaluate'
+type Tab = 'resume' | 'cover' | 'questions' | 'evaluate'
 
 const TABS: { key: Tab; label: string; desc: string }[] = [
-  { key: 'evaluate',  label: 'Job Fit',         desc: 'Score how well a job matches your profile' },
-  { key: 'tailored',  label: 'Tailored Resume', desc: 'AI-tailored to a job posting' },
-  { key: 'cover',     label: 'Cover Letter',    desc: 'AI-written cover letter' },
-  { key: 'questions', label: 'Questions',       desc: 'Answer application or interview questions for a job' },
-  { key: 'base',      label: 'Base Resume',     desc: 'Generate from your saved profile' },
+  { key: 'evaluate',  label: 'Job Fit',      desc: 'Score how well a job matches your profile' },
+  { key: 'resume',    label: 'Resume',        desc: '' },
+  { key: 'cover',     label: 'Cover Letter',  desc: 'AI-written cover letter' },
+  { key: 'questions', label: 'Questions',     desc: 'Answer application or interview questions for a job' },
 ]
 
-const STEPS = {
-  tailored:  ['Fetching job description…', 'Analysing requirements…', 'Tailoring your profile…', 'Rendering PDF…'],
-  cover:     ['Fetching job description…', 'Analysing requirements…', 'Writing cover letter…', 'Rendering PDF…'],
-  base:      ['Loading profile…', 'Rendering PDF…'],
-  evaluate:  ['Fetching job description…', 'Evaluating fit…'],
-  questions: ['Fetching job description…', 'Answering questions…'],
+const STEPS: Record<string, string[]> = {
+  resume_tailored: ['Fetching job description…', 'Analysing requirements…', 'Tailoring your profile…', 'Rendering PDF…'],
+  resume_base:     ['Loading profile…', 'Rendering PDF…'],
+  cover_tailored:  ['Fetching job description…', 'Analysing requirements…', 'Writing cover letter…', 'Rendering PDF…'],
+  cover_base:      ['Loading profile…', 'Writing cover letter…', 'Rendering PDF…'],
+  evaluate:        ['Fetching job description…', 'Evaluating fit…'],
+  questions:       ['Fetching job description…', 'Answering questions…'],
 }
 
 const INPUT_CLS = 'w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50'
@@ -39,6 +39,7 @@ export function Generate() {
   const [resumeFile, setResumeFile] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
   const [step, setStep] = useState(0)
+  const [activeStepKey, setActiveStepKey] = useState<string>('evaluate')
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
   // Revoke previous blob URL whenever pdfUrl changes (prevents memory leak).
   useEffect(() => () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl) }, [pdfUrl])
@@ -77,11 +78,15 @@ export function Generate() {
   }
 
   async function runTab(opts: Parameters<typeof resumeApi.generateTailored>[0], skipUrlFetch: boolean) {
-    if (tab === 'base') {
-      const blob = await resumeApi.generate(resumeFile || undefined, promptHint || undefined, linkedinUrl || undefined, githubUrl || undefined, market || undefined)
-      setPdfUrl(URL.createObjectURL(blob))
-    } else if (tab === 'tailored') {
-      setPdfUrl(URL.createObjectURL(await resumeApi.generateTailored(opts)))
+    if (tab === 'resume') {
+      const hasDescAsContext = jobDesc.trim().length > 20
+      const useTailored = skipUrlFetch ? hasDescAsContext : hasJobInput
+      if (useTailored) {
+        setPdfUrl(URL.createObjectURL(await resumeApi.generateTailored(opts)))
+      } else {
+        const blob = await resumeApi.generate(resumeFile || undefined, promptHint || undefined, linkedinUrl || undefined, githubUrl || undefined, market || undefined)
+        setPdfUrl(URL.createObjectURL(blob))
+      }
     } else if (tab === 'cover') {
       setPdfUrl(URL.createObjectURL(await resumeApi.generateCoverLetter(opts)))
     } else if (tab === 'questions') {
@@ -106,7 +111,14 @@ export function Generate() {
     setQuestionAnswers(null)
     setUrlAlert(false)
     setStep(0)
-    const steps = STEPS[tab]
+    const hasDescAsContext = jobDesc.trim().length > 20
+    let key: string = tab
+    if (tab === 'resume' || tab === 'cover') {
+      const useTailored = skipUrlFetch ? hasDescAsContext : hasJobInput
+      key = useTailored ? `${tab}_tailored` : `${tab}_base`
+    }
+    setActiveStepKey(key)
+    const steps = STEPS[key]
     const timers: ReturnType<typeof setTimeout>[] = []
     steps.forEach((_, i) => {
       if (i > 0) timers.push(setTimeout(() => setStep(i), i * 1400))
@@ -135,11 +147,24 @@ export function Generate() {
     }
   }
 
-  const needsUrl = tab === 'tailored' || tab === 'cover' || tab === 'evaluate' || tab === 'questions'
+  const needsUrl = tab === 'evaluate' || tab === 'questions'
   const hasJobInput = jobUrl.trim().startsWith('http') || jobDesc.trim().length > 20
   const hasQuestions = questions.some(q => q.value.trim().length > 0)
   const canGenerate = !loading && (!needsUrl || hasJobInput) && (tab !== 'questions' || hasQuestions)
   const filename = tab === 'cover' ? 'cover-letter.pdf' : 'resume.pdf'
+
+  let tabDesc: string
+  if (tab === 'resume') {
+    tabDesc = hasJobInput
+      ? 'AI-tailored to a job posting'
+      : 'Generate from your saved profile — add a job URL or description to tailor it'
+  } else if (tab === 'cover') {
+    tabDesc = hasJobInput
+      ? 'AI-written cover letter tailored to a job posting'
+      : 'Write a cover letter from your saved profile — add a job posting to tailor it'
+  } else {
+    tabDesc = TABS.find(t => t.key === tab)?.desc ?? ''
+  }
 
   // Count active optional fields to show a badge on the collapsed panel
   const activeOpts = [resumeFile, linkedinUrl, githubUrl, promptHint].filter(Boolean).length
@@ -203,7 +228,7 @@ export function Generate() {
     </div>
   )
 
-  const GENERATE_LABEL: Record<Tab, string> = { evaluate: 'Evaluate', questions: 'Answer Questions', tailored: 'Generate', cover: 'Generate', base: 'Generate' }
+  const GENERATE_LABEL: Record<Tab, string> = { evaluate: 'Evaluate', questions: 'Answer Questions', resume: hasJobInput ? 'Generate' : 'Generate Base', cover: hasJobInput ? 'Generate' : 'Generate Base' }
   const generateLabel = GENERATE_LABEL[tab]
 
   return (
@@ -220,7 +245,7 @@ export function Generate() {
         ))}
       </div>
 
-      <div className="text-sm text-[var(--color-text-muted)]">{TABS.find(t => t.key === tab)?.desc}</div>
+      <div className="text-sm text-[var(--color-text-muted)]">{tabDesc}</div>
 
       {/* Target Market, not relevant for Job Fit evaluation */}
       {markets.length > 0 && tab !== 'evaluate' && (
@@ -245,7 +270,72 @@ export function Generate() {
         </div>
       )}
 
-      {needsUrl ? (
+      {(tab === 'resume' || tab === 'cover') && (
+        <>
+          {/* Job URL — optional for resume tab */}
+          <div>
+            <p className="text-xs text-[var(--color-text-dim)] mb-2">
+              Job Posting URL <span className="opacity-50">(optional — add to tailor your resume)</span>
+            </p>
+            <input value={jobUrl} onChange={e => { setJobUrl(e.target.value); setUrlAlert(false) }}
+              placeholder="https://linkedin.com/jobs/view/…"
+              className={INPUT_CLS.replace('py-2', 'py-2.5')}
+            />
+          </div>
+
+          {/* URL unreachable alert */}
+          {urlAlert && (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-500/8 p-4 space-y-3">
+              <div className="flex gap-2.5 items-start">
+                <AlertTriangle size={16} className="text-amber-400 mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-amber-300">Could not access the job posting</p>
+                  <p className="text-xs text-amber-400/80">The page may require login or be temporarily unavailable (e.g. LinkedIn, Indeed). Paste the job description below, or generate using your saved profile only.</p>
+                </div>
+              </div>
+              <button onClick={() => generate(true)}
+                className="px-3 py-1.5 rounded-lg text-xs border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 transition-colors">
+                Generate without job details
+              </button>
+            </div>
+          )}
+
+          {/* Job Description — optional */}
+          <div>
+            <p className="text-xs text-[var(--color-text-dim)] mb-2">
+              Job Description <span className="opacity-50">(optional — paste if URL is inaccessible)</span>
+            </p>
+            <textarea value={jobDesc} onChange={e => { setJobDesc(e.target.value); setUrlAlert(false) }} rows={5}
+              placeholder="Paste the full job description here…"
+              className={cn(INPUT_CLS, 'resize-none', urlAlert && 'border-amber-500/50 focus:border-amber-400')} />
+          </div>
+
+          {/* Collapsible extra options */}
+          <div className="rounded-xl border border-[var(--color-border)] overflow-hidden">
+            <button
+              onClick={() => setOptionsOpen(o => !o)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-[var(--color-surface)] hover:bg-[var(--color-surface-2)] transition-colors text-sm"
+            >
+              <span className="text-[var(--color-text-muted)] font-medium flex items-center gap-2">
+                More Options
+                {activeOpts > 0 && (
+                  <span className="px-1.5 py-0.5 rounded-md text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                    {activeOpts} set
+                  </span>
+                )}
+              </span>
+              <ChevronDown size={15} className={cn('text-[var(--color-text-dim)] transition-transform', optionsOpen && 'rotate-180')} />
+            </button>
+            {optionsOpen && (
+              <div className="px-4 py-4 border-t border-[var(--color-border)] space-y-4">
+                {extraOptions}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {needsUrl && (
         <>
           {/* Job URL */}
           <div>
@@ -320,35 +410,7 @@ export function Generate() {
               </button>
             </div>
           )}
-
-          {/* Collapsible options panel, only show for non-evaluate, non-questions tabs that have options */}
-          {tab !== 'evaluate' && tab !== 'questions' && (
-            <div className="rounded-xl border border-[var(--color-border)] overflow-hidden">
-              <button
-                onClick={() => setOptionsOpen(o => !o)}
-                className="w-full flex items-center justify-between px-4 py-3 bg-[var(--color-surface)] hover:bg-[var(--color-surface-2)] transition-colors text-sm"
-              >
-                <span className="text-[var(--color-text-muted)] font-medium flex items-center gap-2">
-                  More Options
-                  {activeOpts > 0 && (
-                    <span className="px-1.5 py-0.5 rounded-md text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30">
-                      {activeOpts} set
-                    </span>
-                  )}
-                </span>
-                <ChevronDown size={15} className={cn('text-[var(--color-text-dim)] transition-transform', optionsOpen && 'rotate-180')} />
-              </button>
-              {optionsOpen && (
-                <div className="px-4 py-4 border-t border-[var(--color-border)] space-y-4">
-                  {extraOptions}
-                </div>
-              )}
-            </div>
-          )}
         </>
-      ) : (
-        /* Base tab, options always inline */
-        extraOptions
       )}
 
       {/* Generate / Evaluate button */}
@@ -365,9 +427,9 @@ export function Generate() {
       {loading && (
         <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-6 text-center space-y-3">
           <Loader2 size={24} className="mx-auto text-violet-400 animate-spin" />
-          <div className="text-sm text-violet-300">{STEPS[tab][step]}</div>
+          <div className="text-sm text-violet-300">{STEPS[activeStepKey][step]}</div>
           <div className="flex justify-center gap-1">
-            {STEPS[tab].map((label, i) => (
+            {STEPS[activeStepKey].map((label, i) => (
               <div key={label} className={cn('h-1 rounded-full transition-all',
                 i <= step ? 'w-6 bg-violet-400' : 'w-2 bg-violet-500/20')} />
             ))}
@@ -395,7 +457,7 @@ export function Generate() {
           </div>
           <p className="text-sm text-[var(--color-text-muted)] leading-relaxed">{scoreResult.reasoning}</p>
           <button
-            onClick={() => { setTab('tailored'); setScoreResult(null) }}
+            onClick={() => { setTab('resume'); setScoreResult(null) }}
             className="flex items-center gap-2 text-sm text-violet-400 hover:text-violet-300 transition-colors"
           >
             Generate Tailored Resume <ArrowRight size={14} />

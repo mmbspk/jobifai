@@ -16,11 +16,12 @@ export function StatCard({ label, value, sub, icon, accent, className }: Props) 
       className={cn(
         'rounded-xl border p-4 flex flex-col gap-1',
         'bg-[var(--color-surface)] border-[var(--color-border)]',
+        'shadow-[var(--shadow-sm)] hover:shadow-[var(--shadow-md)] transition-shadow',
         accent && 'border-[var(--color-accent)] shadow-[0_0_20px_var(--color-accent-glow)]',
         className,
       )}
     >
-      <div className="flex items-center gap-2 text-[var(--color-text-muted)] text-sm">
+      <div className="flex items-center gap-2 text-[var(--color-text-muted)] text-xs font-medium uppercase tracking-wide">
         {icon && <span className="text-[var(--color-accent)]">{icon}</span>}
         {label}
       </div>

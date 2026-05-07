@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { Button } from '../components/Button'
 
 export function Register() {
   const { register, googleLoginUrl } = useAuth()
@@ -48,7 +49,7 @@ export function Register() {
               value={name}
               onChange={e => setName(e.target.value)}
               placeholder="Optional"
-              className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] focus:outline-none focus:border-violet-500 placeholder:text-[var(--color-text-dim)]"
+              className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] focus:outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors placeholder:text-[var(--color-text-dim)]"
             />
           </div>
           <div className="space-y-1">
@@ -59,7 +60,7 @@ export function Register() {
               autoComplete="email"
               value={email}
               onChange={e => setEmail(e.target.value)}
-              className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] focus:outline-none focus:border-violet-500"
+              className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] focus:outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors"
             />
           </div>
           <div className="space-y-1">
@@ -71,17 +72,13 @@ export function Register() {
               minLength={8}
               value={password}
               onChange={e => setPassword(e.target.value)}
-              className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] focus:outline-none focus:border-violet-500"
+              className="w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] focus:outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors"
             />
             <p className="text-xs text-[var(--color-text-dim)]">Minimum 8 characters</p>
           </div>
-          <button
-            type="submit"
-            disabled={busy}
-            className="w-full py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-          >
+          <Button type="submit" variant="primary" fullWidth loading={busy}>
             {busy ? 'Creating account…' : 'Create account'}
-          </button>
+          </Button>
         </form>
 
         <div className="relative flex items-center gap-3">

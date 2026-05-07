@@ -282,11 +282,6 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 	jobDesc := strings.TrimSpace(r.FormValue("job_description"))
 	skipFetch := r.FormValue("skip_url_fetch") == "true"
 
-	if jobURL == "" && jobDesc == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "job_url or job_description is required"})
-		return
-	}
-
 	_, tailor := h.svc.LLMFactory(userID)
 	if tailor == nil {
 		unprocessable(w, msgNoLLM)

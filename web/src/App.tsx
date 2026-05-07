@@ -28,17 +28,17 @@ const SETTINGS_TABS = [
 function SettingsLayout() {
   return (
     <div className="space-y-5">
-      <div className="flex gap-1 p-1 bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
+      <div className="flex gap-0 border-b border-[var(--color-border)]">
         {SETTINGS_TABS.map(t => (
           <NavLink
             key={t.to}
             to={t.to}
             className={({ isActive }) =>
               cn(
-                'flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all text-center whitespace-nowrap',
+                'px-4 py-2.5 text-sm font-medium transition-all whitespace-nowrap border-b-2 -mb-px',
                 isActive
-                  ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
-                  : 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]',
+                  ? 'text-[var(--color-text)] border-[var(--color-accent)]'
+                  : 'text-[var(--color-text-muted)] border-transparent hover:text-[var(--color-text)] hover:border-[var(--color-border)]',
               )
             }
           >

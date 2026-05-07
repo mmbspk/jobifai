@@ -34,8 +34,10 @@ export function BottomNav() {
             end={end}
             className={({ isActive }) =>
               cn(
-                'flex-1 flex flex-col items-center gap-0.5 py-2 text-[0.65rem] relative',
-                isActive ? 'text-violet-400' : 'text-[var(--color-text-dim)]',
+                'flex-1 flex flex-col items-center gap-0.5 py-2 text-[0.65rem] relative border-t-2 transition-colors',
+                isActive
+                  ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
+                  : 'text-[var(--color-text-dim)] border-transparent',
               )
             }
           >

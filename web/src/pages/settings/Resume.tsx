@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Check, Plus, Trash2, Upload, Download, ChevronDown, FileText, X, Loader2, Sparkles } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { cn } from '../../lib'
+import { Button } from '../../components/Button'
 import { TagInput } from '../../components/TagInput'
 import type {
   ResumeProfile, EducationDetail, ExperienceDetail, Language,
@@ -37,7 +38,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Input({ value, onChange, placeholder, type = 'text' }: { value: string; onChange: (v: string) => void; placeholder?: string; type?: string }) {
   return (
     <input type={type} value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder}
-      className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50 w-full"
+      className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors w-full"
     />
   )
 }
@@ -45,7 +46,7 @@ function Input({ value, onChange, placeholder, type = 'text' }: { value: string;
 function Textarea({ value, onChange, placeholder, rows = 3 }: { value: string; onChange: (v: string) => void; placeholder?: string; rows?: number }) {
   return (
     <textarea value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} rows={rows}
-      className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50 w-full resize-none"
+      className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors w-full resize-none"
     />
   )
 }
@@ -592,13 +593,15 @@ export function Resume() {
         </div>
       </Section>
 
-      <button
+      <Button
+        variant="primary"
+        fullWidth
+        loading={save.isPending}
+        leftIcon={saved ? <Check size={14} /> : undefined}
         onClick={() => save.mutate()}
-        disabled={save.isPending}
-        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-violet-500 text-white text-sm font-medium hover:bg-violet-400 disabled:opacity-60 transition-all shadow-[0_0_16px_var(--color-accent-glow)]"
       >
-        {saved ? <><Check size={14} /> Saved</> : save.isPending ? 'Saving…' : 'Save Profile'}
-      </button>
+        {saved ? 'Saved' : 'Save Profile'}
+      </Button>
     </div>
   )
 }

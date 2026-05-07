@@ -3,7 +3,7 @@ import { cn } from '../lib'
 import type { LogLine, LogLevel } from '../hooks/useLogs'
 
 const LEVEL_STYLE: Record<LogLevel, string> = {
-  debug:    'text-zinc-500',
+  debug:    'text-[var(--color-text-dim)]',
   info:     'text-sky-400',
   success:  'text-emerald-400',
   warning:  'text-amber-400',
@@ -121,14 +121,14 @@ export function LogPanel({ lines, connected, onClear, className, currentJob }: P
   }
 
   return (
-    <div className={cn('flex flex-col rounded-xl border overflow-hidden', 'bg-[var(--color-background)] border-[var(--color-border)]', className)}>
+    <div className={cn('flex flex-col rounded-xl border overflow-hidden', 'bg-[var(--color-background)] border-[var(--color-border)] shadow-[var(--shadow-sm)]', className)}>
       {/* Toolbar */}
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
         <div className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
           <span
             className={cn(
               'inline-block w-1.5 h-1.5 rounded-full',
-              connected ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]' : 'bg-zinc-600',
+              connected ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]' : 'bg-[var(--color-text-dim)]',
             )}
           />
           <span className="font-terminal">{connected ? 'live' : 'disconnected'}</span>

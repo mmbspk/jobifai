@@ -4,12 +4,13 @@ import { Check } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { TagInput } from '../../components/TagInput'
 import { LocationTagInput } from '../../components/LocationTagInput'
+import { Button } from '../../components/Button'
 import type { WorkPreferences } from '../../types'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
-      <div className="px-4 py-3 border-b border-[var(--color-border)] text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">{title}</div>
+      <div className="py-3 pr-4 pl-3 border-b border-[var(--color-border)] border-l-2 border-l-[var(--color-accent)] text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">{title}</div>
       <div className="p-4">{children}</div>
     </div>
   )
@@ -20,7 +21,7 @@ function Checkbox({ label, checked, onChange }: { label: string; checked: boolea
     <label className="flex items-center gap-2.5 cursor-pointer select-none">
       <div
         onClick={() => onChange(!checked)}
-        className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${checked ? 'bg-violet-500 border-violet-500' : 'border-zinc-600'}`}
+        className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${checked ? 'bg-[var(--color-accent)] border-[var(--color-accent)]' : 'border-[var(--color-border)]'}`}
       >
         {checked && <Check size={10} strokeWidth={3} className="text-white" />}
       </div>
@@ -143,13 +144,15 @@ export function Preferences() {
         </div>
       </Section>
 
-      <button
+      <Button
+        variant="primary"
+        fullWidth
+        loading={save.isPending}
+        leftIcon={saved ? <Check size={14} /> : undefined}
         onClick={() => save.mutate()}
-        disabled={save.isPending}
-        className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-violet-500 text-white text-sm font-medium hover:bg-violet-400 disabled:opacity-60 transition-all shadow-[0_0_16px_var(--color-accent-glow)]"
       >
-        {saved ? <><Check size={14} /> Saved</> : save.isPending ? 'Saving…' : 'Save Preferences'}
-      </button>
+        {saved ? 'Saved' : 'Save Preferences'}
+      </Button>
     </div>
   )
 }

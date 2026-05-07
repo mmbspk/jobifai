@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Briefcase, SkipForward, AlertCircle, TrendingUp, Star, FileText, Settings, ChevronRight, Sun, Moon, LogOut, Zap,
+  LayoutDashboard, Briefcase, SkipForward, AlertCircle, TrendingUp, Star, FileText, Settings, Sun, Moon, LogOut, Zap,
 } from 'lucide-react'
 import { cn } from '../lib'
 import { useQuery } from '@tanstack/react-query'
@@ -47,7 +47,11 @@ export function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
+      <nav className="flex-1 px-2 py-3 overflow-y-auto">
+        <div className="px-3 mb-2">
+          <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-[var(--color-text-dim)]">Navigation</span>
+        </div>
+        <div className="space-y-0.5">
         {NAV.map(({ to, icon: Icon, label, badge }) => (
           <NavLink
             key={to}
@@ -55,27 +59,27 @@ export function Sidebar() {
             end={to === '/'}
             className={({ isActive }) =>
               cn(
-                'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors',
+                'flex items-center gap-2.5 pl-2.5 pr-3 py-2 rounded-lg text-sm transition-colors',
                 isActive
-                  ? 'bg-violet-500/15 text-violet-300'
-                  : 'text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]',
+                  ? 'bg-[var(--color-surface-2)] text-[var(--color-text)] font-medium border-l-2 border-[var(--color-accent)]'
+                  : 'text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] border-l-2 border-transparent',
               )
             }
           >
             {({ isActive }) => (
               <>
-                <Icon size={15} className={isActive ? 'text-violet-400' : ''} />
+                <Icon size={15} className={isActive ? 'text-[var(--color-accent)]' : ''} />
                 <span className="flex-1">{label}</span>
                 {badge && pendingCount > 0 && (
                   <span className="text-xs bg-violet-500 text-white rounded-full w-4 h-4 flex items-center justify-center font-medium">
                     {pendingCount > 9 ? '9+' : pendingCount}
                   </span>
                 )}
-                {isActive && <ChevronRight size={12} className="text-violet-400/50" />}
               </>
             )}
           </NavLink>
         ))}
+        </div>
       </nav>
 
       {/* Usage */}
@@ -101,7 +105,7 @@ export function Sidebar() {
       <div className="px-3 py-3 border-t border-[var(--color-border)] space-y-2">
         {user && (
           <div className="flex items-center gap-2 min-w-0">
-            <div className="w-6 h-6 rounded-full bg-violet-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+            <div className="w-6 h-6 rounded-full bg-[var(--color-accent)] flex items-center justify-center text-white text-xs font-bold shrink-0">
               {user.display_name?.[0]?.toUpperCase() ?? user.email[0].toUpperCase()}
             </div>
             <span className="text-xs text-[var(--color-text-muted)] truncate flex-1">{user.display_name || user.email}</span>

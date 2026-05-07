@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { ExternalLink, ChevronDown, ChevronRight, TrendingUp, Trash2, CheckCheck, Ban, CircleX, X } from 'lucide-react'
 import { ScorePill } from '../components/ScorePill'
 import { PlatformBadge } from '../components/PlatformBadge'
+import { Button } from '../components/Button'
 import { cn, formatDate, relativeTime } from '../lib'
 import { jobsApi } from '../api/jobs'
 import { settingsApi } from '../api/settings'
@@ -83,7 +84,7 @@ export function TopMatches() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start gap-3 p-3 rounded-lg bg-violet-500/10 border border-violet-500/20 text-violet-300 text-sm">
+      <div className="flex items-start gap-3 p-3 rounded-lg bg-[var(--color-accent-glow)] border border-[var(--color-accent)]/20 text-[var(--color-accent)] text-sm">
         <TrendingUp size={16} className="shrink-0 mt-0.5" />
         <span>
           Jobs that scored at or above your suitability threshold, your best matches waiting for review.
@@ -99,7 +100,7 @@ export function TopMatches() {
         />
       </div>
 
-      <div className="rounded-xl border border-[var(--color-border)] overflow-x-auto">
+      <div className="rounded-xl border border-[var(--color-border)] overflow-auto max-h-[75vh]">
         <table className="w-full table-fixed min-w-[860px] text-sm">
           <colgroup>
             <col className="w-6" />
@@ -114,19 +115,19 @@ export function TopMatches() {
             <col className="w-[50px]" />
             <col className="w-[84px]" />
           </colgroup>
-          <thead className="hidden sm:table-header-group">
+          <thead className="hidden sm:table-header-group sticky top-0 z-10">
             <tr className="border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-              <th className="w-6 text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)]"></th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Posted</th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Company</th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)]">Role</th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Location</th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Platform</th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Due</th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Score</th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Link</th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)] whitespace-nowrap">Applied</th>
-              <th className="text-left px-2 py-2 text-xs font-normal text-[var(--color-text-dim)]"></th>
+              <th className="w-6 text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)]"></th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Posted</th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Company</th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)]">Role</th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Location</th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Platform</th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Due</th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Score</th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Link</th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Applied</th>
+              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)]"></th>
             </tr>
           </thead>
           <tbody>
@@ -227,7 +228,7 @@ export function TopMatches() {
                         ) : (
                           <button title="Blacklist Company" onClick={e => { e.stopPropagation(); setPendingDelete(null); setPendingBlacklist(job.job_id) }} className="text-[var(--color-text-dim)] hover:text-orange-400"><Ban size={13} /></button>
                         )}
-                        <span className="text-[var(--color-border)] select-none">|</span>
+                        <span className="inline-block w-px h-3 bg-[var(--color-border)] self-center" />
                         {pendingDelete === job.job_id ? (
                           <span className="flex items-center gap-1.5">
                             <button title="Confirm delete" onClick={e => { e.stopPropagation(); deleteMutation.mutate(job.job_id) }} disabled={deleteMutation.isPending} className="text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors"><Trash2 size={13} /></button>
@@ -268,14 +269,14 @@ export function TopMatches() {
 
       {hasNextPage && (
         <div className="flex justify-center">
-          <button
+          <Button
+            variant="secondary"
+            leftIcon={<ChevronDown size={14} />}
+            loading={isFetchingNextPage}
             onClick={() => fetchNextPage()}
-            disabled={isFetchingNextPage}
-            className="px-4 py-2 text-sm text-[var(--color-text-muted)] border border-[var(--color-border)] rounded-lg hover:bg-[var(--color-surface-2)] disabled:opacity-50 flex items-center gap-1"
           >
-            <ChevronDown size={14} />
             {isFetchingNextPage ? 'Loading…' : 'Load more'}
-          </button>
+          </Button>
         </div>
       )}
 
