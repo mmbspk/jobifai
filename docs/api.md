@@ -19,6 +19,19 @@ Obtain a token via `POST /auth/login` or `POST /auth/register`. Refresh expired 
 
 ---
 
+## System
+
+### GET /api/system/info
+
+Return server feature flags. Public — no auth required.
+
+- **Auth required**: No
+- **Response**: `200` — `{ "vnc_enabled": true }`
+
+`vnc_enabled` is `true` only when `/usr/share/novnc` exists (i.e. running in the Docker image).
+
+---
+
 ## Auth — User Accounts
 
 ### POST /auth/register
@@ -230,7 +243,25 @@ Return the current bot state.
     "daily_limit": 40
   }
   ```
-  `state` values: `idle` | `running` | `pending_review` | `stopped` | `error`
+  `state` values: `idle` | `running` | `paused` | `pending_review` | `stopped` | `error`
+
+---
+
+### POST /api/bot/pause
+
+Pause the running bot after the current job completes.
+
+- **Auth required**: Yes
+- **Responses**: `200` — `{ "message": "pause signal sent" }` | `404` — bot not running
+
+---
+
+### POST /api/bot/resume
+
+Resume a paused bot.
+
+- **Auth required**: Yes
+- **Responses**: `200` — `{ "message": "resume signal sent" }` | `404` — bot not paused
 
 ---
 
@@ -600,6 +631,16 @@ Set the LLM API key or proxy key.
 
 ---
 
+### DELETE /api/settings/secrets/api-key
+
+Remove a stored LLM API key or proxy key.
+
+- **Auth required**: Yes
+- **Request body**: `{ "key": "llm_api_key" }` (or `"proxy_key"`)
+- **Responses**: `200` — `{ "message": "deleted" }`
+
+---
+
 ### POST /api/settings/secrets/credentials
 
 Store encrypted email/password credentials for a platform.
@@ -607,6 +648,16 @@ Store encrypted email/password credentials for a platform.
 - **Auth required**: Yes
 - **Request body**: `{ "platform": "linkedin", "email": "user@example.com", "password": "..." }`
 - **Responses**: `200` — `{ "message": "saved" }`
+
+---
+
+### DELETE /api/settings/secrets/credentials
+
+Remove stored platform credentials.
+
+- **Auth required**: Yes
+- **Request body**: `{ "platform": "linkedin" }`
+- **Responses**: `200` — `{ "message": "deleted" }`
 
 ---
 
@@ -651,6 +702,23 @@ Serve generated PDF files (resumes, cover letters).
 ---
 
 ## Usage
+
+### GET /api/usage/totals
+
+Return cumulative LLM token usage and estimated cost since the server started, for the authenticated user.
+
+- **Auth required**: Yes
+- **Response**:
+  ```json
+  {
+    "input_tokens": 420000,
+    "output_tokens": 98000,
+    "calls": 312,
+    "estimated_cost_usd": 1.24
+  }
+  ```
+
+---
 
 ### GET /api/usage/session
 

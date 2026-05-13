@@ -17,15 +17,18 @@ func NewWSHandlers(svc *Services) *WSHandlers { return &WSHandlers{svc: svc} }
 // Accepts JWT via ?token= query param (browser WebSocket API cannot set headers)
 // or via Authorization: Bearer header.
 func (h *WSHandlers) Logs(w http.ResponseWriter, r *http.Request) {
+	var userID string
 	if h.svc.TokenManager != nil {
 		tokenStr := r.URL.Query().Get("token")
 		if tokenStr == "" {
 			tokenStr = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		}
-		if _, err := h.svc.TokenManager.Verify(tokenStr); err != nil {
+		claims, err := h.svc.TokenManager.Verify(tokenStr)
+		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		userID = claims.UserID
 	}
 
 	conn, err := websocket.Accept(w, r, wsOptions(r))
@@ -35,7 +38,7 @@ func (h *WSHandlers) Logs(w http.ResponseWriter, r *http.Request) {
 	defer conn.CloseNow()
 
 	if h.svc.Logs != nil {
-		h.svc.Logs.Register(conn)
+		h.svc.Logs.Register(conn, userID)
 		defer h.svc.Logs.Unregister(conn)
 	} else {
 		// Broadcaster not wired, send a single info message.

@@ -160,14 +160,13 @@ func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.svc.DB.ExecContext(r.Context(),
-		"DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?", jobID, userID); err != nil {
-		log.Error().Err(err).Str("job_id", jobID).Msg("review approve: failed to delete pending review")
-	}
-
 	if err := h.svc.Bot.SubmitSync(r.Context(), userID, req); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
+	}
+	if _, err := h.svc.DB.ExecContext(r.Context(),
+		"DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?", jobID, userID); err != nil {
+		log.Error().Err(err).Str("job_id", jobID).Msg("review approve: failed to delete pending review after submission")
 	}
 	okMsg(w, "application submitted")
 }

@@ -11,14 +11,17 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-// Broadcaster fans structured log lines out to all registered WebSocket connections.
+// Broadcaster fans structured log lines out to registered WebSocket connections.
+// Each connection is associated with a userID at registration time. Log entries
+// that carry a "user_id" JSON field are delivered only to the matching connection;
+// entries without that field are broadcast to every connection.
 type Broadcaster struct {
 	mu      sync.RWMutex
-	clients map[*websocket.Conn]struct{}
+	clients map[*websocket.Conn]string // conn → userID
 }
 
 func NewBroadcaster() *Broadcaster {
-	return &Broadcaster{clients: make(map[*websocket.Conn]struct{})}
+	return &Broadcaster{clients: make(map[*websocket.Conn]string)}
 }
 
 // Write implements io.Writer so it can be used as a zerolog output.
@@ -33,12 +36,20 @@ func (b *Broadcaster) Write(p []byte) (int, error) {
 		payload = string(p)
 	}
 
-	// Snapshot connected clients under the read lock, then write outside it.
+	// Determine which user this log entry belongs to, if any.
+	var targetUser string
+	if m, ok := payload.(map[string]any); ok {
+		targetUser, _ = m["user_id"].(string)
+	}
+
+	// Snapshot matching connections under the read lock, then write outside it.
 	// This prevents a slow or stalled WebSocket client from blocking all log writes.
 	b.mu.RLock()
 	conns := make([]*websocket.Conn, 0, len(b.clients))
-	for conn := range b.clients {
-		conns = append(conns, conn)
+	for conn, connUserID := range b.clients {
+		if targetUser == "" || connUserID == targetUser {
+			conns = append(conns, conn)
+		}
 	}
 	b.mu.RUnlock()
 
@@ -49,10 +60,11 @@ func (b *Broadcaster) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Register adds conn to the broadcast set.
-func (b *Broadcaster) Register(conn *websocket.Conn) {
+// Register adds conn to the broadcast set, associated with userID.
+// Pass an empty userID to receive all log entries (no filtering).
+func (b *Broadcaster) Register(conn *websocket.Conn, userID string) {
 	b.mu.Lock()
-	b.clients[conn] = struct{}{}
+	b.clients[conn] = userID
 	b.mu.Unlock()
 }
 

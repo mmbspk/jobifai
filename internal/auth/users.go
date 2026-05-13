@@ -178,7 +178,9 @@ func ConsumeRefreshToken(db *sql.DB, rawToken string) (string, error) {
 		_, _ = db.Exec(`DELETE FROM refresh_tokens WHERE token_hash = ?`, hash)
 		return "", errors.New("refresh token expired")
 	}
-	_, _ = db.Exec(`DELETE FROM refresh_tokens WHERE token_hash = ?`, hash)
+	if _, err := db.Exec(`DELETE FROM refresh_tokens WHERE token_hash = ?`, hash); err != nil {
+		return "", fmt.Errorf("revoke refresh token: %w", err)
+	}
 	return userID, nil
 }
 

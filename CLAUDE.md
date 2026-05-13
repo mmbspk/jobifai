@@ -69,6 +69,7 @@ web/src/
 ```
 make build          — compile Go binary
 make web-build      — compile React frontend → web/dist
+make web-dev        — start Vite dev server (proxies /api → Go on :8080)
 make run            — web-build + build + start server on :8080
 make start          — concurrent dev: Go + Vite dev server
 make dev            — run with air (hot reload)
@@ -79,13 +80,16 @@ make clean          — remove binary + local DB
 make docker         — build Docker image
 make docker-run     — run with persistent volume mounts
 make migrate-status — show current SQLite migration version
+make e2e-server     — build binary and start server with fresh test DB (for Playwright)
+make test-e2e       — build frontend + run Playwright e2e tests
+make test-e2e-ui    — open Playwright interactive UI (local dev only)
 ```
 
 Dev workflow: the app is served from `:8080`. After any change, `make run` rebuilds and restarts everything. No separate Vite dev server is needed for testing.
 
 ## Testing
 
-**No test files exist yet.** When writing tests:
+Test files exist across most packages. When adding new tests:
 
 - Go: use `testing` package + `github.com/stretchr/testify` (assert/require). Add testify first: `go get github.com/stretchr/testify@latest && go mod tidy`.
 - Go handler tests: use `net/http/httptest`. Create DB with a temp file — **do not use `:memory:`** because goose requires a real file path:
@@ -93,8 +97,9 @@ Dev workflow: the app is served from `:8080`. After any change, `make run` rebui
   dbPath := filepath.Join(t.TempDir(), "test.db")
   db, _ := db.Open(dbPath)
   ```
-- Handler auth bypass: create `internal/auth/testing.go` with exported `TestContext(ctx context.Context, userID string) context.Context` so test packages can inject a user ID without depending on unexported context keys.
-- React: add `vitest` + `@testing-library/react` + `@testing-library/user-event` + `jsdom` as devDependencies. Configure `web/vitest.config.ts` with jsdom environment.
+- Handler auth bypass: `internal/auth/testing.go` exports `TestContext(ctx context.Context, userID string) context.Context` so test packages can inject a user ID without depending on unexported context keys.
+- React: `vitest` + `@testing-library/react` + `@testing-library/user-event` + `jsdom` are configured in `web/vitest.config.ts`.
+- E2E: Playwright tests live in `web/e2e/`. Use `make test-e2e` to run them; `make test-e2e-ui` opens the interactive Playwright UI.
 - Run all Go tests: `make test`
 
 ## Field-Agnostic Language

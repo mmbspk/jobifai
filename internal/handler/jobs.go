@@ -181,6 +181,7 @@ func (h *JobHandlers) CannotApply(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&j.ID, &j.Platform, &j.Company, &j.Role, &j.Location,
 			&j.Link, &j.SkipReason, &j.SuitabilityScore, &j.SuitabilityReasoning,
 			&halalRaw, &viewedStr); err != nil {
+			log.Error().Err(err).Msg("cannot-apply jobs: scan row")
 			continue
 		}
 		if len(halalRaw) > 0 {
@@ -208,9 +209,16 @@ func (h *JobHandlers) RequeueCannotApply(w http.ResponseWriter, r *http.Request)
 	userID := auth.UserIDFromCtx(r.Context())
 	jobID := chi.URLParam(r, "job_id")
 
+	tx, err := h.svc.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
 	var company, role, platform, link, location string
 	var score int
-	err := h.svc.DB.QueryRowContext(r.Context(),
+	err = tx.QueryRowContext(r.Context(),
 		`SELECT company, role, platform, link, COALESCE(location,''), COALESCE(suitability_score, 0)
 		 FROM jobs_skipped
 		 WHERE id = ? AND user_id = ? AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`,
@@ -220,17 +228,25 @@ func (h *JobHandlers) RequeueCannotApply(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	_, err = h.svc.DB.ExecContext(r.Context(),
+	if _, err = tx.ExecContext(r.Context(),
 		`INSERT OR REPLACE INTO jobs_pending_review
 		     (job_id, user_id, company, role, location, platform, link, resume_path, cover_letter_path, suitability_score, easy_apply, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, 1, datetime('now'))`,
-		jobID, userID, company, role, location, platform, link, score)
-	if err != nil {
+		jobID, userID, company, role, location, platform, link, score); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
 
-	_, _ = h.svc.DB.ExecContext(r.Context(), `DELETE FROM jobs_skipped WHERE id = ? AND user_id = ?`, jobID, userID)
+	if _, err = tx.ExecContext(r.Context(),
+		`DELETE FROM jobs_skipped WHERE id = ? AND user_id = ?`, jobID, userID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "requeued"})
 }
 
@@ -396,10 +412,17 @@ func (h *JobHandlers) DeletePendingReview(w http.ResponseWriter, r *http.Request
 	userID := auth.UserIDFromCtx(r.Context())
 	jobID := chi.URLParam(r, "job_id")
 
+	tx, err := h.svc.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
 	var company, role, location, platform, link, reasoning string
 	var score int
 	var halalVerdict *string
-	err := h.svc.DB.QueryRowContext(r.Context(),
+	err = tx.QueryRowContext(r.Context(),
 		`SELECT company, role, COALESCE(location,''), platform, COALESCE(link,''),
 		        suitability_score, COALESCE(suitability_reasoning,''), halal_verdict
 		 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID).
@@ -409,20 +432,26 @@ func (h *JobHandlers) DeletePendingReview(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	_, err = h.svc.DB.ExecContext(r.Context(),
-		`DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID)
-	if err != nil {
+	if _, err = tx.ExecContext(r.Context(),
+		`DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
 
-	_, _ = h.svc.DB.ExecContext(r.Context(),
+	if _, err = tx.ExecContext(r.Context(),
 		`INSERT OR IGNORE INTO jobs_skipped
 		     (id, user_id, platform, company, role, location, link, skip_reason,
 		      suitability_score, suitability_reasoning, halal_verdict, viewed_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 'Manual skip', ?, ?, ?, datetime('now'))`,
-		jobID, userID, platform, company, role, location, link, score, reasoning, halalVerdict)
+		jobID, userID, platform, company, role, location, link, score, reasoning, halalVerdict); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
 
+	if err = tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -431,9 +460,16 @@ func (h *JobHandlers) MarkApplied(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	jobID := chi.URLParam(r, "job_id")
 
+	tx, err := h.svc.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
 	var company, role, location, platform, link string
 	var score int
-	err := h.svc.DB.QueryRowContext(r.Context(),
+	err = tx.QueryRowContext(r.Context(),
 		`SELECT company, role, COALESCE(location,''), platform, COALESCE(link,''), suitability_score
 		 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID).
 		Scan(&company, &role, &location, &platform, &link, &score)
@@ -442,18 +478,25 @@ func (h *JobHandlers) MarkApplied(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = h.svc.DB.ExecContext(r.Context(),
+	if _, err = tx.ExecContext(r.Context(),
 		`INSERT OR IGNORE INTO jobs_applied
 		     (id, user_id, platform, company, role, location, link, resume_path, cover_letter_path, suitability_score, applied_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, datetime('now'))`,
-		jobID, userID, platform, company, role, location, link, score)
-	if err != nil {
+		jobID, userID, platform, company, role, location, link, score); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
 
-	_, _ = h.svc.DB.ExecContext(r.Context(),
-		`DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID)
+	if _, err = tx.ExecContext(r.Context(),
+		`DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
 

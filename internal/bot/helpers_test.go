@@ -106,10 +106,10 @@ func TestExtractFirstNumber(t *testing.T) {
 	}{
 		{"14 years", "14"},
 		{"3.5 years experience", "3.5"},
-		{"No number here", "No number here"},
+		{"No number here", "0"}, // no digit → "0" (safe default for numeric form fields)
 		{"42", "42"},
 		{"about 7 to 10 years", "7"},
-		{"", ""},
+		{"", "0"}, // empty → "0"
 	}
 	for _, tc := range cases {
 		t.Run(tc.input, func(t *testing.T) {

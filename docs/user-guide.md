@@ -75,6 +75,7 @@ A status card at the top shows the current bot state:
 |---|---|
 | Idle | Bot is not running |
 | Running | Actively searching and applying |
+| Paused | Paused between jobs; will resume automatically or on request |
 | Pending Review | Paused, waiting for you to approve an application |
 | Stopped | Stopped manually |
 | Error | Stopped due to an error (message shown in the card) |
@@ -173,10 +174,10 @@ The Generate page lets you create documents on demand for any role, independent 
 | Tab | What it does |
 |---|---|
 | Job Fit | Scores how well a posting matches your saved profile (0–10) with a written explanation |
-| Tailored Resume | Generates a PDF resume rewritten by the LLM to match the job description |
+| Resume | Generates a base PDF from your saved profile, or a tailored PDF rewritten by the LLM to match the job description |
 | Cover Letter | Writes and renders a cover letter PDF for the role |
 | Questions | Answers a list of application or interview questions using your profile |
-| Base Resume | Renders your saved profile as a PDF without any tailoring |
+| AI Apply | Applies directly from a job URL using Easy Apply / Quick Apply; detects platform and scores fit before submitting |
 
 For any tab that takes a job as input, you can provide:
 - **Job Posting URL** — the tool fetches and parses the description automatically

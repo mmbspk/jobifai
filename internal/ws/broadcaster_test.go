@@ -39,7 +39,8 @@ func serveWS(t *testing.T, b *jobws.Broadcaster) *httptest.Server {
 		if err != nil {
 			return
 		}
-		b.Register(conn)
+		// Pass empty userID — test connections receive all log entries.
+		b.Register(conn, "")
 		defer func() {
 			b.Unregister(conn)
 			conn.CloseNow()

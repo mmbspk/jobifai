@@ -66,6 +66,8 @@ make web-build      # build React frontend → web/dist
 make build          # compile Go binary
 make clean          # remove binary + local database
 make migrate-status # show current SQLite migration version
+make test-e2e       # build frontend + run Playwright e2e tests
+make test-e2e-ui    # open Playwright interactive UI (local dev only)
 ```
 
 For most changes, `make run` rebuilds both frontend and backend and restarts the server. No separate Vite dev server is required for testing.

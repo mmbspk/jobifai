@@ -153,16 +153,21 @@ func NewRouter(svc *Services) *chi.Mux {
 	// ── Static file serving for generated PDFs ───────────────────────────
 	// Accepts JWT as ?token= (query param) so browser <a> links work without
 	// custom headers, or as the standard Authorization: Bearer header.
+	// Ownership is verified against the authenticated user's job records to
+	// prevent one user from accessing another user's resume/cover-letter PDFs.
 	r.Get("/api/files/*", func(w http.ResponseWriter, r *http.Request) {
+		var userID string
 		if svc.TokenManager != nil {
 			tokenStr := r.URL.Query().Get("token")
 			if tokenStr == "" {
 				tokenStr = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			}
-			if _, err := svc.TokenManager.Verify(tokenStr); err != nil {
+			claims, err := svc.TokenManager.Verify(tokenStr)
+			if err != nil {
 				http.Error(w, `{"message":"unauthorized"}`, http.StatusUnauthorized)
 				return
 			}
+			userID = claims.UserID
 		}
 		p := chi.URLParam(r, "*")
 		base, err := filepath.Abs("job_applications")
@@ -174,6 +179,25 @@ func NewRouter(svc *Services) *chi.Mux {
 		if err != nil || !strings.HasPrefix(target, base+string(filepath.Separator)) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
+		}
+		// Verify the requesting user owns this file — prevents IDOR.
+		if svc.DB != nil && userID != "" {
+			relPath := filepath.Join("job_applications", filepath.ToSlash(p))
+			var exists int
+			_ = svc.DB.QueryRowContext(r.Context(), `
+				SELECT 1 FROM (
+					SELECT 1 FROM jobs_applied
+					WHERE user_id = ? AND (resume_path = ? OR cover_letter_path = ?)
+					UNION ALL
+					SELECT 1 FROM jobs_pending_review
+					WHERE user_id = ? AND (resume_path = ? OR cover_letter_path = ?)
+				) LIMIT 1`,
+				userID, relPath, relPath, userID, relPath, relPath,
+			).Scan(&exists)
+			if exists == 0 {
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
 		}
 		http.ServeFile(w, r, target)
 	})

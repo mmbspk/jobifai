@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/config"
@@ -21,6 +22,10 @@ const (
 	keyWorkPreferences = "work_preferences"
 	keyResumeProfile   = "resume_profile"
 )
+
+// nominatimClient is used for location autocomplete calls. A short timeout
+// prevents the handler goroutine from blocking indefinitely on a slow upstream.
+var nominatimClient = &http.Client{Timeout: 5 * time.Second}
 
 // SettingsHandlers groups all settings/configuration handlers.
 type SettingsHandlers struct{ svc *Services }
@@ -379,7 +384,7 @@ func fetchLocationSuggestions(ctx context.Context, q string) ([]string, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "jobifai/1.0")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := nominatimClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
