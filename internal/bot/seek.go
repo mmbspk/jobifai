@@ -50,7 +50,38 @@ type seekJob struct {
 	EasyApply      bool   // true when Seek shows a Quick Apply button (Seek-hosted form)
 }
 
-// ── Session helpers ───────────────────────────────────────────────────────
+// detectSeekEasyApply returns true when the job page has a Seek-hosted Quick
+// Apply button (i.e. the apply flow stays on seek.com.au rather than redirecting
+// to an external ATS). Used by Manager.ApplyFromURL for the pre-apply check.
+func detectSeekEasyApply(page *rod.Page) bool {
+	elems, err := page.Elements(
+		"[data-automation='job-detail-apply'], [data-automation='job-detail-apply-link'], button[data-automation*='apply']",
+	)
+	if err != nil || len(elems) == 0 {
+		return false
+	}
+	btn := elems[0]
+	if txt, err := btn.Text(); err == nil && strings.Contains(strings.ToLower(stripInvisible(strings.TrimSpace(txt))), "quick apply") {
+		return true
+	}
+	href, _ := btn.Attribute("href")
+	if href == nil {
+		return true // no href = Seek-hosted modal
+	}
+	h := *href
+	return h == "" || strings.HasPrefix(h, "/") || strings.Contains(h, "seek.com")
+}
+
+
+
+// detectSeekPageApplied returns true when the Seek job page shows that the user
+// has already applied (the applied-date-message element is present).
+func detectSeekPageApplied(page *rod.Page) bool {
+	res, err := page.Eval(`() => !!document.getElementById('applied-date-message')`)
+	return err == nil && res.Value.Bool()
+}
+
+
 
 // isSeekLoginPage returns true when the URL indicates Seek has redirected the
 // browser to a login or OAuth page — meaning the saved session is expired.
@@ -173,10 +204,10 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 	if err := page.Navigate(searchURL); err != nil {
 		return nil, fmt.Errorf("navigate: %w", err)
 	}
-	if err := page.WaitLoad(); err != nil {
+	if err := page.Timeout(30 * time.Second).WaitLoad(); err != nil {
 		return nil, fmt.Errorf("wait load: %w", err)
 	}
-	_ = page.WaitStable(500 * time.Millisecond)
+	_ = page.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
 	log.Info().Str("keyword", keyword).Msg("seek: page loaded, scraping cards")
 
 	cap := b.cfg.Settings.MaxJobsPerKeyword
@@ -364,8 +395,8 @@ func (b *Bot) resolveSeekLocation(page *rod.Page, locInput string) string {
 	if err := page.Navigate("https://au.seek.com/jobs"); err != nil {
 		return locInput
 	}
-	_ = page.WaitLoad()
-	_ = page.WaitStable(1 * time.Second)
+	_ = page.Timeout(30 * time.Second).WaitLoad()
+	_ = page.Timeout(5 * time.Second).WaitStable(1 * time.Second)
 
 	whereEl, err := page.Element("#SearchBar__Where")
 	if err != nil {
@@ -790,11 +821,15 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 	}()
 
-	if err := page.WaitLoad(); err != nil {
-		return fmt.Errorf("wait load: %w", err)
+	// Only wait for load if the page hasn't already fired its load event.
+	// Calling WaitLoad() on an already-loaded page blocks forever (no future event).
+	if ready, err := page.Eval(`() => document.readyState`); err != nil || ready.Value.String() != "complete" {
+		if err := page.Timeout(30 * time.Second).WaitLoad(); err != nil {
+			return fmt.Errorf("wait load: %w", err)
+		}
 	}
 	// Give auth0-spa-js time to complete its silent re-auth via hidden iframe.
-	_ = page.WaitStable(3 * time.Second)
+	_ = page.Timeout(5 * time.Second).WaitStable(3 * time.Second)
 
 	// Persist the freshly-rotated refresh token so the NEXT browser launch
 	// starts with a valid token (auth0 rotation means the token used to land
@@ -875,8 +910,8 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if isSubmit {
 			log.Info().Msgf("seek: submit clicked (%q), verifying confirmation", btnText)
 			b.humanPause()
-			_ = page.WaitLoad()
-			_ = page.WaitStable(2 * time.Second)
+			_ = page.Timeout(15 * time.Second).WaitLoad()
+			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 
 			// 1. Seek data-automation attributes for success/confirmation.
 			if _, verr := page.Timeout(8 * time.Second).Element(
@@ -924,8 +959,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 
 		log.Info().Msgf("seek: form step %d, clicked %q", step+1, btnText)
 		b.humanPause()
-		_ = page.WaitLoad()
-		_ = page.WaitStable(500 * time.Millisecond)
+		_ = page.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
 	}
 
 	return fmt.Errorf("could not complete Quick Apply: exceeded maximum form steps")
@@ -937,10 +971,10 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 // Returns (true, nil) if still on a login page after the timeout — meaning
 // the session is genuinely expired. Returns (false, nil) on success.
 func (b *Bot) seekWaitPastLogin(page *rod.Page) (onLogin bool, err error) {
-	if err := page.WaitLoad(); err != nil {
-		return false, err
-	}
-	_ = page.WaitStable(2 * time.Second)
+	// Quick Apply may open a SPA modal (no navigation) or redirect to login (navigation).
+	// Use a short timeout: no load event in 4s means modal opened — not a login redirect.
+	_ = page.Timeout(4 * time.Second).WaitLoad()
+	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 
 	info, err := page.Info()
 	if err != nil || !isSeekLoginPage(info.URL) {
@@ -959,8 +993,8 @@ func (b *Bot) seekWaitPastLogin(page *rod.Page) (onLogin bool, err error) {
 		}
 		if !isSeekLoginPage(cur.URL) {
 			log.Info().Msgf("seek: auth0 silently redirected to form (%s)", cur.URL)
-			_ = page.WaitLoad()
-			_ = page.WaitStable(2 * time.Second)
+			_ = page.Timeout(15 * time.Second).WaitLoad()
+			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 			return false, nil
 		}
 	}
@@ -1023,9 +1057,9 @@ func (b *Bot) seekPersistSession(page *rod.Page) {
 // seekClickQuickApply finds the Quick Apply button, checks it's not external,
 // and clicks it. Extracted so seekApply can call it twice (initial + post-login retry).
 func (b *Bot) seekClickQuickApply(page *rod.Page) error {
-	applyBtn, err := page.Element("[data-automation='job-detail-apply']")
+	applyBtn, err := page.Timeout(8 * time.Second).Element("[data-automation='job-detail-apply']")
 	if err != nil {
-		applyBtn, err = page.Element("a[href*='/apply'], button[data-automation*='apply']")
+		applyBtn, err = page.Timeout(8 * time.Second).Element("a[href*='/apply'], button[data-automation*='apply']")
 		if err != nil {
 			return fmt.Errorf("apply button not found: %w", err)
 		}
@@ -1200,7 +1234,7 @@ func seekHandleResumeLimitDialog(page *rod.Page) error {
 	time.Sleep(300 * time.Millisecond)
 
 	// Click the delete button — dialog closes and deletion proceeds in background.
-	deleteBtn, btnErr := page.Element(`[data-automation="10-resume-delete"]`)
+	deleteBtn, btnErr := page.Timeout(8 * time.Second).Element(`[data-automation="10-resume-delete"]`)
 	if btnErr != nil {
 		return fmt.Errorf("delete button not found: %w", btnErr)
 	}

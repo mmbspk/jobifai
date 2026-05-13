@@ -48,16 +48,17 @@ type PlatformSession struct {
 // ─── Jobs ──────────────────────────────────────────────────────────────────
 
 type AppliedJob struct {
-	ID               string    `json:"id"`
-	Platform         Platform  `json:"platform"`
-	Company          string    `json:"company"`
-	Role             string    `json:"role"`
-	Location         string    `json:"location,omitempty"`
-	Link             string    `json:"link"`
-	ResumePath       string    `json:"resume_path,omitempty"`
-	CoverLetterPath  string    `json:"cover_letter_path,omitempty"`
-	SuitabilityScore int       `json:"suitability_score,omitempty"`
-	AppliedAt        time.Time `json:"applied_at"`
+	ID               string        `json:"id"`
+	Platform         Platform      `json:"platform"`
+	Company          string        `json:"company"`
+	Role             string        `json:"role"`
+	Location         string        `json:"location,omitempty"`
+	Link             string        `json:"link"`
+	ResumePath       string        `json:"resume_path,omitempty"`
+	CoverLetterPath  string        `json:"cover_letter_path,omitempty"`
+	SuitabilityScore int           `json:"suitability_score,omitempty"`
+	HalalVerdict     *HalalVerdict `json:"halal_verdict,omitempty"`
+	AppliedAt        time.Time     `json:"applied_at"`
 }
 
 // HalalVerdict holds the result of an Islamic employment ethics evaluation.

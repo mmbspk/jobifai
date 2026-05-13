@@ -320,14 +320,22 @@ func (h *JobHandlers) GetJob(w http.ResponseWriter, r *http.Request) {
 
 	var aj domain.AppliedJob
 	var appliedStr string
+	var ajHalal []byte
 	err := h.svc.DB.QueryRowContext(r.Context(),
 		`SELECT id,platform,company,role,COALESCE(location,''),link,
-		        COALESCE(resume_path,''),COALESCE(cover_letter_path,''),applied_at
+		        COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
+		        COALESCE(suitability_score,0),halal_verdict,applied_at
 		 FROM jobs_applied WHERE id = ? AND user_id = ?`, jobID, userID,
 	).Scan(&aj.ID, &aj.Platform, &aj.Company, &aj.Role, &aj.Location,
-		&aj.Link, &aj.ResumePath, &aj.CoverLetterPath, &appliedStr)
+		&aj.Link, &aj.ResumePath, &aj.CoverLetterPath, &aj.SuitabilityScore, &ajHalal, &appliedStr)
 	if err == nil {
 		aj.AppliedAt = logParseTime(appliedStr, "applied_at")
+		if len(ajHalal) > 0 {
+			var v domain.HalalVerdict
+			if json.Unmarshal(ajHalal, &v) == nil {
+				aj.HalalVerdict = &v
+			}
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": jobID, "status": "applied", "applied_job": aj})
 		return
 	}

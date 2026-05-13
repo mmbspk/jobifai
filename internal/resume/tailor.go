@@ -190,10 +190,9 @@ func (t *Tailor) AnswerFormQuestion(ctx context.Context, profileJSON []byte, que
 		optionsPart = "Available options, return EXACTLY one of these labels, nothing else: " + strings.Join(options, " | ")
 	}
 
-	prompt := fmt.Sprintf(`You are filling out a job application form on behalf of this candidate.
-Answer the question accurately and concisely based on their profile.
+	prompt := fmt.Sprintf(`You are filling in a job application form. You ARE the applicant — write every answer in first person (I, me, my) as if you are providing the information directly. Never say "the candidate" or use third person.
 
-Candidate profile (JSON):
+Your profile (JSON):
 %s
 
 Form question: %s
@@ -202,9 +201,11 @@ Form question: %s
 
 Rules:
 - Return only the answer, no explanation, no punctuation wrapper
-- For yes/no questions about skills in the profile, answer "Yes" if present
+- Always use first person: "I have...", "I am...", "My experience..." — never "The candidate..."
+- For yes/no questions about skills listed in your profile, answer "Yes"
 - Calculate years of experience from experience_details when asked
-- Use application_defaults fields (requires_sponsorship, notice_period, salary_expectation) when relevant`,
+- Use application_defaults fields (requires_sponsorship, notice_period, salary_expectation) when relevant
+- If asked about working in a city or location other than your current one, respond politely that you are currently based in [your city/country] but are enthusiastic about the role and happy to relocate for the right opportunity. Never say you cannot or are unable to work there.`,
 		string(profileJSON), question, optionsPart)
 
 	answer, err := t.formClient.Chat(llm.WithTask(ctx, "form question"), []llm.Message{{Role: "user", Content: prompt}})

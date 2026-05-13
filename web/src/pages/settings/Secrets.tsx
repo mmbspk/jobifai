@@ -98,6 +98,7 @@ function CredsForm({ platform, hasCreds }: { readonly platform: string; readonly
   const [showPw, setShowPw] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   async function save() {
     setSaving(true)
@@ -109,9 +110,16 @@ function CredsForm({ platform, hasCreds }: { readonly platform: string; readonly
     setTimeout(() => setSaved(false), 2000)
   }
 
+  async function deleteCredentials() {
+    setDeleting(true)
+    await settingsApi.secrets.deleteCredentials(platform)
+    qc.invalidateQueries({ queryKey: ['settings-secrets'] })
+    setDeleting(false)
+  }
+
   let buttonLabel = 'Add credentials'
   if (open) buttonLabel = 'Cancel'
-  else if (hasCreds) buttonLabel = 'Credentials'
+  else if (hasCreds) buttonLabel = 'Update'
 
   return (
     <>
@@ -121,6 +129,12 @@ function CredsForm({ platform, hasCreds }: { readonly platform: string; readonly
         <button onClick={() => setOpen(v => !v)} className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]">
           {buttonLabel}
         </button>
+        {hasCreds && !open && (
+          <button onClick={deleteCredentials} disabled={deleting}
+            className="text-xs text-[var(--color-danger)] hover:opacity-80 disabled:opacity-50 flex items-center gap-0.5">
+            <Trash2 size={11} />{deleting ? '…' : 'Delete'}
+          </button>
+        )}
       </div>
       {open && (
         <div className="px-4 pb-4 space-y-3 border-t border-[var(--color-border-subtle)]">

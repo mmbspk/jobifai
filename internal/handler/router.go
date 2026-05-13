@@ -96,6 +96,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/review/pending", botH.ReviewListPending)
 			r.Post("/review/{job_id}/approve", botH.ReviewApprove)
 			r.Post("/review/{job_id}/reject", botH.ReviewReject)
+			r.Post("/apply-url", botH.ApplyURL)
 		})
 
 		// ── Jobs ─────────────────────────────────────────────────────────
@@ -138,6 +139,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/secrets/api-key", settings.SecretsSetAPIKey)
 				r.Delete("/secrets/api-key", settings.SecretsDeleteAPIKey)
 			r.Post("/secrets/credentials", settings.SecretsSetCredentials)
+			r.Delete("/secrets/credentials", settings.SecretsDeleteCredentials)
 			r.Get("/styles", settings.StylesList)
 			r.Get("/markets", settings.MarketsList)
 			r.Get("/locations/suggest", settings.LocationSuggest)

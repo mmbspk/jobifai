@@ -200,6 +200,48 @@ const jsScanFields = `() => {
 		fields.push({ type: 'radio', name: r.name || groupKey, question, options });
 	});
 
+	// ── Checkbox groups (Lever ATS / LinkedIn consent questions) ─────────────
+	// Group by shared fieldset. Skip LinkedIn's "follow company" checkbox.
+	const seenCb = new Set();
+	allInDOM(container, 'input[type="checkbox"]').filter(isContainerVisible).forEach(cb => {
+		if (cb.id === 'follow-company-checkbox' || (cb.name || '').includes('follow-company')) return;
+		const groupEl = cb.closest('fieldset, [role="group"], [data-test-form-element], .artdeco-form-element, .fb-form-element')
+		               || cb.parentElement?.parentElement;
+		const groupKey = (groupEl && (groupEl.id || groupEl.getAttribute('data-test-form-element'))) || cb.name || cb.id || '';
+		if (groupKey && seenCb.has(groupKey)) return;
+		if (groupKey) seenCb.add(groupKey);
+
+		let all;
+		if (cb.name) {
+			all = allInDOM(container, 'input[type="checkbox"]').filter(x => x.name === cb.name && isContainerVisible(x));
+		} else if (groupEl) {
+			all = allInDOM(groupEl, 'input[type="checkbox"]').filter(isContainerVisible);
+		} else {
+			all = [cb];
+		}
+		if (all.length === 0 || all.every(x => x.checked)) return;
+
+		let question = '';
+		{
+			let node = cb.parentElement;
+			for (let i = 0; i < 8 && node && node !== document.body; i++, node = node.parentElement) {
+				const leg = [...(node.children || [])].find(c => c.tagName === 'LEGEND');
+				if (leg) { question = leg.textContent.trim(); break; }
+			}
+		}
+		if (!question && groupEl) {
+			const fb = groupEl.querySelector('legend, span[class*="label"], div[class*="label"], label:not(:has(input))');
+			question = fb ? fb.textContent.trim() : (cb.name || cb.id || '');
+		}
+
+		const options = all.map(x => {
+			const lbl = labelFor(x.id) || x.closest('label') || x.parentElement;
+			return { id: x.id, value: x.value || x.id,
+			         label: (lbl ? lbl.textContent : (x.value || x.id)).replace(/\s+/g, ' ').trim() };
+		});
+		fields.push({ type: 'checkbox', name: cb.name || groupKey, question, options });
+	});
+
 	// ── Native <select>, unset / at placeholder ──────────────────────────────
 	allInDOM(container, 'select').filter(isVisible).forEach((sel, i) => {
 		const blank = !sel.value || sel.selectedIndex <= 0
@@ -325,6 +367,25 @@ const jsFillSelect = `(id, value) => {
 		setter.call(sel, value);
 	} catch(e) { sel.value = value; }
 	sel.dispatchEvent(new Event('change', { bubbles: true }));
+	return true;
+}`
+
+// jsFillCheckbox checks a single checkbox by element ID, dispatching click+change events.
+const jsFillCheckbox = `(id) => {
+	function allInDOM(root, sel) {
+		const r = [];
+		try {
+			r.push(...root.querySelectorAll(sel));
+			for (const e of root.querySelectorAll('*')) if (e.shadowRoot) r.push(...allInDOM(e.shadowRoot, sel));
+		} catch(e) {}
+		return r;
+	}
+	const cb = allInDOM(document, 'input[type="checkbox"]').find(e => e.id === id);
+	if (!cb) return false;
+	if (!cb.checked) {
+		cb.click();
+		cb.dispatchEvent(new Event('change', { bubbles: true }));
+	}
 	return true;
 }`
 
@@ -528,7 +589,7 @@ func extractFirstNumber(s string) string {
 	if m := reNumber.FindString(s); m != "" {
 		return m
 	}
-	return s
+	return "0" // no digit found → "no experience" = 0; prevents prose text in numeric fields
 }
 
 // fillFormStep scans the current form page/modal step for unanswered fields and
@@ -582,22 +643,18 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			return [...root.querySelectorAll('input:not([type="hidden"]), select, textarea')]
 				.filter(isVisible).length;
 		}`
+		hasVisibleButUnscanned := false
 		if probe, err := page.Eval(jsHasVisibleFormContent); err == nil {
 			if n := probe.Value.Int(); n > 0 {
 				log.Warn().Int("visible_inputs", n).Msg("form: jsScanFields returned 0 fields but DOM has visible inputs, possible selector break")
-				var shot []byte
-				if shot, err = page.Screenshot(false, nil); err == nil {
-					fname := fmt.Sprintf("debug_zero_fields_%d.png", time.Now().UnixMilli())
-					_ = os.WriteFile(fname, shot, 0o644)
-					log.Warn().Str("file", fname).Msg("form: screenshot saved for selector-break diagnosis")
+				if shot, err := page.Screenshot(false, nil); err == nil {
+					_ = os.WriteFile("debug_zero_fields.png", shot, 0o644)
+					log.Warn().Msg("form: screenshot saved for selector-break diagnosis")
 				}
-				// LLM vision fallback intentionally disabled: it re-fills already-typed
-				// typeahead fields as plain text on every iteration, causing an infinite loop.
+				hasVisibleButUnscanned = true
 			}
 		}
-		if len(fields) == 0 {
-			return false, false
-		}
+		return false, hasVisibleButUnscanned
 	}
 	// Log each found field so we can debug what's being detected.
 	for _, f := range fields {
@@ -681,6 +738,32 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 			log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: radio answered")
 			filled = true
+
+		case "checkbox":
+			answer := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())
+			if answer == "" && len(f.Options) > 0 {
+				answer = f.Options[0].Label
+				log.Warn().Str("question", f.Question).Str("fallback", f.Options[0].Label).Msg("form: checkbox fallback to first option")
+			}
+			var targetID string
+			for _, opt := range f.Options {
+				if strings.EqualFold(strings.TrimSpace(opt.Label), strings.TrimSpace(answer)) ||
+					strings.Contains(strings.ToLower(opt.Label), strings.ToLower(strings.TrimSpace(answer))) {
+					targetID = opt.ID
+					break
+				}
+			}
+			if targetID == "" && len(f.Options) > 0 {
+				targetID = f.Options[0].ID
+			}
+			if targetID != "" {
+				if _, err := page.Eval(jsFillCheckbox, targetID); err == nil {
+					log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: checkbox answered")
+					filled = true
+				} else {
+					log.Warn().Err(err).Str("question", f.Question).Msg("form: checkbox fill failed")
+				}
+			}
 
 		case "select":
 			answer := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())

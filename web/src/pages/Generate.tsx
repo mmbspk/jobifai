@@ -1,20 +1,23 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useRef, useEffect } from 'react'
 import { FileText, Download, Loader2, Upload, X, AlertTriangle, ChevronDown, ArrowRight, Plus, Trash2, Copy, Check } from 'lucide-react'
 import { cn, downloadBlob } from '../lib'
 import { resumeApi } from '../api/resume'
 import { settingsApi } from '../api/settings'
+import { botApi } from '../api/bot'
+import type { ApplyURLResponse } from '../api/bot'
 import { ApiError } from '../api/client'
 import { ScorePill } from '../components/ScorePill'
 import type { HalalVerdict, QuestionAnswer } from '../types'
 
-type Tab = 'resume' | 'cover' | 'questions' | 'evaluate'
+type Tab = 'resume' | 'cover' | 'questions' | 'evaluate' | 'apply'
 
 const TABS: { key: Tab; label: string; desc: string }[] = [
   { key: 'evaluate',  label: 'Job Fit',      desc: 'Score how well a job matches your profile' },
   { key: 'resume',    label: 'Resume',        desc: '' },
   { key: 'cover',     label: 'Cover Letter',  desc: 'AI-written cover letter' },
   { key: 'questions', label: 'Questions',     desc: 'Answer application or interview questions for a job' },
+  { key: 'apply',     label: 'AI Apply',      desc: 'Apply directly from a job URL using Easy Apply / Quick Apply' },
 ]
 
 const STEPS: Record<string, string[]> = {
@@ -24,12 +27,19 @@ const STEPS: Record<string, string[]> = {
   cover_base:      ['Loading profile…', 'Writing cover letter…', 'Rendering PDF…'],
   evaluate:        ['Fetching job description…', 'Evaluating fit…'],
   questions:       ['Fetching job description…', 'Answering questions…'],
+  apply:           ['Detecting platform…', 'Scoring job fit…', 'Verifying Easy Apply…', 'Submitting application…'],
 }
 
 const INPUT_CLS = 'w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50'
 
 export function Generate() {
-  const [tab, setTab] = useState<Tab>('evaluate')
+  const [tab, setTab] = useState<Tab>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('jobifai:ai-apply') ?? 'null') as { url?: string; response?: ApplyURLResponse } | null
+      if (saved?.url || saved?.response) return 'apply'
+    } catch { /* ignore */ }
+    return 'evaluate'
+  })
   const [jobUrl, setJobUrl] = useState('')
   const [jobDesc, setJobDesc] = useState('')
   const [market, setMarket] = useState('')
@@ -54,8 +64,34 @@ export function Generate() {
   const [optionsOpen, setOptionsOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  // AI Apply tab state — persisted to localStorage so it survives tab switches and refreshes
+  const qc = useQueryClient()
+  const [applyLoading, setApplyLoading] = useState(false)
+  const [applyStep, setApplyStep] = useState(0)
+  const [applyError, setApplyError] = useState<string | null>(null)
+  const [applyUrl, setApplyUrl] = useState<string>(() => {
+    try { return (JSON.parse(localStorage.getItem('jobifai:ai-apply') ?? 'null') as { url: string } | null)?.url ?? '' } catch { return '' }
+  })
+  const [applyResponse, setApplyResponse] = useState<ApplyURLResponse | null>(() => {
+    try { return (JSON.parse(localStorage.getItem('jobifai:ai-apply') ?? 'null') as { response: ApplyURLResponse } | null)?.response ?? null } catch { return null }
+  })
+  useEffect(() => {
+    if (applyResponse || applyUrl) {
+      localStorage.setItem('jobifai:ai-apply', JSON.stringify({ response: applyResponse, url: applyUrl }))
+    } else {
+      localStorage.removeItem('jobifai:ai-apply')
+    }
+  }, [applyResponse, applyUrl])
+
   const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
   const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
+
+  const [marketTouched, setMarketTouched] = useState(false)
+  useEffect(() => {
+    if (!marketTouched && generalSettings?.default_resume_market) {
+      setMarket(generalSettings.default_resume_market)
+    }
+  }, [generalSettings?.default_resume_market, marketTouched])
 
   const visibleTabs = TABS.filter(t => t.key !== 'questions' || (generalSettings?.interview_questions_enabled ?? true))
 
@@ -65,6 +101,58 @@ export function Generate() {
     setPromptHint(''); setJobDesc('')
     setLinkedinUrl(''); setGithubUrl(''); setResumeFile(null)
     if (fileRef.current) fileRef.current.value = ''
+    // AI Apply state intentionally not cleared here — it persists across tab switches
+  }
+
+  async function applyJob() {
+    setApplyLoading(true)
+    setApplyError(null)
+    setApplyResponse(null)
+    setApplyStep(0)
+    const stepDelays = [0, 8000, 20000, 35000]
+    const stepTimers: ReturnType<typeof setTimeout>[] = []
+    STEPS.apply.forEach((_, i) => {
+      if (i > 0) stepTimers.push(setTimeout(() => setApplyStep(i), stepDelays[i]))
+    })
+    try {
+      const res = await botApi.applyFromURL(applyUrl, market)
+      setApplyResponse(res)
+      if (res.status === 'applied') qc.invalidateQueries({ queryKey: ['jobs-applied'] })
+    } catch (e: unknown) {
+      setApplyError(e instanceof Error ? e.message : 'Apply failed')
+    } finally {
+      stepTimers.forEach(clearTimeout)
+      setApplyLoading(false)
+    }
+  }
+
+  async function applyAnyway() {
+    setApplyLoading(true)
+    setApplyError(null)
+    setApplyStep(0)
+    const stepDelays = [0, 8000, 20000, 35000]
+    const stepTimers: ReturnType<typeof setTimeout>[] = []
+    STEPS.apply.forEach((_, i) => {
+      if (i > 0) stepTimers.push(setTimeout(() => setApplyStep(i), stepDelays[i]))
+    })
+    try {
+      const res = await botApi.applyFromURL(applyUrl, market, true)
+      setApplyResponse(res)
+      if (res.status === 'applied' || res.status === 'already_applied') {
+        qc.invalidateQueries({ queryKey: ['jobs-applied'] })
+      }
+    } catch (e: unknown) {
+      setApplyError(e instanceof Error ? e.message : 'Apply failed')
+    } finally {
+      stepTimers.forEach(clearTimeout)
+      setApplyLoading(false)
+    }
+  }
+
+  async function skipJob() {
+    if (!applyResponse?.job_id) return
+    try { await botApi.reviewReject(applyResponse.job_id) } catch { /* ignore */ }
+    setApplyResponse(null)
   }
 
   async function runQuestionsTab() {
@@ -150,7 +238,8 @@ export function Generate() {
   const needsUrl = tab === 'evaluate' || tab === 'questions'
   const hasJobInput = jobUrl.trim().startsWith('http') || jobDesc.trim().length > 20
   const hasQuestions = questions.some(q => q.value.trim().length > 0)
-  const canGenerate = !loading && (!needsUrl || hasJobInput) && (tab !== 'questions' || hasQuestions)
+  const canGenerate = !loading && tab !== 'apply' && (!needsUrl || hasJobInput) && (tab !== 'questions' || hasQuestions)
+  const canApply = !applyLoading && !applyError && applyUrl.trim().startsWith('http')
   const filename = tab === 'cover' ? 'cover-letter.pdf' : 'resume.pdf'
 
   let tabDesc: string
@@ -162,6 +251,8 @@ export function Generate() {
     tabDesc = hasJobInput
       ? 'AI-written cover letter tailored to a job posting'
       : 'Write a cover letter from your saved profile — add a job posting to tailor it'
+  } else if (tab === 'apply') {
+    tabDesc = 'Paste a LinkedIn or Seek job URL — AI will score it, check for Easy / Quick Apply, and submit on your behalf'
   } else {
     tabDesc = TABS.find(t => t.key === tab)?.desc ?? ''
   }
@@ -228,7 +319,7 @@ export function Generate() {
     </div>
   )
 
-  const GENERATE_LABEL: Record<Tab, string> = { evaluate: 'Evaluate', questions: 'Answer Questions', resume: hasJobInput ? 'Generate' : 'Generate Base', cover: hasJobInput ? 'Generate' : 'Generate Base' }
+  const GENERATE_LABEL: Record<Tab, string> = { evaluate: 'Evaluate', questions: 'Answer Questions', resume: hasJobInput ? 'Generate' : 'Generate Base', cover: hasJobInput ? 'Generate' : 'Generate Base', apply: 'AI Apply' }
   const generateLabel = GENERATE_LABEL[tab]
 
   return (
@@ -248,18 +339,18 @@ export function Generate() {
       <div className="text-sm text-[var(--color-text-muted)]">{tabDesc}</div>
 
       {/* Target Market, not relevant for Job Fit evaluation */}
-      {markets.length > 0 && tab !== 'evaluate' && tab !== 'questions' && (
+      {markets.length > 0 && (tab === 'resume' || tab === 'cover' || tab === 'apply') && (
         <div>
           <p className="text-xs text-[var(--color-text-dim)] mb-2">Target Market</p>
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => setMarket('')}
+            <button onClick={() => { setMarket(''); setMarketTouched(true) }}
               className={cn('px-3 py-1.5 rounded-lg text-xs border transition-all',
                 market === ''
                   ? 'border-violet-500/60 bg-violet-500/15 text-violet-300'
                   : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] bg-[var(--color-surface)]')}
             >Generic</button>
             {markets.filter(m => m.name !== 'Generic').map(m => (
-              <button key={m.yaml_file} onClick={() => setMarket(m.name)}
+              <button key={m.yaml_file} onClick={() => { setMarket(m.name); setMarketTouched(true) }}
                 className={cn('px-3 py-1.5 rounded-lg text-xs border transition-all',
                   market === m.name
                     ? 'border-violet-500/60 bg-violet-500/15 text-violet-300'
@@ -413,7 +504,125 @@ export function Generate() {
         </>
       )}
 
+      {/* AI Apply tab */}
+      {tab === 'apply' && (
+        <>
+          <div>
+            <p className="text-xs text-[var(--color-text-dim)] mb-2">
+              Job Posting URL <span className="text-red-400">*</span>
+            </p>
+            <input value={applyUrl} onChange={e => setApplyUrl(e.target.value)}
+              placeholder="https://linkedin.com/jobs/view/… or https://seek.com.au/job/…"
+              className={INPUT_CLS.replace('py-2', 'py-2.5')}
+            />
+          </div>
+
+          <button onClick={applyJob} disabled={!canApply}
+            className={cn('w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all',
+              canApply
+                ? 'bg-violet-500 text-white hover:bg-violet-400 shadow-[0_0_20px_var(--color-accent-glow)]'
+                : 'bg-[var(--color-surface-2)] text-[var(--color-text-dim)] cursor-not-allowed')}
+          >
+            {applyLoading ? <Loader2 size={15} className="animate-spin" /> : <ArrowRight size={15} />}
+            AI Apply
+          </button>
+
+          {applyLoading && (
+            <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-6 text-center space-y-3">
+              <Loader2 size={24} className="mx-auto text-violet-400 animate-spin" />
+              <div className="text-sm text-violet-300">{STEPS.apply[applyStep]}</div>
+              <div className="flex justify-center gap-1">
+                {STEPS.apply.map((label, i) => (
+                  <div key={label} className={cn('h-1 rounded-full transition-all',
+                    i <= applyStep ? 'w-6 bg-violet-400' : 'w-2 bg-violet-500/20')} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {applyError && !applyLoading && (
+            <div className="relative rounded-xl border border-red-500/30 bg-red-500/5 p-5">
+              <button onClick={() => setApplyError(null)}
+                className="absolute top-3 right-3 text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] transition-colors">
+                <X size={14} />
+              </button>
+              <p className="text-sm font-medium text-red-400">Application failed</p>
+              <p className="text-sm text-[var(--color-text-muted)] mt-1">{applyError}</p>
+            </div>
+          )}
+
+          {applyResponse?.status === 'already_applied' && !applyLoading && (
+            <div className="relative rounded-xl border border-sky-500/30 bg-sky-500/5 p-5">
+              <button onClick={() => setApplyResponse(null)}
+                className="absolute top-3 right-3 text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] transition-colors">
+                <X size={14} />
+              </button>
+              <p className="text-sm font-medium text-sky-400">Already applied</p>
+              <p className="text-sm text-[var(--color-text-muted)] mt-1">
+                You've already applied to <strong>{applyResponse.role}</strong> at <strong>{applyResponse.company}</strong>.
+              </p>
+            </div>
+          )}
+
+          {applyResponse?.status === 'not_easy_apply' && !applyLoading && (
+            <div className="relative rounded-xl border border-slate-500/30 bg-slate-500/5 p-5">
+              <button onClick={() => setApplyResponse(null)}
+                className="absolute top-3 right-3 text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] transition-colors">
+                <X size={14} />
+              </button>
+              <p className="text-sm font-medium text-[var(--color-text-muted)]">No Easy Apply</p>
+              <p className="text-sm text-[var(--color-text-dim)] mt-1">
+                {applyResponse.role && applyResponse.company
+                  ? <><strong>{applyResponse.role}</strong> at <strong>{applyResponse.company}</strong> — </>
+                  : null}
+                {applyResponse.message ?? 'This job does not support Easy Apply / Quick Apply. It has been added to your Top Matches for manual application.'}
+              </p>
+            </div>
+          )}
+
+          {applyResponse?.status === 'score_warning' && !applyLoading && (
+            <div className="rounded-xl border border-amber-500/40 bg-amber-500/8 p-5 space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-amber-300">Score below your threshold</p>
+                  <p className="text-xs text-amber-400/80">
+                    <strong>{applyResponse.role}</strong> at <strong>{applyResponse.company}</strong>
+                  </p>
+                </div>
+                <ScorePill score={applyResponse.score!} />
+              </div>
+              {applyResponse.reasoning && (
+                <p className="text-sm text-[var(--color-text-muted)] leading-relaxed">{applyResponse.reasoning}</p>
+              )}
+              <div className="flex gap-3">
+                <button onClick={applyAnyway} disabled={applyLoading}
+                  className="flex-1 py-2 rounded-lg text-sm font-medium bg-violet-500 text-white hover:bg-violet-400 transition-colors disabled:opacity-50">
+                  Apply Anyway
+                </button>
+                <button onClick={skipJob} disabled={applyLoading}
+                  className="flex-1 py-2 rounded-lg text-sm font-medium border border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] transition-colors disabled:opacity-50">
+                  Skip
+                </button>
+              </div>
+            </div>
+          )}
+
+          {applyResponse?.status === 'applied' && !applyLoading && (
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5 space-y-3">
+              <p className="text-sm font-medium text-emerald-400">Applied ✓</p>
+              <p className="text-sm text-[var(--color-text-muted)]">
+                Successfully applied to <strong>{applyResponse.role}</strong> at <strong>{applyResponse.company}</strong>.
+              </p>
+              <a href="/jobs/applied" className="flex items-center gap-1.5 text-sm text-violet-400 hover:text-violet-300 transition-colors">
+                View Applied Jobs <ArrowRight size={14} />
+              </a>
+            </div>
+          )}
+        </>
+      )}
+
       {/* Generate / Evaluate button */}
+      {tab !== 'apply' && (
       <button onClick={() => generate()} disabled={!canGenerate}
         className={cn('w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all',
           canGenerate
@@ -422,6 +631,7 @@ export function Generate() {
       >
         <FileText size={15} /> {generateLabel}
       </button>
+      )}
 
       {/* Loading */}
       {loading && (

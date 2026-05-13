@@ -91,6 +91,8 @@ type BotController interface {
 	Resume(userID string)
 	Status(userID string) domain.BotStatus
 	SubmitNow(userID string, req bot.SubmitRequest)
+	SubmitSync(ctx context.Context, userID string, req bot.SubmitRequest) error
+	ApplyFromURL(ctx context.Context, userID, jobURL, market string, force bool) (bot.ApplyFromURLResult, error)
 	// InvalidateSeekBrowser closes the cached persistent Seek browser for a user
 	// so the next SubmitNow creates a fresh browser with the latest saved cookies.
 	InvalidateSeekBrowser(userID string)

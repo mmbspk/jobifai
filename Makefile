@@ -4,7 +4,7 @@ MAIN    := ./cmd/server
 IMAGE   := $(APP):latest
 DB      := data/$(APP).db
 
-.PHONY: all build run dev start test lint clean docker docker-run web-dev web-build
+.PHONY: all build run dev start test lint clean docker docker-run web-dev web-build e2e-server test-e2e test-e2e-ui
 
 all: build
 
@@ -74,3 +74,17 @@ migrate-status: build
 ## help: list targets with descriptions
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## /  /'
+
+## e2e-server: build Go binary and start server with a fresh test DB (used by Playwright webServer)
+e2e-server:
+	rm -f /tmp/e2e-test.db
+	go build -trimpath -o /tmp/jobifai-e2e $(MAIN)
+	JWT_SECRET=e2e-test-secret-do-not-use-in-prod /tmp/jobifai-e2e -db /tmp/e2e-test.db
+
+## test-e2e: build frontend then run Playwright e2e tests
+test-e2e: web-build
+	cd web && npx playwright test
+
+## test-e2e-ui: open Playwright interactive UI (local dev only)
+test-e2e-ui: web-build
+	cd web && npx playwright test --ui

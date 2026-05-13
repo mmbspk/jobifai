@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -151,9 +152,9 @@ func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 	var req bot.SubmitRequest
 	req.JobID = jobID
 	err := h.svc.DB.QueryRowContext(r.Context(),
-		`SELECT company,role,COALESCE(location,''),platform,link,COALESCE(resume_path,''),COALESCE(cover_letter_path,'')
+		`SELECT company,role,COALESCE(location,''),platform,link,COALESCE(resume_path,''),COALESCE(cover_letter_path,''),COALESCE(suitability_reasoning,'')
 		 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID,
-	).Scan(&req.Company, &req.Role, &req.Location, &req.Platform, &req.Link, &req.ResumePath, &req.CoverPath)
+	).Scan(&req.Company, &req.Role, &req.Location, &req.Platform, &req.Link, &req.ResumePath, &req.CoverPath, &req.SuitabilityReasoning)
 	if err != nil {
 		notFound(w, "no pending review for job_id "+jobID)
 		return
@@ -164,8 +165,11 @@ func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 		log.Error().Err(err).Str("job_id", jobID).Msg("review approve: failed to delete pending review")
 	}
 
-	h.svc.Bot.SubmitNow(userID, req)
-	okMsg(w, "submitting application in background")
+	if err := h.svc.Bot.SubmitSync(r.Context(), userID, req); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	okMsg(w, "application submitted")
 }
 
 // POST /api/bot/review/{job_id}/reject
@@ -173,10 +177,12 @@ func (h *BotHandlers) ReviewReject(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	jobID := chi.URLParam(r, "job_id")
 
-	var company, role, platform, link string
+	var company, role, platform, link, location string
+	var score int
 	err := h.svc.DB.QueryRowContext(r.Context(),
-		`SELECT company,role,platform,link FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID,
-	).Scan(&company, &role, &platform, &link)
+		`SELECT company,role,platform,link,COALESCE(location,''),COALESCE(suitability_score,0)
+		 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID,
+	).Scan(&company, &role, &platform, &link, &location, &score)
 	if err != nil {
 		notFound(w, "no pending review for job_id "+jobID)
 		return
@@ -185,8 +191,8 @@ func (h *BotHandlers) ReviewReject(w http.ResponseWriter, r *http.Request) {
 	if _, err := h.svc.DB.ExecContext(r.Context(),
 		`INSERT OR IGNORE INTO jobs_skipped
 		 (id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,viewed_at)
-		 VALUES(?,?,?,?,?,'',?,'manual_reject',0,'',datetime('now'))`,
-		jobID, userID, platform, company, role, link,
+		 VALUES(?,?,?,?,?,?,?,'manual_reject',?,'',datetime('now'))`,
+		jobID, userID, platform, company, role, location, link, score,
 	); err != nil {
 		log.Error().Err(err).Str("job_id", jobID).Msg("review reject: failed to insert skipped job")
 	}
@@ -196,4 +202,61 @@ func (h *BotHandlers) ReviewReject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	okMsg(w, "rejected, job will not be reprocessed")
+}
+
+// POST /api/bot/apply-url
+func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
+	if h.svc.Bot == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": msgBotNotInit})
+		return
+	}
+	userID := auth.UserIDFromCtx(r.Context())
+	var req struct {
+		URL    string `json:"url"`
+		Market string `json:"market"`
+		Force  bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "url is required"})
+		return
+	}
+	res, err := h.svc.Bot.ApplyFromURL(r.Context(), userID, req.URL, req.Market, req.Force)
+	if err != nil {
+		if errors.Is(err, bot.ErrNotEasyApply) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "not_easy_apply",
+				"message": "This job does not have Easy Apply / Quick Apply. It has been added to your Top Matches for manual application.",
+				"company": res.Company,
+				"role":    res.Role,
+			})
+			return
+		}
+		if errors.Is(err, bot.ErrAlreadyApplied) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status":  "already_applied",
+				"company": res.Company,
+				"role":    res.Role,
+			})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	if res.ScoreWarning {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":    "score_warning",
+			"score":     res.Score,
+			"reasoning": res.ScoreReason,
+			"job_id":    res.JobID,
+			"company":   res.Company,
+			"role":      res.Role,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "applied",
+		"message": "Application submitted",
+		"company": res.Company,
+		"role":    res.Role,
+	})
 }

@@ -34,3 +34,9 @@ tmp/
 # Env files (never commit secrets)
 .env
 .env.*
+
+# Playwright
+web/playwright-report/
+web/test-results/
+/tmp/jobifai-e2e
+/tmp/e2e-test.db

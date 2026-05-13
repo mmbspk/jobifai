@@ -26,6 +26,8 @@ export const settingsApi = {
     deleteApiKey: () => apiDelete<void>('/settings/secrets/api-key'),
     setCredentials: (platform: string, email: string, password: string) =>
       apiPost<void>('/settings/secrets/credentials', { platform, email, password }),
+    deleteCredentials: (platform: string) =>
+      apiDelete<void>(`/settings/secrets/credentials?platform=${encodeURIComponent(platform)}`),
   },
   styles: {
     list: () => apiGet<ResumeStyle[]>('/settings/styles'),

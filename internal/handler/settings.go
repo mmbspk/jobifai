@@ -274,6 +274,21 @@ func (h *SettingsHandlers) SecretsSetCredentials(w http.ResponseWriter, r *http.
 	okMsg(w, "credentials saved")
 }
 
+// DELETE /api/settings/secrets/credentials?platform=<platform>
+func (h *SettingsHandlers) SecretsDeleteCredentials(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	platform := r.URL.Query().Get("platform")
+	if platform == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "platform is required"})
+		return
+	}
+	if err := h.svc.Secrets.Delete(userID, "cred:"+platform); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	okMsg(w, "credentials deleted")
+}
+
 // ── Styles ─────────────────────────────────────────────────────────────────
 
 // GET /api/settings/styles

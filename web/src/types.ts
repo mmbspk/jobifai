@@ -21,6 +21,7 @@ export interface AppliedJob {
   resume_path?: string
   cover_letter_path?: string
   suitability_score?: number
+  halal_verdict?: HalalVerdict
   applied_at: string
 }
 

@@ -124,14 +124,15 @@ type Config struct {
 
 // SubmitRequest bundles the fields needed to submit a single approved job.
 type SubmitRequest struct {
-	JobID      string
-	Company    string
-	Role       string
-	Location   string
-	Platform   string
-	Link       string
-	ResumePath string
-	CoverPath  string
+	JobID                string
+	Company              string
+	Role                 string
+	Location             string
+	Platform             string
+	Link                 string
+	ResumePath           string
+	CoverPath            string
+	SuitabilityReasoning string
 }
 
 // Bot runs the Easy Apply automation loop for a single platform session.
@@ -260,6 +261,41 @@ var runnerRegistry = map[domain.Platform]platformRunner{}
 // errAlreadyApplied is returned by easyApply when LinkedIn shows the job was
 // already applied to. Callers should record it as applied rather than skipped.
 var errAlreadyApplied = fmt.Errorf("already applied")
+
+// ErrNotEasyApply is returned by Manager.ApplyFromURL when the job page does
+// not have an Easy Apply / Quick Apply button.
+var ErrNotEasyApply = errors.New("not_easy_apply")
+
+// ErrAlreadyApplied is returned by Manager.ApplyFromURL when the DB or the
+// job page itself indicates the user already submitted an application.
+var ErrAlreadyApplied = errors.New("already_applied")
+
+// ApplyFromURLResult is returned by Manager.ApplyFromURL.
+type ApplyFromURLResult struct {
+	Company      string
+	Role         string
+	Score        int
+	ScoreReason  string
+	JobID        string // set when ScoreWarning=true; use with existing approve/reject endpoints
+	ScoreWarning bool   // true = score below threshold; job saved in pending_review for confirmation
+}
+
+// detectPlatformFromURL infers the job platform from the URL host.
+func detectPlatformFromURL(rawURL string) (domain.Platform, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("invalid job URL")
+	}
+	host := strings.ToLower(u.Host)
+	switch {
+	case strings.Contains(host, "linkedin.com"):
+		return domain.PlatformLinkedIn, nil
+	case strings.Contains(host, "seek.com"):
+		return domain.PlatformSeek, nil
+	default:
+		return "", fmt.Errorf("unsupported job site — only LinkedIn and Seek are supported")
+	}
+}
 
 func registerRunner(p domain.Platform, r platformRunner) {
 	runnerRegistry[p] = r
@@ -428,11 +464,10 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	// Seek uses Auth0 SPA which refreshes the access token via a hidden iframe on
 	// first load — navigating away before this finishes leaves the session without
 	// an access token and Quick Apply redirects to login.
-	_ = page.WaitLoad()
-	_ = page.WaitStable(2 * time.Second)
+	_ = page.Timeout(30 * time.Second).WaitLoad()
+	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 
 	// After auth0 completes silent re-auth, the browser's cookie jar contains
-	// fresh rotated tokens. Save them back so the next browser launch starts
 	// with valid tokens instead of the original (now-rotated/invalid) ones.
 	if b.cfg.Sessions != nil && b.cfg.Platform == domain.PlatformSeek {
 		result, cookieErr := proto.NetworkGetAllCookies{}.Call(page)
@@ -754,7 +789,7 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	// Detect Easy Apply on the job detail page (authoritative).
 	easyApply := job.EasyApply // card-level fallback
 	if jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL}); err == nil {
-		_ = jobPage.WaitLoad()
+		_ = jobPage.Timeout(30 * time.Second).WaitLoad()
 		easyApply = detectLinkedInEasyApply(jobPage)
 		_ = jobPage.Close()
 	}
@@ -802,31 +837,30 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 		return false
 	}
 
-	return b.submitEasyApply(ctx, br, job, lazy, score, halalVerdict, llmBefore)
+	return b.submitEasyApply(ctx, br, job, lazy, score, reasoning, halalVerdict, llmBefore)
 }
 
 // linkedInPageApplied returns true when the open job detail page shows an "Applied" indicator,
 // meaning the user has already applied to this job manually or in a prior bot run.
+// Uses a single JS eval round-trip instead of per-selector Element() calls (which each block
+// for 3 s on a miss) — eliminates an 18-second delay on fresh unapplied jobs in the new UI.
 func (b *Bot) linkedInPageApplied(page *rod.Page) bool {
-	selectors := []string{
-		".jobs-s-apply__application-link--applied",
-		"[data-test-job-apply-button-applied]",
-		".artdeco-inline-feedback--success",
-		"button[aria-label*='Applied']",
-		".jobs-apply-button--applied",
-	}
-	for _, sel := range selectors {
-		if _, err := page.Element(sel); err == nil {
-			return true
+	res, err := page.Eval(`() => {
+		const t = document.body.innerText.toLowerCase();
+		// Text signals visible after application submission
+		if (t.includes('application submitted')) return true;
+		if (t.includes('application was sent'))  return true;
+		// aria-label="Applied" (exact) or "Applied <space>..." on the apply button
+		if (document.querySelector('[aria-label="Applied"], button[aria-label*="Applied "]')) return true;
+		// Stable data attribute set by LinkedIn when the apply button is in applied state
+		if (document.querySelector('[data-test-job-apply-button-applied]')) return true;
+		// "Application status" heading replaces the Easy Apply button after applying
+		for (const h of document.querySelectorAll('h1,h2,h3')) {
+			if (h.textContent && h.textContent.includes('Application status')) return true;
 		}
-	}
-	// Fallback: check apply button text.
-	if btn, err := page.Element(".jobs-apply-button, [data-control-name='jobdetails_topcard_inapply']"); err == nil {
-		if txt, err := btn.Text(); err == nil && strings.EqualFold(strings.TrimSpace(txt), "applied") {
-			return true
-		}
-	}
-	return false
+		return false;
+	}`)
+	return err == nil && res.Value.Bool()
 }
 
 // detectLinkedInEasyApply returns true when the job detail page has a clickable
@@ -1024,7 +1058,7 @@ func (b *Bot) queueForReview(p *domain.PendingReview) {
 	}
 }
 
-func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedInJob, lazy *lazyDocGen, score int, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
+func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
 		log.Error().Err(err).Msg("linkedin: open job page")
@@ -1040,7 +1074,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			return true
 		}
 		log.Error().Err(err).Str("job", job.Title).Msg("linkedin: easy apply failed")
-		b.recordSkipped(job, "easy apply: "+err.Error(), score, "", nil)
+		b.recordSkipped(job, "easy apply: "+err.Error(), score, reasoning, nil)
 		return false
 	}
 	resume, cover := lazy.get()
@@ -1052,8 +1086,12 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 // ── Easy Apply modal navigation ────────────────────────────────────────────
 
 func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) error {
-	if err := page.WaitLoad(); err != nil {
-		return fmt.Errorf("wait load: %w", err)
+	// Only wait for load if the page hasn't already fired its load event.
+	// Calling WaitLoad() on an already-loaded page blocks forever.
+	if ready, err := page.Eval(`() => document.readyState`); err != nil || ready.Value.String() != "complete" {
+		if err := page.Timeout(30 * time.Second).WaitLoad(); err != nil {
+			return fmt.Errorf("wait load: %w", err)
+		}
 	}
 
 	if info, err := page.Eval(`() => window.location.href`); err == nil {
@@ -1309,6 +1347,8 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 	okFailCount := 0
 	// consecutiveUnfillable counts steps where fields were found but none could be filled.
 	consecutiveUnfillable := 0
+	// consecutiveBlind counts advancing steps (ok=true) where nothing was filled — safety net for unsupported field types.
+	consecutiveBlind := 0
 	// noAdvanceCount tracks when the step hash doesn't change after a click.
 	noAdvanceCount := 0
 	prevStepHash := ""
@@ -1419,6 +1459,14 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		}
 		okFailCount = 0
 		consecutiveUnfillable = 0 // click succeeded → step advanced, reset counter
+		if !filled {
+			consecutiveBlind++
+			if consecutiveBlind >= 8 {
+				return fmt.Errorf("easy apply: form did not accept input for %d consecutive advancing steps — possible unsupported field type", consecutiveBlind)
+			}
+		} else {
+			consecutiveBlind = 0
+		}
 
 		lowerLabel := strings.ToLower(label)
 		if strings.Contains(lowerLabel, "submit") {
