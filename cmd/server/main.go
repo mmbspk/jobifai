@@ -133,8 +133,8 @@ func main() {
 
 	// ── Usage tracking ───────────────────────────────────────────────────
 	usageStore := llm.NewUserUsageStore()
-	usageStore.OnAdd = func(userID string, input, output int64, calls int) {
-		if err := db.IncrementUsage(database, userID, input, output, calls); err != nil {
+	usageStore.OnAdd = func(userID, model string, input, output int64, calls int) {
+		if err := db.IncrementUsage(database, userID, model, input, output, calls); err != nil {
 			log.Error().Err(err).Str("user_id", userID).Msg("persist usage")
 		}
 	}
@@ -187,7 +187,8 @@ func main() {
 		Users:        userStore,
 		TokenManager: tokenManager,
 		Google:       googleHandler,
-		UsageStore:   usageStore,
+		UsageStore:   &usageStoreAdapter{s: usageStore},
+		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
 		LLMFactory: func(userID string) (handler.ResumeExtractor, handler.ResumeTailor) {
 			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID))
 			return e, t
@@ -303,4 +304,16 @@ func taskClient(base *llm.Client, tm map[string]domain.TaskModel, task string) *
 		return base.WithModel(m.Model, m.MaxTokens)
 	}
 	return base
+}
+
+// usageStoreAdapter adapts *llm.UserUsageStore to the handler.UsageStore interface.
+type usageStoreAdapter struct{ s *llm.UserUsageStore }
+
+func (a *usageStoreAdapter) Session(userID string) domain.SessionUsage {
+	snap := a.s.For(userID).Snapshot()
+	return domain.SessionUsage{
+		InputTokens:  snap.InputTokens,
+		OutputTokens: snap.OutputTokens,
+		Calls:        snap.Calls,
+	}
 }

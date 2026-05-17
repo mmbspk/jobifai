@@ -47,6 +47,7 @@ func NewUsageHandlers(svc *Services) *UsageHandlers { return &UsageHandlers{svc:
 type sessionUsageResponse = domain.SessionUsage
 
 // costForUser returns the model cost for the given user, or false for Ollama/unknown.
+// Used only for the session endpoint (in-memory, no per-model breakdown).
 func (h *UsageHandlers) costForUser(userID string) (modelCost, bool) {
 	var gs struct {
 		LLM struct {
@@ -67,16 +68,27 @@ func (h *UsageHandlers) costForUser(userID string) (modelCost, bool) {
 func (h *UsageHandlers) Totals(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 
-	totals, err := db.TotalUsage(h.svc.DB, userID)
+	rows, err := db.TotalUsageByModel(h.svc.DB, userID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
 
-	if c, ok := h.costForUser(userID); ok {
-		cost := float64(totals.InputTokens)/1_000_000*c.InputPerM +
-			float64(totals.OutputTokens)/1_000_000*c.OutputPerM
-		totals.EstimatedCostUSD = &cost
+	var totals domain.SessionUsage
+	var totalCost float64
+	hasCost := false
+	for _, row := range rows {
+		totals.InputTokens += row.InputTokens
+		totals.OutputTokens += row.OutputTokens
+		totals.Calls += row.Calls
+		if c, ok := lookupCost(row.Model); ok {
+			totalCost += float64(row.InputTokens)/1_000_000*c.InputPerM +
+				float64(row.OutputTokens)/1_000_000*c.OutputPerM
+			hasCost = true
+		}
+	}
+	if hasCost {
+		totals.EstimatedCostUSD = &totalCost
 	}
 
 	writeJSON(w, http.StatusOK, totals)
@@ -86,7 +98,7 @@ func (h *UsageHandlers) Totals(w http.ResponseWriter, r *http.Request) {
 func (h *UsageHandlers) Session(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 
-	snap := h.svc.UsageStore.For(userID).Snapshot()
+	snap := h.svc.UsageStore.Session(userID)
 
 	resp := sessionUsageResponse{
 		InputTokens:  snap.InputTokens,

@@ -198,7 +198,7 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 		return "", fmt.Errorf("claude: empty response")
 	}
 	if c.tracker != nil {
-		c.tracker.Add(&Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens})
+		c.tracker.Add(&Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens}, c.cfg.Model)
 	}
 	log.Debug().Bool("llm_call", true).Msgf("llm: claude/%s%s ✓ in=%d out=%d", c.cfg.Model, taskLabel(ctx), cr.Usage.InputTokens, cr.Usage.OutputTokens)
 	return cr.Content[0].Text, nil
@@ -277,7 +277,7 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 		return "", fmt.Errorf("claude vision: empty response")
 	}
 	if c.tracker != nil {
-		c.tracker.Add(&Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens})
+		c.tracker.Add(&Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens}, c.cfg.Model)
 	}
 	log.Debug().Bool("llm_call", true).Msgf("llm: claude/%s vision%s ✓ in=%d out=%d", c.cfg.Model, taskLabel(ctx), cr.Usage.InputTokens, cr.Usage.OutputTokens)
 	return cr.Content[0].Text, nil
@@ -341,7 +341,7 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error)
 		return "", fmt.Errorf("openai: empty response")
 	}
 	if c.tracker != nil {
-		c.tracker.Add(&Usage{InputTokens: or.Usage.PromptTokens, OutputTokens: or.Usage.CompletionTokens})
+		c.tracker.Add(&Usage{InputTokens: or.Usage.PromptTokens, OutputTokens: or.Usage.CompletionTokens}, c.cfg.Model)
 	}
 	log.Debug().Bool("llm_call", true).Msgf("llm: openai/%s%s ✓ in=%d out=%d", c.cfg.Model, taskLabel(ctx), or.Usage.PromptTokens, or.Usage.CompletionTokens)
 	return or.Choices[0].Message.Content, nil
