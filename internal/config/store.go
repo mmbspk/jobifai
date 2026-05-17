@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/user/jobifai/internal/domain"
 )
 
 // Store is a SQLite-backed key/value store. Values are JSON-encoded.
@@ -17,7 +19,7 @@ type Store struct {
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
-var ErrNotFound = errors.New("config: key not found")
+var ErrNotFound = fmt.Errorf("config: key not found: %w", domain.ErrNotFound)
 
 // Get decodes the value stored at (userID, key) into dst (must be a pointer).
 func (s *Store) Get(userID, key string, dst any) error {

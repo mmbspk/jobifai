@@ -69,7 +69,7 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var out []domain.AppliedJob
+	out := make([]domain.AppliedJob, 0)
 	for rows.Next() {
 		var j domain.AppliedJob
 		var appliedStr string
@@ -85,9 +85,6 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 		log.Error().Err(err).Msg("applied jobs row iteration error")
 		http.Error(w, msgQueryError, http.StatusInternalServerError)
 		return
-	}
-	if out == nil {
-		out = []domain.AppliedJob{}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -117,7 +114,7 @@ func (h *JobHandlers) Skipped(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var out []domain.SkippedJob
+	out := make([]domain.SkippedJob, 0)
 	for rows.Next() {
 		var j domain.SkippedJob
 		var viewedStr string
@@ -141,9 +138,6 @@ func (h *JobHandlers) Skipped(w http.ResponseWriter, r *http.Request) {
 		log.Error().Err(err).Msg("skipped jobs row iteration error")
 		http.Error(w, msgQueryError, http.StatusInternalServerError)
 		return
-	}
-	if out == nil {
-		out = []domain.SkippedJob{}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -173,7 +167,7 @@ func (h *JobHandlers) CannotApply(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var out []domain.SkippedJob
+	out := make([]domain.SkippedJob, 0)
 	for rows.Next() {
 		var j domain.SkippedJob
 		var viewedStr string
@@ -197,9 +191,6 @@ func (h *JobHandlers) CannotApply(w http.ResponseWriter, r *http.Request) {
 		log.Error().Err(err).Msg("cannot-apply jobs row iteration error")
 		http.Error(w, msgQueryError, http.StatusInternalServerError)
 		return
-	}
-	if out == nil {
-		out = []domain.SkippedJob{}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -277,7 +268,7 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var out []domain.PendingReview
+	out := make([]domain.PendingReview, 0)
 	for rows.Next() {
 		var p domain.PendingReview
 		var createdStr string
@@ -304,9 +295,6 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 		log.Error().Err(err).Msg("top matches row iteration error")
 		http.Error(w, msgQueryError, http.StatusInternalServerError)
 		return
-	}
-	if out == nil {
-		out = []domain.PendingReview{}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

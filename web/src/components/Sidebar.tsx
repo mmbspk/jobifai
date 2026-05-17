@@ -40,10 +40,10 @@ export function Sidebar() {
     <aside className="hidden md:flex flex-col fixed left-0 top-0 bottom-0 w-56 border-r border-[var(--color-border)] bg-[var(--color-surface)] z-40">
       {/* Brand */}
       <div className="px-4 py-4 border-b border-[var(--color-border)]">
-        <div className="flex items-center gap-2">
+        <NavLink to="/" className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-500 to-violet-700 flex items-center justify-center text-white text-xs font-bold">J</div>
           <span className="font-semibold text-sm text-[var(--color-text)]">Jobifai</span>
-        </div>
+        </NavLink>
       </div>
 
       {/* Nav */}

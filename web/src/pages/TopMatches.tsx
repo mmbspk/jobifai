@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { ExternalLink, ChevronDown, ChevronRight, TrendingUp, Trash2, CheckCheck, Ban, CircleX, X } from 'lucide-react'
 import { ScorePill } from '../components/ScorePill'
 import { PlatformBadge } from '../components/PlatformBadge'
@@ -67,12 +67,17 @@ export function TopMatches() {
   })
 
   const all = data?.pages.flat() ?? []
-  const filtered = search
-    ? all.filter(j =>
-        j.company.toLowerCase().includes(search.toLowerCase()) ||
-        j.role.toLowerCase().includes(search.toLowerCase()),
-      )
-    : all
+  const filtered = useMemo(
+    () =>
+      search
+        ? all.filter(
+            j =>
+              j.company.toLowerCase().includes(search.toLowerCase()) ||
+              j.role.toLowerCase().includes(search.toLowerCase()),
+          )
+        : all,
+    [all, search],
+  )
 
   function toggleExpand(id: string) {
     setExpanded(prev => {
@@ -93,6 +98,7 @@ export function TopMatches() {
 
       <div className="flex flex-col sm:flex-row gap-2">
         <input
+          aria-label="Search by company or role"
           value={search}
           onChange={e => setSearch(e.target.value)}
           placeholder="Search company or role…"

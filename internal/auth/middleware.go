@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 )
@@ -50,5 +51,6 @@ func UserEmailFromCtx(ctx context.Context) string {
 func writeUnauthorized(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte(`{"message":"` + msg + `"}`))
+	b, _ := json.Marshal(map[string]string{"message": msg})
+	_, _ = w.Write(b)
 }

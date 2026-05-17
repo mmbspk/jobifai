@@ -195,7 +195,7 @@ func (m *Manager) Status(userID string) domain.BotStatus {
 	e := m.entry(userID)
 	if m.db != nil {
 		var n int
-		_ = m.db.QueryRow(
+		_ = m.db.QueryRowContext(m.ctx,
 			"SELECT COUNT(*) FROM jobs_applied WHERE user_id = ? AND date(applied_at) = date('now')", userID,
 		).Scan(&n)
 		e.status.TodayCount = n
@@ -348,12 +348,29 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	); err != nil {
 		log.Error().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to record applied job")
 	}
-	_, _ = m.db.Exec(`DELETE FROM jobs_pending_review WHERE user_id = ? AND link = ?`, userID, req.Link)
+	if _, err := m.db.Exec(`DELETE FROM jobs_pending_review WHERE user_id = ? AND link = ?`, userID, req.Link); err != nil {
+		log.Error().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to delete from pending review")
+	}
 	if _, err := m.db.Exec(`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, req.JobID, userID); err != nil {
 		log.Error().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to delete from approved queue")
 	}
 	log.Info().Str("company", req.Company).Str("job", req.Role).Msg("approve: submitted ✓")
 	return nil
+}
+
+// checkLiveBrowser returns the browser for userID from store if it still responds to
+// br.Pages(). If the browser is dead, it is removed from the map and nil is returned.
+// Caller must hold m.browserMu.
+func (m *Manager) checkLiveBrowser(store map[string]*rod.Browser, userID string) *rod.Browser {
+	br, ok := store[userID]
+	if !ok {
+		return nil
+	}
+	if _, err := br.Pages(); err != nil {
+		delete(store, userID)
+		return nil
+	}
+	return br
 }
 
 // getSeekBrowser returns the persistent Seek browser for userID, creating it if needed.
@@ -363,13 +380,10 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 	m.browserMu.Lock()
 	defer m.browserMu.Unlock()
 
-	if br, ok := m.seekBrowsers[userID]; ok {
-		if _, err := br.Pages(); err == nil {
-			return br, nil // still alive
-		}
-		delete(m.seekBrowsers, userID)
-		log.Info().Str("user_id", userID).Msg("seek: persistent browser was dead, recreating")
+	if br := m.checkLiveBrowser(m.seekBrowsers, userID); br != nil {
+		return br, nil
 	}
+	log.Info().Str("user_id", userID).Msg("seek: persistent browser was dead or missing, recreating")
 
 	cookies, err := m.sessions.Load(userID, "seek")
 	if err != nil {
@@ -407,29 +421,7 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 	// Persist warm-up rotated tokens so the next server restart loads a valid
 	// (unconsumed) refresh token — getSeekBrowser rotates on navigate but unlike
 	// launchBrowser it must save explicitly here.
-	if m.sessions != nil {
-		warmCookies, cookieErr := proto.NetworkGetAllCookies{}.Call(warmPage)
-		if cookieErr == nil {
-			var fresh []browser.Cookie
-			for _, c := range warmCookies.Cookies {
-				fresh = append(fresh, browser.Cookie{
-					Name:     c.Name,
-					Value:    c.Value,
-					Domain:   string(c.Domain),
-					Path:     c.Path,
-					Expires:  float64(c.Expires),
-					HTTPOnly: c.HTTPOnly,
-					Secure:   bool(c.Secure),
-					SameSite: string(c.SameSite),
-				})
-			}
-			if saveErr := m.sessions.Save(userID, "seek", "session", fresh); saveErr != nil {
-				log.Warn().Err(saveErr).Msg("seek: warm-up cookie save failed")
-			} else {
-				log.Debug().Str("user_id", userID).Msg("seek: session cookies saved after warm-up")
-			}
-		}
-	}
+	m.saveBrowserCookies(warmPage, userID, "seek")
 
 	_ = warmPage.Close()
 
@@ -451,6 +443,40 @@ func (m *Manager) InvalidateSeekBrowser(userID string) {
 	}
 }
 
+// saveBrowserCookies marshals all cookies from page and persists them for userID/platform.
+func (m *Manager) saveBrowserCookies(page *rod.Page, userID, platform string) {
+	if m.sessions == nil {
+		return
+	}
+	warmCookies, err := proto.NetworkGetAllCookies{}.Call(page)
+	if err != nil {
+		return
+	}
+	fresh := make([]browser.Cookie, 0, len(warmCookies.Cookies))
+	for _, c := range warmCookies.Cookies {
+		fresh = append(fresh, browser.Cookie{
+			Name:     c.Name,
+			Value:    c.Value,
+			Domain:   string(c.Domain),
+			Path:     c.Path,
+			Expires:  float64(c.Expires),
+			HTTPOnly: c.HTTPOnly,
+			Secure:   bool(c.Secure),
+			SameSite: string(c.SameSite),
+		})
+	}
+	raw, marshalErr := browser.MarshalCookies(fresh)
+	if marshalErr != nil {
+		log.Warn().Err(marshalErr).Str("platform", platform).Msg("warm-up cookie marshal failed")
+		return
+	}
+	if saveErr := m.sessions.Save(userID, platform, "session", raw); saveErr != nil {
+		log.Warn().Err(saveErr).Str("platform", platform).Msg("warm-up cookie save failed")
+		return
+	}
+	log.Debug().Str("user_id", userID).Str("platform", platform).Msg("session cookies saved after warm-up")
+}
+
 // getLinkedInBrowser returns the persistent LinkedIn browser for userID, creating it if needed.
 // Mirrors getSeekBrowser: cookies are loaded, a warm-up page is navigated to linkedin.com
 // (so LinkedIn sets fresh session cookies), then the warm-up tab is closed and the browser
@@ -459,13 +485,10 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (
 	m.browserMu.Lock()
 	defer m.browserMu.Unlock()
 
-	if br, ok := m.linkedInBrowsers[userID]; ok {
-		if _, err := br.Pages(); err == nil {
-			return br, nil // still alive
-		}
-		delete(m.linkedInBrowsers, userID)
-		log.Info().Str("user_id", userID).Msg("linkedin: persistent browser was dead, recreating")
+	if br := m.checkLiveBrowser(m.linkedInBrowsers, userID); br != nil {
+		return br, nil
 	}
+	log.Info().Str("user_id", userID).Msg("linkedin: persistent browser was dead or missing, recreating")
 
 	cookies, err := m.sessions.Load(userID, "linkedin")
 	if err != nil {
@@ -501,29 +524,7 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (
 	_ = warmPage.Timeout(8 * time.Second).WaitStable(2 * time.Second)
 
 	// Persist updated cookies so the next call starts with a fresh session.
-	if m.sessions != nil {
-		warmCookies, cookieErr := proto.NetworkGetAllCookies{}.Call(warmPage)
-		if cookieErr == nil {
-			var fresh []browser.Cookie
-			for _, c := range warmCookies.Cookies {
-				fresh = append(fresh, browser.Cookie{
-					Name:     c.Name,
-					Value:    c.Value,
-					Domain:   string(c.Domain),
-					Path:     c.Path,
-					Expires:  float64(c.Expires),
-					HTTPOnly: c.HTTPOnly,
-					Secure:   bool(c.Secure),
-					SameSite: string(c.SameSite),
-				})
-			}
-			if saveErr := m.sessions.Save(userID, "linkedin", "session", fresh); saveErr != nil {
-				log.Warn().Err(saveErr).Msg("linkedin: warm-up cookie save failed")
-			} else {
-				log.Debug().Str("user_id", userID).Msg("linkedin: session cookies saved after warm-up")
-			}
-		}
-	}
+	m.saveBrowserCookies(warmPage, userID, "linkedin")
 
 	_ = warmPage.Close()
 	m.linkedInBrowsers[userID] = br
@@ -888,16 +889,22 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		// Page shows already-applied but it may not be in our DB (user applied manually).
 		// Record it so it appears in the Applied list, and clean up any pending-review entry.
 		var alreadyTracked int
-		_ = m.db.QueryRow(`SELECT COUNT(*) FROM jobs_applied WHERE user_id=? AND link=?`, userID, jobURL).Scan(&alreadyTracked)
+		if err := m.db.QueryRow(`SELECT COUNT(*) FROM jobs_applied WHERE user_id=? AND link=?`, userID, jobURL).Scan(&alreadyTracked); err != nil {
+			log.Warn().Err(err).Str("url", jobURL).Msg("ai apply: failed to check already-tracked status")
+		}
 		if alreadyTracked == 0 {
 			rid := newJobID()
-			_, _ = m.db.Exec(
+			if _, err := m.db.Exec(
 				`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
 				 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 				rid, userID, string(platform), company, role, location, jobURL, "", "", 0, "",
 				time.Now().UTC().Format(time.RFC3339),
-			)
-			_, _ = m.db.Exec(`DELETE FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL)
+			); err != nil {
+				log.Error().Err(err).Str("url", jobURL).Msg("ai apply: failed to record manually-applied job")
+			}
+			if _, err := m.db.Exec(`DELETE FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL); err != nil {
+				log.Error().Err(err).Str("url", jobURL).Msg("ai apply: failed to delete pending review for manually-applied job")
+			}
 		}
 		return ApplyFromURLResult{Company: company, Role: role}, ErrAlreadyApplied
 	}
@@ -948,15 +955,19 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 			br.Close()
 		}
 		var pendingCount int
-		_ = m.db.QueryRow(`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL).Scan(&pendingCount)
+		if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL).Scan(&pendingCount); err != nil {
+			log.Warn().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: pending check failed")
+		}
 		if pendingCount == 0 {
-			_, _ = m.db.Exec(
+			if _, err := m.db.ExecContext(ctx,
 				`INSERT OR IGNORE INTO jobs_pending_review
 				 (job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,
 				  suitability_score,suitability_reasoning,easy_apply,created_at)
 				 VALUES(?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'))`,
 				jobID, userID, company, role, location, string(platform), jobURL, "", "", score, scoreReason,
-			)
+			); err != nil {
+				log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert pending review failed")
+			}
 		}
 		return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, ErrNotEasyApply
 	}
@@ -996,26 +1007,34 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	if applyErr != nil && !errors.Is(applyErr, errAlreadyApplied) {
 		log.Error().Err(applyErr).Str("job", role).Msg("ai apply: failed")
 		var skippedCount int
-		_ = m.db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id=? AND link=?`, userID, jobURL).Scan(&skippedCount)
+		if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs_skipped WHERE user_id=? AND link=?`, userID, jobURL).Scan(&skippedCount); err != nil {
+			log.Warn().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: skipped check failed")
+		}
 		if skippedCount == 0 {
-			_, _ = m.db.Exec(
+			if _, err := m.db.ExecContext(ctx,
 				`INSERT OR IGNORE INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,viewed_at)
 				 VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
 				jobID, userID, string(platform), company, role, location, jobURL,
 				applyLabel+": "+applyErr.Error(), score, scoreReason,
-			)
+			); err != nil {
+				log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert skipped failed")
+			}
 		}
 		return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason},
 			fmt.Errorf("%s failed: %w", applyLabel, applyErr)
 	}
 	resumePath, coverPath := lazy.get()
-	_, _ = m.db.Exec(
+	if _, err := m.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		jobID, userID, string(platform), company, role, location, jobURL, resumePath, coverPath, score, "",
 		time.Now().UTC().Format(time.RFC3339),
-	)
-	_, _ = m.db.Exec(`DELETE FROM jobs_pending_review WHERE user_id = ? AND link = ?`, userID, jobURL)
+	); err != nil {
+		log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert applied failed")
+	}
+	if _, err := m.db.ExecContext(ctx, `DELETE FROM jobs_pending_review WHERE user_id = ? AND link = ?`, userID, jobURL); err != nil {
+		log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: delete pending review failed")
+	}
 	log.Info().Str("job", role).Str("company", company).Msg("ai apply: submitted ✓")
 	return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason}, nil
 }

@@ -81,6 +81,7 @@ export function LocationTagInput({ values, onChange }: Props) {
           </span>
         ))}
         <input
+          aria-label="Add location"
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={onKeyDown}

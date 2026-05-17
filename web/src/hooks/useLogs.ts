@@ -17,7 +17,7 @@ const BATCH_MS = 80
 
 let nextId = 0
 
-function parseLogLine(raw: string): LogLine {
+export function parseLogLine(raw: string): LogLine {
   try {
     const obj = JSON.parse(raw)
     const level = ((obj.level ?? obj.l ?? 'info') as string).toLowerCase() as LogLevel

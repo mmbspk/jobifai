@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/user/jobifai/internal/auth"
-	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
 )
 
@@ -41,7 +40,7 @@ func writePDF(w http.ResponseWriter, filename string, data []byte) {
 // loadProfile loads the stored resume profile for userID, returning nil if none is saved.
 func (h *ResumeHandlers) loadProfile(userID string) (*domain.ResumeProfile, error) {
 	var p domain.ResumeProfile
-	if err := h.svc.Config.Get(userID, "resume_profile", &p); errors.Is(err, config.ErrNotFound) {
+	if err := h.svc.Config.Get(userID, "resume_profile", &p); errors.Is(err, domain.ErrNotFound) {
 		return nil, nil
 	} else if err != nil {
 		return nil, err

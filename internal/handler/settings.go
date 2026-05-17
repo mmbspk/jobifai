@@ -9,10 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/user/jobifai/internal/auth"
-	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
 	"gopkg.in/yaml.v3"
 )
@@ -22,10 +20,6 @@ const (
 	keyWorkPreferences = "work_preferences"
 	keyResumeProfile   = "resume_profile"
 )
-
-// nominatimClient is used for location autocomplete calls. A short timeout
-// prevents the handler goroutine from blocking indefinitely on a slow upstream.
-var nominatimClient = &http.Client{Timeout: 5 * time.Second}
 
 // SettingsHandlers groups all settings/configuration handlers.
 type SettingsHandlers struct{ svc *Services }
@@ -38,7 +32,7 @@ func NewSettingsHandlers(svc *Services) *SettingsHandlers { return &SettingsHand
 func (h *SettingsHandlers) ResumeGet(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	var p domain.ResumeProfile
-	if err := h.svc.Config.Get(userID, keyResumeProfile, &p); errors.Is(err, config.ErrNotFound) {
+	if err := h.svc.Config.Get(userID, keyResumeProfile, &p); errors.Is(err, domain.ErrNotFound) {
 		notFound(w, "no resume profile saved yet")
 		return
 	} else if err != nil {
@@ -103,7 +97,7 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 func (h *SettingsHandlers) ResumeDownload(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	var p domain.ResumeProfile
-	if err := h.svc.Config.Get(userID, keyResumeProfile, &p); errors.Is(err, config.ErrNotFound) {
+	if err := h.svc.Config.Get(userID, keyResumeProfile, &p); errors.Is(err, domain.ErrNotFound) {
 		notFound(w, "no resume profile saved yet")
 		return
 	} else if err != nil {
@@ -150,7 +144,7 @@ var defaultGeneralSettings = domain.GeneralSettings{
 func (h *SettingsHandlers) GeneralGet(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	var s domain.GeneralSettings
-	if err := h.svc.Config.Get(userID, keyGeneralSettings, &s); errors.Is(err, config.ErrNotFound) {
+	if err := h.svc.Config.Get(userID, keyGeneralSettings, &s); errors.Is(err, domain.ErrNotFound) {
 		writeJSON(w, http.StatusOK, defaultGeneralSettings)
 		return
 	} else if err != nil {
@@ -181,7 +175,7 @@ func (h *SettingsHandlers) GeneralSet(w http.ResponseWriter, r *http.Request) {
 func (h *SettingsHandlers) PreferencesGet(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	var p domain.WorkPreferences
-	if err := h.svc.Config.Get(userID, keyWorkPreferences, &p); errors.Is(err, config.ErrNotFound) {
+	if err := h.svc.Config.Get(userID, keyWorkPreferences, &p); errors.Is(err, domain.ErrNotFound) {
 		writeJSON(w, http.StatusOK, domain.WorkPreferences{})
 		return
 	} else if err != nil {
@@ -368,7 +362,7 @@ func (h *SettingsHandlers) LocationSuggest(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, []string{})
 		return
 	}
-	results, err := fetchLocationSuggestions(r.Context(), q)
+	results, err := fetchLocationSuggestions(r.Context(), q, h.svc.HTTPClient)
 	if err != nil || len(results) == 0 {
 		writeJSON(w, http.StatusOK, []string{})
 		return
@@ -376,7 +370,10 @@ func (h *SettingsHandlers) LocationSuggest(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, results)
 }
 
-func fetchLocationSuggestions(ctx context.Context, q string) ([]string, error) {
+func fetchLocationSuggestions(ctx context.Context, q string, client *http.Client) ([]string, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
 	// fetch=10 so we have room to filter by importance; accept-language=en avoids Arabic-script display names
 	u := "https://nominatim.openstreetmap.org/search?format=json&limit=10&addressdetails=1&featuretype=city&accept-language=en&q=" + url.QueryEscape(q)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -384,7 +381,7 @@ func fetchLocationSuggestions(ctx context.Context, q string) ([]string, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "jobifai/1.0")
-	resp, err := nominatimClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -397,6 +397,8 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 
 // isCDPDead returns true when the browser's CDP connection is no longer usable
 // (e.g. after a VPN reset drops the underlying TCP connection).
+// String match is intentional: rod does not expose a typed sentinel for CDP
+// disconnection. Validated against go-rod v0.116+ — update this comment if the message changes.
 func isCDPDead(page *rod.Page) bool {
 	_, err := page.Eval(`() => true`)
 	return err != nil && strings.Contains(err.Error(), "closed network connection")
@@ -485,7 +487,9 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 					SameSite: string(c.SameSite),
 				})
 			}
-			if err := b.cfg.Sessions.Save(b.cfg.UserID, string(b.cfg.Platform), "session", fresh); err != nil {
+			if raw, marshalErr := browser.MarshalCookies(fresh); marshalErr != nil {
+				log.Warn().Err(marshalErr).Msg("browser: failed to marshal refreshed session cookies")
+			} else if err := b.cfg.Sessions.Save(b.cfg.UserID, string(b.cfg.Platform), "session", raw); err != nil {
 				log.Warn().Err(err).Msg("browser: failed to refresh session cookies")
 			} else {
 				log.Debug().Msg("browser: session cookies refreshed after auth0 re-auth")
@@ -757,13 +761,16 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 		log.Info().Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
-	if b.alreadyQueued(job.Company, job.Title) {
+	if b.alreadyQueued(ctx, job.Company, job.Title) {
 		log.Info().Msgf("linkedin: skip, duplicate listing already queued: %q @ %s", job.Title, job.Company)
 		return false
 	}
 	// Card-level applied indicator (LinkedIn shows "Applied" badge on already-applied cards).
+	// Use recordSkipped rather than recordApplied: the bot did not submit an application here.
+	// This also avoids false positives from browser crashes leaving phantom "Applied" badges.
 	if job.AlreadyApplied {
-		b.recordApplied(job, "", "", 0, nil)
+		b.recordSkipped(job, "already_applied_indicator", 0, "", nil)
+		log.Info().Str("company", job.Company).Str("title", job.Title).Msg("linkedin: card shows applied badge, recording to skipped")
 		return false
 	}
 	if b.isBlacklisted(job) {
@@ -795,7 +802,7 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	}
 
 	if b.cfg.RequireReview {
-		b.queueForReview(&domain.PendingReview{
+		b.queueForReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
 			Company:              job.Company,
 			Role:                 job.Title,
@@ -817,7 +824,7 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 
 	if !easyApply {
 		// Not an Easy Apply job, queue for manual application via Top Matches.
-		b.queueForReview(&domain.PendingReview{
+		b.queueForReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
 			Company:              job.Company,
 			Role:                 job.Title,
@@ -1049,8 +1056,8 @@ func (b *Bot) generateCoverLetter(ctx context.Context, profile *domain.ResumePro
 	return b.savePDF(pdf, job.Company, job.Title, "cover_letter")
 }
 
-func (b *Bot) queueForReview(p *domain.PendingReview) {
-	b.savePendingReview(p)
+func (b *Bot) queueForReview(ctx context.Context, p *domain.PendingReview) {
+	b.savePendingReview(ctx, p)
 	if p.EasyApply {
 		log.Info().Msgf("linkedin: queued for review, %q @ %s", p.Role, p.Company)
 	} else {
@@ -1069,7 +1076,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	if err := b.easyApply(ctx, jobPage, lazy); err != nil {
 		if errors.Is(err, errAlreadyApplied) {
 			resume, cover := lazy.get()
-			b.recordApplied(job, resume, cover, 0, nil)
+			b.recordApplied(job, resume, cover, score, halalVerdict)
 			log.Info().Str("company", job.Company).Str("title", job.Title).Msg("linkedin: already applied, recorded ✓")
 			return true
 		}
@@ -1161,9 +1168,11 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		if diag, err := page.Eval(jsDiag); err == nil {
 			log.Warn().Str("buttons", diag.Value.String()).Msg("easy apply: buttons found on page")
 		}
-		if shot, err := page.Screenshot(false, nil); err == nil {
-			_ = os.WriteFile("debug_easy_apply.png", shot, 0o644)
-			log.Warn().Msg("easy apply: screenshot saved to debug_easy_apply.png")
+		if os.Getenv("DEBUG_BOT") != "" {
+			if shot, err := page.Screenshot(false, nil); err == nil {
+				_ = os.WriteFile("debug_easy_apply.png", shot, 0o644)
+				log.Warn().Msg("easy apply: screenshot saved to debug_easy_apply.png")
+			}
 		}
 		return fmt.Errorf("easy apply button not found after 30s")
 	}
@@ -1396,8 +1405,10 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			// catches cases where the step hash is "~" (unreadable) and noAdvanceCount
 			// never increments, e.g. a required file-upload step with no generated PDF.
 			if consecutiveUnfillable >= 6 {
-				if shot, err := page.Screenshot(false, nil); err == nil {
-					_ = os.WriteFile("debug_unfillable.png", shot, 0o644)
+				if os.Getenv("DEBUG_BOT") != "" {
+					if shot, err := page.Screenshot(false, nil); err == nil {
+						_ = os.WriteFile("debug_unfillable.png", shot, 0o644)
+					}
 				}
 				return fmt.Errorf("easy apply: stuck, %d consecutive unfillable steps", consecutiveUnfillable)
 			}
@@ -1439,15 +1450,19 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			stuckThreshold = 8 // be more lenient when clicks succeed
 		}
 		if noAdvanceCount >= stuckThreshold && !filled {
+			if os.Getenv("DEBUG_BOT") != "" {
 			if shot, err := page.Screenshot(false, nil); err == nil {
 				_ = os.WriteFile("debug_modal_stuck.png", shot, 0o644)
 			}
+		}
 			return fmt.Errorf("easy apply: stuck, modal did not advance after %d iterations (ok=%v, no fill)", noAdvanceCount, ok)
 		}
 
 		if !ok {
-			if shot, err := page.Screenshot(false, nil); err == nil {
-				_ = os.WriteFile("debug_modal.png", shot, 0o644)
+			if os.Getenv("DEBUG_BOT") != "" {
+				if shot, err := page.Screenshot(false, nil); err == nil {
+					_ = os.WriteFile("debug_modal.png", shot, 0o644)
+				}
 			}
 			okFailCount++
 			if okFailCount >= 5 {
@@ -1483,8 +1498,10 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		}
 	}
 
-	if shot, err := page.Screenshot(false, nil); err == nil {
-		_ = os.WriteFile("debug_modal.png", shot, 0o644)
+	if os.Getenv("DEBUG_BOT") != "" {
+		if shot, err := page.Screenshot(false, nil); err == nil {
+			_ = os.WriteFile("debug_modal.png", shot, 0o644)
+		}
 	}
 	return fmt.Errorf("could not complete easy apply modal")
 }
@@ -1612,12 +1629,12 @@ func (b *Bot) alreadyApplied(jobID string) bool {
 // alreadyQueued returns true when a job with the same company+title is already in
 // jobs_pending_review. LinkedIn occasionally shows the same position with different
 // job IDs (sponsored vs organic), so ID-based dedup alone isn't enough.
-func (b *Bot) alreadyQueued(company, title string) bool {
+func (b *Bot) alreadyQueued(ctx context.Context, company, title string) bool {
 	if b.cfg.DB == nil {
 		return false
 	}
 	var n int
-	_ = b.cfg.DB.QueryRow(
+	_ = b.cfg.DB.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id = ? AND company = ? AND role = ?`,
 		b.cfg.UserID, company, title,
 	).Scan(&n)
@@ -1663,7 +1680,7 @@ func (b *Bot) recordSkipped(job linkedInJob, reason string, score int, reasoning
 	}
 }
 
-func (b *Bot) savePendingReview(p *domain.PendingReview) {
+func (b *Bot) savePendingReview(ctx context.Context, p *domain.PendingReview) {
 	if b.cfg.DB == nil {
 		return
 	}
@@ -1671,7 +1688,7 @@ func (b *Bot) savePendingReview(p *domain.PendingReview) {
 	if string(halalJSON) == "null" {
 		halalJSON = nil
 	}
-	if _, err := b.cfg.DB.Exec(
+	if _, err := b.cfg.DB.ExecContext(ctx,
 		`INSERT OR REPLACE INTO jobs_pending_review(job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,suitability_score,suitability_reasoning,due_date,posted_date,easy_apply,halal_verdict,created_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.JobID, b.cfg.UserID, p.Company, p.Role, p.Location, string(p.Platform), p.Link,

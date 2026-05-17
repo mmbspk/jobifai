@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 )
 
@@ -184,7 +187,7 @@ func NewRouter(svc *Services) *chi.Mux {
 		if svc.DB != nil && userID != "" {
 			relPath := filepath.Join("job_applications", filepath.ToSlash(p))
 			var exists int
-			_ = svc.DB.QueryRowContext(r.Context(), `
+			if err := svc.DB.QueryRowContext(r.Context(), `
 				SELECT 1 FROM (
 					SELECT 1 FROM jobs_applied
 					WHERE user_id = ? AND (resume_path = ? OR cover_letter_path = ?)
@@ -193,7 +196,9 @@ func NewRouter(svc *Services) *chi.Mux {
 					WHERE user_id = ? AND (resume_path = ? OR cover_letter_path = ?)
 				) LIMIT 1`,
 				userID, relPath, relPath, userID, relPath, relPath,
-			).Scan(&exists)
+			).Scan(&exists); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				log.Warn().Err(err).Str("path", relPath).Str("user_id", userID).Msg("file ownership check: db error")
+			}
 			if exists == 0 {
 				http.Error(w, "not found", http.StatusNotFound)
 				return

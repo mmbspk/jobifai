@@ -532,7 +532,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: job.Company, Title: job.Title}, jobDesc: details.Description}
 
 	if b.cfg.RequireReview {
-		b.saveSeekPendingReview(&domain.PendingReview{
+		b.saveSeekPendingReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
 			Company:              job.Company,
 			Role:                 job.Title,
@@ -554,7 +554,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 
 	if !job.EasyApply {
 		// Not a Quick Apply job, queue for manual application via Top Matches.
-		b.saveSeekPendingReview(&domain.PendingReview{
+		b.saveSeekPendingReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
 			Company:              job.Company,
 			Role:                 job.Title,
@@ -774,8 +774,8 @@ func (b *Bot) generateSeekDocs(ctx context.Context, job seekJob, jobDesc string)
 	return
 }
 
-func (b *Bot) saveSeekPendingReview(p *domain.PendingReview) {
-	b.savePendingReview(p)
+func (b *Bot) saveSeekPendingReview(ctx context.Context, p *domain.PendingReview) {
+	b.savePendingReview(ctx, p)
 	if p.EasyApply {
 		log.Info().Msgf("seek: queued for review, %q @ %s", p.Role, p.Company)
 	} else {
@@ -853,8 +853,6 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		return err
 	}
 	log.Info().Msg("seek: Quick Apply button clicked, waiting for form")
-	// Start doc generation immediately — runs concurrently while the form loads.
-	lazy.preload()
 	b.humanPause()
 
 	if onLogin, err := b.seekWaitPastLogin(page); err != nil {
@@ -863,6 +861,8 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		// Auth0 could not silently redirect back — session is genuinely expired.
 		return fmt.Errorf("seek session expired — Quick Apply redirected to login, re-add your Seek session in Settings → Secrets")
 	}
+	// Session confirmed alive — start doc generation concurrently while the form finishes loading.
+	lazy.preload()
 
 	// Generate docs (lazy — cached, only if the toggle is on).
 	resumePath, coverPath := lazy.get()
@@ -1047,7 +1047,9 @@ func (b *Bot) seekPersistSession(page *rod.Page) {
 			SameSite: string(c.SameSite),
 		})
 	}
-	if err := b.cfg.Sessions.Save(b.cfg.UserID, string(b.cfg.Platform), "session", fresh); err != nil {
+	if raw, marshalErr := browser.MarshalCookies(fresh); marshalErr != nil {
+		log.Warn().Err(marshalErr).Msg("seek: failed to marshal refreshed session cookies")
+	} else if err := b.cfg.Sessions.Save(b.cfg.UserID, string(b.cfg.Platform), "session", raw); err != nil {
 		log.Warn().Err(err).Msg("seek: failed to refresh session cookies")
 	} else {
 		log.Debug().Msg("seek: session cookies refreshed after job detail page auth0 re-auth")

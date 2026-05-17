@@ -5,7 +5,6 @@ package browser
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/google/uuid"
+	"github.com/user/jobifai/internal/domain"
 )
 
 // PlatformURL is the login page opened for each platform.
@@ -55,31 +55,31 @@ func NewManager() *Manager {
 }
 
 // ErrAlreadyOpen is returned when a session for the same platform is already open.
-var ErrAlreadyOpen = errors.New("browser: a session is already open for this platform")
+var ErrAlreadyOpen = fmt.Errorf("browser: a session is already open for this platform: %w", domain.ErrAlreadyOpen)
 
 // ErrNotFound is returned when the session ID is unknown.
-var ErrNotFound = errors.New("browser: session not found")
+var ErrNotFound = fmt.Errorf("browser: session not found: %w", domain.ErrNotFound)
 
 // ErrSessionOwnership is returned when a session belongs to a different user.
-var ErrSessionOwnership = errors.New("browser: session belongs to a different user")
+var ErrSessionOwnership = fmt.Errorf("browser: session belongs to a different user: %w", domain.ErrSessionOwnership)
 
 // Launch opens a visible (non-headless) Chrome window navigated to the
-// platform's login page. Returns a session ID the caller must pass to
+// platform's login page. Returns the session ID the caller must pass to
 // CaptureCookies later.
-func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool) (*Session, error) {
+func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// Enforce one open session per platform
 	for _, s := range m.sessions {
 		if s.Platform == platform {
-			return nil, ErrAlreadyOpen
+			return "", ErrAlreadyOpen
 		}
 	}
 
 	loginURL, ok := PlatformURL[platform]
 	if !ok {
-		return nil, fmt.Errorf("browser: unknown platform %q", platform)
+		return "", fmt.Errorf("browser: unknown platform %q", platform)
 	}
 
 	l := launcher.New().
@@ -95,7 +95,7 @@ func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool) 
 
 	url, err := l.Launch()
 	if err != nil {
-		return nil, fmt.Errorf("browser: launch chrome: %w", err)
+		return "", fmt.Errorf("browser: launch chrome: %w", err)
 	}
 
 	b := rod.New().ControlURL(url).MustConnect()
@@ -111,13 +111,13 @@ func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool) 
 		CreatedAt: time.Now(),
 	}
 	m.sessions[sess.ID] = sess
-	return sess, nil
+	return sess.ID, nil
 }
 
 // CaptureCookies extracts all cookies from the open browser associated with
-// sessionID, closes that browser, and returns the cookies.
+// sessionID, closes that browser, and returns the JSON-encoded cookies.
 // Returns ErrSessionOwnership if the session belongs to a different user.
-func (m *Manager) CaptureCookies(ctx context.Context, userID, sessionID string) ([]Cookie, error) {
+func (m *Manager) CaptureCookies(ctx context.Context, userID, sessionID string) ([]byte, error) {
 	m.mu.Lock()
 	sess, ok := m.sessions[sessionID]
 	if !ok {
@@ -162,7 +162,7 @@ func (m *Manager) CaptureCookies(ctx context.Context, userID, sessionID string) 
 			SameSite: string(c.SameSite),
 		})
 	}
-	return out, nil
+	return MarshalCookies(out)
 }
 
 // MarshalCookies serialises cookies to JSON bytes ready for encryption.

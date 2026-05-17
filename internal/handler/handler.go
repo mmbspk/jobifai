@@ -15,10 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/bot"
-	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/domain"
-	"github.com/user/jobifai/internal/llm"
-	"github.com/user/jobifai/internal/ws"
 )
 
 // ResumeExtractor is the interface the upload handler uses to parse resume files.
@@ -39,9 +36,9 @@ type Services struct {
 	Extractor    ResumeExtractor
 	Tailor       ResumeTailor
 	Renderer     ResumeRenderer
-	BrowserMgr   *browser.Manager
-	SessionStore *browser.SessionStore
-	Logs         *ws.Broadcaster
+	BrowserMgr   BrowserManager
+	SessionStore PlatformSessionStore
+	Logs         LogBroadcaster
 	Bot          BotController
 	MarketDir    string // directory containing market_*.yaml files
 	StylesDir    string // directory containing style_*.css files
@@ -62,7 +59,10 @@ type Services struct {
 	// Returns nil if no API key is configured.
 	QuestionAnswererFactory func(userID string) JobQuestionAnswerer
 	// UsageStore accumulates per-user LLM token usage for the lifetime of the process.
-	UsageStore *llm.UserUsageStore
+	UsageStore UsageStore
+	// HTTPClient is used for outbound HTTP requests (e.g. location suggestions).
+	// Falls back to http.DefaultClient if nil.
+	HTTPClient *http.Client
 	// FileToText extracts plain text from a file reader (e.g. PDF, DOCX).
 	FileToText func(r io.Reader, filename string) (string, error)
 	// FetchJobPage retrieves the text content of a job posting URL.
@@ -132,6 +132,31 @@ type SecretsStore interface {
 	Get(userID, key string) (string, error)
 	Has(userID, key string) bool
 	Delete(userID, key string) error
+}
+
+// BrowserManager manages visible browser windows for manual platform login.
+type BrowserManager interface {
+	Launch(userID, platform, profilePath string, useProfile bool) (string, error)
+	CaptureCookies(ctx context.Context, userID, sessionID string) ([]byte, error)
+}
+
+// PlatformSessionStore persists and retrieves encrypted platform sessions.
+type PlatformSessionStore interface {
+	Save(userID, platform, loginMethod string, cookies []byte) error
+	Status(userID, platform string) (*domain.PlatformSession, error)
+	Delete(userID, platform string) error
+}
+
+// LogBroadcaster streams structured log lines to connected WebSocket clients.
+type LogBroadcaster interface {
+	io.Writer
+	Register(conn *websocket.Conn, userID string)
+	Unregister(conn *websocket.Conn)
+}
+
+// UsageStore provides per-user LLM token usage snapshots.
+type UsageStore interface {
+	Session(userID string) domain.SessionUsage
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────

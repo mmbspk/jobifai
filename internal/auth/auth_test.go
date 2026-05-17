@@ -84,8 +84,13 @@ func TestTokenManager_TamperedToken(t *testing.T) {
 	token, err := tm.IssueAccess("user-1", "")
 	require.NoError(t, err)
 
-	// Flip the last character of the signature.
-	tampered := token[:len(token)-1] + "X"
+	// Flip the last character ensuring it actually changes.
+	last := token[len(token)-1]
+	replacement := byte('X')
+	if last == 'X' {
+		replacement = 'Y'
+	}
+	tampered := token[:len(token)-1] + string(replacement)
 	_, err = tm.Verify(tampered)
 	assert.Error(t, err)
 }

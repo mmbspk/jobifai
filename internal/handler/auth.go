@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/user/jobifai/internal/auth"
-	"github.com/user/jobifai/internal/browser"
+	"github.com/user/jobifai/internal/domain"
 )
 
 // AuthHandlers groups all auth-related handlers.
@@ -33,7 +33,7 @@ func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sess, err := h.svc.BrowserMgr.Launch(userID, req.Platform, req.ProfilePath, req.UseProfile)
-	if errors.Is(err, browser.ErrAlreadyOpen) {
+	if errors.Is(err, domain.ErrAlreadyOpen) {
 		conflict(w, "a browser session is already open for "+req.Platform)
 		return
 	}
@@ -43,7 +43,7 @@ func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"session_id": sess.ID,
+		"session_id": sess,
 		"message":    "Chrome opened, log in manually then call /api/auth/save-session",
 	})
 }
@@ -61,11 +61,11 @@ func (h *AuthHandlers) SaveSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cookies, err := h.svc.BrowserMgr.CaptureCookies(r.Context(), userID, req.SessionID)
-	if errors.Is(err, browser.ErrNotFound) {
+	if errors.Is(err, domain.ErrNotFound) {
 		notFound(w, "no open browser session with id "+req.SessionID)
 		return
 	}
-	if errors.Is(err, browser.ErrSessionOwnership) {
+	if errors.Is(err, domain.ErrSessionOwnership) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -97,7 +97,7 @@ func (h *AuthHandlers) PlatformStatus(w http.ResponseWriter, r *http.Request) {
 	platform := chi.URLParam(r, "platform")
 
 	info, err := h.svc.SessionStore.Status(userID, platform)
-	if errors.Is(err, browser.ErrSessionNotFound) {
+	if errors.Is(err, domain.ErrSessionNotFound) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"platform":    platform,
 			"has_session": false,
@@ -122,7 +122,7 @@ func (h *AuthHandlers) DeleteSession(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	platform := chi.URLParam(r, "platform")
 
-	if err := h.svc.SessionStore.Delete(userID, platform); errors.Is(err, browser.ErrSessionNotFound) {
+	if err := h.svc.SessionStore.Delete(userID, platform); errors.Is(err, domain.ErrSessionNotFound) {
 		notFound(w, "no session found for "+platform)
 		return
 	} else if err != nil {

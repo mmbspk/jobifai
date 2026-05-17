@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -53,9 +54,10 @@ func (b *Broadcaster) Write(p []byte) (int, error) {
 	}
 	b.mu.RUnlock()
 
-	ctx := context.Background()
 	for _, conn := range conns {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		_ = wsjson.Write(ctx, conn, payload)
+		cancel()
 	}
 	return len(p), nil
 }

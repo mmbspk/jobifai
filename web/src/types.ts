@@ -284,7 +284,7 @@ export interface WorkPreferences {
 
 export interface SecretsConfig {
   llm_api_key?: string        // masked
-  credential_platforms?: string[]  // platforms with credentials stored
+  credential_platforms?: Platform[]  // platforms with credentials stored
 }
 
 export interface ResumeStyle {
