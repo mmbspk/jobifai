@@ -30,26 +30,42 @@ import (
 // result. Generation only happens when the toggle is on and a file upload
 // field is actually encountered during form filling.
 type lazyDocGen struct {
-	b        *Bot
-	ctx      context.Context
-	job      linkedInJob
-	jobDesc  string
-	once     sync.Once
-	resume   string
-	cover    string
-	formOnce sync.Once
-	formJSON []byte
+	b              *Bot
+	ctx            context.Context
+	job            linkedInJob
+	jobDesc        string
+	once           sync.Once
+	resume         string
+	cover          string
+	formOnce       sync.Once
+	formJSON       []byte
+	resumeOverride string // pre-generated resume path from a prior attempt; skips LLM if set
+	coverOverride  string // pre-generated cover letter path from a prior attempt; skips LLM if set
 }
 
 // get returns the generated resume and cover letter paths, generating them on
-// the first call. Returns empty strings if the toggle is off or generation fails.
+// the first call. If override paths from a prior attempt are set, they are
+// returned directly without calling the LLM again.
 func (l *lazyDocGen) get() (resume, cover string) {
+	if l.resumeOverride != "" || l.coverOverride != "" {
+		return l.resumeOverride, l.coverOverride
+	}
 	if !l.b.cfg.Settings.GenerateNewResumeDocs {
 		return "", ""
 	}
 	l.once.Do(func() {
 		l.resume, l.cover = l.b.generateDocs(l.ctx, l.job, l.jobDesc)
 	})
+	return l.resume, l.cover
+}
+
+// peek returns already-generated paths without triggering new generation.
+// Returns override paths if set, otherwise whatever get() has already cached.
+// Returns empty strings if generation never ran.
+func (l *lazyDocGen) peek() (resume, cover string) {
+	if l.resumeOverride != "" || l.coverOverride != "" {
+		return l.resumeOverride, l.coverOverride
+	}
 	return l.resume, l.cover
 }
 

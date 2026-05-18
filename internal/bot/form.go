@@ -266,7 +266,7 @@ const jsScanFields = `() => {
 		                 || el.getAttribute('aria-autocomplete') === 'list'
 		                 || el.getAttribute('aria-autocomplete') === 'both'
 		                 || (el.closest('.search-basic-typeahead, [data-test-single-typeahead-entity-form-component]') != null);
-		if (el.value.trim() && !isTypeahead) { textIdx++; return; }
+		if (el.value.trim() && !isTypeahead && el.getAttribute('aria-invalid') !== 'true') { textIdx++; return; }
 		const isRequired = el.required || el.getAttribute('aria-required') === 'true';
 		const lbl = labelFor(el.id)
 		            || el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element')?.querySelector('label');
@@ -641,7 +641,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 			const root = document.querySelector('[role="dialog"], form') || document.body;
 			return [...root.querySelectorAll('input:not([type="hidden"]), select, textarea')]
-				.filter(isVisible).length;
+				.filter(el => isVisible(el) && (!el.value.trim() || el.getAttribute('aria-invalid') === 'true')).length;
 		}`
 		hasVisibleButUnscanned := false
 		if probe, err := page.Eval(jsHasVisibleFormContent); err == nil {

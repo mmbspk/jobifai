@@ -236,6 +236,34 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		return err
 	}
 
+	// Reject immediately if this job has already been attempted twice.
+	var attemptCount int
+	_ = m.db.QueryRow(
+		`SELECT COALESCE(attempt_count,0) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
+		req.JobID, userID,
+	).Scan(&attemptCount)
+	if attemptCount >= 2 {
+		var earlyScore int
+		var earlyReason string
+		_ = m.db.QueryRow(
+			`SELECT COALESCE(suitability_score,0), COALESCE(suitability_reasoning,'')
+			 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
+			req.JobID, userID,
+		).Scan(&earlyScore, &earlyReason)
+		earlyLabel := "easy apply"
+		if req.Platform == "seek" {
+			earlyLabel = "quick apply"
+		}
+		_, _ = m.db.Exec(
+			`INSERT OR IGNORE INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,viewed_at)
+			 VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
+			req.JobID, userID, req.Platform, req.Company, req.Role, req.Location, req.Link,
+			earlyLabel+": application attempted twice, could not complete", earlyScore, earlyReason,
+		)
+		_, _ = m.db.Exec(`DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, req.JobID, userID)
+		return fmt.Errorf("application has already been attempted twice — it has been moved to Cannot Apply")
+	}
+
 	// Seek: reuse a persistent browser per user so auth0 session state (including
 	// the post-PKCE cookies from each Quick Apply) is preserved naturally between
 	// consecutive approvals — no token-rotation issues.
@@ -257,7 +285,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		}
 		br, jobPage = seekBr, p
 	} else {
-		newBr, newPage, launchErr := b.launchBrowser(ctx)
+		newBr, newPage, launchErr := b.launchBrowser(m.ctx)
 		if launchErr != nil {
 			log.Error().Err(launchErr).Str("job", req.Role).Msg("approve: launch browser")
 			return launchErr
@@ -301,10 +329,10 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 				jobDesc = d.Description
 			}
 		}
-		managerLazy = &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: jobDesc}
+		managerLazy = &lazyDocGen{b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: jobDesc, resumeOverride: req.ResumePath, coverOverride: req.CoverPath}
 	} else {
-		managerDetails := b.fetchJob(ctx, linkedInJob{URL: req.Link, Company: req.Company, Title: req.Role})
-		managerLazy = &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description}
+		managerDetails := b.fetchJob(m.ctx, linkedInJob{URL: req.Link, Company: req.Company, Title: req.Role})
+		managerLazy = &lazyDocGen{b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description, resumeOverride: req.ResumePath, coverOverride: req.CoverPath}
 	}
 
 	// Extract location from the job page; fall back to the value stored in pending_review.
@@ -315,9 +343,9 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 
 	var applyErr error
 	if req.Platform == "seek" {
-		applyErr = b.seekApply(ctx, jobPage, managerLazy)
+		applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
 	} else {
-		applyErr = b.easyApply(ctx, jobPage, managerLazy)
+		applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
 	}
 	if applyErr != nil {
 		if errors.Is(applyErr, errAlreadyApplied) {
@@ -335,6 +363,25 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			); err != nil {
 				log.Error().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to record skipped job")
 			}
+			// Persist any generated doc paths and increment attempt count so the
+			// next re-approval reuses the docs instead of re-running the LLM.
+			genResume, genCover := managerLazy.peek()
+			savedResume := genResume
+			if savedResume == "" {
+				savedResume = req.ResumePath
+			}
+			savedCover := genCover
+			if savedCover == "" {
+				savedCover = req.CoverPath
+			}
+			_, _ = m.db.Exec(
+				`UPDATE jobs_pending_review
+				 SET attempt_count = attempt_count + 1,
+				     resume_path = CASE WHEN ? != '' THEN ? ELSE resume_path END,
+				     cover_letter_path = CASE WHEN ? != '' THEN ? ELSE cover_letter_path END
+				 WHERE job_id = ? AND user_id = ?`,
+				savedResume, savedResume, savedCover, savedCover, req.JobID, userID,
+			)
 			return applyErr
 		}
 	}
