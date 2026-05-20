@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ExternalLink, ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { ExternalLink, ChevronDown, ChevronRight, Trash2, X } from 'lucide-react'
 import { PlatformBadge } from '../components/PlatformBadge'
 import { ScorePill } from '../components/ScorePill'
 import { cn, formatDate, relativeTime } from '../lib'
@@ -22,6 +23,8 @@ const PLATFORMS = [
 
 export function JobsSkipped() {
   const qc = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const todayFilter = searchParams.get('today') === 'true'
   const [search, setSearch] = useState('')
   const [platform, setPlatform] = useState('')
   const [skipReason, setSkipReason] = useState('')
@@ -32,11 +35,12 @@ export function JobsSkipped() {
   const halalEnabled = generalSettings?.halal_job_filter === true
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery({
-    queryKey: ['jobs-skipped', platform, skipReason],
+    queryKey: ['jobs-skipped', platform, skipReason, todayFilter],
     queryFn: ({ pageParam = 0 }) =>
       jobsApi.skipped({
         platform: platform || undefined,
         skip_reason: skipReason || undefined,
+        today: todayFilter || undefined,
         limit: PAGE_SIZE,
         offset: pageParam,
       }),
@@ -90,6 +94,20 @@ export function JobsSkipped() {
           {SKIP_REASONS.map(r => <option key={r} value={r}>{r || 'All reasons'}</option>)}
         </select>
       </div>
+
+      {todayFilter && (
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/20 text-xs text-violet-300 w-fit">
+          <span>Showing today only</span>
+          <button
+            type="button"
+            onClick={() => setSearchParams({})}
+            className="text-violet-400 hover:text-violet-200"
+            aria-label="Clear today filter"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
 
       <div className="rounded-xl border border-[var(--color-border)] overflow-x-auto">
         <table className="w-full table-fixed min-w-[700px] text-sm">

@@ -49,6 +49,7 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	limit, offset := limitOffset(r)
 	platform := r.URL.Query().Get("platform")
+	todayOnly := r.URL.Query().Get("today") == "true"
 
 	q := `SELECT id,platform,company,role,COALESCE(location,''),link,
 	             COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
@@ -58,6 +59,9 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 	if platform != "" {
 		q += " AND platform = ?"
 		args = append(args, platform)
+	}
+	if todayOnly {
+		q += " AND date(applied_at) = date('now')"
 	}
 	q += " ORDER BY applied_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
@@ -94,6 +98,7 @@ func (h *JobHandlers) Skipped(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	limit, offset := limitOffset(r)
 	reason := r.URL.Query().Get("skip_reason")
+	todayOnly := r.URL.Query().Get("today") == "true"
 
 	q := `SELECT id,platform,company,role,COALESCE(location,''),link,skip_reason,
 	             COALESCE(suitability_score,0),COALESCE(suitability_reasoning,''),halal_verdict,viewed_at
@@ -103,6 +108,9 @@ func (h *JobHandlers) Skipped(w http.ResponseWriter, r *http.Request) {
 	if reason != "" {
 		q += " AND skip_reason LIKE ?"
 		args = append(args, "%"+reason+"%")
+	}
+	if todayOnly {
+		q += " AND date(viewed_at) = date('now')"
 	}
 	q += " ORDER BY viewed_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
@@ -193,6 +201,55 @@ func (h *JobHandlers) CannotApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// POST /api/jobs/cannot-apply/{job_id}/mark-applied
+func (h *JobHandlers) MarkAppliedFromCannotApply(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	jobID := chi.URLParam(r, "job_id")
+
+	tx, err := h.svc.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var company, role, location, platform, link string
+	var score int
+	var halalVerdict *string
+	err = tx.QueryRowContext(r.Context(),
+		`SELECT company, role, COALESCE(location,''), platform, link,
+		        COALESCE(suitability_score,0), halal_verdict
+		 FROM jobs_skipped
+		 WHERE id = ? AND user_id = ?
+		   AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`,
+		jobID, userID).Scan(&company, &role, &location, &platform, &link, &score, &halalVerdict)
+	if err != nil {
+		notFound(w, "job not found in cannot-apply list")
+		return
+	}
+
+	if _, err = tx.ExecContext(r.Context(),
+		`INSERT OR IGNORE INTO jobs_applied
+		     (id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
+		 VALUES (?,?,?,?,?,?,?,'','',?,?,datetime('now'))`,
+		jobID, userID, platform, company, role, location, link, score, halalVerdict); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+
+	if _, err = tx.ExecContext(r.Context(),
+		`DELETE FROM jobs_skipped WHERE id = ? AND user_id = ?`, jobID, userID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+
+	if err = tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
 
 // POST /api/jobs/cannot-apply/{job_id}/requeue
@@ -313,6 +370,10 @@ func (h *JobHandlers) Stats(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.DB.QueryRowContext(r.Context(),
 		"SELECT COUNT(*) FROM jobs_skipped WHERE user_id = ?", userID).Scan(&stats.TotalSkipped); err != nil {
 		log.Error().Err(err).Msg("stats: total_skipped query failed")
+	}
+	if err := h.svc.DB.QueryRowContext(r.Context(),
+		"SELECT COUNT(*) FROM jobs_skipped WHERE user_id = ? AND date(viewed_at) = date('now')", userID).Scan(&stats.SkippedToday); err != nil {
+		log.Error().Err(err).Msg("stats: skipped_today query failed")
 	}
 	writeJSON(w, http.StatusOK, stats)
 }

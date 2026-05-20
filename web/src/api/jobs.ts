@@ -6,6 +6,7 @@ export interface JobsQuery {
   skip_reason?: string
   limit?: number
   offset?: number
+  today?: boolean
 }
 
 function qs(q: JobsQuery): string {
@@ -14,6 +15,7 @@ function qs(q: JobsQuery): string {
   if (q.skip_reason) p.set('skip_reason', q.skip_reason)
   if (q.limit != null) p.set('limit', String(q.limit))
   if (q.offset != null) p.set('offset', String(q.offset))
+  if (q.today) p.set('today', 'true')
   const s = p.toString()
   return s ? `?${s}` : ''
 }
@@ -25,6 +27,7 @@ export const jobsApi = {
   deleteSkipped: (id: string) => apiDelete<{ status: string }>(`/jobs/skipped/${id}`),
   cannotApply: (q: JobsQuery = {}) => apiGet<SkippedJob[]>(`/jobs/cannot-apply${qs(q)}`),
   requeueCannotApply: (id: string) => apiPost<{ status: string }>(`/jobs/cannot-apply/${id}/requeue`),
+  markAppliedFromCannotApply: (id: string) => apiPost<{ status: string }>(`/jobs/cannot-apply/${id}/mark-applied`),
   topMatches: (q: JobsQuery = {}) => apiGet<PendingReview[]>(`/jobs/top-matches${qs(q)}`),
   deletePendingReview: (id: string) => apiDelete<{ status: string }>(`/jobs/pending-review/${id}`),
   markApplied: (id: string) => apiPost<{ status: string }>(`/jobs/pending-review/${id}/mark-applied`),

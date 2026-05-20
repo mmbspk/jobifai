@@ -110,6 +110,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Delete("/skipped/{job_id}", jobs.DeleteSkipped)
 			r.Get("/cannot-apply", jobs.CannotApply)
 			r.Post("/cannot-apply/{job_id}/requeue", jobs.RequeueCannotApply)
+			r.Post("/cannot-apply/{job_id}/mark-applied", jobs.MarkAppliedFromCannotApply)
 			r.Get("/top-matches", jobs.TopMatches)
 			r.Delete("/pending-review/{job_id}", jobs.DeletePendingReview)
 			r.Post("/pending-review/{job_id}/mark-applied", jobs.MarkApplied)

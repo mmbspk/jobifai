@@ -72,6 +72,7 @@ export interface JobStats {
   total_applied: number
   applied_today: number
   total_skipped: number
+  skipped_today: number
 }
 
 export interface BotStatus {

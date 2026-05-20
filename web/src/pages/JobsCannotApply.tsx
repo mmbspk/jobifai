@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ExternalLink, ChevronDown, ChevronRight, AlertCircle, RotateCcw, Trash2 } from 'lucide-react'
+import { ExternalLink, ChevronDown, ChevronRight, AlertCircle, RotateCcw, Trash2, CheckCheck } from 'lucide-react'
 import { PlatformBadge } from '../components/PlatformBadge'
 import { ScorePill } from '../components/ScorePill'
 import { cn, formatDate, relativeTime } from '../lib'
@@ -43,6 +43,14 @@ export function JobsCannotApply() {
   const requeue = useMutation({
     mutationFn: jobsApi.requeueCannotApply,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs-cannot-apply'] }),
+  })
+
+  const markApplied = useMutation({
+    mutationFn: jobsApi.markAppliedFromCannotApply,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['jobs-cannot-apply'] })
+      qc.invalidateQueries({ queryKey: ['jobs-stats'] })
+    },
   })
 
   const deleteMutation = useMutation({
@@ -170,6 +178,14 @@ export function JobsCannotApply() {
                           className="text-[var(--color-text-dim)] hover:text-violet-400 disabled:opacity-40"
                         >
                           <RotateCcw size={12} />
+                        </button>
+                        <button
+                          onClick={e => { e.stopPropagation(); markApplied.mutate(job.id) }}
+                          disabled={markApplied.isPending}
+                          title="Mark as Applied"
+                          className="text-[var(--color-text-dim)] hover:text-emerald-400 disabled:opacity-40 transition-colors"
+                        >
+                          <CheckCheck size={13} />
                         </button>
                         <a
                           href={job.link}

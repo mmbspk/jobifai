@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ExternalLink, ChevronDown, FileText, Trash2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { ExternalLink, ChevronDown, FileText, Trash2, X } from 'lucide-react'
 import { PlatformBadge } from '../components/PlatformBadge'
 import { ScorePill } from '../components/ScorePill'
 import { formatDate, relativeTime } from '../lib'
@@ -17,14 +18,16 @@ const PLATFORMS: { value: string; label: string }[] = [
 
 export function JobsApplied() {
   const qc = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const todayFilter = searchParams.get('today') === 'true'
   const [search, setSearch] = useState('')
   const [platform, setPlatform] = useState('')
   const [pendingDelete, setPendingDelete] = useState<string | null>(null)
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery({
-    queryKey: ['jobs-applied', platform],
+    queryKey: ['jobs-applied', platform, todayFilter],
     queryFn: ({ pageParam = 0 }) =>
-      jobsApi.applied({ platform: platform || undefined, limit: PAGE_SIZE, offset: pageParam }),
+      jobsApi.applied({ platform: platform || undefined, today: todayFilter || undefined, limit: PAGE_SIZE, offset: pageParam }),
     initialPageParam: 0,
     getNextPageParam: (last, all) =>
       last.length === PAGE_SIZE ? all.flat().length : undefined,
@@ -61,6 +64,20 @@ export function JobsApplied() {
           {PLATFORMS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
         </select>
       </div>
+
+      {todayFilter && (
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/20 text-xs text-violet-300 w-fit">
+          <span>Showing today only</span>
+          <button
+            type="button"
+            onClick={() => setSearchParams({})}
+            className="text-violet-400 hover:text-violet-200"
+            aria-label="Clear today filter"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
 
       <div className="rounded-xl border border-[var(--color-border)] overflow-hidden">
         <table className="w-full table-auto text-sm">

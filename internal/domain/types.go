@@ -107,6 +107,7 @@ type JobStats struct {
 	TotalApplied int `json:"total_applied"`
 	AppliedToday int `json:"applied_today"`
 	TotalSkipped int `json:"total_skipped"`
+	SkippedToday int `json:"skipped_today"`
 }
 
 // JobScore is the result of an LLM suitability evaluation.

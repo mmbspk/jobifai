@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useRef, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { FileText, Download, Loader2, Upload, X, AlertTriangle, ChevronDown, ArrowRight, Plus, Trash2, Copy, Check } from 'lucide-react'
 import { cn, downloadBlob } from '../lib'
 import { resumeApi } from '../api/resume'
@@ -33,7 +34,10 @@ const STEPS: Record<string, string[]> = {
 const INPUT_CLS = 'w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50'
 
 export function Generate() {
+  const [searchParams] = useSearchParams()
   const [tab, setTab] = useState<Tab>(() => {
+    const urlTab = searchParams.get('tab') as Tab | null
+    if (urlTab && TABS.some(t => t.key === urlTab)) return urlTab
     try {
       const saved = JSON.parse(localStorage.getItem('jobifai:ai-apply') ?? 'null') as { url?: string; response?: ApplyURLResponse } | null
       if (saved?.url || saved?.response) return 'apply'

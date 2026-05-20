@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Play, Square, Pause, RotateCcw, Zap, FileText, Star } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Play, Square, Pause, RotateCcw, Zap, FileText, Star, Target, Mail } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
 import { useBot } from '../hooks/useBot'
 import { useLogs } from '../hooks/useLogs'
 import { LogPanel } from '../components/LogPanel'
@@ -26,6 +26,7 @@ const STATE_STYLE: Record<BotState, { ring: string; dot: string; label: string; 
 }
 
 export function Dashboard() {
+  const navigate = useNavigate()
   const { status, start, stop, pause, resume, startError } = useBot()
   const { lines, connected, clear } = useLogs()
   const [platform, setPlatform] = useState<Platform>('linkedin')
@@ -173,10 +174,11 @@ export function Dashboard() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
-        <StatCard label="Applied Today" value={stats?.applied_today ?? 0} icon={<Zap size={14} />} />
-        <StatCard label="Total Applied" value={stats?.total_applied ?? 0} />
-        <StatCard label="Total Skipped" value={stats?.total_skipped ?? 0} />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatCard label="Applied Today" value={stats?.applied_today ?? 0} icon={<Zap size={14} />} onClick={() => navigate('/jobs/applied?today=true')} />
+        <StatCard label="Skipped Today" value={stats?.skipped_today ?? 0} onClick={() => navigate('/jobs/skipped?today=true')} />
+        <StatCard label="Total Applied" value={stats?.total_applied ?? 0} onClick={() => navigate('/jobs/applied')} />
+        <StatCard label="Total Skipped" value={stats?.total_skipped ?? 0} onClick={() => navigate('/jobs/skipped')} />
       </div>
 
       {/* Quick actions */}
@@ -193,19 +195,33 @@ export function Dashboard() {
         </Link>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Link to="/generate" className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 hover:border-violet-500/40 hover:bg-violet-500/5 transition-all group">
+      <div className="grid grid-cols-4 gap-3">
+        <Link to="/jobs/top-matches" className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 hover:border-violet-500/40 hover:bg-violet-500/5 transition-all group">
+          <Star size={16} className="text-[var(--color-text-dim)] group-hover:text-violet-400 transition-colors" />
+          <div>
+            <div className="text-sm font-medium text-[var(--color-text)]">Top Matches</div>
+            <div className="text-xs text-[var(--color-text-dim)]">Review your best-fit positions</div>
+          </div>
+        </Link>
+        <Link to="/generate?tab=evaluate" className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 hover:border-violet-500/40 hover:bg-violet-500/5 transition-all group">
+          <Target size={16} className="text-[var(--color-text-dim)] group-hover:text-violet-400 transition-colors" />
+          <div>
+            <div className="text-sm font-medium text-[var(--color-text)]">Job Fit</div>
+            <div className="text-xs text-[var(--color-text-dim)]">Score how well a role matches your profile</div>
+          </div>
+        </Link>
+        <Link to="/generate?tab=resume" className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 hover:border-violet-500/40 hover:bg-violet-500/5 transition-all group">
           <FileText size={16} className="text-[var(--color-text-dim)] group-hover:text-violet-400 transition-colors" />
           <div>
             <div className="text-sm font-medium text-[var(--color-text)]">Generate Resume</div>
-            <div className="text-xs text-[var(--color-text-dim)]">Create tailored resume or cover letter</div>
+            <div className="text-xs text-[var(--color-text-dim)]">Create a tailored or base resume</div>
           </div>
         </Link>
-        <Link to="/jobs/applied" className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 hover:border-violet-500/40 hover:bg-violet-500/5 transition-all group">
-          <Zap size={16} className="text-[var(--color-text-dim)] group-hover:text-violet-400 transition-colors" />
+        <Link to="/generate?tab=cover" className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 hover:border-violet-500/40 hover:bg-violet-500/5 transition-all group">
+          <Mail size={16} className="text-[var(--color-text-dim)] group-hover:text-violet-400 transition-colors" />
           <div>
-            <div className="text-sm font-medium text-[var(--color-text)]">View Applications</div>
-            <div className="text-xs text-[var(--color-text-dim)]">Browse applied and skipped jobs</div>
+            <div className="text-sm font-medium text-[var(--color-text)]">Generate Cover Letter</div>
+            <div className="text-xs text-[var(--color-text-dim)]">AI-written cover letter for any role</div>
           </div>
         </Link>
       </div>
