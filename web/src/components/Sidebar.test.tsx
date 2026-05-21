@@ -31,6 +31,8 @@ vi.mock('../contexts/AuthContext', () => ({
 
 const mockedReviewPending = vi.mocked(botApi.reviewPending)
 
+const defaultProps = { collapsed: false, onToggle: vi.fn() }
+
 function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return (
@@ -50,7 +52,7 @@ beforeEach(() => {
 })
 
 test('renders all navigation items', () => {
-  render(<Sidebar />, { wrapper: Wrapper })
+  render(<Sidebar {...defaultProps} />, { wrapper: Wrapper })
   expect(screen.getByText('Dashboard')).toBeInTheDocument()
   expect(screen.getByText('Applied')).toBeInTheDocument()
   expect(screen.getByText('Skipped')).toBeInTheDocument()
@@ -62,12 +64,12 @@ test('renders all navigation items', () => {
 })
 
 test('shows user display name in footer', () => {
-  render(<Sidebar />, { wrapper: Wrapper })
+  render(<Sidebar {...defaultProps} />, { wrapper: Wrapper })
   expect(screen.getByText('Test User')).toBeInTheDocument()
 })
 
 test('shows brand name', () => {
-  render(<Sidebar />, { wrapper: Wrapper })
+  render(<Sidebar {...defaultProps} />, { wrapper: Wrapper })
   expect(screen.getByText('Jobifai')).toBeInTheDocument()
 })
 
@@ -75,7 +77,7 @@ test('shows pending badge count when there are pending reviews', async () => {
   mockedReviewPending.mockResolvedValue(
     Array.from({ length: 5 }, (_, i) => ({ job_id: String(i) })) as never,
   )
-  render(<Sidebar />, { wrapper: Wrapper })
+  render(<Sidebar {...defaultProps} />, { wrapper: Wrapper })
 
   await waitFor(() => {
     expect(screen.getByText('5')).toBeInTheDocument()
@@ -86,7 +88,7 @@ test('caps badge at 9+ for more than 9 pending reviews', async () => {
   mockedReviewPending.mockResolvedValue(
     Array.from({ length: 12 }, (_, i) => ({ job_id: String(i) })) as never,
   )
-  render(<Sidebar />, { wrapper: Wrapper })
+  render(<Sidebar {...defaultProps} />, { wrapper: Wrapper })
 
   await waitFor(() => {
     expect(screen.getByText('9+')).toBeInTheDocument()
@@ -95,7 +97,7 @@ test('caps badge at 9+ for more than 9 pending reviews', async () => {
 
 test('calls logout when sign-out button is clicked', async () => {
   const user = userEvent.setup()
-  render(<Sidebar />, { wrapper: Wrapper })
+  render(<Sidebar {...defaultProps} />, { wrapper: Wrapper })
 
   await user.click(screen.getByTitle('Sign out'))
 
@@ -107,6 +109,6 @@ test('falls back to email initial when display_name is absent', () => {
     user: { email: 'alice@example.com', display_name: '' },
     logout: mockLogout,
   })
-  render(<Sidebar />, { wrapper: Wrapper })
+  render(<Sidebar {...defaultProps} />, { wrapper: Wrapper })
   expect(screen.getByText('alice@example.com')).toBeInTheDocument()
 })

@@ -104,10 +104,11 @@ type PendingReview struct {
 }
 
 type JobStats struct {
-	TotalApplied int `json:"total_applied"`
-	AppliedToday int `json:"applied_today"`
-	TotalSkipped int `json:"total_skipped"`
-	SkippedToday int `json:"skipped_today"`
+	TotalApplied    int `json:"total_applied"`
+	AppliedToday    int `json:"applied_today"`
+	TotalSkipped    int `json:"total_skipped"`
+	SkippedToday    int `json:"skipped_today"`
+	TopMatchesCount int `json:"top_matches_count"`
 }
 
 // JobScore is the result of an LLM suitability evaluation.

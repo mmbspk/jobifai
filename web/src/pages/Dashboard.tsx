@@ -198,10 +198,15 @@ export function Dashboard() {
       <div className="grid grid-cols-4 gap-3">
         <Link to="/jobs/top-matches" className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 hover:border-violet-500/40 hover:bg-violet-500/5 transition-all group">
           <Star size={16} className="text-[var(--color-text-dim)] group-hover:text-violet-400 transition-colors" />
-          <div>
+          <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-[var(--color-text)]">Top Matches</div>
             <div className="text-xs text-[var(--color-text-dim)]">Review your best-fit positions</div>
           </div>
+          {(stats?.top_matches_count ?? 0) > 0 && (
+            <span className="text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30 rounded-full px-2 py-0.5 shrink-0">
+              {stats!.top_matches_count}
+            </span>
+          )}
         </Link>
         <Link to="/generate?tab=evaluate" className="flex items-center gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 hover:border-violet-500/40 hover:bg-violet-500/5 transition-all group">
           <Target size={16} className="text-[var(--color-text-dim)] group-hover:text-violet-400 transition-colors" />

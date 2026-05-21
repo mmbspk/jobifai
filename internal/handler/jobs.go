@@ -375,6 +375,16 @@ func (h *JobHandlers) Stats(w http.ResponseWriter, r *http.Request) {
 		"SELECT COUNT(*) FROM jobs_skipped WHERE user_id = ? AND date(viewed_at) = date('now')", userID).Scan(&stats.SkippedToday); err != nil {
 		log.Error().Err(err).Msg("stats: skipped_today query failed")
 	}
+	topThreshold := 7
+	var gs domain.GeneralSettings
+	if err := h.svc.Config.Get(userID, "general_settings", &gs); err == nil && gs.JobSuitabilityScore > 0 {
+		topThreshold = gs.JobSuitabilityScore
+	}
+	if err := h.svc.DB.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id = ? AND suitability_score >= ? AND easy_apply = 0`,
+		userID, topThreshold).Scan(&stats.TopMatchesCount); err != nil {
+		log.Error().Err(err).Msg("stats: top_matches_count query failed")
+	}
 	writeJSON(w, http.StatusOK, stats)
 }
 
