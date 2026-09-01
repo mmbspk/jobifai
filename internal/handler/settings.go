@@ -182,6 +182,7 @@ func (h *SettingsHandlers) PreferencesGet(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
+	p.Normalize()
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -193,6 +194,7 @@ func (h *SettingsHandlers) PreferencesSet(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
+	p.Normalize()
 	if err := h.svc.Config.Set(userID, keyWorkPreferences, p); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return

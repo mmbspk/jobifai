@@ -3,9 +3,9 @@ import { useState, useEffect } from 'react'
 import { Check } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { TagInput } from '../../components/TagInput'
-import { LocationTagInput } from '../../components/LocationTagInput'
+import { SearchTargetList } from '../../components/SearchTargetList'
 import { Button } from '../../components/Button'
-import type { WorkPreferences } from '../../types'
+import type { SearchTarget, WorkPreferences } from '../../types'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -30,14 +30,40 @@ function Checkbox({ label, checked, onChange }: { label: string; checked: boolea
   )
 }
 
+const DEFAULT_TARGET: SearchTarget = { location: '', remote: true, hybrid: true, onsite: false }
+
 const DEFAULT: WorkPreferences = {
-  remote: true, hybrid: true, onsite: false,
   experience_level: { entry: true, associate: true, mid_senior_level: true, senior: true },
   job_types: { full_time: true },
   date_filters: { week: true },
-  positions: [], locations: [],
+  positions: [],
+  search_targets: [DEFAULT_TARGET],
   company_blacklist: [], title_blacklist: [], location_blacklist: [],
   apply_once_at_company: true, max_applications: 50,
+}
+
+function normalizePrefs(p: WorkPreferences): WorkPreferences {
+  if (p.search_targets?.length) return p
+  if (p.locations?.length) {
+    return {
+      ...p,
+      search_targets: p.locations.map(loc => ({
+        location: loc,
+        remote: p.remote ?? false,
+        hybrid: p.hybrid ?? false,
+        onsite: p.onsite ?? false,
+      })),
+    }
+  }
+  return {
+    ...p,
+    search_targets: [{
+      location: '',
+      remote: p.remote ?? true,
+      hybrid: p.hybrid ?? true,
+      onsite: p.onsite ?? false,
+    }],
+  }
 }
 
 export function Preferences() {
@@ -46,7 +72,7 @@ export function Preferences() {
   const [form, setForm] = useState<WorkPreferences>(DEFAULT)
   const [saved, setSaved] = useState(false)
 
-  useEffect(() => { if (data) setForm(data) }, [data])
+  useEffect(() => { if (data) setForm(normalizePrefs(data)) }, [data])
 
   const save = useMutation({
     mutationFn: () => settingsApi.preferences.set(form),
@@ -61,16 +87,10 @@ export function Preferences() {
     setForm(f => ({ ...f, [section]: { ...f[section], [key]: !((f[section] as Record<string, boolean>)[key]) } }))
   }
 
+  const targets = form.search_targets?.length ? form.search_targets : [DEFAULT_TARGET]
+
   return (
     <div className="space-y-4">
-      <Section title="Work Type">
-        <div className="flex gap-6">
-          <Checkbox label="Remote" checked={form.remote ?? false} onChange={v => setForm(f => ({ ...f, remote: v }))} />
-          <Checkbox label="Hybrid" checked={form.hybrid ?? false} onChange={v => setForm(f => ({ ...f, hybrid: v }))} />
-          <Checkbox label="On-site" checked={form.onsite ?? false} onChange={v => setForm(f => ({ ...f, onsite: v }))} />
-        </div>
-      </Section>
-
       <Section title="Experience Level">
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {(['internship','entry','associate','mid_senior_level','senior','director','executive'] as const).map(k => (
@@ -113,10 +133,11 @@ export function Preferences() {
             </div>
           </div>
           <div>
-            <div className="text-xs text-[var(--color-text-dim)] mb-1.5">Locations</div>
-            <div className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg p-2.5 min-h-10">
-              <LocationTagInput values={form.locations ?? []} onChange={v => setForm(f => ({ ...f, locations: v }))} />
-            </div>
+            <div className="text-xs text-[var(--color-text-dim)] mb-1.5">Location Searches</div>
+            <SearchTargetList
+              targets={targets}
+              onChange={search_targets => setForm(f => ({ ...f, search_targets }))}
+            />
           </div>
         </div>
       </Section>

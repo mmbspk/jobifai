@@ -34,7 +34,7 @@ test.describe('Settings', () => {
 
   test('Preferences page loads with correct sections', async ({ page }) => {
     await page.goto('/settings/preferences')
-    await expect(page.getByText('Work Type')).toBeVisible()
+    await expect(page.getByText('Location Searches')).toBeVisible()
     await expect(page.getByText('Experience Level')).toBeVisible()
     await expect(page.getByText('Job Types')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Save Preferences' })).toBeVisible()
@@ -43,7 +43,7 @@ test.describe('Settings', () => {
   test('all settings tabs are accessible', async ({ page }) => {
     for (const [path, landmark] of [
       ['/settings/general',     'LLM Configuration'],
-      ['/settings/preferences', 'Work Type'],
+      ['/settings/preferences', 'Location Searches'],
       ['/settings/secrets',     'LLM API Keys'],
       ['/settings/usage',       'Usage Statistics'],
     ] as const) {

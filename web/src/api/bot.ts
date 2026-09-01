@@ -21,5 +21,5 @@ export const botApi = {
   reviewApprove: (jobId: string) => apiPost<void>(`/bot/review/${jobId}/approve`),
   reviewReject: (jobId: string) => apiPost<void>(`/bot/review/${jobId}/reject`),
   applyFromURL: (url: string, market: string, force = false) =>
-    apiPost<ApplyURLResponse>('/bot/apply-url', { url, market, force }),
+    apiPost<ApplyURLResponse>('/bot/apply-url', { url, market, force }, 4.5 * 60 * 1000),
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 )
 
@@ -45,7 +46,7 @@ func (s *Store) Set(userID, key string, src any) error {
 	if err != nil {
 		return fmt.Errorf("config marshal %q: %w", key, err)
 	}
-	_, err = s.db.Exec(
+	_, err = db.ExecWithRetry(s.db,
 		`INSERT INTO settings(user_id, key, value) VALUES(?,?,?)
 		 ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value`,
 		userID, key, string(raw),

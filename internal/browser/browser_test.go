@@ -3,6 +3,7 @@ package browser_test
 import (
 	"path/filepath"
 	"testing"
+	"os"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,6 +49,35 @@ func TestToCookieParams_MapsFields(t *testing.T) {
 	assert.Equal(t, "token", params[0].Value)
 	assert.Contains(t, params[0].Domain, "seek.com")
 	assert.NotContains(t, params[0].Domain, "seek.com.au", "legacy domain should be rewritten")
+}
+
+func TestProfileDir_ConfiguredWins(t *testing.T) {
+	assert.Equal(t, "/custom/path", browser.ProfileDir("u1", "seek", "/custom/path"))
+}
+
+func TestProfileDir_DefaultPerUserPlatform(t *testing.T) {
+	got := browser.ProfileDir("user-abc", "linkedin", "")
+	assert.Equal(t, filepath.Join("data", "chrome-profiles", "user-abc", "linkedin"), got)
+}
+
+func TestClearStaleChromeProfileLocks_RemovesDeadProcessLock(t *testing.T) {
+	dir := t.TempDir()
+	// macOS Chrome lock format: hostname-PID
+	require.NoError(t, os.Symlink("DR77XGQY46-999999", filepath.Join(dir, "SingletonLock")))
+	browser.ClearStaleChromeProfileLocks(dir)
+	_, err := os.Lstat(filepath.Join(dir, "SingletonLock"))
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestReleaseProfileForLaunch_NoPanicOnEmptyDir(t *testing.T) {
+	assert.NotPanics(t, func() { browser.ReleaseProfileForLaunch("") })
+}
+
+func TestShouldPersistCookies(t *testing.T) {
+	assert.True(t, browser.ShouldPersistCookies(browser.LoginStateYes, nil))
+	assert.False(t, browser.ShouldPersistCookies(browser.LoginStateNo, nil))
+	assert.False(t, browser.ShouldPersistCookies(browser.LoginStateUnknown, nil))
+	assert.False(t, browser.ShouldPersistCookies(browser.LoginStateYes, assert.AnError))
 }
 
 func TestSessionStore_Status_NotFound(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 )
 
@@ -39,7 +40,7 @@ func (s *SessionStore) Save(userID, platform, loginMethod string, cookies []byte
 		return fmt.Errorf("session save: encrypt: %w", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.Exec(
+	_, err := db.ExecWithRetry(s.db,
 		`INSERT INTO platform_sessions(user_id, platform, cookies_json, login_method, created_at, updated_at)
 		 VALUES(?,?,?,?,?,?)
 		 ON CONFLICT(user_id, platform) DO UPDATE SET
@@ -87,7 +88,7 @@ func (s *SessionStore) Load(userID, platform string) ([]Cookie, error) {
 
 // Delete removes the session and its encrypted cookies for the user+platform.
 func (s *SessionStore) Delete(userID, platform string) error {
-	res, err := s.db.Exec(
+	res, err := db.ExecWithRetry(s.db,
 		"DELETE FROM platform_sessions WHERE user_id = ? AND platform = ?", userID, platform,
 	)
 	if err != nil {

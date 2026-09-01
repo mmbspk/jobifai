@@ -82,8 +82,9 @@ export function JobsCannotApply() {
       <div className="flex items-start gap-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-300 text-sm">
         <AlertCircle size={16} className="shrink-0 mt-0.5" />
         <span>
-          These jobs were found and scored, but jobifai couldn't submit the application automatically
-          (e.g. external ATS redirect, Easy Apply not available). You can apply to them manually.
+          These jobs had Easy Apply / Quick Apply, but jobifai couldn't complete the submission
+          (e.g. form validation, session step-up, upload error). Re-queue to retry, or apply manually on the job site.
+          Jobs without Easy / Quick Apply appear in Top Matches instead.
         </span>
       </div>
 

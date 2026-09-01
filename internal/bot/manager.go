@@ -3,10 +3,10 @@ package bot
 import (
 	"context"
 	"database/sql"
-	"slices"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -120,8 +120,8 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 	e.bot = New(*cfg)
 	now := time.Now()
 	location := ""
-	if len(cfg.Preferences.Locations) > 0 {
-		location = cfg.Preferences.Locations[0]
+	if targets := cfg.Preferences.EffectiveSearchTargets(); len(targets) > 0 {
+		location = targets[0].Location
 	}
 	e.status = domain.BotStatus{
 		State:      domain.BotStateRunning,
@@ -437,11 +437,19 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 		return nil, errors.New("no saved Seek session, log in via Settings → Secrets first")
 	}
 
-	l := launcher.New().Headless(!gs.Browser.ShowBrowser)
-	if gs.Browser.UseChromeProfile && gs.Browser.ChromeProfilePath != "" {
-		l = l.UserDataDir(gs.Browser.ChromeProfilePath)
-	}
+	dir := browser.ProfileDir(userID, "seek", gs.Browser.ChromeProfilePath)
+	browser.PrepareChromeProfileDir(dir)
+	l := launcher.New().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
 	wsURL, launchErr := l.Launch()
+	if launchErr != nil && strings.Contains(launchErr.Error(), "SingletonLock") {
+		log.Warn().Err(launchErr).Str("dir", dir).Msg("seek: profile locked, force-unlocking and retrying")
+		if old := m.seekBrowsers[userID]; old != nil {
+			_ = old.Close()
+			delete(m.seekBrowsers, userID)
+		}
+		browser.ForceUnlockChromeProfile(dir)
+		wsURL, launchErr = launcher.New().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
+	}
 	if launchErr != nil {
 		return nil, errors.New("launch chrome: " + launchErr.Error())
 	}
@@ -464,6 +472,16 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 	}
 	_ = warmPage.Timeout(30 * time.Second).WaitLoad()
 	_ = warmPage.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+
+	// Recover with stored credentials when warm-up lands logged out.
+	if state, _ := browser.PageLoginState(warmPage, "seek"); state == browser.LoginStateNo {
+		tmpBot, _, setupErr := m.setupBot(userID, domain.PlatformSeek, "")
+		if setupErr == nil && tmpBot.cfg.SeekEmail != "" {
+			if recoverErr := tmpBot.seekEnsureLoggedIn(warmPage); recoverErr != nil {
+				log.Warn().Err(recoverErr).Str("user_id", userID).Msg("seek: warm-up auto-login failed")
+			}
+		}
+	}
 
 	// Persist warm-up rotated tokens so the next server restart loads a valid
 	// (unconsumed) refresh token — getSeekBrowser rotates on navigate but unlike
@@ -491,8 +509,16 @@ func (m *Manager) InvalidateSeekBrowser(userID string) {
 }
 
 // saveBrowserCookies marshals all cookies from page and persists them for userID/platform.
+// Skips persistence when the page is not confirmed logged in, so a guest jar cannot
+// overwrite a previously-valid session.
 func (m *Manager) saveBrowserCookies(page *rod.Page, userID, platform string) {
 	if m.sessions == nil {
+		return
+	}
+	state, stateErr := browser.PageLoginState(page, platform)
+	if !browser.ShouldPersistCookies(state, stateErr) {
+		log.Warn().Str("user_id", userID).Str("platform", platform).Str("state", string(state)).
+			Msg("session cookies not saved after warm-up — not confirmed logged in")
 		return
 	}
 	warmCookies, err := proto.NetworkGetAllCookies{}.Call(page)
@@ -542,11 +568,19 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (
 		return nil, errors.New("no saved LinkedIn session — log in via Settings → Secrets first")
 	}
 
-	l := launcher.New().Headless(!gs.Browser.ShowBrowser)
-	if gs.Browser.UseChromeProfile && gs.Browser.ChromeProfilePath != "" {
-		l = l.UserDataDir(gs.Browser.ChromeProfilePath)
-	}
+	dir := browser.ProfileDir(userID, "linkedin", gs.Browser.ChromeProfilePath)
+	browser.PrepareChromeProfileDir(dir)
+	l := launcher.New().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
 	wsURL, launchErr := l.Launch()
+	if launchErr != nil && strings.Contains(launchErr.Error(), "SingletonLock") {
+		log.Warn().Err(launchErr).Str("dir", dir).Msg("linkedin: profile locked, force-unlocking and retrying")
+		if old := m.linkedInBrowsers[userID]; old != nil {
+			_ = old.Close()
+			delete(m.linkedInBrowsers, userID)
+		}
+		browser.ForceUnlockChromeProfile(dir)
+		wsURL, launchErr = launcher.New().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
+	}
 	if launchErr != nil {
 		return nil, errors.New("launch chrome: " + launchErr.Error())
 	}
@@ -569,6 +603,15 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (
 	}
 	_ = warmPage.Timeout(30 * time.Second).WaitLoad()
 	_ = warmPage.Timeout(8 * time.Second).WaitStable(2 * time.Second)
+
+	if state, _ := browser.PageLoginState(warmPage, "linkedin"); state == browser.LoginStateNo {
+		tmpBot, _, setupErr := m.setupBot(userID, domain.PlatformLinkedIn, "")
+		if setupErr == nil && tmpBot.cfg.LinkedInEmail != "" {
+			if recoverErr := tmpBot.linkedinEnsureLoggedIn(warmPage); recoverErr != nil {
+				log.Warn().Err(recoverErr).Str("user_id", userID).Msg("linkedin: warm-up auto-login failed")
+			}
+		}
+	}
 
 	// Persist updated cookies so the next call starts with a fresh session.
 	m.saveBrowserCookies(warmPage, userID, "linkedin")
@@ -603,6 +646,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	if err := m.cfgStore.Get(userID, "work_preferences", &prefs); err != nil {
 		log.Warn().Err(err).Str("user_id", userID).Msg("buildConfig: failed to load work preferences, using defaults")
 	}
+	prefs.Normalize()
 
 	var profile domain.ResumeProfile
 	if err := m.cfgStore.Get(userID, "resume_profile", &profile); err != nil {
@@ -670,6 +714,18 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 			if json.Unmarshal([]byte(raw), &cred) == nil {
 				cfg.SeekEmail = cred.Email
 				cfg.SeekPassword = cred.Password
+			}
+		}
+	}
+	if platform == domain.PlatformLinkedIn {
+		if raw, err := m.secrets.Get(userID, "cred:linkedin"); err == nil {
+			var cred struct {
+				Email    string `json:"email"`
+				Password string `json:"password"`
+			}
+			if json.Unmarshal([]byte(raw), &cred) == nil {
+				cfg.LinkedInEmail = cred.Email
+				cfg.LinkedInPassword = cred.Password
 			}
 		}
 	}
@@ -777,6 +833,15 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 			if json.Unmarshal([]byte(raw), &cred) == nil {
 				b.cfg.SeekEmail = cred.Email
 				b.cfg.SeekPassword = cred.Password
+			}
+		}
+	}
+	if platform == domain.PlatformLinkedIn {
+		if raw, err := m.secrets.Get(userID, "cred:linkedin"); err == nil {
+			var cred struct{ Email, Password string }
+			if json.Unmarshal([]byte(raw), &cred) == nil {
+				b.cfg.LinkedInEmail = cred.Email
+				b.cfg.LinkedInPassword = cred.Password
 			}
 		}
 	}
@@ -930,11 +995,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		if ownsBr {
 			br.Close()
 		}
-		if force {
-			return ApplyFromURLResult{Company: company, Role: role}, nil
-		}
-		// Page shows already-applied but it may not be in our DB (user applied manually).
-		// Record it so it appears in the Applied list, and clean up any pending-review entry.
+		// Always surface as already_applied — never nil (which the UI treats as fresh Applied ✓).
 		var alreadyTracked int
 		if err := m.db.QueryRow(`SELECT COUNT(*) FROM jobs_applied WHERE user_id=? AND link=?`, userID, jobURL).Scan(&alreadyTracked); err != nil {
 			log.Warn().Err(err).Str("url", jobURL).Msg("ai apply: failed to check already-tracked status")
@@ -963,31 +1024,8 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		applyLabel = "quick apply"
 	}
 
-	// Extract job description from the already-loaded page.
-	jobDesc := role + " at " + company
-	if rawHTML, htmlErr := jobPage.HTML(); htmlErr == nil {
-		if d := scraper.ParseHTML(rawHTML); len(strings.TrimSpace(d.Description)) >= 100 {
-			jobDesc = d.Description
-		}
-	}
-
-	// STEP 1: Score first so all outcome paths get a real LLM score.
-	score, scoreReason := 0, ""
-	threshold := gs.JobSuitabilityScore
-	if threshold == 0 {
-		threshold = 7
-	}
-	scoredOK := false
-	if b.cfg.Scorer != nil {
-		if jScore, scoreErr := b.cfg.Scorer.EvaluateJob(ctx, b.cfg.Profile, jobDesc); scoreErr == nil {
-			score, scoreReason = jScore.Score, jScore.Reasoning
-			scoredOK = true
-		} else {
-			log.Warn().Err(scoreErr).Msg("ai apply: scoring failed, proceeding without score gate")
-		}
-	}
-
-	// STEP 2: Check Easy Apply / Quick Apply presence on the page.
+	// STEP 1: Easy/Quick Apply check BEFORE scoring — external Apply jobs must fail
+	// fast so the UI does not sit on "Submitting application…" during an LLM score.
 	var isEasyApply bool
 	switch platform {
 	case domain.PlatformSeek:
@@ -996,7 +1034,26 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		isEasyApply = detectLinkedInEasyApply(jobPage)
 	}
 
+	// Extract job description from the already-loaded page (needed for score + pending).
+	jobDesc := role + " at " + company
+	if rawHTML, htmlErr := jobPage.HTML(); htmlErr == nil {
+		if d := scraper.ParseHTML(rawHTML); len(strings.TrimSpace(d.Description)) >= 100 {
+			jobDesc = d.Description
+		}
+	}
+
 	if !isEasyApply {
+		// Light score for Top Matches context — bounded so this path cannot hang.
+		score, scoreReason := 0, ""
+		if b.cfg.Scorer != nil {
+			scoreCtx, scoreCancel := context.WithTimeout(ctx, 45*time.Second)
+			if jScore, scoreErr := b.cfg.Scorer.EvaluateJob(scoreCtx, b.cfg.Profile, jobDesc); scoreErr == nil {
+				score, scoreReason = jScore.Score, jScore.Reasoning
+			} else {
+				log.Warn().Err(scoreErr).Msg("ai apply: scoring failed for non-easy-apply job")
+			}
+			scoreCancel()
+		}
 		jobPage.Close()
 		if ownsBr {
 			br.Close()
@@ -1019,7 +1076,25 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, ErrNotEasyApply
 	}
 
-	// STEP 3: Easy Apply confirmed — check score threshold (skip when force=true).
+	// STEP 2: Score Easy/Quick Apply jobs (bounded).
+	score, scoreReason := 0, ""
+	threshold := gs.JobSuitabilityScore
+	if threshold == 0 {
+		threshold = 7
+	}
+	scoredOK := false
+	if b.cfg.Scorer != nil {
+		scoreCtx, scoreCancel := context.WithTimeout(ctx, 90*time.Second)
+		if jScore, scoreErr := b.cfg.Scorer.EvaluateJob(scoreCtx, b.cfg.Profile, jobDesc); scoreErr == nil {
+			score, scoreReason = jScore.Score, jScore.Reasoning
+			scoredOK = true
+		} else {
+			log.Warn().Err(scoreErr).Msg("ai apply: scoring failed, proceeding without score gate")
+		}
+		scoreCancel()
+	}
+
+	// STEP 3: Score threshold (skip when force=true).
 	if !force && scoredOK && score < threshold {
 		jobPage.Close()
 		if ownsBr {
@@ -1035,10 +1110,9 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		}, nil
 	}
 
-	// STEP 4: Score OK — apply now. Run synchronously so the HTTP response
-	// reflects the actual outcome rather than just "in progress".
-	// Use m.ctx (server lifetime) so the apply survives if the HTTP connection drops.
-	lazy := &lazyDocGen{b: b, ctx: m.ctx, job: linkedInJob{Company: company, Title: role}, jobDesc: jobDesc}
+	// STEP 4: Apply — use request ctx (includes 4m handler timeout) so a hung
+	// browser/form cannot block "Submitting application…" indefinitely.
+	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: company, Title: role}, jobDesc: jobDesc}
 	defer jobPage.Close()
 	if ownsBr {
 		defer br.Close()
@@ -1046,13 +1120,32 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 
 	var applyErr error
 	if platform == domain.PlatformSeek {
-		applyErr = b.seekApply(m.ctx, jobPage, lazy)
+		applyErr = b.seekApply(ctx, jobPage, lazy)
 	} else {
-		applyErr = b.easyApply(m.ctx, jobPage, lazy)
+		applyErr = b.easyApply(ctx, jobPage, lazy)
 	}
 
 	if applyErr != nil && !errors.Is(applyErr, errAlreadyApplied) {
 		log.Error().Err(applyErr).Str("job", role).Msg("ai apply: failed")
+		if isSeekApplyBlockedError(applyErr) {
+			var pendingCount int
+			if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL).Scan(&pendingCount); err != nil {
+				log.Warn().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: pending check failed")
+			}
+			if pendingCount == 0 {
+				if _, err := m.db.ExecContext(ctx,
+					`INSERT OR IGNORE INTO jobs_pending_review
+					 (job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,
+					  suitability_score,suitability_reasoning,easy_apply,created_at)
+					 VALUES(?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'))`,
+					jobID, userID, company, role, location, string(platform), jobURL, "", "", score, scoreReason,
+				); err != nil {
+					log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert pending review failed")
+				}
+			}
+			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID},
+				fmt.Errorf("%s not automatable: %w", applyLabel, applyErr)
+		}
 		var skippedCount int
 		if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs_skipped WHERE user_id=? AND link=?`, userID, jobURL).Scan(&skippedCount); err != nil {
 			log.Warn().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: skipped check failed")
@@ -1070,6 +1163,37 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason},
 			fmt.Errorf("%s failed: %w", applyLabel, applyErr)
 	}
+
+	// Defence in depth: never record Applied unless the platform UI confirms it.
+	// Stops false "Applied ✓" when Easy Apply detection misfired on external Apply,
+	// or when success-page heuristics fired without a real submission.
+	if !errors.Is(applyErr, errAlreadyApplied) {
+		confirmed := false
+		switch platform {
+		case domain.PlatformSeek:
+			confirmed = detectSeekPageApplied(jobPage)
+			if !confirmed {
+				_ = jobPage.Navigate(jobURL)
+				_ = jobPage.Timeout(30 * time.Second).WaitLoad()
+				_ = jobPage.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+				confirmed = detectSeekPageApplied(jobPage)
+			}
+		default:
+			confirmed = b.linkedInPageApplied(jobPage)
+			if !confirmed {
+				_ = jobPage.Navigate(jobURL)
+				_ = jobPage.Timeout(30 * time.Second).WaitLoad()
+				_ = jobPage.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+				confirmed = b.linkedInPageApplied(jobPage)
+			}
+		}
+		if !confirmed {
+			log.Warn().Str("job", role).Str("url", jobURL).Msg("ai apply: bot reported success but job page does not show Applied")
+			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason},
+				fmt.Errorf("%s failed: application was not confirmed on the job page (this may be an external Apply job — only Easy/Quick Apply is supported)", applyLabel)
+		}
+	}
+
 	resumePath, coverPath := lazy.get()
 	if _, err := m.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)

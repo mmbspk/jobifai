@@ -248,7 +248,7 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
         <div className="px-4 pb-4 border-t border-[var(--color-border-subtle)] pt-3 space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-xs text-[var(--color-text-muted)]">
-              Log in to <span className="capitalize">{platform}</span> below, then click <strong>Save session</strong>.
+              Log in to <span className="capitalize">{platform}</span> fully (including MFA). For Seek, open a job and confirm you can see Quick Apply, then click <strong>Save session</strong>.
             </p>
             <button onClick={() => saveSession.mutate()} disabled={saveSession.isPending}
               className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium disabled:opacity-50 transition-colors flex-shrink-0 ml-3"

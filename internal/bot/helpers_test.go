@@ -4,6 +4,8 @@ package bot
 // Uses package bot (not bot_test) to access unexported functions.
 
 import (
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -150,6 +152,35 @@ func TestIsSeekLoginPage(t *testing.T) {
 	assert.False(t, isSeekLoginPage(""))
 }
 
+func TestSeekDetailPageExternalApply(t *testing.T) {
+	assert.True(t, seekDetailPageExternalApply(`<a href="https://jobs.smartrecruiters.com/oneclick-ui/company/AFCA">Apply</a>`))
+	assert.True(t, seekDetailPageExternalApply(`<script src="https://boards.greenhouse.io/embed.js"></script>`))
+	assert.False(t, seekDetailPageExternalApply(`<button data-automation="job-detail-apply">Quick Apply</button>`))
+}
+
+func TestSeekApplyBlockedReason(t *testing.T) {
+	assert.Contains(t, seekApplyBlockedReasonFromURL("https://geo.captcha-delivery.com/captcha/"), "captcha")
+	assert.Contains(t, seekApplyBlockedReasonFromURL("https://jobs.smartrecruiters.com/oneclick-ui/company/AFCA/publication/abc"), "SmartRecruiters")
+
+	html, err := os.ReadFile("../../debug_seek_upload_stepup_no_form.html")
+	if err == nil {
+		reason := seekApplyBlockedReasonFromHTML(string(html))
+		assert.Contains(t, reason, "SmartRecruiters")
+		assert.Contains(t, reason, "captcha")
+	}
+
+	assert.False(t, isSeekSessionExpiredError(fmt.Errorf("seek apply blocked: SmartRecruiters captcha")))
+	assert.True(t, isSeekSessionExpiredError(fmt.Errorf("seek session expired — Quick Apply redirected to login")))
+	assert.True(t, isSeekApplyBlockedError(fmt.Errorf("seek apply blocked: external site")))
+}
+
+func TestSkipReasonBelongsInTopMatches(t *testing.T) {
+	assert.True(t, skipReasonBelongsInTopMatches("seek apply: seek apply blocked: SmartRecruiters captcha"))
+	assert.True(t, skipReasonBelongsInTopMatches("quick apply: bot-protection captcha blocked"))
+	assert.False(t, skipReasonBelongsInTopMatches("seek apply: required screening questions could not be filled"))
+	assert.False(t, skipReasonBelongsInTopMatches("score 4 < 6"))
+}
+
 // ── isBlacklisted / isSeekJobBlacklisted ─────────────────────────────────────
 
 func newBotWithPrefs(prefs domain.WorkPreferences) *Bot {
@@ -236,4 +267,28 @@ func TestSeekLocationPath(t *testing.T) {
 	// Empty → base path
 	assert.Equal(t, "/jobs", seekLocationPath(""))
 	assert.Equal(t, "/jobs", seekLocationPath("All Australia"))
+
+	assert.Contains(t, seekLocationPath("All Melbourne VIC"), "Melbourne")
+}
+
+func TestPickBestLocationOption(t *testing.T) {
+	opts := []string{"South Australia SA", "All Melbourne VIC", "Melbourne VIC"}
+	assert.Equal(t, "All Melbourne VIC", pickBestLocationOption("All Melbourne VIC", opts))
+	assert.Equal(t, "All Melbourne VIC", pickBestLocationOption("Melbourne", opts))
+	assert.Equal(t, "", pickBestLocationOption("Melbourne", []string{"South Australia SA", "Perth WA"}))
+	assert.Equal(t, "Adelaide SA", pickBestLocationOption("Adelaide", []string{"Adelaide SA", "South Australia SA"}))
+}
+
+func TestScoreLocationMatch(t *testing.T) {
+	assert.Greater(t, scoreLocationMatch("All Melbourne VIC", "All Melbourne VIC"), scoreLocationMatch("All Melbourne VIC", "South Australia SA"))
+	assert.Equal(t, 0, scoreLocationMatch("Melbourne", "South Australia SA"))
+}
+
+func TestSeekWhereCanonical(t *testing.T) {
+	assert.Equal(t, "All Melbourne VIC", domain.FormatSearchLocation("All Melbourne VIC", domain.PlatformSeek))
+	assert.Equal(t, "All Adelaide SA", domain.FormatSearchLocation("All Adelaide SA", domain.PlatformSeek))
+	assert.Equal(t, "All Sydney NSW", domain.FormatSearchLocation("Sydney NSW", domain.PlatformSeek))
+	where, ok := domain.SeekSearchLocation("Melbourne, Victoria, Australia")
+	assert.True(t, ok)
+	assert.Equal(t, "All Melbourne VIC", where)
 }

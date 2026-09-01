@@ -3,15 +3,13 @@ import { useState, useRef, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { FileText, Download, Loader2, Upload, X, AlertTriangle, ChevronDown, ArrowRight, Plus, Trash2, Copy, Check } from 'lucide-react'
 import { cn, downloadBlob } from '../lib'
-import { resumeApi } from '../api/resume'
 import { settingsApi } from '../api/settings'
 import { botApi } from '../api/bot'
 import type { ApplyURLResponse } from '../api/bot'
-import { ApiError } from '../api/client'
 import { ScorePill } from '../components/ScorePill'
-import type { HalalVerdict, QuestionAnswer } from '../types'
+import { generationStore, useGenerationState, STEPS, type GenTab } from '../state/generationStore'
 
-type Tab = 'resume' | 'cover' | 'questions' | 'evaluate' | 'apply'
+type Tab = GenTab | 'apply'
 
 const TABS: { key: Tab; label: string; desc: string }[] = [
   { key: 'evaluate',  label: 'Job Fit',      desc: 'Score how well a job matches your profile' },
@@ -21,15 +19,7 @@ const TABS: { key: Tab; label: string; desc: string }[] = [
   { key: 'apply',     label: 'AI Apply',      desc: 'Apply directly from a job URL using Easy Apply / Quick Apply' },
 ]
 
-const STEPS: Record<string, string[]> = {
-  resume_tailored: ['Fetching job description…', 'Analysing requirements…', 'Tailoring your profile…', 'Rendering PDF…'],
-  resume_base:     ['Loading profile…', 'Rendering PDF…'],
-  cover_tailored:  ['Fetching job description…', 'Analysing requirements…', 'Writing cover letter…', 'Rendering PDF…'],
-  cover_base:      ['Loading profile…', 'Writing cover letter…', 'Rendering PDF…'],
-  evaluate:        ['Fetching job description…', 'Evaluating fit…'],
-  questions:       ['Fetching job description…', 'Answering questions…'],
-  apply:           ['Detecting platform…', 'Scoring job fit…', 'Verifying Easy Apply…', 'Submitting application…'],
-}
+const APPLY_STEPS = ['Detecting platform…', 'Scoring job fit…', 'Verifying Easy Apply…', 'Submitting application…']
 
 const INPUT_CLS = 'w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50'
 
@@ -44,27 +34,22 @@ export function Generate() {
     } catch { /* ignore */ }
     return 'evaluate'
   })
-  const [jobUrl, setJobUrl] = useState('')
-  const [jobDesc, setJobDesc] = useState('')
-  const [market, setMarket] = useState('')
-  const [promptHint, setPromptHint] = useState('')
-  const [linkedinUrl, setLinkedinUrl] = useState('')
-  const [githubUrl, setGithubUrl] = useState('')
-  const [resumeFile, setResumeFile] = useState<File | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [step, setStep] = useState(0)
-  const [activeStepKey, setActiveStepKey] = useState<string>('evaluate')
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null)
-  // Revoke previous blob URL whenever pdfUrl changes (prevents memory leak).
-  useEffect(() => () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl) }, [pdfUrl])
-  const [scoreResult, setScoreResult] = useState<{ score: number; reasoning: string } | null>(null)
-  const [halalResult, setHalalResult] = useState<HalalVerdict | null>(null)
-  const [questionAnswers, setQuestionAnswers] = useState<QuestionAnswer[] | null>(null)
+
+  const state = useGenerationState()
+  const f = state.form
+  const genTab: GenTab | null = tab === 'apply' ? null : tab
+  const loading = genTab ? !!state.inFlight[genTab] : false
+  let pdfUrl: string | null = null
+  if (tab === 'resume') pdfUrl = state.outputs.resume?.pdfUrl ?? null
+  else if (tab === 'cover') pdfUrl = state.outputs.cover?.pdfUrl ?? null
+  const scoreResult = tab === 'evaluate' ? state.outputs.evaluate?.scoreResult ?? null : null
+  const halalResult = tab === 'evaluate' ? state.outputs.evaluate?.halalResult ?? null : null
+  const questionAnswers = tab === 'questions' ? state.outputs.questions?.answers ?? null : null
+  const error = genTab ? state.errors[genTab] ?? null : null
+  const urlAlert = genTab ? !!state.urlAlerts[genTab] : false
+
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
-  const [questions, setQuestions] = useState<Array<{ id: number; value: string }>>([{ id: 0, value: '' }])
-  const nextQuestionId = useRef(1)
-  const [error, setError] = useState<string | null>(null)
-  const [urlAlert, setUrlAlert] = useState(false)
+  const nextQuestionId = useRef(Math.max(0, ...f.questions.map(q => q.id)) + 1)
   const [optionsOpen, setOptionsOpen] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -92,21 +77,12 @@ export function Generate() {
 
   const [marketTouched, setMarketTouched] = useState(false)
   useEffect(() => {
-    if (!marketTouched && generalSettings?.default_resume_market) {
-      setMarket(generalSettings.default_resume_market)
+    if (!marketTouched && !f.market && generalSettings?.default_resume_market) {
+      generationStore.setForm({ market: generalSettings.default_resume_market })
     }
-  }, [generalSettings?.default_resume_market, marketTouched])
+  }, [generalSettings?.default_resume_market, marketTouched, f.market])
 
   const visibleTabs = TABS.filter(t => t.key !== 'questions' || (generalSettings?.interview_questions_enabled ?? true))
-
-  function clearAll() {
-    setPdfUrl(null); setScoreResult(null); setHalalResult(null); setQuestionAnswers(null)
-    setError(null); setUrlAlert(false)
-    setPromptHint(''); setJobDesc('')
-    setLinkedinUrl(''); setGithubUrl(''); setResumeFile(null)
-    if (fileRef.current) fileRef.current.value = ''
-    // AI Apply state intentionally not cleared here — it persists across tab switches
-  }
 
   async function applyJob() {
     setApplyLoading(true)
@@ -115,11 +91,11 @@ export function Generate() {
     setApplyStep(0)
     const stepDelays = [0, 8000, 20000, 35000]
     const stepTimers: ReturnType<typeof setTimeout>[] = []
-    STEPS.apply.forEach((_, i) => {
+    APPLY_STEPS.forEach((_, i) => {
       if (i > 0) stepTimers.push(setTimeout(() => setApplyStep(i), stepDelays[i]))
     })
     try {
-      const res = await botApi.applyFromURL(applyUrl, market)
+      const res = await botApi.applyFromURL(applyUrl, f.market)
       setApplyResponse(res)
       if (res.status === 'applied') qc.invalidateQueries({ queryKey: ['jobs-applied'] })
     } catch (e: unknown) {
@@ -136,11 +112,11 @@ export function Generate() {
     setApplyStep(0)
     const stepDelays = [0, 8000, 20000, 35000]
     const stepTimers: ReturnType<typeof setTimeout>[] = []
-    STEPS.apply.forEach((_, i) => {
+    APPLY_STEPS.forEach((_, i) => {
       if (i > 0) stepTimers.push(setTimeout(() => setApplyStep(i), stepDelays[i]))
     })
     try {
-      const res = await botApi.applyFromURL(applyUrl, market, true)
+      const res = await botApi.applyFromURL(applyUrl, f.market, true)
       setApplyResponse(res)
       if (res.status === 'applied' || res.status === 'already_applied') {
         qc.invalidateQueries({ queryKey: ['jobs-applied'] })
@@ -159,89 +135,14 @@ export function Generate() {
     setApplyResponse(null)
   }
 
-  async function runQuestionsTab() {
-    const nonEmpty = questions.filter(q => q.value.trim()).map(q => q.value.trim())
-    const answers = await resumeApi.answerQuestions({
-      jobUrl: jobUrl || undefined,
-      jobDescription: jobDesc || undefined,
-      questions: nonEmpty,
-    })
-    setQuestionAnswers(answers)
-  }
-
-  async function runTab(opts: Parameters<typeof resumeApi.generateTailored>[0], skipUrlFetch: boolean) {
-    if (tab === 'resume') {
-      const hasDescAsContext = jobDesc.trim().length > 20
-      const useTailored = skipUrlFetch ? hasDescAsContext : hasJobInput
-      if (useTailored) {
-        setPdfUrl(URL.createObjectURL(await resumeApi.generateTailored(opts)))
-      } else {
-        const blob = await resumeApi.generate(resumeFile || undefined, promptHint || undefined, linkedinUrl || undefined, githubUrl || undefined, market || undefined)
-        setPdfUrl(URL.createObjectURL(blob))
-      }
-    } else if (tab === 'cover') {
-      setPdfUrl(URL.createObjectURL(await resumeApi.generateCoverLetter(opts)))
-    } else if (tab === 'questions') {
-      await runQuestionsTab()
-    } else {
-      const halalOpts = { jobUrl: jobUrl || undefined, jobDescription: jobDesc || undefined, skipUrlFetch }
-      const [result, halal] = await Promise.all([
-        resumeApi.evaluate(opts),
-        generalSettings?.halal_job_filter ? resumeApi.checkHalal(halalOpts).catch(() => null) : Promise.resolve(null),
-      ])
-      setScoreResult(result)
-      if (halal) setHalalResult(halal)
-    }
-  }
-
-  async function generate(skipUrlFetch = false) {
-    setLoading(true)
-    setError(null)
-    setPdfUrl(null)
-    setScoreResult(null)
-    setHalalResult(null)
-    setQuestionAnswers(null)
-    setUrlAlert(false)
-    setStep(0)
-    const hasDescAsContext = jobDesc.trim().length > 20
-    let key: string = tab
-    if (tab === 'resume' || tab === 'cover') {
-      const useTailored = skipUrlFetch ? hasDescAsContext : hasJobInput
-      key = useTailored ? `${tab}_tailored` : `${tab}_base`
-    }
-    setActiveStepKey(key)
-    const steps = STEPS[key]
-    const timers: ReturnType<typeof setTimeout>[] = []
-    steps.forEach((_, i) => {
-      if (i > 0) timers.push(setTimeout(() => setStep(i), i * 1400))
-    })
-    try {
-      const opts = {
-        jobUrl: jobUrl || undefined,
-        jobDescription: jobDesc || undefined,
-        skipUrlFetch,
-        promptHint: promptHint || undefined,
-        linkedinUrl: linkedinUrl || undefined,
-        githubUrl: githubUrl || undefined,
-        resumeFile: resumeFile || undefined,
-        market: market || undefined,
-      }
-      await runTab(opts, skipUrlFetch)
-    } catch (e: unknown) {
-      if (e instanceof ApiError && e.code === 'url_unreachable') {
-        setUrlAlert(true)
-      } else {
-        setError(e instanceof Error ? e.message : 'Generation failed')
-      }
-    } finally {
-      timers.forEach(clearTimeout)
-      setLoading(false)
-    }
+  function generate(skipUrlFetch = false) {
+    if (tab === 'apply') return
+    void generationStore.startGenerate(tab, skipUrlFetch, !!generalSettings?.halal_job_filter)
   }
 
   const needsUrl = tab === 'evaluate' || tab === 'questions'
-  const hasJobInput = jobUrl.trim().startsWith('http') || jobDesc.trim().length > 20
-  const hasQuestions = questions.some(q => q.value.trim().length > 0)
+  const hasJobInput = f.jobUrl.trim().startsWith('http') || f.jobDesc.trim().length > 20
+  const hasQuestions = f.questions.some(q => q.value.trim().length > 0)
   const canGenerate = !loading && tab !== 'apply' && (!needsUrl || hasJobInput) && (tab !== 'questions' || hasQuestions)
   const canApply = !applyLoading && !applyError && applyUrl.trim().startsWith('http')
   const filename = tab === 'cover' ? 'cover-letter.pdf' : 'resume.pdf'
@@ -262,7 +163,7 @@ export function Generate() {
   }
 
   // Count active optional fields to show a badge on the collapsed panel
-  const activeOpts = [resumeFile, linkedinUrl, githubUrl, promptHint].filter(Boolean).length
+  const activeOpts = [f.resumeFile, f.linkedinUrl, f.githubUrl, f.promptHint].filter(Boolean).length
 
   // The collapsible extra options block (shared by all tabs; for base it's always inline)
   const extraOptions = (
@@ -274,12 +175,12 @@ export function Generate() {
             Resume File <span className="opacity-50">(optional, uses saved profile if omitted)</span>
           </p>
           <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.txt" className="hidden"
-            onChange={e => setResumeFile(e.target.files?.[0] ?? null)} />
-          {resumeFile ? (
+            onChange={e => generationStore.setForm({ resumeFile: e.target.files?.[0] ?? null })} />
+          {f.resumeFile ? (
             <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)]">
               <Upload size={14} className="text-violet-400 shrink-0" />
-              <span className="text-sm text-[var(--color-text)] truncate flex-1">{resumeFile.name}</span>
-              <button onClick={() => { setResumeFile(null); if (fileRef.current) fileRef.current.value = '' }}
+              <span className="text-sm text-[var(--color-text)] truncate flex-1">{f.resumeFile.name}</span>
+              <button onClick={() => { generationStore.setForm({ resumeFile: null }); if (fileRef.current) fileRef.current.value = '' }}
                 className="text-[var(--color-text-dim)] hover:text-red-400 transition-colors shrink-0">
                 <X size={13} />
               </button>
@@ -298,12 +199,12 @@ export function Generate() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <p className="text-xs text-[var(--color-text-dim)] mb-2">LinkedIn URL <span className="opacity-50">(optional)</span></p>
-            <input value={linkedinUrl} onChange={e => setLinkedinUrl(e.target.value)}
+            <input value={f.linkedinUrl} onChange={e => generationStore.setForm({ linkedinUrl: e.target.value })}
               placeholder="https://linkedin.com/in/yourname" className={INPUT_CLS} />
           </div>
           <div>
             <p className="text-xs text-[var(--color-text-dim)] mb-2">GitHub URL <span className="opacity-50">(optional)</span></p>
-            <input value={githubUrl} onChange={e => setGithubUrl(e.target.value)}
+            <input value={f.githubUrl} onChange={e => generationStore.setForm({ githubUrl: e.target.value })}
               placeholder="https://github.com/yourname" className={INPUT_CLS} />
           </div>
         </div>
@@ -313,7 +214,7 @@ export function Generate() {
       {tab !== 'evaluate' && (
         <div>
           <p className="text-xs text-[var(--color-text-dim)] mb-2">Additional Instructions <span className="opacity-50">(optional)</span></p>
-          <textarea value={promptHint} onChange={e => setPromptHint(e.target.value)} rows={2}
+          <textarea value={f.promptHint} onChange={e => generationStore.setForm({ promptHint: e.target.value })} rows={2}
             placeholder={tab === 'cover'
               ? 'e.g. Emphasise leadership experience, keep it under 300 words'
               : 'e.g. Highlight Python and ML skills, downplay frontend experience'}
@@ -326,12 +227,16 @@ export function Generate() {
   const GENERATE_LABEL: Record<Tab, string> = { evaluate: 'Evaluate', questions: 'Answer Questions', resume: hasJobInput ? 'Generate' : 'Generate Base', cover: hasJobInput ? 'Generate' : 'Generate Base', apply: 'AI Apply' }
   const generateLabel = GENERATE_LABEL[tab]
 
+  const inFlightHere = genTab ? state.inFlight[genTab] : undefined
+  const activeStepKey = inFlightHere?.activeStepKey ?? tab
+  const stepIdx = inFlightHere?.step ?? 0
+
   return (
     <div className="space-y-6">
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
         {visibleTabs.map(t => (
-          <button key={t.key} onClick={() => { setTab(t.key); clearAll() }}
+          <button key={t.key} onClick={() => setTab(t.key)}
             className={cn('flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all',
               tab === t.key
                 ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
@@ -347,16 +252,16 @@ export function Generate() {
         <div>
           <p className="text-xs text-[var(--color-text-dim)] mb-2">Target Market</p>
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => { setMarket(''); setMarketTouched(true) }}
+            <button onClick={() => { generationStore.setForm({ market: '' }); setMarketTouched(true) }}
               className={cn('px-3 py-1.5 rounded-lg text-xs border transition-all',
-                market === ''
+                f.market === ''
                   ? 'border-violet-500/60 bg-violet-500/15 text-violet-300'
                   : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] bg-[var(--color-surface)]')}
             >Generic</button>
             {markets.filter(m => m.name !== 'Generic').map(m => (
-              <button key={m.yaml_file} onClick={() => { setMarket(m.name); setMarketTouched(true) }}
+              <button key={m.yaml_file} onClick={() => { generationStore.setForm({ market: m.name }); setMarketTouched(true) }}
                 className={cn('px-3 py-1.5 rounded-lg text-xs border transition-all',
-                  market === m.name
+                  f.market === m.name
                     ? 'border-violet-500/60 bg-violet-500/15 text-violet-300'
                     : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] bg-[var(--color-surface)]')}
               >{m.name}</button>
@@ -372,7 +277,7 @@ export function Generate() {
             <p className="text-xs text-[var(--color-text-dim)] mb-2">
               Job Posting URL <span className="opacity-50">(optional — add to tailor your resume)</span>
             </p>
-            <input value={jobUrl} onChange={e => { setJobUrl(e.target.value); setUrlAlert(false) }}
+            <input value={f.jobUrl} onChange={e => { generationStore.setForm({ jobUrl: e.target.value }); generationStore.setUrlAlert(genTab ?? 'resume', false) }}
               placeholder="https://linkedin.com/jobs/view/…"
               className={INPUT_CLS.replace('py-2', 'py-2.5')}
             />
@@ -400,7 +305,7 @@ export function Generate() {
             <p className="text-xs text-[var(--color-text-dim)] mb-2">
               Job Description <span className="opacity-50">(optional — paste if URL is inaccessible)</span>
             </p>
-            <textarea value={jobDesc} onChange={e => { setJobDesc(e.target.value); setUrlAlert(false) }} rows={5}
+            <textarea value={f.jobDesc} onChange={e => { generationStore.setForm({ jobDesc: e.target.value }); generationStore.setUrlAlert(genTab ?? 'resume', false) }} rows={5}
               placeholder="Paste the full job description here…"
               className={cn(INPUT_CLS, 'resize-none', urlAlert && 'border-amber-500/50 focus:border-amber-400')} />
           </div>
@@ -435,7 +340,7 @@ export function Generate() {
           {/* Job URL */}
           <div>
             <p className="text-xs text-[var(--color-text-dim)] mb-2">Job Posting URL</p>
-            <input value={jobUrl} onChange={e => { setJobUrl(e.target.value); setUrlAlert(false) }}
+            <input value={f.jobUrl} onChange={e => { generationStore.setForm({ jobUrl: e.target.value }); generationStore.setUrlAlert(genTab ?? 'resume', false) }}
               placeholder="https://linkedin.com/jobs/view/…"
               className={INPUT_CLS.replace('py-2', 'py-2.5')}
             />
@@ -463,7 +368,7 @@ export function Generate() {
             <p className="text-xs text-[var(--color-text-dim)] mb-2">
               Job Description <span className="opacity-50">(optional, paste if URL is inaccessible)</span>
             </p>
-            <textarea value={jobDesc} onChange={e => { setJobDesc(e.target.value); setUrlAlert(false) }} rows={5}
+            <textarea value={f.jobDesc} onChange={e => { generationStore.setForm({ jobDesc: e.target.value }); generationStore.setUrlAlert(genTab ?? 'resume', false) }} rows={5}
               placeholder="Paste the full job description here…"
               className={cn(INPUT_CLS, 'resize-none', urlAlert && 'border-amber-500/50 focus:border-amber-400')} />
           </div>
@@ -472,22 +377,22 @@ export function Generate() {
           {tab === 'questions' && (
             <div className="space-y-2">
               <p className="text-xs text-[var(--color-text-dim)]">Questions</p>
-              {questions.map((q, i) => (
+              {f.questions.map((q, i) => (
                 <div key={q.id} className="flex gap-2 items-start">
                   <textarea
                     value={q.value}
                     onChange={e => {
-                      const next = [...questions]
+                      const next = [...f.questions]
                       next[i] = { ...next[i], value: e.target.value }
-                      setQuestions(next)
+                      generationStore.setForm({ questions: next })
                     }}
                     rows={2}
                     placeholder={`Question ${i + 1}…`}
                     className={cn(INPUT_CLS, 'resize-none flex-1')}
                   />
-                  {questions.length > 1 && (
+                  {f.questions.length > 1 && (
                     <button
-                      onClick={() => setQuestions(questions.filter((_, idx) => idx !== i))}
+                      onClick={() => generationStore.setForm({ questions: f.questions.filter((_, idx) => idx !== i) })}
                       className="mt-1 text-[var(--color-text-dim)] hover:text-red-400 transition-colors shrink-0"
                     >
                       <Trash2 size={14} />
@@ -496,9 +401,7 @@ export function Generate() {
                 </div>
               ))}
               <button
-                onClick={() => {
-                  setQuestions([...questions, { id: nextQuestionId.current++, value: '' }])
-                }}
+                onClick={() => generationStore.setForm({ questions: [...f.questions, { id: nextQuestionId.current++, value: '' }] })}
                 className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 transition-colors mt-1"
               >
                 <Plus size={13} /> Add question
@@ -534,9 +437,9 @@ export function Generate() {
           {applyLoading && (
             <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-6 text-center space-y-3">
               <Loader2 size={24} className="mx-auto text-violet-400 animate-spin" />
-              <div className="text-sm text-violet-300">{STEPS.apply[applyStep]}</div>
+              <div className="text-sm text-violet-300">{APPLY_STEPS[applyStep]}</div>
               <div className="flex justify-center gap-1">
-                {STEPS.apply.map((label, i) => (
+                {APPLY_STEPS.map((label, i) => (
                   <div key={label} className={cn('h-1 rounded-full transition-all',
                     i <= applyStep ? 'w-6 bg-violet-400' : 'w-2 bg-violet-500/20')} />
                 ))}
@@ -641,18 +544,18 @@ export function Generate() {
       {loading && (
         <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-6 text-center space-y-3">
           <Loader2 size={24} className="mx-auto text-violet-400 animate-spin" />
-          <div className="text-sm text-violet-300">{STEPS[activeStepKey][step]}</div>
+          <div className="text-sm text-violet-300">{STEPS[activeStepKey]?.[stepIdx]}</div>
           <div className="flex justify-center gap-1">
-            {STEPS[activeStepKey].map((label, i) => (
+            {STEPS[activeStepKey]?.map((label, i) => (
               <div key={label} className={cn('h-1 rounded-full transition-all',
-                i <= step ? 'w-6 bg-violet-400' : 'w-2 bg-violet-500/20')} />
+                i <= stepIdx ? 'w-6 bg-violet-400' : 'w-2 bg-violet-500/20')} />
             ))}
           </div>
         </div>
       )}
 
       {/* Generic error */}
-      {error && (
+      {error && tab !== 'apply' && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-400">
           {error}
         </div>
@@ -671,7 +574,7 @@ export function Generate() {
           </div>
           <p className="text-sm text-[var(--color-text-muted)] leading-relaxed">{scoreResult.reasoning}</p>
           <button
-            onClick={() => { setTab('resume'); setScoreResult(null) }}
+            onClick={() => { setTab('resume'); generationStore.clearOutput('evaluate') }}
             className="flex items-center gap-2 text-sm text-violet-400 hover:text-violet-300 transition-colors"
           >
             Generate Tailored Resume <ArrowRight size={14} />
@@ -756,4 +659,3 @@ export function Generate() {
     </div>
   )
 }
-

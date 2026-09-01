@@ -11,4 +11,5 @@ var (
 	ErrAlreadyOpen      = errors.New("already open")
 	ErrSessionOwnership = errors.New("session belongs to a different user")
 	ErrSessionNotFound  = errors.New("session not found")
+	ErrNotLoggedIn      = errors.New("not logged in on platform")
 )

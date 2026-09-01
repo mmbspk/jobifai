@@ -9,8 +9,9 @@ data/
 job_applications/
 uploads/
 
-# Debug screenshots
+# Debug screenshots and HTML dumps
 debug_*.png
+debug_*.html
 
 # Go build cache
 *.test

@@ -20,6 +20,7 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
+	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/resume"
@@ -133,9 +134,11 @@ type Config struct {
 	RequireReview bool
 	MarketDir     string // path to resume_markets/ directory
 	LLMTracker    *llm.UsageTracker // optional; tracks per-job token usage for success log
-	SeekEmail     string            // stored credentials for auto-login on session expiry
-	SeekPassword  string
-	Sessions      *browser.SessionStore // if set, updated with fresh cookies after each auth
+	SeekEmail        string // stored credentials for auto-login on session expiry
+	SeekPassword     string
+	LinkedInEmail    string
+	LinkedInPassword string
+	Sessions         *browser.SessionStore // if set, updated with fresh cookies after each auth
 }
 
 // SubmitRequest bundles the fields needed to submit a single approved job.
@@ -160,6 +163,10 @@ type Bot struct {
 	stopCh         chan struct{}
 	pauseMu        sync.Mutex
 	pauseCh        chan struct{} // non-nil and open when paused; closed on resume
+
+	seekSessionExpired bool // set during runSeek when a job page reveals the Seek session is no longer valid
+
+	seenCache *jobSeenCache
 }
 
 // SetKeyword stores the keyword currently being searched (thread-safe).
@@ -177,13 +184,56 @@ func (b *Bot) Keyword() string {
 }
 
 func New(cfg Config) *Bot {
-	return &Bot{cfg: cfg, state: domain.BotStateIdle, stopCh: make(chan struct{})}
+	return &Bot{cfg: cfg, state: domain.BotStateIdle, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
+}
+
+// warmSeenCache loads applied/skipped/top-matches/approved job ids into memory.
+func (b *Bot) warmSeenCache() {
+	if b.seenCache == nil {
+		b.seenCache = newJobSeenCache()
+	}
+	n, err := b.seenCache.load(b.cfg.DB, b.cfg.UserID)
+	if err != nil {
+		log.Warn().Err(err).Msg("bot: job seen cache load failed, falling back to per-job DB lookups")
+		return
+	}
+	log.Info().Int("known_jobs", n).Msg("bot: job seen cache loaded")
 }
 
 func (b *Bot) State() domain.BotState {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.state
+}
+
+func (b *Bot) markSeekSessionExpired() {
+	b.mu.Lock()
+	b.seekSessionExpired = true
+	b.mu.Unlock()
+}
+
+func (b *Bot) isSeekSessionExpired() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.seekSessionExpired
+}
+
+// bailIfSeekSessionExpired returns true (and transitions the bot to error state)
+// when a Seek job page has revealed the session is invalid. Callers in runSeek
+// use this to stop the run before more rows pollute jobs_pending_review or
+// jobs_skipped.
+func (b *Bot) bailIfSeekSessionExpired() bool {
+	b.mu.Lock()
+	expired := b.seekSessionExpired
+	b.mu.Unlock()
+	if !expired {
+		return false
+	}
+	log.Error().Msg("seek: stopping run — Seek session expired, re-add your Seek session in Settings → Secrets")
+	b.mu.Lock()
+	b.state = domain.BotStateError
+	b.mu.Unlock()
+	return true
 }
 
 // Start runs the bot loop and blocks until it finishes.
@@ -354,15 +404,19 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 	}
 	defer br.Close()
 
-	// Verify session is still valid after browser launch.
+	b.warmSeenCache()
+
+	// Verify session is still valid after browser launch; try stored credentials once.
 	if info, e := page.Info(); e == nil {
 		u := info.URL
 		if strings.Contains(u, "/login") || strings.Contains(u, "/checkpoint") || strings.Contains(u, "/authwall") {
-			log.Error().Msg("linkedin: session expired, re-login via Settings → Secrets")
-			b.mu.Lock()
-			b.state = domain.BotStateError
-			b.mu.Unlock()
-			return
+			if recoverErr := b.linkedinEnsureLoggedIn(page); recoverErr != nil {
+				log.Error().Err(recoverErr).Msg("linkedin: session expired, re-login via Settings → Secrets")
+				b.mu.Lock()
+				b.state = domain.BotStateError
+				b.mu.Unlock()
+				return
+			}
 		}
 	}
 
@@ -378,37 +432,46 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 		appliedToday += b.processApprovedQueue(ctx, br, limit-appliedToday)
 	}
 
-	for _, keyword := range b.cfg.Preferences.Positions {
-		b.waitIfPaused(ctx)
-		if reason := b.stopReason(ctx); reason != "" {
-			log.Info().Str("keyword", keyword).Msgf("linkedin: stopped, %s", reason)
-			return
+	targets := b.cfg.Preferences.EffectiveSearchTargets()
+	for _, target := range targets {
+		arrangement := searchArrangementLabel(target)
+		if arrangement != "" || strings.TrimSpace(target.Location) != "" {
+			log.Info().Str("location", target.Location).Str("arrangement", arrangement).
+				Msg("linkedin: searching location target")
 		}
-		if appliedToday >= limit {
-			log.Info().Int("limit", limit).Msg("linkedin: stopped, daily application limit reached")
-			return
-		}
-		b.SetKeyword(keyword)
-		n := b.processKeyword(ctx, br, page, keyword, limit-appliedToday)
-		appliedToday += n
 
-		// If no jobs were found, check whether the browser connection was lost
-		// (e.g. VPN reset) and attempt a reconnect before continuing.
-		if n == 0 && isCDPDead(page) {
-			log.Warn().Msg("linkedin: browser connection lost, attempting reconnect")
-			br.Close()
-			newBr, newPage, err := b.launchBrowser(ctx)
-			if err != nil {
-				log.Error().Err(err).Msg("linkedin: reconnect failed, stopping")
+		for _, keyword := range b.cfg.Preferences.Positions {
+			b.waitIfPaused(ctx)
+			if reason := b.stopReason(ctx); reason != "" {
+				log.Info().Str("keyword", keyword).Msgf("linkedin: stopped, %s", reason)
 				return
 			}
-			br, page = newBr, newPage
-			log.Info().Msg("linkedin: browser reconnected, retrying keyword")
-			appliedToday += b.processKeyword(ctx, br, page, keyword, limit-appliedToday)
+			if appliedToday >= limit {
+				log.Info().Int("limit", limit).Msg("linkedin: stopped, daily application limit reached")
+				return
+			}
+			b.SetKeyword(keyword)
+			n := b.processKeyword(ctx, br, page, keyword, limit-appliedToday, target)
+			appliedToday += n
+
+			// If no jobs were found, check whether the browser connection was lost
+			// (e.g. VPN reset) and attempt a reconnect before continuing.
+			if n == 0 && isCDPDead(page) {
+				log.Warn().Msg("linkedin: browser connection lost, attempting reconnect")
+				br.Close()
+				newBr, newPage, err := b.launchBrowser(ctx)
+				if err != nil {
+					log.Error().Err(err).Msg("linkedin: reconnect failed, stopping")
+					return
+				}
+				br, page = newBr, newPage
+				log.Info().Msg("linkedin: browser reconnected, retrying keyword")
+				appliedToday += b.processKeyword(ctx, br, page, keyword, limit-appliedToday, target)
+			}
 		}
 	}
 	b.SetKeyword("")
-	log.Info().Int("applied_today", appliedToday).Msg("linkedin: stopped, all keywords processed, no more jobs found")
+	log.Info().Int("applied_today", appliedToday).Msg("linkedin: stopped, all location targets and keywords processed")
 }
 
 // isCDPDead returns true when the browser's CDP connection is no longer usable
@@ -418,6 +481,23 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 func isCDPDead(page *rod.Page) bool {
 	_, err := page.Eval(`() => true`)
 	return err != nil && strings.Contains(err.Error(), "closed network connection")
+}
+
+// isCDPFatal reports whether err indicates the Chrome WebSocket / underlying
+// pipe is dead. After this happens, every subsequent CDP call will fail with
+// the same error — looping wastes minutes. Treat it like context.Canceled.
+func isCDPFatal(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "websocket: close") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "websocket: bad close code")
 }
 
 func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error) {
@@ -446,11 +526,18 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	l := launcher.New().
 		Headless(!b.cfg.Settings.Browser.ShowBrowser)
 
-	if b.cfg.Settings.Browser.UseChromeProfile && b.cfg.Settings.Browser.ChromeProfilePath != "" {
-		l = l.UserDataDir(b.cfg.Settings.Browser.ChromeProfilePath)
-	}
+	// Always use a persistent profile for job platforms so Auth0/localStorage
+	// from Connect browser is reused. Path can be overridden in General settings.
+	dir := browser.ProfileDir(b.cfg.UserID, string(b.cfg.Platform), b.cfg.Settings.Browser.ChromeProfilePath)
+	browser.PrepareChromeProfileDir(dir)
+	l = l.UserDataDir(dir)
 
 	u, err := l.Launch()
+	if err != nil && strings.Contains(err.Error(), "SingletonLock") {
+		log.Warn().Err(err).Str("dir", dir).Msg("browser: profile locked, force-unlocking and retrying")
+		browser.ForceUnlockChromeProfile(dir)
+		u, err = launcher.New().Headless(!b.cfg.Settings.Browser.ShowBrowser).UserDataDir(dir).Launch()
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("launch chrome: %w", err)
 	}
@@ -485,45 +572,84 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	_ = page.Timeout(30 * time.Second).WaitLoad()
 	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 
-	// After auth0 completes silent re-auth, the browser's cookie jar contains
-	// with valid tokens instead of the original (now-rotated/invalid) ones.
-	if b.cfg.Sessions != nil && b.cfg.Platform == domain.PlatformSeek {
-		result, cookieErr := proto.NetworkGetAllCookies{}.Call(page)
-		if cookieErr == nil {
-			var fresh []browser.Cookie
-			for _, c := range result.Cookies {
-				fresh = append(fresh, browser.Cookie{
-					Name:     c.Name,
-					Value:    c.Value,
-					Domain:   string(c.Domain),
-					Path:     c.Path,
-					Expires:  float64(c.Expires),
-					HTTPOnly: c.HTTPOnly,
-					Secure:   bool(c.Secure),
-					SameSite: string(c.SameSite),
-				})
+	// Recover a dead session with stored credentials before giving up.
+	if b.cfg.Platform == domain.PlatformSeek {
+		if err := b.seekEnsureLoggedIn(page); err != nil {
+			log.Warn().Err(err).Msg("browser: seek session not authenticated after warm-up")
+		}
+	} else if b.cfg.Platform == domain.PlatformLinkedIn {
+		if err := b.linkedinEnsureLoggedIn(page); err != nil {
+			log.Warn().Err(err).Msg("browser: linkedin session not authenticated after warm-up")
+		}
+	}
+
+	// Only refresh the saved cookie jar when we positively see a logged-in UI.
+	// Persisting a guest jar would wipe a previously-good session.
+	if b.cfg.Sessions != nil {
+		state, stateErr := browser.PageLoginState(page, string(b.cfg.Platform))
+		if browser.ShouldPersistCookies(state, stateErr) {
+			result, cookieErr := proto.NetworkGetAllCookies{}.Call(page)
+			if cookieErr == nil {
+				var fresh []browser.Cookie
+				for _, c := range result.Cookies {
+					fresh = append(fresh, browser.Cookie{
+						Name:     c.Name,
+						Value:    c.Value,
+						Domain:   string(c.Domain),
+						Path:     c.Path,
+						Expires:  float64(c.Expires),
+						HTTPOnly: c.HTTPOnly,
+						Secure:   bool(c.Secure),
+						SameSite: string(c.SameSite),
+					})
+				}
+				if raw, marshalErr := browser.MarshalCookies(fresh); marshalErr != nil {
+					log.Warn().Err(marshalErr).Msg("browser: failed to marshal refreshed session cookies")
+				} else if err := b.cfg.Sessions.Save(b.cfg.UserID, string(b.cfg.Platform), "session", raw); err != nil {
+					log.Warn().Err(err).Msg("browser: failed to refresh session cookies")
+				} else {
+					log.Debug().Msg("browser: session cookies refreshed after auth warm-up")
+				}
 			}
-			if raw, marshalErr := browser.MarshalCookies(fresh); marshalErr != nil {
-				log.Warn().Err(marshalErr).Msg("browser: failed to marshal refreshed session cookies")
-			} else if err := b.cfg.Sessions.Save(b.cfg.UserID, string(b.cfg.Platform), "session", raw); err != nil {
-				log.Warn().Err(err).Msg("browser: failed to refresh session cookies")
-			} else {
-				log.Debug().Msg("browser: session cookies refreshed after auth0 re-auth")
-			}
+		} else {
+			log.Warn().Str("state", string(state)).Msg("browser: skipping cookie refresh — not confirmed logged in")
 		}
 	}
 
 	return br, page, nil
 }
 
-func (b *Bot) processKeyword(ctx context.Context, br *rod.Browser, page *rod.Page, keyword string, remaining int) int {
-	jobs, err := b.scrapeLinkedInJobs(ctx, page, keyword)
+// filterLinkedInJobs drops jobs already recorded as applied, skipped, top matches, etc.
+func (b *Bot) filterLinkedInJobs(jobs []linkedInJob) []linkedInJob {
+	fresh := make([]linkedInJob, 0, len(jobs))
+	skipped := 0
+	for _, job := range jobs {
+		if reason := b.alreadyAppliedReason(job.ID); reason != "" {
+			skipped++
+			log.Info().Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
+			continue
+		}
+		fresh = append(fresh, job)
+	}
+	if skipped > 0 {
+		log.Info().Int("skipped_known", skipped).Int("to_process", len(fresh)).Msg("linkedin: filtered known jobs from search results")
+	}
+	return fresh
+}
+
+func (b *Bot) processKeyword(ctx context.Context, br *rod.Browser, page *rod.Page, keyword string, remaining int, target domain.SearchTarget) int {
+	jobs, err := b.scrapeLinkedInJobs(ctx, page, keyword, target)
 	if err != nil {
 		log.Error().Err(err).Str("keyword", keyword).Msg("linkedin: scrape jobs failed")
 		return 0
 	}
 	if len(jobs) == 0 {
 		log.Info().Str("keyword", keyword).Msg("linkedin: no new jobs found for keyword")
+		return 0
+	}
+	jobs = b.filterLinkedInJobs(jobs)
+	if len(jobs) == 0 {
+		log.Info().Str("keyword", keyword).Msg("linkedin: all search results already known, nothing to process")
 		return 0
 	}
 	log.Info().Msgf("linkedin: found %d jobs for %q, processing", len(jobs), keyword)
@@ -583,25 +709,27 @@ type linkedInJob struct {
 	EasyApply      bool   // true when LinkedIn shows an Easy Apply indicator on the card
 }
 
-func (b *Bot) scrapeLinkedInJobs(ctx context.Context, page *rod.Page, keyword string) ([]linkedInJob, error) {
-	b.navigateLinkedInSearch(page, keyword)
+func (b *Bot) scrapeLinkedInJobs(ctx context.Context, page *rod.Page, keyword string, target domain.SearchTarget) ([]linkedInJob, error) {
+	b.navigateLinkedInSearch(page, keyword, target)
 
 	cap := b.cfg.Settings.MaxJobsPerKeyword
 	if cap <= 0 {
 		cap = 25
 	}
-	fallbackLocation := ""
-	if len(b.cfg.Preferences.Locations) > 0 {
-		fallbackLocation = b.cfg.Preferences.Locations[0]
-	}
+	fallbackLocation := domain.FormatSearchLocation(target.Location, domain.PlatformLinkedIn)
 	jobs := b.collectLinkedInCards(page, cap, fallbackLocation)
 	log.Info().Msgf("linkedin: search returned %d jobs for %q", len(jobs), keyword)
 	return jobs, nil
 }
 
-func (b *Bot) navigateLinkedInSearch(page *rod.Page, keyword string) {
-	searchURL := b.buildLinkedInSearchURL(keyword)
-	log.Info().Msgf("linkedin: searching %q", keyword)
+func (b *Bot) navigateLinkedInSearch(page *rod.Page, keyword string, target domain.SearchTarget) {
+	searchURL := b.buildLinkedInSearchURL(keyword, target)
+	arrangement := searchArrangementLabel(target)
+	log.Info().
+		Str("keyword", keyword).
+		Str("location", target.Location).
+		Str("arrangement", arrangement).
+		Msg("linkedin: searching")
 	log.Debug().Str("url", searchURL).Msg("linkedin: navigating to search URL")
 	if err := page.Timeout(30 * time.Second).Navigate(searchURL); err != nil {
 		log.Warn().Err(err).Msg("linkedin: navigate timed out, proceeding anyway")
@@ -759,10 +887,8 @@ func extractLinkedInJob(el *rod.Element) linkedInJob {
 			job.AlreadyApplied = true
 		}
 	}
-	// Detect Easy Apply badge on listing card.
+	// Easy Apply badge on listing card — detail page re-check is authoritative.
 	if _, err := el.Element("[aria-label*='Easy Apply'], .jobs-apply-button--top-card"); err == nil {
-		job.EasyApply = true
-	} else if txt, err := el.Text(); err == nil && strings.Contains(strings.ToLower(txt), "easy apply") {
 		job.EasyApply = true
 	}
 	return job
@@ -795,10 +921,28 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 		return false
 	}
 
+	// Open the job page once — authoritative Easy Apply detection before scoring/apply.
+	easyApply := job.EasyApply
 	details := b.fetchJob(ctx, job)
+	if jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL}); err == nil {
+		_ = jobPage.Timeout(30 * time.Second).WaitLoad()
+		easyApply = detectLinkedInEasyApply(jobPage)
+		if pageDetails, err := jobPage.HTML(); err == nil {
+			if parsed := scraper.ParseHTML(pageDetails); len(strings.TrimSpace(parsed.Description)) >= 100 {
+				details = parsed
+			}
+		}
+		_ = jobPage.Close()
+	}
 	if details.PostedDate == "" {
 		details.PostedDate = job.PostedDate
 	}
+	if easyApply {
+		log.Info().Msgf("linkedin: Easy Apply detected: %q @ %s", job.Title, job.Company)
+	} else {
+		log.Info().Msgf("linkedin: not Easy Apply, will route to Top Matches: %q @ %s", job.Title, job.Company)
+	}
+
 	llmBefore := b.llmSnapshot()
 	score, reasoning, halalVerdict, ok := b.checkScore(ctx, job, details.Description)
 	if !ok {
@@ -808,14 +952,6 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	// Docs are generated lazily at the file-upload step, only if the toggle is on
 	// and a file field is actually encountered during form filling.
 	lazy := &lazyDocGen{b: b, ctx: ctx, job: job, jobDesc: details.Description}
-
-	// Detect Easy Apply on the job detail page (authoritative).
-	easyApply := job.EasyApply // card-level fallback
-	if jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL}); err == nil {
-		_ = jobPage.Timeout(30 * time.Second).WaitLoad()
-		easyApply = detectLinkedInEasyApply(jobPage)
-		_ = jobPage.Close()
-	}
 
 	if b.cfg.RequireReview {
 		b.queueForReview(ctx, &domain.PendingReview{
@@ -839,7 +975,6 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	}
 
 	if !easyApply {
-		// Not an Easy Apply job, queue for manual application via Top Matches.
 		b.queueForReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
 			Company:              job.Company,
@@ -857,6 +992,7 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 			CreatedAt:            time.Now(),
 		})
+		log.Info().Msgf("linkedin: routed to Top Matches (not Easy Apply): %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -886,29 +1022,96 @@ func (b *Bot) linkedInPageApplied(page *rod.Page) bool {
 	return err == nil && res.Value.Bool()
 }
 
-// detectLinkedInEasyApply returns true when the job detail page has a clickable
-// Easy Apply button. Read-only, does not click anything.
-// Polls for up to 10s because LinkedIn's SPA renders the button after the load event.
+// detectLinkedInEasyApply returns true when the job details pane shows LinkedIn's
+// Easy Apply CTA. This follows LinkedIn's UI contract — not job-specific heuristics:
+//
+//	Easy Apply  → accessible name contains "Easy Apply" (or "LinkedIn Apply …")
+//	External    → primary CTA is plain "Apply" / "Apply on company website"
+//
+// Only the main job pane is considered (similar-jobs / aside rails are ignored).
 func detectLinkedInEasyApply(page *rod.Page) bool {
 	const jsDetect = `() => {
-		const candidates = [
-			...document.querySelectorAll('button'),
-			...document.querySelectorAll('a'),
-			...document.querySelectorAll('[role="button"]'),
+		function deepAll(root, selector) {
+			const out = [];
+			const walk = (node) => {
+				if (!node || !node.querySelectorAll) return;
+				try { out.push(...node.querySelectorAll(selector)); } catch (e) {}
+				try {
+					for (const el of node.querySelectorAll('*')) {
+						if (el.shadowRoot) walk(el.shadowRoot);
+					}
+				} catch (e) {}
+			};
+			walk(root);
+			return out;
+		}
+		function labelOf(el) {
+			return ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || el.textContent || ''))
+				.toLowerCase().replace(/\s+/g, ' ').trim();
+		}
+		function isExcluded(el) {
+			return !!el.closest([
+				'aside',
+				'[class*="similar-job"]',
+				'[class*="jobs-similar"]',
+				'[class*="people-also-viewed"]',
+				'[class*="scaffold-layout__aside"]',
+				'[data-test-similar-jobs]',
+				'.jobs-discovery',
+			].join(','));
+		}
+		function isVisible(el) {
+			const r = el.getBoundingClientRect();
+			return r.width > 0 && r.height > 0;
+		}
+		function isEasyApplyLabel(t) {
+			return t.includes('easy apply') || t.includes('linkedin apply');
+		}
+
+		// 1) Visible Easy Apply control in the main job pane (LinkedIn's standard CTA).
+		const controls = [
+			...deepAll(document, 'button'),
+			...deepAll(document, 'a'),
+			...deepAll(document, '[role="button"]'),
 		];
-		return candidates.some(b => {
-			const label = (b.getAttribute('aria-label') || '').toLowerCase();
-			const text  = b.textContent.toLowerCase().trim();
-			return label.includes('easy apply') || text === 'easy apply';
-		});
+		for (const el of controls) {
+			if (isExcluded(el)) continue;
+			if (!isVisible(el)) continue;
+			if (isEasyApplyLabel(labelOf(el))) return true;
+			if (el.getAttribute('data-live-test-easy-apply') != null) return true;
+		}
+
+		// 2) LinkedIn SDUI Easy Apply flag on an in-pane control/link.
+		for (const el of controls) {
+			if (isExcluded(el)) continue;
+			const href = (el.getAttribute('href') || '').toLowerCase();
+			if (href.includes('opensduiapplyflow=true') || href.includes('opensduiapplyflow')) return true;
+		}
+
+		return false;
 	}`
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
 		res, err := page.Eval(jsDetect)
 		if err == nil && res.Value.Bool() {
 			return true
 		}
-		time.Sleep(1 * time.Second)
+		time.Sleep(400 * time.Millisecond)
+	}
+
+	// Diagnostics: what apply CTAs did we actually see?
+	const jsDiag = `() => {
+		function labelOf(el) {
+			return ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || el.textContent || ''))
+				.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80);
+		}
+		return [...document.querySelectorAll('button, a, [role="button"]')]
+			.map(el => labelOf(el))
+			.filter(t => t.includes('apply') || t.includes('save'))
+			.slice(0, 20);
+	}`
+	if diag, err := page.Eval(jsDiag); err == nil {
+		log.Warn().Str("apply_ctas", diag.Value.String()).Msg("linkedin: Easy Apply CTA not found on job page")
 	}
 	return false
 }
@@ -1121,31 +1324,71 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		log.Info().Str("url", info.Value.String()).Msg("easy apply: page URL after load")
 	}
 
+	// Kick off resume/cover generation in parallel with the form so uploads are ready
+	// before the review/submit step (otherwise LLM finishes after "submitted").
+	if lazy != nil {
+		lazy.preload()
+	}
+
 	// Poll for up to 30s for either an Easy Apply button OR an "already applied" state.
 	// LinkedIn's SPA renders both dynamically after the initial load event.
+	// SDUI apply buttons ignore plain element.click() — use a full pointer lifecycle.
 	const jsPoll = `() => {
-		// Already applied?
-		const t = document.body.innerText.toLowerCase();
-		if (t.includes('application submitted') || t.includes('applied  ') ||
-		    document.querySelector('[class*="application-status"]') ||
-		    document.querySelector('[data-test-job-save-button]') === null && t.includes('applied')) {
-			const hasAppStatus = document.querySelector('[class*="application-status"], [class*="ApplicationStatus"]');
-			if (hasAppStatus || t.includes('application submitted')) return 'already_applied';
+		function trustClick(btn) {
+			try { btn.scrollIntoView({ block: 'center' }); } catch(e) {}
+			try { btn.focus(); } catch(e) {}
+			const view = (btn.ownerDocument && btn.ownerDocument.defaultView) || window;
+			const opts = { bubbles: true, cancelable: true, view: view };
+			for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+				try {
+					if (type.startsWith('pointer')) {
+						btn.dispatchEvent(new PointerEvent(type, Object.assign({pointerId: 1, pointerType: 'mouse'}, opts)));
+					} else {
+						btn.dispatchEvent(new MouseEvent(type, opts));
+					}
+				} catch(e) {
+					try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch(e2) {}
+				}
+			}
+			try { btn.click(); } catch(e) {}
 		}
-		// Easy Apply button present?
-		const candidates = [
-			...document.querySelectorAll('button'),
-			...document.querySelectorAll('a'),
-			...document.querySelectorAll('[role="button"]'),
-		];
+		function allInDOM(root, selector) {
+			const r = [];
+			try {
+				r.push(...root.querySelectorAll(selector));
+				for (const el of root.querySelectorAll('*')) {
+					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
+					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+						try {
+							const d = el.contentDocument;
+							if (d) r.push(...allInDOM(d, selector));
+						} catch (e) {}
+					}
+				}
+			} catch(e) {}
+			return r;
+		}
+		const t = document.body.innerText.toLowerCase();
+		if (t.includes('application submitted') || t.includes('application was sent')) {
+			const hasAppStatus = document.querySelector('[class*="application-status"], [class*="ApplicationStatus"]');
+			if (hasAppStatus || t.includes('application submitted') || t.includes('application was sent')) return 'already_applied';
+		}
+		const candidates = (() => {
+			return allInDOM(document, 'button, a, [role="button"]').filter(b => {
+				return !b.closest('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="scaffold-layout__aside"], [class*="people-also-viewed"]');
+			});
+		})();
 		const btn = candidates.find(b => {
-			const label = (b.getAttribute('aria-label') || '').toLowerCase();
-			const text  = b.textContent.toLowerCase().trim();
-			return label.includes('easy apply') || text === 'easy apply';
+			const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || b.textContent || ''))
+				.toLowerCase().replace(/\s+/g, ' ').trim();
+			if (label.includes('easy apply') || label.includes('linkedin apply')) return true;
+			if (b.getAttribute('data-live-test-easy-apply') != null) return true;
+			const href = (b.getAttribute('href') || '').toLowerCase();
+			if (href.includes('opensduiapplyflow')) return true;
+			return false;
 		});
 		if (btn) {
-			btn.scrollIntoView({ block: 'center' });
-			btn.click();
+			trustClick(btn);
 			return 'clicked';
 		}
 		return '';
@@ -1173,8 +1416,16 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		return errAlreadyApplied
 	case "clicked":
 		log.Info().Msg("easy apply: button clicked")
+		// Collapse LinkedIn messaging overlays — they are also role="dialog".
+		_, _ = page.Eval(`() => {
+			const closeBtns = [...document.querySelectorAll(
+				'.msg-overlay-bubble-header__control, .msg-overlay-conversation-bubble__control, button[aria-label*="Close your conversation"], button[aria-label*="Minimize your conversation"]'
+			)];
+			for (const b of closeBtns) {
+				try { b.click(); } catch(e) {}
+			}
+		}`)
 	default:
-		// Neither found, save diagnostics.
 		const jsDiag = `() => [
 			...document.querySelectorAll('button'),
 			...document.querySelectorAll('a[href]'),
@@ -1184,27 +1435,184 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		if diag, err := page.Eval(jsDiag); err == nil {
 			log.Warn().Str("buttons", diag.Value.String()).Msg("easy apply: buttons found on page")
 		}
-		if os.Getenv("DEBUG_BOT") != "" {
-			if shot, err := page.Screenshot(false, nil); err == nil {
-				_ = os.WriteFile("debug_easy_apply.png", shot, 0o644)
-				log.Warn().Msg("easy apply: screenshot saved to debug_easy_apply.png")
-			}
+		if shot, err := page.Screenshot(false, nil); err == nil {
+			_ = os.WriteFile("debug_easy_apply.png", shot, 0o644)
+			log.Warn().Msg("easy apply: screenshot saved to debug_easy_apply.png")
 		}
 		return fmt.Errorf("easy apply button not found after 30s")
 	}
 
-	// Wait for the Easy Apply modal to appear before starting the form loop.
-	// LinkedIn's SPA can take several seconds to render the dialog after the button click.
-	const jsModalPresent = `() => !!document.querySelector(
-		'[data-test-modal][role="dialog"], .artdeco-modal[role="dialog"], [data-test-easy-apply-modal]'
-	)`
-	modalDeadline := time.Now().Add(20 * time.Second)
+	// Wait for the Easy Apply modal. LinkedIn SDUI may render it in an iframe /
+	// shadow root without classic .jobs-easy-apply-* class names. Detect by
+	// apply-specific chrome OR a non-messaging dialog that looks like an apply form.
+	const jsModalPresent = `() => {
+		function allInDOM(root, selector) {
+			const r = [];
+			try {
+				r.push(...root.querySelectorAll(selector));
+				for (const el of root.querySelectorAll('*')) {
+					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
+					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+						try {
+							const d = el.contentDocument;
+							if (d) r.push(...allInDOM(d, selector));
+						} catch (e) {}
+					}
+				}
+			} catch(e) {}
+			return r;
+		}
+		function looksLikeMessaging(el) {
+			if (!el) return false;
+			try {
+				if (el.closest && el.closest('.msg-overlay-conversation-bubble, .msg-overlay-list-bubble, .msg-form, .msg-conversations-container, .msg-overlay, [data-test-messaging]')) return true;
+			} catch(e) {}
+			const cls = (el.className && el.className.toString && el.className.toString() || '').toLowerCase();
+			if (cls.includes('msg-overlay') || cls.includes('msg-form') || cls.includes('msg-conversations')) return true;
+			const t = (el.getAttribute('aria-label') || '').toLowerCase();
+			return t.includes('conversation with') || t.includes('new message');
+		}
+		function btnText(b) {
+			return ((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '')).toLowerCase().replace(/\s+/g, ' ').trim();
+		}
+		function isApplyActionBtn(b) {
+			if (looksLikeMessaging(b)) return false;
+			const t = btnText(b);
+			if (t.includes('conversation') || t.includes('messaging') || t.includes('close your')) return false;
+			if (b.hasAttribute('data-live-test-easy-apply-next-button') || b.hasAttribute('data-easy-apply-next-button')) return true;
+			if (b.hasAttribute('data-live-test-easy-apply-submit-button') || b.hasAttribute('data-easy-apply-submit-button')) return true;
+			if (t === 'next' || t.startsWith('next ')) return true;
+			if (t === 'continue' || t.startsWith('continue ') || t.includes('continue to next step')) return true;
+			if (t.includes('review your application') || t === 'review' || t.startsWith('review ')) return true;
+			if (t.includes('submit application') || t === 'submit' || t.startsWith('submit ')) return true;
+			return false;
+		}
+
+		// Classic Easy Apply containers (legacy + current).
+		const preferred = [
+			'[data-test-easy-apply-modal]',
+			'.jobs-easy-apply-modal',
+			'.jobs-easy-apply-content',
+			'[class*="jobs-easy-apply"]',
+			'[data-live-test-easy-apply-next-button]',
+			'[data-easy-apply-next-button]',
+			'[data-live-test-easy-apply-submit-button]',
+			'[data-test-form-element]',
+		];
+		for (const sel of preferred) {
+			if (allInDOM(document, sel).some(el => !looksLikeMessaging(el))) return true;
+		}
+
+		// Distinctive apply-modal chrome visible in body text (works even when
+		// LinkedIn drops jobs-easy-apply-* class names / uses opaque wrappers).
+		const pageText = (document.body && document.body.innerText || '').toLowerCase();
+		const hasPager = /\b\d+\s*\/\s*\d+\s+pages?\b/.test(pageText);
+		const hasContact = pageText.includes('contact info') || pageText.includes('contact information');
+		const hasApplyTo = /\bapply to\b/.test(pageText);
+		const hasResumeStep = pageText.includes('resume') && (pageText.includes('cover letter') || hasPager);
+		const applyBtns = allInDOM(document, 'button, [role="button"]').filter(isApplyActionBtn);
+		if (applyBtns.length && (hasPager || hasContact || hasResumeStep || (hasApplyTo && hasContact))) return true;
+
+		// Any non-messaging dialog/modal that contains an apply action button.
+		const shells = allInDOM(document, '[role="dialog"], .artdeco-modal, [data-test-modal]');
+		for (const shell of shells) {
+			if (looksLikeMessaging(shell)) continue;
+			if (allInDOM(shell, 'button, [role="button"]').some(isApplyActionBtn)) return true;
+			const t = (shell.innerText || '').toLowerCase();
+			if (t.includes('contact info') || /\b\d+\s*\/\s*\d+\s+pages?\b/.test(t) || t.includes('apply to')) return true;
+		}
+		return false;
+	}`
+
+	const jsModalDiag = `() => {
+		function allInDOM(root, selector) {
+			const r = [];
+			try {
+				r.push(...root.querySelectorAll(selector));
+				for (const el of root.querySelectorAll('*')) {
+					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
+					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+						try { const d = el.contentDocument; if (d) r.push(...allInDOM(d, selector)); } catch (e) {}
+					}
+				}
+			} catch(e) {}
+			return r;
+		}
+		const dialogs = allInDOM(document, '[role="dialog"], .artdeco-modal');
+		return JSON.stringify({
+			url: location.href,
+			iframes: allInDOM(document, 'iframe').length,
+			dialogs: dialogs.length,
+			easyApplyNodes: allInDOM(document, '.jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-easy-apply-modal], [class*="jobs-easy-apply"]').length,
+			dialogSnippets: dialogs.slice(0, 3).map(d => ({
+				cls: (d.className && d.className.toString && d.className.toString() || '').slice(0, 80),
+				label: (d.getAttribute('aria-label') || '').slice(0, 80),
+				text: (d.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+			})),
+		});
+	}`
+
+	clickEasyApplyAgain := func() {
+		_, _ = page.Eval(jsPoll)
+	}
+
+	modalDeadline := time.Now().Add(25 * time.Second)
+	modalFound := false
+	retriedClick := false
 	for time.Now().Before(modalDeadline) {
 		if res, err := page.Eval(jsModalPresent); err == nil && res.Value.Bool() {
+			modalFound = true
 			break
+		}
+		// Mid-wait: if nothing appeared after ~8s, click Easy Apply again once.
+		if !retriedClick && time.Until(modalDeadline) < 17*time.Second {
+			log.Warn().Msg("easy apply: modal not visible yet, re-clicking Easy Apply")
+			clickEasyApplyAgain()
+			retriedClick = true
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+	if !modalFound {
+		// Fallback: LinkedIn SDUI sometimes ignores synthetic clicks on the apply
+		// TriggerButton. Opening the job URL with openSDUIApplyFlow=true forces the flow.
+		curURL := ""
+		if info, err := page.Info(); err == nil && info != nil {
+			curURL = info.URL
+		}
+		if curURL != "" && !strings.Contains(curURL, "openSDUIApplyFlow=true") {
+			sep := "?"
+			if strings.Contains(curURL, "?") {
+				sep = "&"
+			}
+			forceURL := curURL + sep + "openSDUIApplyFlow=true"
+			log.Warn().Str("url", forceURL).Msg("easy apply: trying openSDUIApplyFlow URL fallback")
+			_ = page.Navigate(forceURL)
+			_ = page.Timeout(30 * time.Second).WaitLoad()
+			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+			time.Sleep(2 * time.Second)
+			// Also click Easy Apply once more if the forced URL alone is not enough.
+			_, _ = page.Eval(jsPoll)
+			forceDeadline := time.Now().Add(15 * time.Second)
+			for time.Now().Before(forceDeadline) {
+				if res, err := page.Eval(jsModalPresent); err == nil && res.Value.Bool() {
+					modalFound = true
+					break
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+	}
+	if !modalFound {
+		if diag, err := page.Eval(jsModalDiag); err == nil {
+			log.Warn().Str("diag", diag.Value.String()).Msg("easy apply: modal did not appear")
+		}
+		if shot, err := page.Screenshot(false, nil); err == nil {
+			_ = os.WriteFile("debug_easy_apply_no_modal.png", shot, 0o644)
+			log.Warn().Msg("easy apply: screenshot saved to debug_easy_apply_no_modal.png")
+		}
+		return fmt.Errorf("easy apply modal did not appear after click (LinkedIn may have changed the apply UI or blocked the session)")
+	}
+
 	// Extra settle time after modal appears.
 	time.Sleep(1 * time.Second)
 
@@ -1216,6 +1624,12 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 				r.push(...root.querySelectorAll(selector));
 				for (const el of root.querySelectorAll('*')) {
 					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
+					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+						try {
+							const d = el.contentDocument;
+							if (d) r.push(...allInDOM(d, selector));
+						} catch (e) {}
+					}
 				}
 			} catch(e) {}
 			return r;
@@ -1223,7 +1637,8 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		const anchor =
 			allInDOM(document, '[data-test-form-element]')[0] ||
 			allInDOM(document, 'fieldset[data-test-form-builder-radio-button-form-component]')[0] ||
-			allInDOM(document, '.jobs-easy-apply-content')[0];
+			allInDOM(document, '.jobs-easy-apply-content')[0] ||
+			allInDOM(document, '.jobs-easy-apply-modal')[0];
 		const form = anchor ? (anchor.closest('form') || anchor.parentElement) : null;
 		const root = form || document.body;
 		const inputs = [...root.querySelectorAll('input, select, textarea')];
@@ -1238,101 +1653,223 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		log.Debug().Str("inputs", diagRes.Value.String()).Msg("easy apply: modal inputs at start")
 	}
 
-	// JS to click the correct Easy Apply modal action button.
-	// LinkedIn's Artdeco modal renders buttons inside shadow DOM, so we must
-	// recursively walk all shadow roots to find them.
+	// JS to click the correct Easy Apply action button.
+	// LinkedIn's apply UI is identified by CTA labels (Next / Continue / Review /
+	// Submit), not by fragile .jobs-easy-apply-* shell classes. We deep-walk
+	// open shadow roots + same-origin iframes; the Go caller also re-runs this
+	// inside each CDP frame when the top document cannot see the modal.
 	const jsClickPrimary = `() => {
 		function allInDOM(root, sel) {
 			const r = [];
-			try {
-				r.push(...root.querySelectorAll(sel));
-				for (const el of root.querySelectorAll('*'))
-					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, sel));
-			} catch(e) {}
+			const walk = (node) => {
+				if (!node) return;
+				try {
+					if (node.querySelectorAll) r.push(...node.querySelectorAll(sel));
+				} catch (e) {}
+				let kids = [];
+				try { kids = node.querySelectorAll ? [...node.querySelectorAll('*')] : []; } catch (e) {}
+				for (const el of kids) {
+					if (el.shadowRoot) walk(el.shadowRoot);
+					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+						try {
+							const d = el.contentDocument;
+							if (d) walk(d);
+						} catch (e) {}
+					}
+				}
+			};
+			walk(root);
 			return r;
 		}
 
-		// Visibility check scoped to the modal, avoids nav-bar false positives.
-		// Does NOT enforce viewport bounds (footer buttons sit at the screen edge).
-		function isVisibleInModal(el) {
+		function isVisible(el) {
 			try {
 				const rect = el.getBoundingClientRect();
-				if (rect.width === 0 && rect.height === 0) return false;
+				if (rect.width < 2 && rect.height < 2) return false;
+				const doc = el.ownerDocument || document;
+				const view = doc.defaultView || window;
 				let node = el;
-				while (node && node !== document.documentElement) {
-					const s = window.getComputedStyle(node);
+				while (node && node !== doc.documentElement) {
+					const s = view.getComputedStyle(node);
 					if (s.display === 'none' || s.visibility === 'hidden') return false;
-					node = node.parentElement;
+					const parent = node.parentElement;
+					if (parent) { node = parent; continue; }
+					const root = node.getRootNode && node.getRootNode();
+					if (root && root.host) { node = root.host; continue; }
+					break;
 				}
 				return true;
-			} catch(e) { return false; }
+			} catch (e) { return false; }
 		}
 
-		function clickBtn(btn) {
-			const label = (btn.getAttribute('aria-label') || btn.textContent || '').trim();
-			btn.scrollIntoView({block: 'nearest'});
-			btn.click();
-			return {ok: true, label: label};
+		function isEnabled(btn) {
+			if (btn.disabled) return false;
+			if (btn.getAttribute('aria-disabled') === 'true') return false;
+			if (btn.classList && btn.classList.contains('artdeco-button--disabled')) return false;
+			return true;
 		}
 
-		// 1. LinkedIn data-attribute selectors, unique to apply action buttons,
-		//    no visibility check needed (they could be at the very edge of the viewport).
-		const dataSelectors = [
-			'[data-live-test-easy-apply-submit-button]',
-			'[data-easy-apply-submit-button]',
-			'[data-live-test-easy-apply-review-button]',
-			'[data-easy-apply-review-btn]',
-			'[data-live-test-easy-apply-next-button]',
-			'[data-easy-apply-next-button]',
-		];
-		for (const sel of dataSelectors) {
-			const btn = allInDOM(document, sel)[0];
-			if (btn) return clickBtn(btn);
+		function btnLabel(btn) {
+			return ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || btn.textContent || ''))
+				.trim().replace(/\s+/g, ' ');
 		}
 
-		// 2. Text / aria-label matching, restrict to inside the modal dialog
-		//    so we never accidentally click nav-bar buttons.
-		const modal = document.querySelector('[data-test-modal][role="dialog"], .artdeco-modal[role="dialog"]')
-		              || document;
-		const priority = [
-			'submit application',
-			'submit',
-			'review your application',
-			'continue to next step',
-			'next',
-		];
-		const modalBtns = allInDOM(modal, 'button, [role="button"]').filter(isVisibleInModal);
-		for (const lbl of priority) {
-			const btn = modalBtns.find(b => {
-				const t = (b.getAttribute('aria-label') || b.textContent || '').toLowerCase().trim();
-				return t === lbl || t.startsWith(lbl);
+		function isMessagingChrome(el) {
+			if (!el) return false;
+			try {
+				if (el.closest && el.closest(
+					'.msg-overlay-conversation-bubble, .msg-overlay-list-bubble, .msg-form, .msg-conversations-container, .msg-overlay, [data-test-messaging]'
+				)) return true;
+			} catch (e) {}
+			const t = btnLabel(el).toLowerCase();
+			return t.includes('conversation') || t.includes('messaging') ||
+				t.includes('close your conversation') || t.includes('open your conversation') ||
+				t.includes('new message');
+		}
+
+		function isExcludedRail(el) {
+			try {
+				return !!el.closest('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="scaffold-layout__aside"], [class*="people-also-viewed"]');
+			} catch (e) { return false; }
+		}
+
+		function actionKind(btn) {
+			const t = btnLabel(btn).toLowerCase();
+			if (btn.hasAttribute('data-live-test-easy-apply-submit-button') || btn.hasAttribute('data-easy-apply-submit-button')) return 'submit';
+			if (btn.hasAttribute('data-live-test-easy-apply-review-button') || btn.hasAttribute('data-easy-apply-review-btn')) return 'review';
+			if (btn.hasAttribute('data-live-test-easy-apply-next-button') || btn.hasAttribute('data-easy-apply-next-button')) return 'next';
+			if (t.includes('submit application') || t === 'submit' || t.startsWith('submit ')) return 'submit';
+			if (t.includes('review your application') || t === 'review' || t.startsWith('review ')) return 'review';
+			if (t.includes('continue to next step') || t === 'continue' || t.startsWith('continue ')) return 'continue';
+			if (t === 'next' || t.startsWith('next ') || t === 'done' || t.startsWith('done ')) return 'next';
+			return '';
+		}
+
+		function trustClick(btn) {
+			const label = btnLabel(btn);
+			try { btn.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) {}
+			try { btn.focus(); } catch (e) {}
+			const view = (btn.ownerDocument && btn.ownerDocument.defaultView) || window;
+			const opts = { bubbles: true, cancelable: true, view: view };
+			for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+				try {
+					if (type.startsWith('pointer')) {
+						btn.dispatchEvent(new PointerEvent(type, Object.assign({ pointerId: 1, pointerType: 'mouse' }, opts)));
+					} else {
+						btn.dispatchEvent(new MouseEvent(type, opts));
+					}
+				} catch (e) {
+					try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch (e2) {}
+				}
+			}
+			try { btn.click(); } catch (e) {}
+			return { ok: true, label: label };
+		}
+
+		const priority = ['submit', 'review', 'continue', 'next'];
+		const candidates = allInDOM(document, 'button, [role="button"], a[role="button"]')
+			.filter(b => !isMessagingChrome(b) && !isExcludedRail(b) && actionKind(b));
+
+		for (const kind of priority) {
+			const btn = candidates.find(b => actionKind(b) === kind && isVisible(b) && isEnabled(b));
+			if (btn) return trustClick(btn);
+		}
+
+		const primary = allInDOM(document, 'button.artdeco-button--primary, button[class*="primary"]')
+			.find(b => {
+				if (!isVisible(b) || !isEnabled(b) || isMessagingChrome(b) || isExcludedRail(b)) return false;
+				const t = btnLabel(b).toLowerCase();
+				if (t.includes('dismiss') || t.includes('cancel') || t.includes('close') || t.includes('back') || t.includes('save')) return false;
+				if (t.includes('easy apply') || t === 'apply' || t.startsWith('apply ')) return false;
+				return actionKind(b) !== '';
 			});
-			if (btn) return clickBtn(btn);
+		if (primary) return trustClick(primary);
+
+		const disabledNext = candidates.find(b => actionKind(b) && isVisible(b) && !isEnabled(b));
+		if (disabledNext) {
+			return { ok: false, label: 'apply CTA disabled (validation): ' + btnLabel(disabledNext).slice(0, 60) };
 		}
 
-		// 3. Fallback: any primary button in the modal footer.
-		const footerPrimary = allInDOM(modal,
-			'footer button.artdeco-button--primary, [role="dialog"] button.artdeco-button--primary')
-			.find(isVisibleInModal);
-		if (footerPrimary) return clickBtn(footerPrimary);
-
-		const labels = modalBtns
-			.map(b => (b.getAttribute('aria-label') || b.textContent || '').trim().substring(0, 50))
-			.filter(t => t).slice(0, 30);
-		return {ok: false, label: labels.join(' | ')};
+		const seen = candidates.slice(0, 12).map(b => btnLabel(b).slice(0, 40)).filter(Boolean);
+		const iframeCount = allInDOM(document, 'iframe').length;
+		const dialogCount = allInDOM(document, '[role="dialog"], .artdeco-modal').length;
+		return {
+			ok: false,
+			label: 'no apply CTA (iframes=' + iframeCount + ', dialogs=' + dialogCount + ', seen=[' + seen.join(' | ') + '])'
+		};
 	}`
 
+	// clickEasyApplyPrimary runs the CTA clicker on the top page, then inside each
+	// CDP iframe frame. LinkedIn often mounts the apply UI in a frame whose
+	// contentDocument is opaque to page JS but reachable via rod's Frame().
+	clickEasyApplyPrimary := func() (label string, ok bool, err error) {
+		tryEval := func(p *rod.Page) (string, bool, error) {
+			res, evalErr := p.Timeout(10 * time.Second).Eval(jsClickPrimary)
+			if evalErr != nil {
+				return "", false, evalErr
+			}
+			return res.Value.Get("label").String(), res.Value.Get("ok").Bool(), nil
+		}
+
+		label, ok, err = tryEval(page)
+		if err != nil || ok {
+			return label, ok, err
+		}
+
+		frames, frameErr := page.Elements("iframe, frame")
+		if frameErr != nil {
+			return label, false, nil
+		}
+		for _, fr := range frames {
+			fp, ferr := fr.Frame()
+			if ferr != nil || fp == nil {
+				continue
+			}
+			flabel, fok, ferr := tryEval(fp)
+			if ferr != nil {
+				continue
+			}
+			if fok {
+				return flabel, true, nil
+			}
+			if flabel != "" && (strings.Contains(flabel, "disabled") || strings.Contains(flabel, "seen=[")) {
+				label = flabel
+			}
+		}
+		return label, false, nil
+	}
+
 	const jsSuccess = `() => {
-		const t = document.body.innerText.toLowerCase();
-		return t.includes('application was sent') ||
-		       t.includes('application submitted') ||
-		       (t.includes('your application') && t.includes('sent'));
+		const t = (document.body && document.body.innerText || '').toLowerCase();
+		// Must be a post-submit confirmation — never match "Review your application".
+		if (t.includes('review your application')) return false;
+		if (t.includes('application was sent')) return true;
+		if (t.includes('your application was sent')) return true;
+		if (t.includes('application submitted')) return true;
+		if (t.includes('applied successfully')) return true;
+		return false;
 	}`
 
 	// jsStepHash identifies the current Easy Apply step using visible question text
 	// and the section heading inside the modal. Progress % alone is unreliable because
 	// LinkedIn only updates it at major milestones, not on every individual step.
 	const jsStepHash = `() => {
+		function allInDOM(root, selector) {
+			const r = [];
+			try {
+				r.push(...root.querySelectorAll(selector));
+				for (const el of root.querySelectorAll('*')) {
+					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
+					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+						try {
+							const d = el.contentDocument;
+							if (d) r.push(...allInDOM(d, selector));
+						} catch (e) {}
+					}
+				}
+			} catch(e) {}
+			return r;
+		}
 		function isVisible(el) {
 			try {
 				const rect = el.getBoundingClientRect();
@@ -1348,18 +1885,17 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 				return true;
 			} catch(e) { return false; }
 		}
-		const prog = document.querySelector('progress[aria-valuenow]');
+		const prog = allInDOM(document, 'progress[aria-valuenow]')[0]
+			|| document.querySelector('progress[aria-valuenow]');
 		const pct = prog ? prog.getAttribute('aria-valuenow') : '';
-		// Collect visible question labels and section headings, these change every step.
-		const texts = [
-			...document.querySelectorAll(
-				'[role="dialog"] h3, [role="dialog"] h4, .artdeco-modal h3, .artdeco-modal h4, ' +
-				'legend, legend span[aria-hidden="true"], ' +
-				'[data-test-form-element] label:not(.visually-hidden), ' +
-				'.artdeco-text-input--label, ' +
-				'[role="group"] label, fieldset label:first-of-type'
-			)
-		]
+		const texts = allInDOM(document,
+			'[role="dialog"] h3, [role="dialog"] h4, .artdeco-modal h3, .artdeco-modal h4, ' +
+			'.jobs-easy-apply-content h3, .jobs-easy-apply-modal h3, ' +
+			'legend, legend span[aria-hidden="true"], ' +
+			'[data-test-form-element] label:not(.visually-hidden), ' +
+			'.artdeco-text-input--label, ' +
+			'[role="group"] label, fieldset label:first-of-type'
+		)
 			.filter(isVisible)
 			.map(e => e.textContent.trim().replace(/\s+/g, ' ').substring(0, 60))
 			.filter(Boolean)
@@ -1387,13 +1923,15 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 
 		b.interactionPause()
 
-		if res, err := page.Eval(jsSuccess); err == nil && res.Value.Bool() {
+		if res, err := page.Timeout(10 * time.Second).Eval(jsSuccess); err == nil && res.Value.Bool() {
 			log.Info().Msg("easy apply: success detected")
 			return nil
+		} else if isCDPFatal(err) {
+			return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
 		}
 
 		// Check whether the modal actually advanced since the previous click.
-		if hashRes, err := page.Eval(jsStepHash); err == nil {
+		if hashRes, err := page.Timeout(10 * time.Second).Eval(jsStepHash); err == nil {
 			h := hashRes.Value.String()
 			log.Debug().Msgf("easy apply: step %d hash=%q", i, h)
 			// Only treat as "same step" when we got a meaningful hash.
@@ -1405,11 +1943,15 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 				noAdvanceCount = 0
 				prevStepHash = h
 			}
+		} else if isCDPFatal(err) {
+			return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
 		}
 
 		// Per-step diagnostic: log what form inputs exist right now.
-		if diagRes, err := page.Eval(jsDiagInputs); err == nil {
+		if diagRes, err := page.Timeout(10 * time.Second).Eval(jsDiagInputs); err == nil {
 			log.Debug().Str("inputs", diagRes.Value.String()).Msgf("easy apply: step %d inputs", i)
+		} else if isCDPFatal(err) {
+			return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
 		}
 
 		// Fill any unanswered fields on the current step before clicking the action button.
@@ -1436,49 +1978,45 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		}
 
 		// Always uncheck the "Follow company" checkbox on the review page before submitting.
-		_, _ = page.Eval(`() => {
+		if _, err := page.Timeout(10 * time.Second).Eval(`() => {
 			const cb = document.getElementById('follow-company-checkbox');
 			if (cb && cb.checked) {
 				cb.checked = false;
 				cb.dispatchEvent(new Event('change', { bubbles: true }));
 			}
-		}`)
+		}`); isCDPFatal(err) {
+			return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
+		}
 
-		res, err := page.Eval(jsClickPrimary)
+		label, ok, err := clickEasyApplyPrimary()
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if isCDPFatal(err) {
 				return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
 			}
 			log.Warn().Err(err).Int("step", i).Msg("easy apply: eval error")
 			continue
 		}
-
-		label := res.Value.Get("label").String()
-		ok := res.Value.Get("ok").Bool()
 		log.Info().Msgf("easy apply: step %d, btn=%q ok=%v filled=%v", i, label, ok, filled)
 
-		// Bail when the modal is stuck: either the button click failed repeatedly,
-		// or the button click succeeds (ok=true) but the step hash never changes and
-		// nothing new is filled, e.g. a typeahead field that requires dropdown
-		// selection but didn't get one, leaving the step frozen.
+		// Bail when the modal is stuck: button click may succeed (ok=true) while
+		// LinkedIn validation blocks advance (e.g. essay fields left empty). Do NOT
+		// require !filled — false "filled" from mismatched selects used to loop forever.
 		stuckThreshold := 4
-		if ok {
-			stuckThreshold = 8 // be more lenient when clicks succeed
+		if ok && filled {
+			stuckThreshold = 5
+		} else if ok {
+			stuckThreshold = 6
 		}
-		if noAdvanceCount >= stuckThreshold && !filled {
-			if os.Getenv("DEBUG_BOT") != "" {
+		if noAdvanceCount >= stuckThreshold {
 			if shot, err := page.Screenshot(false, nil); err == nil {
 				_ = os.WriteFile("debug_modal_stuck.png", shot, 0o644)
 			}
-		}
-			return fmt.Errorf("easy apply: stuck, modal did not advance after %d iterations (ok=%v, no fill)", noAdvanceCount, ok)
+			return fmt.Errorf("easy apply: stuck, modal did not advance after %d iterations (ok=%v, filled=%v) — likely unanswered/invalid fields", noAdvanceCount, ok, filled)
 		}
 
 		if !ok {
-			if os.Getenv("DEBUG_BOT") != "" {
-				if shot, err := page.Screenshot(false, nil); err == nil {
-					_ = os.WriteFile("debug_modal.png", shot, 0o644)
-				}
+			if shot, err := page.Screenshot(false, nil); err == nil {
+				_ = os.WriteFile("debug_modal.png", shot, 0o644)
 			}
 			okFailCount++
 			if okFailCount >= 5 {
@@ -1501,15 +2039,48 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 
 		lowerLabel := strings.ToLower(label)
 		if strings.Contains(lowerLabel, "submit") {
-			b.interactionPause() // pause before checking submission success
+			b.interactionPause()
+			_ = page.Timeout(10 * time.Second).WaitStable(500 * time.Millisecond)
 			if res, err := page.Eval(jsSuccess); err == nil && res.Value.Bool() {
 				log.Info().Msg("easy apply: submitted successfully")
 				return nil
 			}
-			// If the page no longer has an Easy Apply modal, assume success.
-			if res, err := page.Eval(`() => !document.querySelector('[class*="easy-apply"], [class*="artdeco-modal"]')`); err == nil && res.Value.Bool() {
-				log.Info().Msg("easy apply: modal closed after submit, assuming success")
-				return nil
+			// Modal gone and not on review → success. Still on review → keep looping.
+			stillReview := false
+			if res, err := page.Eval(`() => (document.body.innerText || '').toLowerCase().includes('review your application')`); err == nil {
+				stillReview = res.Value.Bool()
+			}
+			if !stillReview {
+				if res, err := page.Eval(`() => {
+					function allInDOM(root, sel) {
+						const r = [];
+						try {
+							r.push(...root.querySelectorAll(sel));
+							for (const el of root.querySelectorAll('*')) {
+								if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, sel));
+								if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+									try { const d = el.contentDocument; if (d) r.push(...allInDOM(d, sel)); } catch(e) {}
+								}
+							}
+						} catch(e) {}
+						return r;
+					}
+					const easy = allInDOM(document, '.jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-easy-apply-modal]');
+					return easy.length === 0;
+				}`); err == nil && res.Value.Bool() {
+					log.Info().Msg("easy apply: apply modal closed after submit, assuming success")
+					return nil
+				}
+			} else {
+				log.Warn().Msg("easy apply: still on review page after Submit click — will retry")
+				// Scroll modal footer into view so Submit is clickable next iteration.
+				_, _ = page.Eval(`() => {
+					const dialog = document.querySelector('[role="dialog"], .artdeco-modal, .jobs-easy-apply-content');
+					if (dialog) dialog.scrollTop = dialog.scrollHeight;
+					const btn = [...document.querySelectorAll('button')].find(b =>
+						/submit application/i.test(b.getAttribute('aria-label') || b.textContent || ''));
+					if (btn) btn.scrollIntoView({block: 'center'});
+				}`)
 			}
 		}
 	}
@@ -1600,14 +2171,14 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			`SELECT COALESCE(suitability_score,0) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
 			j.JobID, b.cfg.UserID,
 		).Scan(&score)
-		_, _ = b.cfg.DB.Exec(
+		_, _ = appdb.ExecWithRetry(b.cfg.DB,
 			`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,applied_at)
 			 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 			j.JobID, b.cfg.UserID, platform, j.Company, j.Role,
 			j.Location, j.Link, j.ResumePath, j.CoverLetterPath, score,
 			time.Now().UTC().Format(time.RFC3339),
 		)
-		_, _ = b.cfg.DB.Exec(`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
+		_, _ = appdb.ExecWithRetry(b.cfg.DB, `DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
 		log.Info().Str("company", j.Company).Str("title", j.Role).Msg("approved queue: submitted ✓")
 		applied++
 	}
@@ -1619,6 +2190,14 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 // alreadyAppliedReason returns a non-empty reason string if the job has
 // already been seen, or "" if it is new.
 func (b *Bot) alreadyAppliedReason(jobID string) string {
+	if jobID == "" {
+		return ""
+	}
+	if b.seenCache != nil {
+		if r := b.seenCache.reason(jobID); r != "" {
+			return r
+		}
+	}
 	if b.cfg.DB == nil {
 		return ""
 	}
@@ -1670,7 +2249,7 @@ func (b *Bot) recordApplied(job linkedInJob, resumePath, coverPath string, score
 	if b.cfg.DB == nil {
 		return
 	}
-	if _, err := b.cfg.DB.Exec(
+	if _, err := appdb.ExecWithRetry(b.cfg.DB,
 		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, b.cfg.UserID, string(domain.PlatformLinkedIn), job.Company, job.Title,
@@ -1679,13 +2258,16 @@ func (b *Bot) recordApplied(job linkedInJob, resumePath, coverPath string, score
 	); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID).Msg("failed to record applied job")
 	}
+	if b.seenCache != nil {
+		b.seenCache.mark(job.ID, seenApplied)
+	}
 }
 
 func (b *Bot) recordSkipped(job linkedInJob, reason string, score int, reasoning string, halalVerdict []byte) {
 	if b.cfg.DB == nil {
 		return
 	}
-	if _, err := b.cfg.DB.Exec(
+	if _, err := appdb.ExecWithRetry(b.cfg.DB,
 		`INSERT OR IGNORE INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,halal_verdict,viewed_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, b.cfg.UserID, string(domain.PlatformLinkedIn), job.Company, job.Title,
@@ -1693,6 +2275,9 @@ func (b *Bot) recordSkipped(job linkedInJob, reason string, score int, reasoning
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID).Msg("failed to record skipped job")
+	}
+	if b.seenCache != nil {
+		b.seenCache.mark(job.ID, seenSkipped)
 	}
 }
 
@@ -1704,7 +2289,7 @@ func (b *Bot) savePendingReview(ctx context.Context, p *domain.PendingReview) {
 	if string(halalJSON) == "null" {
 		halalJSON = nil
 	}
-	if _, err := b.cfg.DB.ExecContext(ctx,
+	if _, err := appdb.ExecContextWithRetry(ctx, b.cfg.DB,
 		`INSERT OR REPLACE INTO jobs_pending_review(job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,suitability_score,suitability_reasoning,due_date,posted_date,easy_apply,halal_verdict,created_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.JobID, b.cfg.UserID, p.Company, p.Role, p.Location, string(p.Platform), p.Link,
@@ -1712,6 +2297,9 @@ func (b *Bot) savePendingReview(ctx context.Context, p *domain.PendingReview) {
 		p.CreatedAt.UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", p.JobID).Msg("failed to save pending review")
+	}
+	if b.seenCache != nil {
+		b.seenCache.mark(p.JobID, seenPendingReview)
 	}
 }
 
@@ -1793,27 +2381,63 @@ func (b *Bot) isBlacklisted(job linkedInJob) bool {
 	return false
 }
 
-func (b *Bot) buildLinkedInSearchURL(keyword string) string {
+func (b *Bot) buildLinkedInSearchURL(keyword string, target domain.SearchTarget) string {
 	params := url.Values{}
 	params.Set("keywords", keyword)
-	if len(b.cfg.Preferences.Locations) > 0 {
-		params.Set("location", b.cfg.Preferences.Locations[0])
+	if loc := domain.FormatSearchLocation(target.Location, domain.PlatformLinkedIn); loc != "" {
+		params.Set("location", loc)
+	}
+
+	var workTypes []string
+	if target.Onsite {
+		workTypes = append(workTypes, "1")
+	}
+	if target.Remote {
+		workTypes = append(workTypes, "2")
+	}
+	if target.Hybrid {
+		workTypes = append(workTypes, "3")
+	}
+	// Only apply when a subset is selected — omitting f_WT returns all work types.
+	if len(workTypes) > 0 && len(workTypes) < 3 {
+		params.Set("f_WT", strings.Join(workTypes, ","))
 	}
 
 	prefs := b.cfg.Preferences
-	var workTypes []string
-	if prefs.Onsite {
-		workTypes = append(workTypes, "1")
+	var jobTypes []string
+	if prefs.JobTypes.FullTime {
+		jobTypes = append(jobTypes, "F")
 	}
-	if prefs.Remote {
-		workTypes = append(workTypes, "2")
+	if prefs.JobTypes.PartTime {
+		jobTypes = append(jobTypes, "P")
 	}
-	if prefs.Hybrid {
-		workTypes = append(workTypes, "3")
+	if prefs.JobTypes.Contract {
+		jobTypes = append(jobTypes, "C")
 	}
-	// Only apply the filter when a subset is selected, omitting it returns all work types.
-	if len(workTypes) > 0 && len(workTypes) < 3 {
-		params.Set("f_WT", strings.Join(workTypes, ","))
+	if prefs.JobTypes.Temporary {
+		jobTypes = append(jobTypes, "T")
+	}
+	if prefs.JobTypes.Internship {
+		jobTypes = append(jobTypes, "I")
+	}
+	if prefs.JobTypes.Volunteer {
+		jobTypes = append(jobTypes, "V")
+	}
+	if prefs.JobTypes.Other {
+		jobTypes = append(jobTypes, "O")
+	}
+	if len(jobTypes) > 0 {
+		params.Set("f_JT", strings.Join(jobTypes, ","))
+	}
+
+	switch {
+	case prefs.Date.Hours24:
+		params.Set("f_TPR", "r86400")
+	case prefs.Date.Week:
+		params.Set("f_TPR", "r604800")
+	case prefs.Date.Month:
+		params.Set("f_TPR", "r2592000")
+		// AllTime: omit f_TPR
 	}
 
 	return "https://www.linkedin.com/jobs/search/?" + params.Encode()
@@ -1840,4 +2464,93 @@ func (b *Bot) savePDF(data []byte, company, title, kind string) string {
 		return ""
 	}
 	return path
+}
+
+// linkedinEnsureLoggedIn returns nil when LinkedIn looks authenticated. If not,
+// and stored credentials exist, it runs linkedinAutoLogin once and re-checks.
+func (b *Bot) linkedinEnsureLoggedIn(page *rod.Page) error {
+	state, err := browser.PageLoginState(page, "linkedin")
+	if err == nil && state == browser.LoginStateYes {
+		return nil
+	}
+	if info, ierr := page.Info(); ierr == nil {
+		u := strings.ToLower(info.URL)
+		onLogin := strings.Contains(u, "/login") || strings.Contains(u, "/checkpoint") || strings.Contains(u, "/authwall")
+		if !onLogin && state != browser.LoginStateNo {
+			return nil
+		}
+	}
+
+	if b.cfg.LinkedInEmail == "" || b.cfg.LinkedInPassword == "" {
+		return fmt.Errorf("not logged in and no LinkedIn credentials saved")
+	}
+
+	if info, ierr := page.Info(); ierr == nil {
+		u := strings.ToLower(info.URL)
+		if !strings.Contains(u, "/login") && !strings.Contains(u, "linkedin.com/uas") {
+			_ = page.Navigate("https://www.linkedin.com/login")
+			_ = page.Timeout(30 * time.Second).WaitLoad()
+			_ = page.Timeout(5 * time.Second).WaitStable(1 * time.Second)
+		}
+	}
+
+	if autoErr := b.linkedinAutoLogin(page); autoErr != nil {
+		return autoErr
+	}
+
+	_ = page.Navigate("https://www.linkedin.com/feed/")
+	_ = page.Timeout(30 * time.Second).WaitLoad()
+	_ = page.Timeout(8 * time.Second).WaitStable(2 * time.Second)
+
+	state, err = browser.PageLoginState(page, "linkedin")
+	if err == nil && state == browser.LoginStateYes {
+		log.Info().Msg("linkedin: session recovered via stored credentials")
+		return nil
+	}
+	if info, ierr := page.Info(); ierr == nil {
+		u := strings.ToLower(info.URL)
+		if strings.Contains(u, "/login") || strings.Contains(u, "/checkpoint") || strings.Contains(u, "/authwall") {
+			return fmt.Errorf("auto-login completed but still on login/checkpoint page")
+		}
+	}
+	if state == browser.LoginStateNo {
+		return fmt.Errorf("auto-login completed but still logged out")
+	}
+	log.Info().Msg("linkedin: session recovered via stored credentials")
+	return nil
+}
+
+// linkedinAutoLogin fills the LinkedIn login form using stored credentials.
+func (b *Bot) linkedinAutoLogin(page *rod.Page) error {
+	log.Info().Msg("linkedin: auto-login with stored credentials")
+
+	emailInput, err := page.Timeout(10 * time.Second).Element(
+		"input#username, input[name='session_key'], input[type='email']",
+	)
+	if err != nil {
+		return fmt.Errorf("login form: email input not found: %w", err)
+	}
+	_ = emailInput.SelectAllText()
+	if err := emailInput.Input(b.cfg.LinkedInEmail); err != nil {
+		return fmt.Errorf("fill email: %w", err)
+	}
+	b.humanPause()
+
+	pwdInput, err := page.Timeout(5 * time.Second).Element("input#password, input[name='session_password'], input[type='password']")
+	if err != nil {
+		return fmt.Errorf("login form: password input not found: %w", err)
+	}
+	_ = pwdInput.SelectAllText()
+	if err := pwdInput.Input(b.cfg.LinkedInPassword); err != nil {
+		return fmt.Errorf("fill password: %w", err)
+	}
+	b.humanPause()
+
+	if btn, e := page.Element("button[type='submit'], button[data-litms-control-urn='login-submit']"); e == nil {
+		_ = btn.Click(proto.InputMouseButtonLeft, 1)
+	}
+
+	_ = page.Timeout(30 * time.Second).WaitLoad()
+	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+	return nil
 }

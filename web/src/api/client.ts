@@ -37,11 +37,22 @@ export async function apiGet<T>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: 'GET', headers: {} })
 }
 
-export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  return apiFetch<T>(path, {
+export async function apiPost<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+  const init: RequestInit = {
     method: 'POST',
     body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
+  }
+  if (timeoutMs && timeoutMs > 0) {
+    init.signal = AbortSignal.timeout(timeoutMs)
+  }
+  try {
+    return await apiFetch<T>(path, init)
+  } catch (e: unknown) {
+    if (e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      throw new ApiError(504, 'Request timed out — try again')
+    }
+    throw e
+  }
 }
 
 export async function apiPut<T>(path: string, body?: unknown): Promise<T> {

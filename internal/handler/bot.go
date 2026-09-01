@@ -1,14 +1,17 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/bot"
+	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 )
 
@@ -164,7 +167,7 @@ func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	if _, err := h.svc.DB.ExecContext(r.Context(),
+	if _, err := appdb.ExecContextWithRetry(r.Context(), h.svc.DB,
 		"DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?", jobID, userID); err != nil {
 		log.Error().Err(err).Str("job_id", jobID).Msg("review approve: failed to delete pending review after submission")
 	}
@@ -187,7 +190,7 @@ func (h *BotHandlers) ReviewReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.svc.DB.ExecContext(r.Context(),
+	if _, err := appdb.ExecContextWithRetry(r.Context(), h.svc.DB,
 		`INSERT OR IGNORE INTO jobs_skipped
 		 (id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,viewed_at)
 		 VALUES(?,?,?,?,?,?,?,'manual_reject',?,'',datetime('now'))`,
@@ -195,7 +198,7 @@ func (h *BotHandlers) ReviewReject(w http.ResponseWriter, r *http.Request) {
 	); err != nil {
 		log.Error().Err(err).Str("job_id", jobID).Msg("review reject: failed to insert skipped job")
 	}
-	if _, err := h.svc.DB.ExecContext(r.Context(),
+	if _, err := appdb.ExecContextWithRetry(r.Context(), h.svc.DB,
 		"DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?", jobID, userID); err != nil {
 		log.Error().Err(err).Str("job_id", jobID).Msg("review reject: failed to delete pending review")
 	}
@@ -219,8 +222,18 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "url is required"})
 		return
 	}
-	res, err := h.svc.Bot.ApplyFromURL(r.Context(), userID, req.URL, req.Market, req.Force)
+	// Bound total AI Apply time so the UI cannot sit on "Submitting…" forever
+	// (browser hangs, LLM stalls, or form loops).
+	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
+	defer cancel()
+	res, err := h.svc.Bot.ApplyFromURL(ctx, userID, req.URL, req.Market, req.Force)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeJSON(w, http.StatusGatewayTimeout, map[string]string{
+				"message": "AI Apply timed out after 4 minutes — try again, or confirm the job has Easy Apply / Quick Apply",
+			})
+			return
+		}
 		if errors.Is(err, bot.ErrNotEasyApply) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":  "not_easy_apply",

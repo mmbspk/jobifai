@@ -336,6 +336,15 @@ type DateFilterConfig struct {
 	Hours24 bool `json:"hours_24,omitempty"`
 }
 
+// SearchTarget bundles a location with per-location work arrangement filters.
+// Job titles (Positions) are shared across all targets.
+type SearchTarget struct {
+	Location string `json:"location,omitempty"`
+	Remote   bool   `json:"remote,omitempty"`
+	Hybrid   bool   `json:"hybrid,omitempty"`
+	Onsite   bool   `json:"onsite,omitempty"`
+}
+
 type WorkPreferences struct {
 	Remote             bool                  `json:"remote,omitempty"`
 	Hybrid             bool                  `json:"hybrid,omitempty"`
@@ -344,6 +353,7 @@ type WorkPreferences struct {
 	JobTypes           JobTypeConfig         `json:"job_types,omitempty"`
 	Date               DateFilterConfig      `json:"date_filters,omitempty"`
 	Positions          []string              `json:"positions,omitempty"`
+	SearchTargets      []SearchTarget        `json:"search_targets,omitempty"`
 	Locations          []string              `json:"locations,omitempty"`
 	Distance           int                   `json:"distance,omitempty"`
 	CompanyBlacklist   []string              `json:"company_blacklist,omitempty"`

@@ -96,6 +96,8 @@ type BotController interface {
 	// InvalidateSeekBrowser closes the cached persistent Seek browser for a user
 	// so the next SubmitNow creates a fresh browser with the latest saved cookies.
 	InvalidateSeekBrowser(userID string)
+	// InvalidateLinkedInBrowser closes the cached persistent LinkedIn browser.
+	InvalidateLinkedInBrowser(userID string)
 }
 
 // ResumeTailor rewrites a profile for a job and writes cover letters.

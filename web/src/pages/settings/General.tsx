@@ -247,12 +247,12 @@ export function GeneralSettingsPage() {
         <Field label="Show Browser Window">
           <Toggle checked={browserCfg.show_browser ?? true} onChange={v => browser('show_browser', v)} />
         </Field>
-        <Field label="Use Chrome Profile" sub="Reuse existing Chrome profile (stays logged in)">
+        <Field label="Use Chrome Profile" sub="Reuse a persistent Chrome profile (keeps Auth0/localStorage login). Leave path empty to use data/chrome-profiles/&lt;user&gt;/&lt;platform&gt;">
           <Toggle checked={browserCfg.use_chrome_profile ?? true} onChange={v => browser('use_chrome_profile', v)} />
         </Field>
         {browserCfg.use_chrome_profile && (
           <Field label="Profile Path">
-            <TextInput value={browserCfg.chrome_profile_path ?? ''} onChange={v => browser('chrome_profile_path', v)} placeholder="/path/to/profile" />
+            <TextInput value={browserCfg.chrome_profile_path ?? ''} onChange={v => browser('chrome_profile_path', v)} placeholder="data/chrome-profiles/... (default if empty)" />
           </Field>
         )}
         <Field label="Remote Debug Port" sub="Chrome DevTools remote debugging port (0 = disabled)">

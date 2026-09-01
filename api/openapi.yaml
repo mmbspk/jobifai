@@ -1034,6 +1034,17 @@ components:
         week: { type: boolean }
         hours_24: { type: boolean }
 
+    SearchTarget:
+      type: object
+      description: Location-specific search bundle with per-location work arrangement filters.
+      properties:
+        location:
+          type: string
+          description: Geographic search area (empty = nationwide)
+        remote: { type: boolean }
+        hybrid: { type: boolean }
+        onsite: { type: boolean }
+
     WorkPreferences:
       type: object
       properties:
@@ -1046,6 +1057,10 @@ components:
           $ref: "#/components/schemas/JobTypeConfig"
         date:
           $ref: "#/components/schemas/DateFilterConfig"
+        search_targets:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchTarget"
         positions:
           type: array
           items:

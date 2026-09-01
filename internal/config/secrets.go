@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/user/jobifai/internal/db"
 )
 
 // SecretsStore stores sensitive values encrypted with AES-256-GCM.
@@ -38,7 +40,7 @@ func (s *SecretsStore) Set(userID, key, value string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(
+	_, err = db.ExecWithRetry(s.db,
 		`INSERT INTO secrets(user_id, key, value) VALUES(?,?,?)
 		 ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value`,
 		userID, key, ct,
@@ -73,7 +75,7 @@ func (s *SecretsStore) Has(userID, key string) bool {
 
 // Delete removes the secret at (userID, key).
 func (s *SecretsStore) Delete(userID, key string) error {
-	_, err := s.db.Exec("DELETE FROM secrets WHERE user_id = ? AND key = ?", userID, key)
+	_, err := db.ExecWithRetry(s.db, "DELETE FROM secrets WHERE user_id = ? AND key = ?", userID, key)
 	return err
 }
 

@@ -80,7 +80,8 @@ func (stubBotCtrl) SubmitSync(_ context.Context, _ string, _ bot.SubmitRequest) 
 func (stubBotCtrl) ApplyFromURL(_ context.Context, _, _, _ string, _ bool) (bot.ApplyFromURLResult, error) {
 	return bot.ApplyFromURLResult{}, nil
 }
-func (stubBotCtrl) InvalidateSeekBrowser(_ string) {}
+func (stubBotCtrl) InvalidateSeekBrowser(_ string)    {}
+func (stubBotCtrl) InvalidateLinkedInBrowser(_ string) {}
 
 func newAuthTestServices(t *testing.T, bm *stubBrowserMgr, ss *stubSessionStore) (*handler.Services, string) {
 	t.Helper()
@@ -148,6 +149,23 @@ func TestAuth_SaveSession_Success(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	assert.Equal(t, true, resp["success"])
+	assert.Equal(t, float64(1), resp["cookies_saved"])
+}
+
+func TestAuth_SaveSession_NotLoggedIn(t *testing.T) {
+	bm := &stubBrowserMgr{captureErr: domain.ErrNotLoggedIn}
+	svc, token := newAuthTestServices(t, bm, newStubSessionStore())
+	router := handler.NewRouter(svc)
+
+	w := authPost(t, router, "/api/auth/save-session", token, map[string]any{
+		"session_id": "sess-001",
+		"platform":   "seek",
+	})
+	assert.Equal(t, 400, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.Contains(t, resp["message"], "not logged in")
 }
 
 func TestAuth_SaveSession_NotFound(t *testing.T) {

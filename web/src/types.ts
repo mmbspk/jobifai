@@ -246,6 +246,13 @@ export interface QuestionAnswer {
   answer: string
 }
 
+export interface SearchTarget {
+  location?: string
+  remote?: boolean
+  hybrid?: boolean
+  onsite?: boolean
+}
+
 export interface WorkPreferences {
   remote?: boolean
   hybrid?: boolean
@@ -275,6 +282,7 @@ export interface WorkPreferences {
     hours_24?: boolean
   }
   positions?: string[]
+  search_targets?: SearchTarget[]
   locations?: string[]
   distance?: number
   company_blacklist?: string[]
