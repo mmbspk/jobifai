@@ -218,6 +218,17 @@ func TestIsBlacklisted_Empty(t *testing.T) {
 	assert.False(t, b.isBlacklisted(linkedInJob{Company: "AnyCompany", Title: "Any Role"}))
 }
 
+func TestIsBlacklisted_Location(t *testing.T) {
+	prefs := domain.WorkPreferences{
+		LocationBlacklist: []string{"India", "Perth"},
+	}
+	b := newBotWithPrefs(prefs)
+
+	assert.True(t, b.isBlacklisted(linkedInJob{Company: "Acme", Title: "Dev", Location: "Remote - India"}))
+	assert.True(t, b.isBlacklisted(linkedInJob{Company: "Acme", Title: "Dev", Location: "Perth WA"}))
+	assert.False(t, b.isBlacklisted(linkedInJob{Company: "Acme", Title: "Dev", Location: "Melbourne VIC"}))
+}
+
 func TestIsSeekJobBlacklisted(t *testing.T) {
 	prefs := domain.WorkPreferences{
 		CompanyBlacklist: []string{"ToxicCo"},
@@ -228,6 +239,10 @@ func TestIsSeekJobBlacklisted(t *testing.T) {
 	assert.True(t, b.isSeekJobBlacklisted(seekJob{Company: "ToxicCo", Title: "Analyst"}))
 	assert.True(t, b.isSeekJobBlacklisted(seekJob{Company: "Good", Title: "Unpaid Research Assistant"}))
 	assert.False(t, b.isSeekJobBlacklisted(seekJob{Company: "GoodCo", Title: "Senior Analyst"}))
+
+	bLoc := newBotWithPrefs(domain.WorkPreferences{LocationBlacklist: []string{"Perth"}})
+	assert.True(t, bLoc.isSeekJobBlacklisted(seekJob{Company: "GoodCo", Title: "Analyst", Location: "Perth WA"}))
+	assert.False(t, bLoc.isSeekJobBlacklisted(seekJob{Company: "GoodCo", Title: "Analyst", Location: "Sydney NSW"}))
 }
 
 // ── unmarshalHalalVerdict ─────────────────────────────────────────────────────

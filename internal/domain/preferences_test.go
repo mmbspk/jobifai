@@ -40,6 +40,36 @@ func TestWorkPreferences_Normalize_PreservesSearchTargets(t *testing.T) {
 	assert.True(t, p.SearchTargets[1].Onsite)
 }
 
+func TestWorkPreferences_normalizeDateFilter(t *testing.T) {
+	p := WorkPreferences{
+		Date: DateFilterConfig{Hours24: true, Week: true, Month: true, AllTime: true},
+	}
+	p.normalizeDateFilter()
+	assert.True(t, p.Date.Hours24)
+	assert.False(t, p.Date.Week)
+	assert.False(t, p.Date.Month)
+	assert.False(t, p.Date.AllTime)
+
+	p.Date = DateFilterConfig{Week: true, Month: true}
+	p.normalizeDateFilter()
+	assert.True(t, p.Date.Week)
+	assert.False(t, p.Date.Month)
+
+	p.Date = DateFilterConfig{}
+	p.normalizeDateFilter()
+	assert.True(t, p.Date.Week)
+}
+
+func TestWorkPreferences_Normalize_CollapsesDateFilter(t *testing.T) {
+	p := WorkPreferences{
+		Date: DateFilterConfig{Month: true, AllTime: true},
+		SearchTargets: []SearchTarget{{Location: "Melbourne", Onsite: true}},
+	}
+	p.Normalize()
+	assert.True(t, p.Date.Month)
+	assert.False(t, p.Date.AllTime)
+}
+
 func TestWorkPreferences_EffectiveSearchTargets_DefaultNationwide(t *testing.T) {
 	targets := (WorkPreferences{}).EffectiveSearchTargets()
 	assert.Len(t, targets, 1)

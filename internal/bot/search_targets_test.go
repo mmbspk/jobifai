@@ -35,8 +35,9 @@ func TestBuildSeekSearchURL_HybridAndOnsite(t *testing.T) {
 
 func TestBuildLinkedInSearchURL_PerTarget(t *testing.T) {
 	b := &Bot{cfg: Config{Preferences: domain.WorkPreferences{
-		JobTypes: domain.JobTypeConfig{FullTime: true},
-		Date:     domain.DateFilterConfig{Week: true},
+		JobTypes:         domain.JobTypeConfig{FullTime: true},
+		Date:             domain.DateFilterConfig{Week: true},
+		ExperienceLevel:  domain.ExperienceLevelConfig{Entry: true, MidSenior: true},
 	}}}
 	target := domain.SearchTarget{Location: "All Melbourne VIC", Hybrid: true, Onsite: true}
 	u := b.buildLinkedInSearchURL("Engineer", target)
@@ -45,6 +46,7 @@ func TestBuildLinkedInSearchURL_PerTarget(t *testing.T) {
 	assert.Contains(t, u, "f_WT=1%2C3")
 	assert.Contains(t, u, "f_JT=F")
 	assert.Contains(t, u, "f_TPR=r604800")
+	assert.Contains(t, u, "f_E=2%2C4")
 }
 
 func TestBuildLinkedInSearchURL_MultipleTargets(t *testing.T) {

@@ -468,10 +468,14 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 		prevCount := len(jobs)
 		for _, card := range cards {
 			job := extractSeekJob(card)
-			if job.ID != "" && !seen[job.ID] {
-				seen[job.ID] = true
-				jobs = append(jobs, job)
+			if job.ID == "" || seen[job.ID] {
+				continue
 			}
+			if !b.cfg.Preferences.ExperienceLevel.MatchesExperienceTitle(job.Title) {
+				continue
+			}
+			seen[job.ID] = true
+			jobs = append(jobs, job)
 		}
 		log.Info().Msgf("seek: scroll %d, found %d cards (%d new)", attempt+1, len(cards), len(jobs)-prevCount)
 
@@ -2413,6 +2417,9 @@ func (b *Bot) recordSeekSkipped(job seekJob, reason string, score int, reasoning
 }
 
 func (b *Bot) isSeekJobBlacklisted(job seekJob) bool {
+	if domain.LocationMatchesBlacklist(job.Location, b.cfg.Preferences.LocationBlacklist) {
+		return true
+	}
 	for _, c := range b.cfg.Preferences.CompanyBlacklist {
 		if strings.EqualFold(job.Company, c) || strings.Contains(strings.ToLower(job.Company), strings.ToLower(c)) {
 			return true

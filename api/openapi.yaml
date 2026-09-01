@@ -1028,6 +1028,7 @@ components:
 
     DateFilterConfig:
       type: object
+      description: Exactly one date window should be active; server normalizes on save.
       properties:
         all_time: { type: boolean }
         month: { type: boolean }
@@ -1083,10 +1084,6 @@ components:
           type: array
           items:
             type: string
-        apply_once_at_company:
-          type: boolean
-        max_applications:
-          type: integer
 
     SecretsConfig:
       type: object

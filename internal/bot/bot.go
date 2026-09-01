@@ -920,6 +920,11 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 		log.Info().Msgf("linkedin: skip, blacklisted: %q @ %s", job.Title, job.Company)
 		return false
 	}
+	if !b.cfg.Preferences.ExperienceLevel.MatchesExperienceTitle(job.Title) {
+		b.recordSkipped(job, "experience_level", 0, "", nil)
+		log.Info().Msgf("linkedin: skip, experience level: %q @ %s", job.Title, job.Company)
+		return false
+	}
 
 	// Open the job page once — authoritative Easy Apply detection before scoring/apply.
 	easyApply := job.EasyApply
@@ -2368,6 +2373,9 @@ func (b *Bot) shortPause() {
 }
 
 func (b *Bot) isBlacklisted(job linkedInJob) bool {
+	if domain.LocationMatchesBlacklist(job.Location, b.cfg.Preferences.LocationBlacklist) {
+		return true
+	}
 	for _, c := range b.cfg.Preferences.CompanyBlacklist {
 		if strings.EqualFold(job.Company, c) || strings.Contains(strings.ToLower(job.Company), strings.ToLower(c)) {
 			return true
@@ -2428,6 +2436,10 @@ func (b *Bot) buildLinkedInSearchURL(keyword string, target domain.SearchTarget)
 	}
 	if len(jobTypes) > 0 {
 		params.Set("f_JT", strings.Join(jobTypes, ","))
+	}
+
+	if codes := domain.LinkedInExperienceCodes(prefs.ExperienceLevel); len(codes) > 0 && len(codes) < 6 {
+		params.Set("f_E", strings.Join(codes, ","))
 	}
 
 	switch {

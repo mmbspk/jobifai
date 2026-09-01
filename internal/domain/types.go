@@ -359,8 +359,6 @@ type WorkPreferences struct {
 	CompanyBlacklist   []string              `json:"company_blacklist,omitempty"`
 	TitleBlacklist     []string              `json:"title_blacklist,omitempty"`
 	LocationBlacklist  []string              `json:"location_blacklist,omitempty"`
-	ApplyOnceAtCompany bool                  `json:"apply_once_at_company,omitempty"`
-	MaxApplications    int                   `json:"max_applications,omitempty"`
 }
 
 type SecretsConfig struct {

@@ -16,6 +16,40 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+function Radio({ label, checked, onChange }: { label: string; checked: boolean; onChange: () => void }) {
+  return (
+    <label className="flex items-center gap-2.5 cursor-pointer select-none">
+      <input
+        type="radio"
+        checked={checked}
+        onChange={onChange}
+        className="accent-[var(--color-accent)]"
+      />
+      <span className="text-sm text-[var(--color-text-muted)]">{label}</span>
+    </label>
+  )
+}
+
+const DATE_FILTER_KEYS = ['all_time', 'month', 'week', 'hours_24'] as const
+type DateFilterKey = typeof DATE_FILTER_KEYS[number]
+
+function pickDateFilter(d: WorkPreferences['date_filters']): DateFilterKey {
+  if (d?.hours_24) return 'hours_24'
+  if (d?.week) return 'week'
+  if (d?.month) return 'month'
+  if (d?.all_time) return 'all_time'
+  return 'week'
+}
+
+function dateFilterRecord(key: DateFilterKey): WorkPreferences['date_filters'] {
+  return {
+    all_time: key === 'all_time',
+    month: key === 'month',
+    week: key === 'week',
+    hours_24: key === 'hours_24',
+  }
+}
+
 function Checkbox({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className="flex items-center gap-2.5 cursor-pointer select-none">
@@ -39,29 +73,30 @@ const DEFAULT: WorkPreferences = {
   positions: [],
   search_targets: [DEFAULT_TARGET],
   company_blacklist: [], title_blacklist: [], location_blacklist: [],
-  apply_once_at_company: true, max_applications: 50,
 }
 
 function normalizePrefs(p: WorkPreferences): WorkPreferences {
-  if (p.search_targets?.length) return p
-  if (p.locations?.length) {
+  const dateKey = pickDateFilter(p.date_filters)
+  const withDate = { ...p, date_filters: dateFilterRecord(dateKey) }
+  if (withDate.search_targets?.length) return withDate
+  if (withDate.locations?.length) {
     return {
-      ...p,
-      search_targets: p.locations.map(loc => ({
+      ...withDate,
+      search_targets: withDate.locations.map(loc => ({
         location: loc,
-        remote: p.remote ?? false,
-        hybrid: p.hybrid ?? false,
-        onsite: p.onsite ?? false,
+        remote: withDate.remote ?? false,
+        hybrid: withDate.hybrid ?? false,
+        onsite: withDate.onsite ?? false,
       })),
     }
   }
   return {
-    ...p,
+    ...withDate,
     search_targets: [{
       location: '',
-      remote: p.remote ?? true,
-      hybrid: p.hybrid ?? true,
-      onsite: p.onsite ?? false,
+      remote: withDate.remote ?? true,
+      hybrid: withDate.hybrid ?? true,
+      onsite: withDate.onsite ?? false,
     }],
   }
 }
@@ -83,15 +118,19 @@ export function Preferences() {
     },
   })
 
-  function toggle<K extends 'experience_level' | 'job_types' | 'date_filters'>(section: K, key: string) {
+  function toggle<K extends 'experience_level' | 'job_types'>(section: K, key: string) {
     setForm(f => ({ ...f, [section]: { ...f[section], [key]: !((f[section] as Record<string, boolean>)[key]) } }))
   }
 
+  const selectedDateFilter = pickDateFilter(form.date_filters)
   const targets = form.search_targets?.length ? form.search_targets : [DEFAULT_TARGET]
 
   return (
     <div className="space-y-4">
       <Section title="Experience Level">
+        <p className="text-[10px] text-[var(--color-text-dim)] mb-3">
+          Filters LinkedIn search (f_E). Seek listings are matched by job title after search.
+        </p>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {(['internship','entry','associate','mid_senior_level','senior','director','executive'] as const).map(k => (
             <Checkbox key={k} label={k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
@@ -103,6 +142,9 @@ export function Preferences() {
       </Section>
 
       <Section title="Job Types">
+        <p className="text-[10px] text-[var(--color-text-dim)] mb-3">
+          Multi-select. LinkedIn uses all types; Seek maps full-time, part-time, contract, and temporary only.
+        </p>
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {(['full_time','contract','part_time','temporary','internship','volunteer','other'] as const).map(k => (
             <Checkbox key={k} label={k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
@@ -114,11 +156,16 @@ export function Preferences() {
       </Section>
 
       <Section title="Date Filter">
+        <p className="text-[10px] text-[var(--color-text-dim)] mb-3">
+          One period applies to Seek and LinkedIn search (most recent wins if legacy data had several selected).
+        </p>
         <div className="flex flex-wrap gap-6">
-          {(['all_time','month','week','hours_24'] as const).map(k => (
-            <Checkbox key={k} label={k.replace(/_/g, ' ')}
-              checked={(form.date_filters as Record<string, boolean>)?.[k] ?? false}
-              onChange={() => toggle('date_filters', k)}
+          {DATE_FILTER_KEYS.map(k => (
+            <Radio
+              key={k}
+              label={k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+              checked={selectedDateFilter === k}
+              onChange={() => setForm(f => ({ ...f, date_filters: dateFilterRecord(k) }))}
             />
           ))}
         </div>

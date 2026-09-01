@@ -288,8 +288,6 @@ export interface WorkPreferences {
   company_blacklist?: string[]
   title_blacklist?: string[]
   location_blacklist?: string[]
-  apply_once_at_company?: boolean
-  max_applications?: number
 }
 
 export interface SecretsConfig {
