@@ -228,6 +228,10 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	res, err := h.svc.Bot.ApplyFromURL(ctx, userID, req.URL, req.Market, req.Force)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			writeJSON(w, http.StatusOK, map[string]string{"message": "AI Apply cancelled"})
+			return
+		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{
 				"message": "AI Apply timed out after 4 minutes — try again, or confirm the job has Easy Apply / Quick Apply",

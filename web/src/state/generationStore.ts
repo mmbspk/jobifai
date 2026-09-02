@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { resumeApi, type TailoredOptions } from '../api/resume'
-import { ApiError } from '../api/client'
+import { ApiError, isAbortError } from '../api/client'
 import type { HalalVerdict, QuestionAnswer } from '../types'
 
 export type GenTab = 'resume' | 'cover' | 'evaluate' | 'questions'
@@ -55,6 +55,8 @@ let state: GenerationState = {
   urlAlerts: {},
 }
 
+const abortControllers: Partial<Record<GenTab, AbortController>> = {}
+
 const listeners = new Set<() => void>()
 function emit() {
   state = { ...state }
@@ -99,8 +101,16 @@ export const generationStore = {
     emit()
   },
 
+  cancelGenerate(tab: GenTab) {
+    abortControllers[tab]?.abort()
+  },
+
   async startGenerate(tab: GenTab, skipUrlFetch: boolean, halalFilter: boolean): Promise<void> {
     if (state.inFlight[tab]) return
+
+    const controller = new AbortController()
+    abortControllers[tab] = controller
+    const signal = controller.signal
 
     const f = state.form
     const hasJobInput = f.jobUrl.trim().startsWith('http') || f.jobDesc.trim().length > 20
@@ -144,6 +154,7 @@ export const generationStore = {
       githubUrl: f.githubUrl || undefined,
       resumeFile: f.resumeFile || undefined,
       market: f.market || undefined,
+      signal,
     }
 
     try {
@@ -151,7 +162,14 @@ export const generationStore = {
         const useTailored = skipUrlFetch ? hasDescAsContext : hasJobInput
         const blob = useTailored
           ? await resumeApi.generateTailored(opts)
-          : await resumeApi.generate(f.resumeFile || undefined, f.promptHint || undefined, f.linkedinUrl || undefined, f.githubUrl || undefined, f.market || undefined)
+          : await resumeApi.generate(
+            f.resumeFile || undefined,
+            f.promptHint || undefined,
+            f.linkedinUrl || undefined,
+            f.githubUrl || undefined,
+            f.market || undefined,
+            signal,
+          )
         state.outputs = { ...state.outputs, resume: { pdfUrl: URL.createObjectURL(blob) } }
       } else if (tab === 'cover') {
         const blob = await resumeApi.generateCoverLetter(opts)
@@ -162,17 +180,24 @@ export const generationStore = {
           jobUrl: f.jobUrl || undefined,
           jobDescription: f.jobDesc || undefined,
           questions: nonEmpty,
+          signal,
         })
         state.outputs = { ...state.outputs, questions: { answers } }
       } else {
-        const halalOpts = { jobUrl: f.jobUrl || undefined, jobDescription: f.jobDesc || undefined, skipUrlFetch }
+        const halalOpts = {
+          jobUrl: f.jobUrl || undefined,
+          jobDescription: f.jobDesc || undefined,
+          skipUrlFetch,
+          signal,
+        }
         const [scoreResult, halalResult] = await Promise.all([
           resumeApi.evaluate(opts),
-          halalFilter ? resumeApi.checkHalal(halalOpts).catch(() => null) : Promise.resolve(null),
+          halalFilter ? resumeApi.checkHalal(halalOpts).catch(e => (isAbortError(e) ? Promise.reject(e) : null)) : Promise.resolve(null),
         ])
         state.outputs = { ...state.outputs, evaluate: { scoreResult, halalResult } }
       }
     } catch (e: unknown) {
+      if (isAbortError(e) || signal.aborted) return
       if (e instanceof ApiError && e.code === 'url_unreachable') {
         state.urlAlerts = { ...state.urlAlerts, [tab]: true }
       } else {
@@ -180,6 +205,7 @@ export const generationStore = {
       }
     } finally {
       timers.forEach(clearTimeout)
+      delete abortControllers[tab]
       const next = { ...state.inFlight }
       delete next[tab]
       state.inFlight = next

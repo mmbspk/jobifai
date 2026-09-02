@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { FileText, Download, Loader2, Upload, X, AlertTriangle, ChevronDown, ArrowRight, Plus, Trash2, Copy, Check } from 'lucide-react'
 import { cn, downloadBlob } from '../lib'
+import { isAbortError } from '../api/client'
 import { settingsApi } from '../api/settings'
 import { botApi } from '../api/bot'
 import type { ApplyURLResponse } from '../api/bot'
@@ -64,6 +65,7 @@ export function Generate() {
   const [applyResponse, setApplyResponse] = useState<ApplyURLResponse | null>(() => {
     try { return (JSON.parse(localStorage.getItem('jobifai:ai-apply') ?? 'null') as { response: ApplyURLResponse } | null)?.response ?? null } catch { return null }
   })
+  const applyAbortRef = useRef<AbortController | null>(null)
   useEffect(() => {
     if (applyResponse || applyUrl) {
       localStorage.setItem('jobifai:ai-apply', JSON.stringify({ response: applyResponse, url: applyUrl }))
@@ -84,10 +86,18 @@ export function Generate() {
 
   const visibleTabs = TABS.filter(t => t.key !== 'questions' || (generalSettings?.interview_questions_enabled ?? true))
 
-  async function applyJob() {
+  function cancelApply() {
+    applyAbortRef.current?.abort()
+  }
+
+  async function runApply(force = false) {
+    applyAbortRef.current?.abort()
+    const controller = new AbortController()
+    applyAbortRef.current = controller
+
     setApplyLoading(true)
     setApplyError(null)
-    setApplyResponse(null)
+    if (!force) setApplyResponse(null)
     setApplyStep(0)
     const stepDelays = [0, 8000, 20000, 35000]
     const stepTimers: ReturnType<typeof setTimeout>[] = []
@@ -95,38 +105,27 @@ export function Generate() {
       if (i > 0) stepTimers.push(setTimeout(() => setApplyStep(i), stepDelays[i]))
     })
     try {
-      const res = await botApi.applyFromURL(applyUrl, f.market)
+      const res = await botApi.applyFromURL(applyUrl, f.market, force, { signal: controller.signal })
       setApplyResponse(res)
-      if (res.status === 'applied') qc.invalidateQueries({ queryKey: ['jobs-applied'] })
+      if (res.status === 'applied' || (force && res.status === 'already_applied')) {
+        qc.invalidateQueries({ queryKey: ['jobs-applied'] })
+      }
     } catch (e: unknown) {
+      if (isAbortError(e) || controller.signal.aborted) return
       setApplyError(e instanceof Error ? e.message : 'Apply failed')
     } finally {
       stepTimers.forEach(clearTimeout)
+      if (applyAbortRef.current === controller) applyAbortRef.current = null
       setApplyLoading(false)
     }
   }
 
+  async function applyJob() {
+    await runApply(false)
+  }
+
   async function applyAnyway() {
-    setApplyLoading(true)
-    setApplyError(null)
-    setApplyStep(0)
-    const stepDelays = [0, 8000, 20000, 35000]
-    const stepTimers: ReturnType<typeof setTimeout>[] = []
-    APPLY_STEPS.forEach((_, i) => {
-      if (i > 0) stepTimers.push(setTimeout(() => setApplyStep(i), stepDelays[i]))
-    })
-    try {
-      const res = await botApi.applyFromURL(applyUrl, f.market, true)
-      setApplyResponse(res)
-      if (res.status === 'applied' || res.status === 'already_applied') {
-        qc.invalidateQueries({ queryKey: ['jobs-applied'] })
-      }
-    } catch (e: unknown) {
-      setApplyError(e instanceof Error ? e.message : 'Apply failed')
-    } finally {
-      stepTimers.forEach(clearTimeout)
-      setApplyLoading(false)
-    }
+    await runApply(true)
   }
 
   async function skipJob() {
@@ -144,7 +143,7 @@ export function Generate() {
   const hasJobInput = f.jobUrl.trim().startsWith('http') || f.jobDesc.trim().length > 20
   const hasQuestions = f.questions.some(q => q.value.trim().length > 0)
   const canGenerate = !loading && tab !== 'apply' && (!needsUrl || hasJobInput) && (tab !== 'questions' || hasQuestions)
-  const canApply = !applyLoading && !applyError && applyUrl.trim().startsWith('http')
+  const canStartApply = !applyError && applyUrl.trim().startsWith('http')
   const filename = tab === 'cover' ? 'cover-letter.pdf' : 'resume.pdf'
 
   let tabDesc: string
@@ -424,15 +423,30 @@ export function Generate() {
             />
           </div>
 
-          <button onClick={applyJob} disabled={!canApply}
-            className={cn('w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all',
-              canApply
-                ? 'bg-violet-500 text-white hover:bg-violet-400 shadow-[0_0_20px_var(--color-accent-glow)]'
-                : 'bg-[var(--color-surface-2)] text-[var(--color-text-dim)] cursor-not-allowed')}
-          >
-            {applyLoading ? <Loader2 size={15} className="animate-spin" /> : <ArrowRight size={15} />}
-            AI Apply
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => applyJob()}
+              disabled={!canStartApply || applyLoading}
+              className={cn(
+                'flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all',
+                canStartApply && !applyLoading
+                  ? 'bg-violet-500 text-white hover:bg-violet-400 shadow-[0_0_20px_var(--color-accent-glow)]'
+                  : 'bg-[var(--color-surface-2)] text-[var(--color-text-dim)] cursor-not-allowed',
+              )}
+            >
+              {applyLoading ? <Loader2 size={15} className="animate-spin" /> : <ArrowRight size={15} />}
+              AI Apply
+            </button>
+            {applyLoading && (
+              <button
+                type="button"
+                onClick={cancelApply}
+                className="px-4 py-3 rounded-xl text-sm font-medium border border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] transition-colors shrink-0"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
 
           {applyLoading && (
             <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-6 text-center space-y-3">
@@ -444,6 +458,9 @@ export function Generate() {
                     i <= applyStep ? 'w-6 bg-violet-400' : 'w-2 bg-violet-500/20')} />
                 ))}
               </div>
+              <p className="text-[10px] text-[var(--color-text-dim)]">
+                Cancel stops the request; scoring or apply may already be in progress on the server briefly.
+              </p>
             </div>
           )}
 
@@ -530,14 +547,29 @@ export function Generate() {
 
       {/* Generate / Evaluate button */}
       {tab !== 'apply' && (
-      <button onClick={() => generate()} disabled={!canGenerate}
-        className={cn('w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all',
-          canGenerate
-            ? 'bg-violet-500 text-white hover:bg-violet-400 shadow-[0_0_20px_var(--color-accent-glow)]'
-            : 'bg-[var(--color-surface-2)] text-[var(--color-text-dim)] cursor-not-allowed')}
-      >
-        <FileText size={15} /> {generateLabel}
-      </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => generate()}
+            disabled={!canGenerate}
+            className={cn(
+              'flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all',
+              canGenerate
+                ? 'bg-violet-500 text-white hover:bg-violet-400 shadow-[0_0_20px_var(--color-accent-glow)]'
+                : 'bg-[var(--color-surface-2)] text-[var(--color-text-dim)] cursor-not-allowed',
+            )}
+          >
+            <FileText size={15} /> {generateLabel}
+          </button>
+          {loading && genTab && (
+            <button
+              type="button"
+              onClick={() => generationStore.cancelGenerate(genTab)}
+              className="px-4 py-3 rounded-xl text-sm font-medium border border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] transition-colors shrink-0"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
       )}
 
       {/* Loading */}
@@ -551,6 +583,9 @@ export function Generate() {
                 i <= stepIdx ? 'w-6 bg-violet-400' : 'w-2 bg-violet-500/20')} />
             ))}
           </div>
+          <p className="text-[10px] text-[var(--color-text-dim)]">
+            Cancel before tailoring starts to avoid LLM usage.
+          </p>
         </div>
       )}
 

@@ -12,6 +12,25 @@ export class ApiError extends Error {
   }
 }
 
+export type ApiRequestOpts = {
+  signal?: AbortSignal
+  timeoutMs?: number
+}
+
+function mergeSignals(opts?: number | ApiRequestOpts): AbortSignal | undefined {
+  const o: ApiRequestOpts = typeof opts === 'number' ? { timeoutMs: opts } : opts ?? {}
+  let signal = o.signal
+  if (o.timeoutMs && o.timeoutMs > 0) {
+    const timeout = AbortSignal.timeout(o.timeoutMs)
+    signal = signal ? AbortSignal.any([signal, timeout]) : timeout
+  }
+  return signal
+}
+
+export function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'AbortError'
+}
+
 export function getToken(): string | null {
   return localStorage.getItem('access_token')
 }
@@ -37,18 +56,18 @@ export async function apiGet<T>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: 'GET', headers: {} })
 }
 
-export async function apiPost<T>(path: string, body?: unknown, timeoutMs?: number): Promise<T> {
+export async function apiPost<T>(path: string, body?: unknown, opts?: number | ApiRequestOpts): Promise<T> {
   const init: RequestInit = {
     method: 'POST',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   }
-  if (timeoutMs && timeoutMs > 0) {
-    init.signal = AbortSignal.timeout(timeoutMs)
-  }
+  const signal = mergeSignals(opts)
+  if (signal) init.signal = signal
   try {
     return await apiFetch<T>(path, init)
   } catch (e: unknown) {
-    if (e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+    if (isAbortError(e)) throw e
+    if (e instanceof DOMException && e.name === 'TimeoutError') {
       throw new ApiError(504, 'Request timed out — try again')
     }
     throw e
@@ -66,10 +85,16 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: 'DELETE', headers: {} })
 }
 
-export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
+export async function apiPostForm<T>(path: string, form: FormData, opts?: ApiRequestOpts): Promise<T> {
   const token = getToken()
   const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
-  const res = await fetch(`${BASE}${path}`, { method: 'POST', body: form, headers: authHeader })
+  const signal = mergeSignals(opts)
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    body: form,
+    headers: authHeader,
+    signal,
+  })
   if (!res.ok) {
     let msg = res.statusText
     let code = ''
