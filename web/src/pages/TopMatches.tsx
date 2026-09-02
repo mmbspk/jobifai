@@ -4,7 +4,7 @@ import { ExternalLink, ChevronDown, ChevronRight, TrendingUp, Trash2, CheckCheck
 import { ScorePill } from '../components/ScorePill'
 import { PlatformBadge } from '../components/PlatformBadge'
 import { Button } from '../components/Button'
-import { cn, formatDate, relativeTime } from '../lib'
+import { cn, formatPostedDisplay } from '../lib'
 import { jobsApi } from '../api/jobs'
 import { settingsApi } from '../api/settings'
 
@@ -115,7 +115,6 @@ export function TopMatches() {
             <col className="w-[150px]" />
             <col className="w-[110px]" />
             <col className="w-[88px]" />
-            <col className="w-[68px]" />
             <col className="w-[58px]" />
             <col className="w-[38px]" />
             <col className="w-[50px]" />
@@ -129,7 +128,6 @@ export function TopMatches() {
               <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)]">Role</th>
               <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Location</th>
               <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Platform</th>
-              <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Due</th>
               <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Score</th>
               <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Link</th>
               <th className="text-left px-2 py-2 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--color-text-dim)] whitespace-nowrap">Applied</th>
@@ -138,11 +136,11 @@ export function TopMatches() {
           </thead>
           <tbody>
             {isLoading && (
-              <tr><td colSpan={11} className="px-4 py-8 text-center text-sm text-[var(--color-text-dim)]">Loading…</td></tr>
+              <tr><td colSpan={10} className="px-4 py-8 text-center text-sm text-[var(--color-text-dim)]">Loading…</td></tr>
             )}
             {!isLoading && filtered.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-4 py-12 text-center text-sm text-[var(--color-text-dim)]">
+                <td colSpan={10} className="px-4 py-12 text-center text-sm text-[var(--color-text-dim)]">
                   No top matches yet, jobs scored at or above your suitability threshold will appear here.
                 </td>
               </tr>
@@ -151,6 +149,7 @@ export function TopMatches() {
               const isExpanded = expanded.has(job.job_id)
               const isDoubtful = halalEnabled && job.halal_verdict?.verdict === 'DOUBTFUL'
               const isExpandable = !!(job.suitability_reasoning || isDoubtful)
+              const posted = formatPostedDisplay(job.posted_date, job.created_at)
               return (
                 <>
                   <tr
@@ -169,8 +168,8 @@ export function TopMatches() {
                       )}
                     </td>
                     <td className="px-2 py-2 align-top text-xs text-[var(--color-text-dim)] whitespace-nowrap">
-                      <span title={formatDate(job.posted_date || job.created_at)} className="cursor-default">
-                        {relativeTime(job.posted_date || job.created_at)}
+                      <span title={posted.title || undefined} className="cursor-default">
+                        {posted.label}
                       </span>
                     </td>
                     <td className="px-2 py-2 align-top font-medium text-[var(--color-text)] max-w-[140px]">
@@ -188,9 +187,6 @@ export function TopMatches() {
                       <div className="truncate" title={job.location || undefined}>{job.location || '—'}</div>
                     </td>
                     <td className="px-2 py-2 align-top whitespace-nowrap"><PlatformBadge platform={job.platform} size="sm" /></td>
-                    <td className="px-2 py-2 align-top text-xs text-[var(--color-text-dim)] whitespace-nowrap">
-                      {job.due_date || '—'}
-                    </td>
                     <td className="px-2 py-2 align-top whitespace-nowrap">
                       {job.suitability_score != null && job.suitability_score > 0
                         ? <ScorePill score={job.suitability_score} />
@@ -248,7 +244,7 @@ export function TopMatches() {
                   </tr>
                   {isExpanded && isExpandable && (
                     <tr key={`${job.job_id}-expand`} className={cn('border-b border-[var(--color-border-subtle)]', isDoubtful ? 'bg-orange-500/8' : 'bg-[var(--color-surface)]')}>
-                      <td colSpan={11} className="px-8 py-3 space-y-2">
+                      <td colSpan={10} className="px-8 py-3 space-y-2">
                         {job.suitability_reasoning && (
                           <p className="text-xs text-[var(--color-text-muted)] leading-relaxed">{job.suitability_reasoning}</p>
                         )}

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { cn, scoreColor, scoreBg, relativeTime, formatDate } from './lib'
+import { cn, scoreColor, scoreBg, relativeTime, formatDate, formatPostedDisplay } from './lib'
 
 describe('cn', () => {
   test('merges class names', () => {
@@ -55,7 +55,29 @@ describe('scoreBg', () => {
   })
 })
 
+describe('formatPostedDisplay', () => {
+  test('uses ISO posted date', () => {
+    const iso = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString()
+    const out = formatPostedDisplay(iso, '2026-01-01T00:00:00Z')
+    expect(out.label).toBe('2d ago')
+  })
+
+  test('falls back to created_at when posted is listing text', () => {
+    const created = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString()
+    const out = formatPostedDisplay('3 days ago', created)
+    expect(out.label).toBe('3h ago')
+  })
+
+  test('shows raw listing text when neither is parseable', () => {
+    const out = formatPostedDisplay('Posted 1 week ago', '')
+    expect(out.label).toBe('Posted 1 week ago')
+  })
+})
+
 describe('relativeTime', () => {
+  test('invalid input returns em dash', () => {
+    expect(relativeTime('3 days ago')).toBe('—')
+  })
   test('just now for less than 60s ago', () => {
     const iso = new Date(Date.now() - 10_000).toISOString()
     expect(relativeTime(iso)).toBe('just now')

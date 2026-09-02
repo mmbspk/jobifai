@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -202,5 +203,15 @@ func wsOptions(r *http.Request) *websocket.AcceptOptions {
 }
 
 func parseTime(s string) (time.Time, error) {
-	return time.Parse(time.RFC3339, s)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty timestamp")
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	// SQLite datetime('now') and DEFAULT columns use space-separated local time.
+	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.Local); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unrecognized timestamp %q", s)
 }

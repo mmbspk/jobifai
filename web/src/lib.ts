@@ -26,7 +26,10 @@ export function scoreBg(score: number): string {
 }
 
 export function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
+  const ms = Date.parse(iso)
+  if (Number.isNaN(ms)) return '—'
+  const diff = Date.now() - ms
+  if (diff < 0) return 'just now'
   const s = Math.floor(diff / 1000)
   if (s < 60) return 'just now'
   const m = Math.floor(s / 60)
@@ -43,8 +46,24 @@ export function relativeTime(iso: string): string {
 }
 
 export function formatDate(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+  const ms = Date.parse(iso)
+  if (Number.isNaN(ms)) return iso || '—'
+  return new Date(ms).toLocaleString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit',
   })
+}
+
+/** Prefer ISO posted date; fall back to queue created_at; else show raw listing text. */
+export function formatPostedDisplay(posted?: string, createdAt?: string): { label: string; title: string } {
+  const postedTrim = posted?.trim()
+  if (postedTrim && !Number.isNaN(Date.parse(postedTrim))) {
+    return { label: relativeTime(postedTrim), title: formatDate(postedTrim) }
+  }
+  const createdTrim = createdAt?.trim()
+  if (createdTrim && !Number.isNaN(Date.parse(createdTrim))) {
+    return { label: relativeTime(createdTrim), title: formatDate(createdTrim) }
+  }
+  if (postedTrim) return { label: postedTrim, title: postedTrim }
+  return { label: '—', title: '' }
 }
