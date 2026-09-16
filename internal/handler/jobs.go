@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -296,6 +299,114 @@ func (h *JobHandlers) RequeueCannotApply(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "requeued"})
+}
+
+const sqlCannotApplyFilter = `(skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`
+
+var errCannotApplyNotFound = errors.New("not_found")
+
+// POST /api/jobs/cannot-apply/{job_id}/retry
+func (h *JobHandlers) RetryCannotApply(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	jobID := chi.URLParam(r, "job_id")
+	if err := h.enqueueCannotApplyRetry(r.Context(), userID, jobID); err != nil {
+		if errors.Is(err, errCannotApplyNotFound) {
+			notFound(w, "job not found in cannot-apply list")
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "queued_for_retry"})
+}
+
+// POST /api/jobs/cannot-apply/retry-all
+func (h *JobHandlers) RetryAllCannotApply(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	platform := r.URL.Query().Get("platform")
+
+	tx, err := h.svc.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	q := `SELECT id FROM jobs_skipped WHERE user_id = ? AND ` + sqlCannotApplyFilter
+	args := []any{userID}
+	if platform != "" {
+		q += " AND platform = ?"
+		args = append(args, platform)
+	}
+	rows, err := tx.QueryContext(r.Context(), q, args...)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+
+	queued := 0
+	for _, id := range ids {
+		if err := h.enqueueCannotApplyRetryTx(r.Context(), tx, userID, id); err != nil {
+			if errors.Is(err, errCannotApplyNotFound) {
+				continue
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+			return
+		}
+		queued++
+	}
+	if err := tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"queued": queued})
+}
+
+func (h *JobHandlers) enqueueCannotApplyRetry(ctx context.Context, userID, jobID string) error {
+	tx, err := h.svc.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if err := h.enqueueCannotApplyRetryTx(ctx, tx, userID, jobID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (h *JobHandlers) enqueueCannotApplyRetryTx(ctx context.Context, tx *sql.Tx, userID, jobID string) error {
+	var company, role, platform, link, location string
+	err := tx.QueryRowContext(ctx,
+		`SELECT company, role, platform, link, COALESCE(location,'')
+		 FROM jobs_skipped
+		 WHERE id = ? AND user_id = ? AND `+sqlCannotApplyFilter,
+		jobID, userID).Scan(&company, &role, &platform, &link, &location)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errCannotApplyNotFound
+		}
+		return err
+	}
+	if _, err = tx.ExecContext(ctx,
+		`INSERT OR REPLACE INTO jobs_approved_queue
+		     (job_id, user_id, company, role, location, platform, link, resume_path, cover_letter_path, approved_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', datetime('now'))`,
+		jobID, userID, company, role, location, platform, link); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM jobs_skipped WHERE id = ? AND user_id = ?`, jobID, userID); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GET /api/jobs/top-matches

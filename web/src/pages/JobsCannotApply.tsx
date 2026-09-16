@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ExternalLink, ChevronDown, ChevronRight, AlertCircle, RotateCcw, Trash2, CheckCheck } from 'lucide-react'
+import { ExternalLink, ChevronDown, ChevronRight, AlertCircle, RotateCcw, Trash2, CheckCheck, Play } from 'lucide-react'
 import { PlatformBadge } from '../components/PlatformBadge'
 import { ScorePill } from '../components/ScorePill'
 import { cn, formatDate, relativeTime } from '../lib'
@@ -45,6 +45,16 @@ export function JobsCannotApply() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs-cannot-apply'] }),
   })
 
+  const retry = useMutation({
+    mutationFn: jobsApi.retryCannotApply,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs-cannot-apply'] }),
+  })
+
+  const retryAll = useMutation({
+    mutationFn: () => jobsApi.retryAllCannotApply(platform || undefined),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs-cannot-apply'] }),
+  })
+
   const markApplied = useMutation({
     mutationFn: jobsApi.markAppliedFromCannotApply,
     onSuccess: () => {
@@ -83,12 +93,21 @@ export function JobsCannotApply() {
         <AlertCircle size={16} className="shrink-0 mt-0.5" />
         <span>
           These jobs had Easy Apply / Quick Apply, but jobifai couldn't complete the submission
-          (e.g. form validation, session step-up, upload error). Re-queue to retry, or apply manually on the job site.
-          Jobs without Easy / Quick Apply appear in Top Matches instead.
+          (e.g. screening questions, form validation). Use Retry to queue them for the next bot run,
+          or Re-queue for the manual review list. Jobs without Easy / Quick Apply appear in Top Matches instead.
         </span>
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-2">
+      <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+        <button
+          type="button"
+          onClick={() => retryAll.mutate()}
+          disabled={retryAll.isPending || filtered.length === 0}
+          className="shrink-0 px-3 py-2 text-sm rounded-lg border border-violet-500/40 bg-violet-500/10 text-violet-300 hover:bg-violet-500/20 disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5"
+        >
+          <Play size={14} />
+          {retryAll.isPending ? 'Queuing…' : 'Retry all'}
+        </button>
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
@@ -173,9 +192,17 @@ export function JobsCannotApply() {
                       <div className="flex items-center gap-2">
                         <span title={formatDate(job.viewed_at)} className="text-xs text-[var(--color-text-dim)] whitespace-nowrap cursor-default">{relativeTime(job.viewed_at)}</span>
                         <button
+                          onClick={e => { e.stopPropagation(); retry.mutate(job.id) }}
+                          disabled={retry.isPending}
+                          title="Retry on next bot run"
+                          className="text-[var(--color-text-dim)] hover:text-emerald-400 disabled:opacity-40"
+                        >
+                          <Play size={12} />
+                        </button>
+                        <button
                           onClick={e => { e.stopPropagation(); requeue.mutate(job.id) }}
                           disabled={requeue.isPending}
-                          title="Re-queue for review"
+                          title="Re-queue for manual review"
                           className="text-[var(--color-text-dim)] hover:text-violet-400 disabled:opacity-40"
                         >
                           <RotateCcw size={12} />

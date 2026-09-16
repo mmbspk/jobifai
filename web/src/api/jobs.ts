@@ -27,6 +27,9 @@ export const jobsApi = {
   deleteSkipped: (id: string) => apiDelete<{ status: string }>(`/jobs/skipped/${id}`),
   cannotApply: (q: JobsQuery = {}) => apiGet<SkippedJob[]>(`/jobs/cannot-apply${qs(q)}`),
   requeueCannotApply: (id: string) => apiPost<{ status: string }>(`/jobs/cannot-apply/${id}/requeue`),
+  retryCannotApply: (id: string) => apiPost<{ status: string }>(`/jobs/cannot-apply/${id}/retry`),
+  retryAllCannotApply: (platform?: string) =>
+    apiPost<{ queued: number }>(`/jobs/cannot-apply/retry-all${platform ? `?platform=${platform}` : ''}`),
   markAppliedFromCannotApply: (id: string) => apiPost<{ status: string }>(`/jobs/cannot-apply/${id}/mark-applied`),
   topMatches: (q: JobsQuery = {}) => apiGet<PendingReview[]>(`/jobs/top-matches${qs(q)}`),
   deletePendingReview: (id: string) => apiDelete<{ status: string }>(`/jobs/pending-review/${id}`),

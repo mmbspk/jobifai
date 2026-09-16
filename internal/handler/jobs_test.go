@@ -310,6 +310,37 @@ func TestJobs_BlacklistCompany_AddsToPrefs(t *testing.T) {
 	assert.Contains(t, prefs.CompanyBlacklist, "BadCorp")
 }
 
+func TestJobs_RetryCannotApply(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+	token := registerAndLogin(t, router, "retry1@example.com", "password123")
+
+	wMe := authGet(t, router, "/api/me", token)
+	var me map[string]any
+	require.NoError(t, json.NewDecoder(wMe.Body).Decode(&me))
+	userID := me["id"].(string)
+
+	_, err := db.Exec(
+		`INSERT INTO jobs_skipped(id,user_id,platform,company,role,link,skip_reason,suitability_score,viewed_at)
+		 VALUES(?,?,?,?,?,?,?,?,datetime('now'))`,
+		"retry-001", userID, "linkedin", "RetryCo", "Engineer", "https://example.com/job",
+		"easy apply: modal stuck", 8,
+	)
+	require.NoError(t, err)
+
+	w := authPost(t, router, "/api/jobs/cannot-apply/retry-001/retry", token, nil)
+	assert.Equal(t, 200, w.Code)
+
+	var cnt int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_approved_queue WHERE job_id=? AND user_id=?`, "retry-001", userID).Scan(&cnt))
+	assert.Equal(t, 1, cnt)
+
+	w2 := authGet(t, router, "/api/jobs/cannot-apply", token)
+	var out []domain.SkippedJob
+	require.NoError(t, json.NewDecoder(w2.Body).Decode(&out))
+	assert.Empty(t, out)
+}
+
 func TestJobs_RequeueCannotApply(t *testing.T) {
 	svc, db := newTestServices(t)
 	router := handler.NewRouter(svc)
