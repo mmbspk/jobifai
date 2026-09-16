@@ -1305,7 +1305,25 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			return true
 		}
 		log.Error().Err(err).Str("job", job.Title).Msg("linkedin: easy apply failed")
-		b.recordSkipped(job, "easy apply: "+err.Error(), score, reasoning, nil)
+		reason := "easy apply: " + err.Error()
+		if skipReasonBelongsInTopMatches(reason) {
+			b.savePendingReview(ctx, &domain.PendingReview{
+				JobID:                job.ID,
+				Company:              job.Company,
+				Role:                 job.Title,
+				Location:             job.Location,
+				Platform:             domain.PlatformLinkedIn,
+				Link:                 job.URL,
+				SuitabilityScore:     score,
+				SuitabilityReasoning: reasoning,
+				EasyApply:            false,
+				HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
+				CreatedAt:            time.Now(),
+			})
+			log.Info().Str("reason", reason).Msgf("linkedin: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
+			return false
+		}
+		b.recordSkipped(job, reason, score, reasoning, nil)
 		return false
 	}
 	resume, cover := lazy.get()
@@ -1611,10 +1629,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		if diag, err := page.Eval(jsModalDiag); err == nil {
 			log.Warn().Str("diag", diag.Value.String()).Msg("easy apply: modal did not appear")
 		}
-		if shot, err := page.Screenshot(false, nil); err == nil {
-			_ = os.WriteFile("debug_easy_apply_no_modal.png", shot, 0o644)
-			log.Warn().Msg("easy apply: screenshot saved to debug_easy_apply_no_modal.png")
-		}
+		saveApplyDebug(page, "no_modal")
 		return fmt.Errorf("easy apply modal did not appear after click (LinkedIn may have changed the apply UI or blocked the session)")
 	}
 
@@ -1968,11 +1983,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			// catches cases where the step hash is "~" (unreadable) and noAdvanceCount
 			// never increments, e.g. a required file-upload step with no generated PDF.
 			if consecutiveUnfillable >= 6 {
-				if os.Getenv("DEBUG_BOT") != "" {
-					if shot, err := page.Screenshot(false, nil); err == nil {
-						_ = os.WriteFile("debug_unfillable.png", shot, 0o644)
-					}
-				}
+				saveApplyDebug(page, "unfillable")
 				return fmt.Errorf("easy apply: stuck, %d consecutive unfillable steps", consecutiveUnfillable)
 			}
 		} else {
@@ -2013,16 +2024,21 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			stuckThreshold = 6
 		}
 		if noAdvanceCount >= stuckThreshold {
-			if shot, err := page.Screenshot(false, nil); err == nil {
-				_ = os.WriteFile("debug_modal_stuck.png", shot, 0o644)
+			if errs := pageValidationErrors(page); len(errs) > 0 {
+				log.Warn().Strs("errors", errs).Msg("easy apply: validation errors on page, re-filling step")
+				refilled, _ := b.fillFormStep(ctx, page, lazy)
+				if refilled {
+					noAdvanceCount = 0
+					consecutiveUnfillable = 0
+					continue
+				}
 			}
+			saveApplyDebug(page, "modal_stuck")
 			return fmt.Errorf("easy apply: stuck, modal did not advance after %d iterations (ok=%v, filled=%v) — likely unanswered/invalid fields", noAdvanceCount, ok, filled)
 		}
 
 		if !ok {
-			if shot, err := page.Screenshot(false, nil); err == nil {
-				_ = os.WriteFile("debug_modal.png", shot, 0o644)
-			}
+			saveApplyDebug(page, "no_primary_button")
 			okFailCount++
 			if okFailCount >= 5 {
 				log.Error().Str("btn", label).Msg("easy apply: stuck, no clickable primary button")
@@ -2090,11 +2106,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		}
 	}
 
-	if os.Getenv("DEBUG_BOT") != "" {
-		if shot, err := page.Screenshot(false, nil); err == nil {
-			_ = os.WriteFile("debug_modal.png", shot, 0o644)
-		}
-	}
+	saveApplyDebug(page, "modal_incomplete")
 	return fmt.Errorf("could not complete easy apply modal")
 }
 
@@ -2114,6 +2126,7 @@ func (b *Bot) platformApply(ctx context.Context, page *rod.Page, lazy *lazyDocGe
 
 type approvedJob struct {
 	JobID           string
+	Platform        string
 	Company         string
 	Role            string
 	Location        string
@@ -2127,7 +2140,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		return 0
 	}
 	rows, err := b.cfg.DB.QueryContext(ctx,
-		`SELECT job_id,company,role,location,link,COALESCE(resume_path,''),COALESCE(cover_letter_path,'')
+		`SELECT job_id,platform,company,role,location,link,COALESCE(resume_path,''),COALESCE(cover_letter_path,'')
 		 FROM jobs_approved_queue WHERE user_id = ? ORDER BY approved_at ASC`, b.cfg.UserID)
 	if err != nil {
 		log.Error().Err(err).Msg("approved queue: load")
@@ -2136,7 +2149,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 	var jobs []approvedJob
 	for rows.Next() {
 		var j approvedJob
-		if err := rows.Scan(&j.JobID, &j.Company, &j.Role, &j.Location, &j.Link, &j.ResumePath, &j.CoverLetterPath); err == nil {
+		if err := rows.Scan(&j.JobID, &j.Platform, &j.Company, &j.Role, &j.Location, &j.Link, &j.ResumePath, &j.CoverLetterPath); err == nil {
 			jobs = append(jobs, j)
 		}
 	}
@@ -2152,6 +2165,13 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		if b.stopped(ctx) || applied >= remaining {
 			return applied
 		}
+		jobPlatform := j.Platform
+		if jobPlatform == "" {
+			jobPlatform = platform
+		}
+		if jobPlatform != platform {
+			continue // wait for the matching platform bot run
+		}
 		log.Info().Str("company", j.Company).Str("title", j.Role).Msg("approved queue: submitting")
 		b.humanPause()
 
@@ -2165,6 +2185,14 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		if err := b.platformApply(ctx, jobPage, queueLazy); err != nil {
 			jobPage.Close()
 			log.Error().Err(err).Str("job", j.Role).Msg("approved queue: apply failed")
+			var score int
+			_ = b.cfg.DB.QueryRow(
+				`SELECT COALESCE(suitability_score,0) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
+				j.JobID, b.cfg.UserID,
+			).Scan(&score)
+			b.recordApplyFailure(j, score, err)
+			_, _ = appdb.ExecWithRetry(b.cfg.DB,
+				`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
 			continue
 		}
 		jobPage.Close()
@@ -2188,6 +2216,30 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		applied++
 	}
 	return applied
+}
+
+func (b *Bot) recordApplyFailure(j approvedJob, score int, err error) {
+	if err == nil {
+		return
+	}
+	plat := j.Platform
+	if plat == "" {
+		plat = string(b.cfg.Platform)
+	}
+	label := "easy apply"
+	if plat == string(domain.PlatformSeek) {
+		label = "quick apply"
+	}
+	reason := label + ": " + err.Error()
+	if plat == string(domain.PlatformSeek) {
+		b.recordSeekSkipped(seekJob{
+			ID: j.JobID, Company: j.Company, Title: j.Role, Location: j.Location, URL: j.Link,
+		}, reason, score, "", nil)
+		return
+	}
+	b.recordSkipped(linkedInJob{
+		ID: j.JobID, Company: j.Company, Title: j.Role, Location: j.Location, URL: j.Link,
+	}, reason, score, "", nil)
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────

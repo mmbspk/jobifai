@@ -712,31 +712,50 @@ const jsFillFileNth = `(index) => {
 
 // ── fillFormStep ──────────────────────────────────────────────────────────────
 
-// extractFirstNumber returns the first integer or decimal number found in s.
+// maxExperienceYears is the upper bound LinkedIn uses on most "years of experience" fields.
+const maxExperienceYears = 99
+
+// extractFirstNumber returns the first plausible experience-year value in s.
 // Used to clean up verbose LLM answers for numeric form fields (e.g. "14 years" → "14").
+// Product/version numbers (e.g. "365" in Dynamics 365) are ignored; returns "0" when none fit.
 var reNumber = regexp.MustCompile(`\d+(?:\.\d+)?`)
 var reYearsNum = regexp.MustCompile(`(?i)(?:^|\s)(\d+(?:\.\d+)?)\s*\+?\s*years?`)
 var reYearsRange = regexp.MustCompile(`(?i)(?:^|\s)(\d+(?:\.\d+)?)\s*(?:to|–|-)\s*(\d+(?:\.\d+)?)\s*years?`)
 
 func extractFirstNumber(s string) string {
+	return extractFirstNumberMax(s, maxExperienceYears)
+}
+
+func extractFirstNumberMax(s string, max int) string {
+	if max <= 0 {
+		max = maxExperienceYears
+	}
 	if m := reYearsRange.FindStringSubmatch(s); len(m) > 1 {
-		return m[1]
+		return clampNumericString(m[1], max)
 	}
 	if m := reYearsNum.FindStringSubmatch(s); len(m) > 1 {
-		return m[1]
+		return clampNumericString(m[1], max)
 	}
 	nums := reNumber.FindAllString(s, -1)
-	// Prefer plausible experience-year values over product/version numbers (e.g. "365" in Dynamics 365).
 	for _, n := range nums {
-		base := strings.Split(n, ".")[0]
-		if v, err := strconv.Atoi(base); err == nil && v <= 50 {
+		if plausibleExperienceYear(n, max) {
 			return n
 		}
 	}
-	if len(nums) > 0 {
-		return nums[0]
+	return "0"
+}
+
+func plausibleExperienceYear(n string, max int) bool {
+	base := strings.Split(n, ".")[0]
+	v, err := strconv.Atoi(base)
+	return err == nil && v >= 0 && v <= max
+}
+
+func clampNumericString(n string, max int) string {
+	if !plausibleExperienceYear(n, max) {
+		return "0"
 	}
-	return "0" // no digit found → "no experience" = 0; prevents prose text in numeric fields
+	return n
 }
 
 // fillFormStep scans the current form page/modal step for unanswered fields and
@@ -967,7 +986,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				continue
 			}
 			if f.InputType == "numeric" {
-				answer = extractFirstNumber(answer)
+				answer = sanitizeNumericFieldAnswer(answer, f.Question)
 			}
 
 			if f.Typeahead {
@@ -1141,6 +1160,19 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 		return ans
 	}
 
+	// Years-of-experience numeric fields (LinkedIn "Additional Questions").
+	if len(options) == 0 && containsAny(lower, "how many years", "years of experience", "years experience", "years of work experience") {
+		if profile := b.currentProfile(); profile != nil {
+			years := totalExperienceYears(profile)
+			if years > maxExperienceYears {
+				years = maxExperienceYears
+			}
+			ans := strconv.Itoa(years)
+			log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (years of experience)")
+			return ans
+		}
+	}
+
 	// Work authorisation
 	if containsAny(lower, "authoris", "authoriz", "legally permitted", "eligible to work", "right to work", "legally able", "work without") {
 		if ad.RequiresSponsorship {
@@ -1268,6 +1300,27 @@ func parseEmploymentYears(period string, currentYear int) (start, end int) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// sanitizeNumericFieldAnswer turns an LLM answer into a value acceptable for LinkedIn
+// numeric screening fields (0–99). Strips product/version numbers from the question
+// context (e.g. "Dynamics 365" must not become years "365").
+func sanitizeNumericFieldAnswer(answer, question string) string {
+	n := extractFirstNumberMax(answer, maxExperienceYears)
+	if n != "0" {
+		return n
+	}
+	// LLM may echo a version from the question — if answer only contains question numbers, use 0.
+	qNums := reNumber.FindAllString(question, -1)
+	for _, qn := range qNums {
+		if !plausibleExperienceYear(qn, maxExperienceYears) {
+			trimmed := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(answer, qn, ""), "  ", " "))
+			if trimmed == "" || trimmed == "-" {
+				return "0"
+			}
+		}
+	}
+	return n
+}
 
 func looksLikeOpenEndedQuestion(q string) bool {
 	lower := strings.ToLower(q)

@@ -110,6 +110,8 @@ func TestExtractFirstNumber(t *testing.T) {
 		{"3.5 years experience", "3.5"},
 		{"No number here", "0"}, // no digit → "0" (safe default for numeric form fields)
 		{"42", "42"},
+		{"365", "0"},
+		{"Microsoft Dynamics 365", "0"},
 		{"about 7 to 10 years", "7"},
 		{"", "0"}, // empty → "0"
 	}
@@ -118,6 +120,14 @@ func TestExtractFirstNumber(t *testing.T) {
 			assert.Equal(t, tc.want, extractFirstNumber(tc.input))
 		})
 	}
+}
+
+func TestSanitizeNumericFieldAnswer(t *testing.T) {
+	q := "How many years of work experience do you have with Microsoft Dynamics 365?"
+	assert.Equal(t, "0", sanitizeNumericFieldAnswer("365", q))
+	assert.Equal(t, "0", sanitizeNumericFieldAnswer("Microsoft Dynamics 365", q))
+	assert.Equal(t, "9", sanitizeNumericFieldAnswer("9 years", q))
+	assert.Equal(t, "14", sanitizeNumericFieldAnswer("14", "How many years with Microsoft SQL Server?"))
 }
 
 // ── containsAny ───────────────────────────────────────────────────────────────
@@ -177,8 +187,11 @@ func TestSeekApplyBlockedReason(t *testing.T) {
 func TestSkipReasonBelongsInTopMatches(t *testing.T) {
 	assert.True(t, skipReasonBelongsInTopMatches("seek apply: seek apply blocked: SmartRecruiters captcha"))
 	assert.True(t, skipReasonBelongsInTopMatches("quick apply: bot-protection captcha blocked"))
+	assert.True(t, skipReasonBelongsInTopMatches("quick apply: external application"))
+	assert.True(t, skipReasonBelongsInTopMatches("easy apply: failed: application was not confirmed on the job page (only Easy/Quick Apply is supported)"))
 	assert.False(t, skipReasonBelongsInTopMatches("seek apply: required screening questions could not be filled"))
 	assert.False(t, skipReasonBelongsInTopMatches("score 4 < 6"))
+	assert.False(t, skipReasonBelongsInTopMatches("quick apply: navigate apply href: navigation failed: net::ERR_NAME_NOT_RESOLVED"))
 }
 
 // ── isBlacklisted / isSeekJobBlacklisted ─────────────────────────────────────
