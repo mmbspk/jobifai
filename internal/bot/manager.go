@@ -355,7 +355,34 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			if req.Platform == "seek" {
 				applyLabel = "quick apply"
 			}
+			fullReason := applyLabel + ": " + applyErr.Error()
 			log.Error().Err(applyErr).Str("company", req.Company).Str("job", req.Role).Msgf("approve: %s failed", applyLabel)
+			if skipReasonBelongsInTopMatches(fullReason) {
+				genResume, genCover := managerLazy.peek()
+				savedResume := genResume
+				if savedResume == "" {
+					savedResume = req.ResumePath
+				}
+				savedCover := genCover
+				if savedCover == "" {
+					savedCover = req.CoverPath
+				}
+				_, _ = m.db.Exec(
+					`INSERT OR REPLACE INTO jobs_pending_review
+					 (job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,
+					  suitability_score,suitability_reasoning,easy_apply,created_at)
+					 VALUES(?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'))`,
+					req.JobID, userID, req.Company, req.Role, location, req.Platform, req.Link,
+					savedResume, savedCover, score, req.SuitabilityReasoning,
+				)
+				_, _ = m.db.Exec(
+					`UPDATE jobs_pending_review
+					 SET attempt_count = attempt_count + 1
+					 WHERE job_id = ? AND user_id = ?`,
+					req.JobID, userID,
+				)
+				return fmt.Errorf("%s not automatable: %w", applyLabel, applyErr)
+			}
 			if _, err := m.db.Exec(
 				`INSERT OR IGNORE INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,viewed_at)
 				 VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
@@ -1127,7 +1154,8 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 
 	if applyErr != nil && !errors.Is(applyErr, errAlreadyApplied) {
 		log.Error().Err(applyErr).Str("job", role).Msg("ai apply: failed")
-		if isSeekApplyBlockedError(applyErr) {
+		fullReason := applyLabel + ": " + applyErr.Error()
+		if skipReasonBelongsInTopMatches(fullReason) {
 			var pendingCount int
 			if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL).Scan(&pendingCount); err != nil {
 				log.Warn().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: pending check failed")
