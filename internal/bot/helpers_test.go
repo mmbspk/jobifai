@@ -130,6 +130,30 @@ func TestSanitizeNumericFieldAnswer(t *testing.T) {
 	assert.Equal(t, "14", sanitizeNumericFieldAnswer("14", "How many years with Microsoft SQL Server?"))
 }
 
+func TestSanitizePhoneAnswer(t *testing.T) {
+	assert.Equal(t, "0412345678", sanitizePhoneAnswer("0412 345 678"))
+	assert.Equal(t, "0412345678", sanitizePhoneAnswer("My mobile phone number is 0412 345 678"))
+	assert.Equal(t, "+61412345678", sanitizePhoneAnswer("+61 412 345 678"))
+}
+
+func TestProfileContactAnswer(t *testing.T) {
+	pi := domain.PersonalInformation{
+		Name:    "Jane",
+		Surname: "Doe",
+		Email:   "jane.doe@example.com",
+		Phone:   "0412 345 678",
+		City:    "Sydney",
+		Country: "Australia",
+		Address: "Sydney, NSW",
+	}
+	assert.Equal(t, "0412345678", profileContactAnswer("Mobile phone number", "tel", &pi))
+	assert.Equal(t, "jane.doe@example.com", profileContactAnswer("Email address", "email", &pi))
+	assert.Equal(t, "Jane", profileContactAnswer("First name", "text", &pi))
+	assert.Equal(t, "Doe", profileContactAnswer("Last name", "text", &pi))
+	assert.Equal(t, "Sydney, NSW", profileContactAnswer("Location (city)", "text", &pi))
+	assert.Equal(t, "", profileContactAnswer("How many years of experience with mobile apps?", "text", &pi))
+}
+
 // ── containsAny ───────────────────────────────────────────────────────────────
 
 func TestContainsAny(t *testing.T) {

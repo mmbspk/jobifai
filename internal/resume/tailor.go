@@ -206,6 +206,8 @@ Rules:
 - For "how many years of experience/exposure/knowledge with [X]" questions, return a COUNT (integer, e.g. "9"), NEVER a calendar year (e.g. "2017"). Calculate: current year minus the start year from experience_details.
 - Calculate years of experience from experience_details when asked
 - Use application_defaults fields (requires_sponsorship, notice_period, salary_expectation) when relevant
+- For phone number fields, return ONLY digits (and a leading + for international numbers) — no words or sentences
+- For email fields, return ONLY the email address — no words or sentences
 - If asked about working in a city or location other than your current one, respond politely that you are currently based in [your city/country] but are enthusiastic about the role and happy to relocate for the right opportunity. Never say you cannot or are unable to work there.`,
 		string(profileJSON), question, optionsPart)
 

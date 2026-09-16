@@ -981,10 +981,17 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 
 		case "text":
-			answer := b.answerFormQuestion(ctx, lazy, f.Question, nil)
+			answer := ""
+			if profile := b.currentProfile(); profile != nil {
+				answer = profileContactAnswer(f.Question, f.InputType, &profile.PersonalInformation)
+			}
+			if answer == "" {
+				answer = b.answerFormQuestion(ctx, lazy, f.Question, nil)
+			}
 			if answer == "" {
 				continue
 			}
+			answer = sanitizeContactFieldAnswer(answer, f.Question, f.InputType)
 			if f.InputType == "numeric" {
 				answer = sanitizeNumericFieldAnswer(answer, f.Question)
 			}
@@ -1139,6 +1146,16 @@ func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int) error {
 func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question string, options []string) string {
 	lower := strings.ToLower(question)
 	ad := b.profileDefaults()
+
+	// Contact-info fields (phone, email, name, city) — use profile, never LLM prose.
+	if len(options) == 0 {
+		if profile := b.currentProfile(); profile != nil {
+			if ans := profileContactAnswer(question, inferContactInputType(question), &profile.PersonalInformation); ans != "" {
+				log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (contact info)")
+				return sanitizeContactFieldAnswer(ans, question, inferContactInputType(question))
+			}
+		}
+	}
 
 	// ── Fast heuristics, binary yes/no only ──────────────────────────────────
 
@@ -1300,6 +1317,121 @@ func parseEmploymentYears(period string, currentYear int) (start, end int) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+var rePhoneChunk = regexp.MustCompile(`\+?\d[\d\s().-]{6,}\d`)
+
+// profileContactAnswer returns a profile value for standard contact-info form fields.
+func profileContactAnswer(question, inputType string, pi *domain.PersonalInformation) string {
+	if pi == nil {
+		return ""
+	}
+	lower := strings.ToLower(strings.TrimSpace(question))
+	if lower == "" && inputType == "" {
+		return ""
+	}
+
+	if isPhoneField(question, inputType) {
+		phone := strings.TrimSpace(pi.Phone)
+		if phone == "" {
+			return ""
+		}
+		prefix := strings.TrimSpace(pi.PhonePrefix)
+		if prefix != "" && !strings.HasPrefix(phone, "+") {
+			return sanitizePhoneAnswer(strings.TrimSpace(prefix + " " + phone))
+		}
+		return sanitizePhoneAnswer(phone)
+	}
+
+	if inputType == "email" || containsAny(lower, "email", "e-mail") {
+		return strings.TrimSpace(pi.Email)
+	}
+
+	if containsAny(lower, "first name", "given name", "forename") {
+		return strings.TrimSpace(pi.Name)
+	}
+	if containsAny(lower, "last name", "family name", "surname") {
+		return strings.TrimSpace(pi.Surname)
+	}
+
+	if isLocationField(lower) {
+		return profileLocation(pi)
+	}
+
+	return ""
+}
+
+func isPhoneField(question, inputType string) bool {
+	if inputType == "tel" {
+		return true
+	}
+	lower := strings.ToLower(question)
+	return containsAny(lower, "phone", "mobile", "cell", "telephone") &&
+		!containsAny(lower, "years", "experience", "smartphone")
+}
+
+func isLocationField(lower string) bool {
+	return (strings.Contains(lower, "location") || strings.Contains(lower, "city")) &&
+		!containsAny(lower, "relocate", "willing to", "preferred work", "work location preference")
+}
+
+func profileLocation(pi *domain.PersonalInformation) string {
+	if a := strings.TrimSpace(pi.Address); a != "" {
+		return a
+	}
+	city := strings.TrimSpace(pi.City)
+	country := strings.TrimSpace(pi.Country)
+	if city != "" && country != "" {
+		return city + ", " + country
+	}
+	return city
+}
+
+func inferContactInputType(question string) string {
+	if isPhoneField(question, "") {
+		return "tel"
+	}
+	lower := strings.ToLower(question)
+	if containsAny(lower, "email", "e-mail") {
+		return "email"
+	}
+	return ""
+}
+
+// sanitizePhoneAnswer strips prose and returns digits (optional leading +).
+func sanitizePhoneAnswer(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if m := rePhoneChunk.FindString(s); m != "" {
+		s = m
+	}
+	plus := strings.HasPrefix(strings.TrimSpace(s), "+")
+	var digits strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	out := digits.String()
+	if out == "" {
+		return ""
+	}
+	if plus {
+		return "+" + out
+	}
+	return out
+}
+
+func sanitizeContactFieldAnswer(answer, question, inputType string) string {
+	if isPhoneField(question, inputType) {
+		return sanitizePhoneAnswer(answer)
+	}
+	if inputType == "email" || containsAny(strings.ToLower(question), "email", "e-mail") {
+		return strings.TrimSpace(answer)
+	}
+	return answer
+}
 
 // sanitizeNumericFieldAnswer turns an LLM answer into a value acceptable for LinkedIn
 // numeric screening fields (0–99). Strips product/version numbers from the question
