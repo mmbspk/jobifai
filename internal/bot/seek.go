@@ -50,9 +50,9 @@ type seekJob struct {
 	EasyApply      bool   // true when Seek shows a Quick Apply button (Seek-hosted form)
 }
 
-// detectSeekEasyApply returns true only when the job detail page shows Seek's
-// native Quick Apply CTA that jobifai can automate. External/link-out apply
-// (SmartRecruiters, Workday, plain "Apply", etc.) returns false → Top Matches.
+// detectSeekEasyApply returns true when the job detail page shows Seek's native
+// apply flow (Seek-hosted /apply URL or primary apply CTA). External/link-out
+// apply (SmartRecruiters, Workday, etc.) returns false → Top Matches.
 func detectSeekEasyApply(page *rod.Page) bool {
 	const jsDetect = `() => {
 		function labelOf(el) {
@@ -65,33 +65,119 @@ func detectSeekEasyApply(page *rod.Page) bool {
 			if (!h || h.startsWith('/') || h.includes('seek.com')) return false;
 			return h.startsWith('http');
 		}
+		function isSeekApplyHref(href) {
+			if (!href) return false;
+			let h = href.toLowerCase().trim();
+			if (!h) return false;
+			if (!h.startsWith('http')) h = 'https://www.seek.com.au' + (h.startsWith('/') ? h : '/' + h);
+			if (!h.includes('seek.com')) return false;
+			return h.includes('/apply') || h.includes('application');
+		}
 		const controls = [
 			...document.querySelectorAll("[data-automation='job-detail-apply']"),
 			...document.querySelectorAll("[data-automation='job-detail-apply-link']"),
 			...document.querySelectorAll("button[data-automation*='apply']"),
 			...document.querySelectorAll("a[data-automation*='apply']"),
 		];
+		let viaQuickLabel = false;
+		let viaSeekHref = false;
 		for (const el of controls) {
 			const t = labelOf(el);
 			if (!t || t.includes('applied')) continue;
 			const href = el.getAttribute('href') || '';
 			if (isExternalHref(href)) continue;
-			if (t.includes('quick apply')) return true;
+			if (t.includes('quick apply')) viaQuickLabel = true;
+			if (isSeekApplyHref(href)) viaSeekHref = true;
+			if (!viaSeekHref && el.matches("[data-automation='job-detail-apply'], [data-automation='job-detail-apply-link']")) {
+				viaSeekHref = true;
+			}
 		}
-		return false;
+		return { match: viaQuickLabel || viaSeekHref, viaSeekHref };
 	}`
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		res, err := page.Eval(jsDetect)
-		if err == nil && res.Value.Bool() {
+		if err != nil {
+			time.Sleep(400 * time.Millisecond)
+			continue
+		}
+		if !res.Value.Get("match").Bool() {
+			time.Sleep(400 * time.Millisecond)
+			continue
+		}
+		viaSeekHref := res.Value.Get("viaSeekHref").Bool()
+		if !viaSeekHref {
 			if html, herr := page.HTML(); herr == nil && seekDetailPageExternalApply(html) {
 				return false
 			}
-			return true
 		}
-		time.Sleep(400 * time.Millisecond)
+		return true
 	}
 	return false
+}
+
+// seekDefaultOrigin is used when resolving relative apply hrefs without page context.
+const seekDefaultOrigin = "https://www.seek.com.au"
+
+// resolveSeekHref turns a Seek apply href (absolute or relative) into a full URL.
+func resolveSeekHref(href string) string {
+	h := strings.TrimSpace(href)
+	if h == "" {
+		return ""
+	}
+	if strings.HasPrefix(h, "http://") || strings.HasPrefix(h, "https://") {
+		return h
+	}
+	if strings.HasPrefix(h, "//") {
+		return "https:" + h
+	}
+	if strings.HasPrefix(h, "/") {
+		return seekDefaultOrigin + h
+	}
+	return seekDefaultOrigin + "/" + h
+}
+
+// resolveSeekHrefOnPage resolves href against the current job detail page URL.
+func resolveSeekHrefOnPage(href string, page *rod.Page) string {
+	h := strings.TrimSpace(href)
+	if h == "" {
+		return ""
+	}
+	if strings.HasPrefix(h, "http://") || strings.HasPrefix(h, "https://") {
+		return h
+	}
+	if page != nil {
+		if info, err := page.Info(); err == nil && info.URL != "" {
+			if base, err := url.Parse(info.URL); err == nil {
+				if ref, err := url.Parse(h); err == nil {
+					return base.ResolveReference(ref).String()
+				}
+			}
+		}
+	}
+	return resolveSeekHref(h)
+}
+
+// isExternalApplyHref reports absolute http(s) links that leave Seek.
+func isExternalApplyHref(href string) bool {
+	h := strings.TrimSpace(href)
+	if h == "" || !strings.HasPrefix(h, "http") {
+		return false
+	}
+	return !strings.Contains(strings.ToLower(h), "seek.com")
+}
+
+// isSeekHostedApplyHref reports Seek-hosted apply/application URLs.
+func isSeekHostedApplyHref(href string) bool {
+	resolved := resolveSeekHref(href)
+	if resolved == "" {
+		return false
+	}
+	lu := strings.ToLower(resolved)
+	if !strings.Contains(lu, "seek.com") {
+		return false
+	}
+	return strings.Contains(lu, "/apply") || strings.Contains(lu, "application")
 }
 
 // seekDetailPageExternalApply returns true when the job detail HTML references an
@@ -203,26 +289,7 @@ func isSeekApplyBlockedError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "seek apply blocked:")
 }
 
-// skipReasonBelongsInTopMatches reports apply-failure skip reasons that are really
-// manual-apply jobs (external ATS / captcha), not Quick Apply automation failures.
-func skipReasonBelongsInTopMatches(reason string) bool {
-	lower := strings.ToLower(reason)
-	if !strings.HasPrefix(lower, "seek apply:") &&
-		!strings.HasPrefix(lower, "easy apply:") &&
-		!strings.HasPrefix(lower, "quick apply:") {
-		return false
-	}
-	for _, marker := range []string{
-		"blocked", "smartrecruiters", "external ats", "external site",
-		"datadome", "captcha", "not automatable",
-	} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
+// isSeekSessionExpiredError reports session / login failures during Quick Apply.
 func isSeekSessionExpiredError(err error) bool {
 	if err == nil || isSeekApplyBlockedError(err) {
 		return false
@@ -568,11 +635,7 @@ func extractSeekJob(el *rod.Element) seekJob {
 		job.URL = "https://au.seek.com/job/" + job.ID
 	} else if a, err := el.Element("a[href*='/job/']"); err == nil {
 		if href, e := a.Attribute("href"); e == nil && href != nil {
-			h := *href
-			if strings.HasPrefix(h, "/") {
-				h = "https://au.seek.com" + h
-			}
-			job.URL = strings.SplitN(h, "?", 2)[0] // drop query params
+			job.URL = strings.SplitN(resolveSeekHref(*href), "?", 2)[0]
 			// Attempt to extract ID from URL path /job/XXXXXX
 			parts := strings.Split(job.URL, "/")
 			if len(parts) > 0 && job.ID == "" {
@@ -1135,13 +1198,11 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 			break
 		}
 
-		// Mark as attempted once the page loads so this job isn't rechecked next run.
-		appdb.ExecContextWithRetry(ctx, b.cfg.DB,
-			"UPDATE jobs_pending_review SET attempt_count = attempt_count + 1 WHERE job_id = ? AND user_id = ?",
-			p.jobID, b.cfg.UserID,
-		)
-
 		if !detectSeekEasyApply(page) {
+			appdb.ExecContextWithRetry(ctx, b.cfg.DB,
+				"UPDATE jobs_pending_review SET attempt_count = attempt_count + 1 WHERE job_id = ? AND user_id = ?",
+				p.jobID, b.cfg.UserID,
+			)
 			log.Info().Msgf("seek: top-matches recheck: no Quick Apply for %q @ %s, leaving in Top Matches", p.role, p.company)
 			_ = page.Close()
 			continue
@@ -1167,6 +1228,10 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 				applied++
 			}
 		case seekSubmitTopMatches:
+			appdb.ExecContextWithRetry(ctx, b.cfg.DB,
+				"UPDATE jobs_pending_review SET attempt_count = attempt_count + 1 WHERE job_id = ? AND user_id = ?",
+				p.jobID, b.cfg.UserID,
+			)
 			log.Info().Msgf("seek: top-matches recheck: kept in Top Matches after non-automatable apply: %q @ %s", p.role, p.company)
 		}
 		if applied >= remaining {
@@ -2004,17 +2069,14 @@ func (b *Bot) seekClickQuickApply(page *rod.Page) error {
 		}
 	}
 	if href, e := applyBtn.Attribute("href"); e == nil && href != nil {
-		h := strings.TrimSpace(*href)
-		if h != "" && !strings.HasPrefix(h, "http") {
-			h = "https://au.seek.com" + h
-		}
-		if h != "" && !strings.Contains(h, "seek.com") && strings.HasPrefix(h, "http") {
+		raw := strings.TrimSpace(*href)
+		if isExternalApplyHref(raw) {
 			return fmt.Errorf("external application")
 		}
-		// Prefer navigating to Seek-hosted apply routes — more reliable than SPA click.
-		if strings.Contains(h, "seek.com") && (strings.Contains(h, "/apply") || strings.Contains(h, "application")) {
-			log.Info().Str("url", h).Msg("seek: opening apply via button href")
-			if err := page.Navigate(h); err != nil {
+		resolved := resolveSeekHrefOnPage(raw, page)
+		if isSeekHostedApplyHref(resolved) {
+			log.Info().Str("url", resolved).Msg("seek: opening apply via button href")
+			if err := page.Navigate(resolved); err != nil {
 				return fmt.Errorf("navigate apply href: %w", err)
 			}
 			_ = page.Timeout(30 * time.Second).WaitLoad()
@@ -2400,6 +2462,23 @@ func (b *Bot) recordSeekApplied(job seekJob, resumePath, coverPath string, score
 
 func (b *Bot) recordSeekSkipped(job seekJob, reason string, score int, reasoning string, halalVerdict []byte) {
 	if b.cfg.DB == nil {
+		return
+	}
+	if skipReasonBelongsInTopMatches(reason) {
+		b.saveSeekPendingReview(context.Background(), &domain.PendingReview{
+			JobID:                job.ID,
+			Company:              job.Company,
+			Role:                 job.Title,
+			Location:             job.Location,
+			Platform:             domain.PlatformSeek,
+			Link:                 job.URL,
+			SuitabilityScore:     score,
+			SuitabilityReasoning: reasoning,
+			EasyApply:            false,
+			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
+			CreatedAt:            time.Now(),
+		})
+		log.Info().Str("reason", reason).Msgf("seek: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
 		return
 	}
 	if _, err := appdb.ExecWithRetry(b.cfg.DB,
