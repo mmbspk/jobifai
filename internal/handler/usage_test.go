@@ -16,10 +16,12 @@ type stubUsageStore struct{ snap domain.SessionUsage }
 func (s *stubUsageStore) Session(_ string) domain.SessionUsage { return s.snap }
 
 func TestUsage_Session_ReturnsSnapshot(t *testing.T) {
-	svc, _ := newTestServices(t)
+	svc, db := newTestServices(t)
 	svc.UsageStore = &stubUsageStore{snap: domain.SessionUsage{InputTokens: 100, OutputTokens: 50, Calls: 2}}
 	router := handler.NewRouter(svc)
-	token := registerAndLogin(t, router, "usage1@example.com", "password123")
+	email := "usage1@example.com"
+	token := registerAndLogin(t, router, email, "password123")
+	setUserAdmin(t, db, email)
 
 	w := authGet(t, router, "/api/usage/session", token)
 	assert.Equal(t, 200, w.Code)
@@ -32,10 +34,12 @@ func TestUsage_Session_ReturnsSnapshot(t *testing.T) {
 }
 
 func TestUsage_Session_NoCostWhenNoConfig(t *testing.T) {
-	svc, _ := newTestServices(t)
+	svc, db := newTestServices(t)
 	svc.UsageStore = &stubUsageStore{snap: domain.SessionUsage{InputTokens: 1000, OutputTokens: 500}}
 	router := handler.NewRouter(svc)
-	token := registerAndLogin(t, router, "usage2@example.com", "password123")
+	email := "usage2@example.com"
+	token := registerAndLogin(t, router, email, "password123")
+	setUserAdmin(t, db, email)
 
 	w := authGet(t, router, "/api/usage/session", token)
 	assert.Equal(t, 200, w.Code)
@@ -46,10 +50,12 @@ func TestUsage_Session_NoCostWhenNoConfig(t *testing.T) {
 }
 
 func TestUsage_Session_CostCalculated(t *testing.T) {
-	svc, _ := newTestServices(t)
+	svc, db := newTestServices(t)
 	svc.UsageStore = &stubUsageStore{snap: domain.SessionUsage{InputTokens: 1_000_000, OutputTokens: 1_000_000}}
 	router := handler.NewRouter(svc)
-	token := registerAndLogin(t, router, "usage3@example.com", "password123")
+	email := "usage3@example.com"
+	token := registerAndLogin(t, router, email, "password123")
+	setUserAdmin(t, db, email)
 
 	// Set a known model so cost is calculated.
 	w := authPost(t, router, "/api/settings/general", token, map[string]any{
@@ -67,10 +73,12 @@ func TestUsage_Session_CostCalculated(t *testing.T) {
 }
 
 func TestUsage_Totals_ZeroReturnsOK(t *testing.T) {
-	svc, _ := newTestServices(t)
+	svc, db := newTestServices(t)
 	svc.UsageStore = &stubUsageStore{}
 	router := handler.NewRouter(svc)
-	token := registerAndLogin(t, router, "usage4@example.com", "password123")
+	email := "usage4@example.com"
+	token := registerAndLogin(t, router, email, "password123")
+	setUserAdmin(t, db, email)
 
 	w := authGet(t, router, "/api/usage/totals", token)
 	assert.Equal(t, 200, w.Code)
@@ -85,7 +93,9 @@ func TestUsage_Totals_ReflectsInserted(t *testing.T) {
 	svc, sqldb := newTestServices(t)
 	svc.UsageStore = &stubUsageStore{}
 	router := handler.NewRouter(svc)
-	token := registerAndLogin(t, router, "usage5@example.com", "password123")
+	email := "usage5@example.com"
+	token := registerAndLogin(t, router, email, "password123")
+	setUserAdmin(t, sqldb, email)
 
 	// Get userID.
 	wMe := authGet(t, router, "/api/me", token)

@@ -127,6 +127,34 @@ func (s *UserStore) ByGoogleID(googleID string) (*User, error) {
 	))
 }
 
+// List returns all users ordered by created_at descending.
+func (s *UserStore) List() ([]User, error) {
+	rows, err := s.db.Query(
+		`SELECT id, email, COALESCE(password_hash,''), display_name,
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, created_at
+		 FROM users ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []User
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// SetAdmin updates the is_admin flag for a user.
+func (s *UserStore) SetAdmin(userID string, isAdmin bool) error {
+	_, err := s.db.Exec(`UPDATE users SET is_admin = ?, updated_at = ? WHERE id = ?`, isAdmin, time.Now(), userID)
+	return err
+}
+
 // Update applies display_name and/or avatar_url changes.
 func (s *UserStore) Update(userID, displayName, avatarURL string) error {
 	_, err := s.db.Exec(

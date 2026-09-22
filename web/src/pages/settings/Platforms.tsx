@@ -1,0 +1,1 @@
+export { PlatformsSettingsPage } from './Secrets'

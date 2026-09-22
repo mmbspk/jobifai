@@ -142,8 +142,6 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/preferences", settings.PreferencesGet)
 			r.Post("/preferences", settings.PreferencesSet)
 			r.Get("/secrets", settings.SecretsGet)
-			r.Post("/secrets/api-key", settings.SecretsSetAPIKey)
-				r.Delete("/secrets/api-key", settings.SecretsDeleteAPIKey)
 			r.Post("/secrets/credentials", settings.SecretsSetCredentials)
 			r.Delete("/secrets/credentials", settings.SecretsDeleteCredentials)
 			r.Get("/styles", settings.StylesList)
@@ -151,9 +149,25 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/locations/suggest", settings.LocationSuggest)
 		})
 
-		// ── Usage ─────────────────────────────────────────────────────────
-		r.Get("/api/usage/session", usage.Session)
-		r.Get("/api/usage/totals", usage.Totals)
+		// ── Admin-only ────────────────────────────────────────────────────
+		adminH := NewAdminHandlers(svc)
+		r.Group(func(r chi.Router) {
+			if svc.Users != nil {
+				r.Use(auth.RequireAdmin(svc.Users))
+			}
+			r.Get("/api/admin/system", adminH.SystemGet)
+			r.Put("/api/admin/system", adminH.SystemSet)
+			r.Get("/api/admin/system/secrets", adminH.SystemSecretsGet)
+			r.Post("/api/admin/system/secrets/api-key", adminH.SystemSetAPIKey)
+			r.Delete("/api/admin/system/secrets/api-key", adminH.SystemDeleteAPIKey)
+			r.Get("/api/admin/users", adminH.UsersList)
+			r.Get("/api/admin/users/{user_id}", adminH.UserGet)
+			r.Put("/api/admin/users/{user_id}", adminH.UserUpdate)
+			r.Post("/api/admin/users/{user_id}/secrets/api-key", adminH.UserSetAPIKey)
+			r.Delete("/api/admin/users/{user_id}/secrets/api-key", adminH.UserDeleteAPIKey)
+			r.Get("/api/usage/session", usage.Session)
+			r.Get("/api/usage/totals", usage.Totals)
+		})
 	})
 
 	// ── Static file serving for generated PDFs ───────────────────────────

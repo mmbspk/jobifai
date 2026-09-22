@@ -7,10 +7,13 @@ import { JobsCannotApply } from './pages/JobsCannotApply'
 import { TopMatches } from './pages/TopMatches'
 import { Review } from './pages/Review'
 import { Generate } from './pages/Generate'
-import { GeneralSettingsPage } from './pages/settings/General'
+import { ApplicationSettingsPage } from './pages/settings/Application'
+import { AdminDefaultsPage } from './pages/admin/Defaults'
+import { AdminAutomationPage } from './pages/admin/Automation'
+import { AdminUsersPage } from './pages/admin/Users'
 import { Preferences } from './pages/settings/Preferences'
 import { Resume } from './pages/settings/Resume'
-import { Secrets } from './pages/settings/Secrets'
+import { PlatformsSettingsPage } from './pages/settings/Platforms'
 import { UsagePage } from './pages/settings/Usage'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
@@ -18,11 +21,17 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { cn } from './lib'
 
 const SETTINGS_TABS = [
-  { to: '/settings/general',     label: 'General' },
+  { to: '/settings/application', label: 'Application' },
   { to: '/settings/preferences', label: 'Preferences' },
   { to: '/settings/resume',      label: 'Profile' },
-  { to: '/settings/secrets',     label: 'Secrets' },
-  { to: '/settings/usage',       label: 'Usage' },
+  { to: '/settings/platforms',   label: 'Platforms' },
+]
+
+const ADMIN_TABS = [
+  { to: '/admin/defaults',   label: 'Defaults' },
+  { to: '/admin/automation', label: 'Automation' },
+  { to: '/admin/users',      label: 'Users' },
+  { to: '/admin/usage',      label: 'Usage' },
 ]
 
 function SettingsLayout() {
@@ -47,12 +56,52 @@ function SettingsLayout() {
         ))}
       </div>
       <Routes>
-        <Route path="general"     element={<GeneralSettingsPage />} />
+        <Route path="application" element={<ApplicationSettingsPage />} />
         <Route path="preferences" element={<Preferences />} />
         <Route path="resume"      element={<Resume />} />
-        <Route path="secrets"     element={<Secrets />} />
-        <Route path="usage"       element={<UsagePage />} />
-        <Route index element={<Navigate to="general" replace />} />
+        <Route path="platforms"   element={<PlatformsSettingsPage />} />
+        <Route path="general"     element={<Navigate to="/settings/application" replace />} />
+        <Route path="secrets"     element={<Navigate to="/settings/platforms" replace />} />
+        <Route path="usage"       element={<Navigate to="/" replace />} />
+        <Route index element={<Navigate to="application" replace />} />
+      </Routes>
+    </div>
+  )
+}
+
+function AdminLayout() {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-lg font-semibold text-[var(--color-text)]">Admin</h1>
+        <p className="text-sm text-[var(--color-text-dim)]">System configuration — not visible to regular users.</p>
+      </div>
+      <div className="flex gap-1 p-1 bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
+        {ADMIN_TABS.map(t => (
+          <NavLink
+            key={t.to}
+            to={t.to}
+            className={({ isActive }) =>
+              cn(
+                'flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all text-center whitespace-nowrap',
+                isActive
+                  ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                  : 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]',
+              )
+            }
+          >
+            {t.label}
+          </NavLink>
+        ))}
+      </div>
+      <Routes>
+        <Route path="defaults"   element={<AdminDefaultsPage />} />
+        <Route path="automation" element={<AdminAutomationPage />} />
+        <Route path="users"      element={<AdminUsersPage />} />
+        <Route path="usage"      element={<UsagePage />} />
+        <Route path="system"     element={<Navigate to="/admin/defaults" replace />} />
+        <Route path="secrets"    element={<Navigate to="/admin/defaults" replace />} />
+        <Route index element={<Navigate to="defaults" replace />} />
       </Routes>
     </div>
   )
@@ -64,6 +113,15 @@ function ProtectedRoute({ children }: Readonly<{ children: React.ReactNode }>) {
   const location = useLocation()
   if (loading) return null
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />
+  return <>{children}</>
+}
+
+function AdminRoute({ children }: Readonly<{ children: React.ReactNode }>) {
+  const { user, loading } = useAuth()
+  const location = useLocation()
+  if (loading) return null
+  if (!user) return <Navigate to="/login" state={{ from: location }} replace />
+  if (!user.is_admin) return <Navigate to="/" replace state={{ from: location }} />
   return <>{children}</>
 }
 
@@ -84,6 +142,7 @@ function AppRoutes() {
         <Route path="/review"                element={<Review />} />
         <Route path="/generate"              element={<Generate />} />
         <Route path="/settings/*"            element={<SettingsLayout />} />
+        <Route path="/admin/*"               element={<AdminRoute><AdminLayout /></AdminRoute>} />
         <Route path="*"                      element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

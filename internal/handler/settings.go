@@ -65,7 +65,7 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 	userID := auth.UserIDFromCtx(r.Context())
 	extractor, _ := h.svc.LLMFactory(userID)
 	if extractor == nil {
-		unprocessable(w, "LLM not configured, set an API key in Settings → Secrets first")
+		unprocessable(w, "LLM not configured — ask an admin to set the default API key under Admin → Defaults")
 		return
 	}
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
@@ -140,15 +140,50 @@ var defaultGeneralSettings = domain.GeneralSettings{
 	InterviewQuestionsEnabled: true,
 }
 
+func (h *SettingsHandlers) isAdmin(r *http.Request) bool {
+	if h.svc.Users == nil {
+		return false
+	}
+	u, err := h.svc.Users.ByID(auth.UserIDFromCtx(r.Context()))
+	return err == nil && u.IsAdmin
+}
+
+func userFacingGeneral(s domain.GeneralSettings) domain.GeneralSettings {
+	return domain.GeneralSettings{
+		DefaultResumeMarket:       s.DefaultResumeMarket,
+		RequireReview:             s.RequireReview,
+		JobSuitabilityScore:       s.JobSuitabilityScore,
+		MaxJobsPerKeyword:         s.MaxJobsPerKeyword,
+		HalalJobFilter:            s.HalalJobFilter,
+		GenerateNewResumeDocs:     s.GenerateNewResumeDocs,
+		InterviewQuestionsEnabled: s.InterviewQuestionsEnabled,
+	}
+}
+
+func mergeUserGeneralUpdate(stored, incoming domain.GeneralSettings) domain.GeneralSettings {
+	out := stored
+	out.DefaultResumeMarket = incoming.DefaultResumeMarket
+	out.RequireReview = incoming.RequireReview
+	out.JobSuitabilityScore = incoming.JobSuitabilityScore
+	out.MaxJobsPerKeyword = incoming.MaxJobsPerKeyword
+	out.HalalJobFilter = incoming.HalalJobFilter
+	out.GenerateNewResumeDocs = incoming.GenerateNewResumeDocs
+	out.InterviewQuestionsEnabled = incoming.InterviewQuestionsEnabled
+	return out
+}
+
 // GET /api/settings/general
 func (h *SettingsHandlers) GeneralGet(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	var s domain.GeneralSettings
 	if err := h.svc.Config.Get(userID, keyGeneralSettings, &s); errors.Is(err, domain.ErrNotFound) {
-		writeJSON(w, http.StatusOK, defaultGeneralSettings)
-		return
+		s = defaultGeneralSettings
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	if !h.isAdmin(r) {
+		writeJSON(w, http.StatusOK, userFacingGeneral(s))
 		return
 	}
 	writeJSON(w, http.StatusOK, s)
@@ -157,12 +192,26 @@ func (h *SettingsHandlers) GeneralGet(w http.ResponseWriter, r *http.Request) {
 // POST /api/settings/general
 func (h *SettingsHandlers) GeneralSet(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
-	var s domain.GeneralSettings
-	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+	var incoming domain.GeneralSettings
+	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
-	if err := h.svc.Config.Set(userID, keyGeneralSettings, s); err != nil {
+
+	var stored domain.GeneralSettings
+	if err := h.svc.Config.Get(userID, keyGeneralSettings, &stored); errors.Is(err, domain.ErrNotFound) {
+		stored = defaultGeneralSettings
+	} else if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+
+	toSave := incoming
+	if !h.isAdmin(r) {
+		toSave = mergeUserGeneralUpdate(stored, incoming)
+	}
+
+	if err := h.svc.Config.Set(userID, keyGeneralSettings, toSave); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
@@ -208,7 +257,7 @@ func (h *SettingsHandlers) PreferencesSet(w http.ResponseWriter, r *http.Request
 func (h *SettingsHandlers) SecretsGet(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	out := domain.SecretsConfig{}
-	if h.svc.Secrets.Has(userID, "llm_api_key") {
+	if h.isAdmin(r) && h.svc.Secrets.Has(userID, "llm_api_key") {
 		out.LLMAPIKey = "****"
 	}
 	for _, p := range []domain.Platform{domain.PlatformLinkedIn, domain.PlatformSeek} {

@@ -82,6 +82,27 @@ func authPost(t *testing.T, router http.Handler, path, token string, body any) *
 	return w
 }
 
+// setUserAdmin promotes a user by email to admin (for handler tests).
+func setUserAdmin(t *testing.T, db *sql.DB, email string) {
+	t.Helper()
+	_, err := db.Exec(`UPDATE users SET is_admin = 1 WHERE email = ?`, email)
+	require.NoError(t, err)
+}
+
+// authPut performs a PUT with a Bearer token and JSON body.
+func authPut(t *testing.T, router http.Handler, path, token string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
+}
+
 // authDelete performs a DELETE with a Bearer token.
 func authDelete(t *testing.T, router http.Handler, path, token string) *httptest.ResponseRecorder {
 	t.Helper()

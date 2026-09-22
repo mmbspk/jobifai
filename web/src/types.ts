@@ -228,6 +228,28 @@ export interface HumanBehaviorConfig {
   business_hours_end?: number
 }
 
+export interface LLMOverrides {
+  provider?: string
+  model?: string
+  use_proxy?: boolean
+  proxy_url?: string
+  max_tokens?: number
+  task_models?: Record<string, TaskModel>
+}
+
+export interface AdminUserRow {
+  id: string
+  email: string
+  display_name: string
+  is_admin: boolean
+  created_at: string
+  has_api_key: boolean
+}
+
+export interface AdminUserDetail extends AdminUserRow {
+  llm_overrides: LLMOverrides
+}
+
 export interface GeneralSettings {
   llm?: LLMConfig
   browser?: BrowserConfig

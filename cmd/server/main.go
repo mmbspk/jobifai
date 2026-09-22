@@ -198,8 +198,7 @@ func main() {
 			if client == nil {
 				return nil
 			}
-			var gs domain.GeneralSettings
-			_ = cfgStore.Get(userID, "general_settings", &gs)
+			gs := config.ResolveOperationalSettings(cfgStore, userID)
 			return resume.NewScorer(taskClient(client, gs.LLM.TaskModels, "scoring"))
 		},
 		HalalCheckerFactory: func(userID string) handler.JobHalalChecker {
@@ -207,8 +206,7 @@ func main() {
 			if client == nil {
 				return nil
 			}
-			var gs domain.GeneralSettings
-			_ = cfgStore.Get(userID, "general_settings", &gs)
+			gs := config.ResolveOperationalSettings(cfgStore, userID)
 			return resume.NewHalalChecker(taskClient(client, gs.LLM.TaskModels, "halal"))
 		},
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
@@ -216,8 +214,7 @@ func main() {
 			if client == nil {
 				return nil
 			}
-			var gs domain.GeneralSettings
-			_ = cfgStore.Get(userID, "general_settings", &gs)
+			gs := config.ResolveOperationalSettings(cfgStore, userID)
 			return resume.NewQuestionAnswerer(taskClient(client, gs.LLM.TaskModels, "questions"))
 		},
 	}
@@ -262,26 +259,10 @@ func main() {
 func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
 	renderer := resume.NewPDFRenderer("resume_style")
 
-	var gs domain.GeneralSettings
-	if err := cfgStore.Get(userID, "general_settings", &gs); err != nil {
-		gs = domain.GeneralSettings{
-			LLM: domain.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
-		}
-	}
-
-	// When proxy is enabled, prefer proxy_key (e.g. HAI proxy key) over llm_api_key.
-	var apiKey string
-	if gs.LLM.UseProxy {
-		if pk, err := secrets.Get(userID, "proxy_key"); err == nil && pk != "" {
-			apiKey = pk
-		}
-	}
-	if apiKey == "" {
-		var err error
-		apiKey, err = secrets.Get(userID, "llm_api_key")
-		if err != nil {
-			return nil, nil, renderer, nil
-		}
+	gs := config.ResolveOperationalSettings(cfgStore, userID)
+	apiKey, err := config.ResolveLLMAPIKey(secrets, userID, gs.LLM.UseProxy)
+	if err != nil || apiKey == "" {
+		return nil, nil, renderer, nil
 	}
 
 	client := llm.New(gs.LLM, apiKey)

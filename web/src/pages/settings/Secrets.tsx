@@ -267,7 +267,31 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
   )
 }
 
-export function Secrets() {
+export function PlatformsSettingsPage() {
+  const { data: secrets } = useQuery({ queryKey: ['settings-secrets'], queryFn: settingsApi.secrets.get })
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-3">Platform Connections</div>
+        <p className="text-sm text-[var(--color-text-dim)] mb-4">
+          Connect LinkedIn or Seek so the bot can sign in and submit applications on your behalf.
+        </p>
+        <div className="space-y-2">
+          {PLATFORMS.map(p => (
+            <CredentialsCard
+              key={p}
+              platform={p}
+              hasCreds={secrets?.credential_platforms?.includes(p) ?? false}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function AdminSecretsPage() {
   const qc = useQueryClient()
   const { data: secrets } = useQuery({ queryKey: ['settings-secrets'], queryFn: settingsApi.secrets.get })
 
@@ -285,19 +309,6 @@ export function Secrets() {
               onDelete={() => settingsApi.secrets.deleteApiKey().then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
             />
           </div>
-        </div>
-      </div>
-
-      <div>
-        <div className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-3">Platform Connections</div>
-        <div className="space-y-2">
-          {PLATFORMS.map(p => (
-            <CredentialsCard
-              key={p}
-              platform={p}
-              hasCreds={secrets?.credential_platforms?.includes(p) ?? false}
-            />
-          ))}
         </div>
       </div>
     </div>

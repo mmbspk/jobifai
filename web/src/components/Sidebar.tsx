@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Briefcase, SkipForward, AlertCircle, TrendingUp, Star, FileText, Settings,
-  Sun, Moon, LogOut, Zap, ChevronLeft, ChevronRight,
+  Sun, Moon, LogOut, Zap, ChevronLeft, ChevronRight, Shield,
 } from 'lucide-react'
 import { cn } from '../lib'
 import { useQuery } from '@tanstack/react-query'
@@ -18,7 +18,7 @@ const NAV = [
   { to: '/jobs/top-matches',    icon: TrendingUp,      label: 'Top Matches' },
   { to: '/review',              icon: Star,            label: 'Review', badge: true },
   { to: '/generate',            icon: FileText,        label: 'Generate' },
-  { to: '/settings/general',    icon: Settings,        label: 'Settings' },
+  { to: '/settings/application', icon: Settings,        label: 'Settings' },
 ]
 
 interface SidebarProps {
@@ -27,6 +27,8 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+  const { user, logout } = useAuth()
+  const isAdmin = user?.is_admin === true
   const { data: pending } = useQuery({
     queryKey: ['review-pending'],
     queryFn: botApi.reviewPending,
@@ -36,10 +38,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     queryKey: ['usage-session'],
     queryFn: usageApi.session,
     refetchInterval: 15000,
+    enabled: isAdmin,
   })
   const pendingCount = pending?.length ?? 0
   const { theme, toggle } = useTheme()
-  const { user, logout } = useAuth()
   const navigate = useNavigate()
 
   return (
@@ -102,11 +104,33 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               )}
             </NavLink>
           ))}
+          {isAdmin && (
+            <NavLink
+              to="/admin"
+              title={collapsed ? 'Admin' : undefined}
+              className={({ isActive }) =>
+                cn(
+                  'flex items-center py-2 rounded-lg text-sm transition-colors mt-2',
+                  collapsed ? 'justify-center px-0' : 'gap-2.5 pl-2.5 pr-3',
+                  isActive
+                    ? 'bg-amber-500/10 text-amber-300 font-medium border-l-2 border-amber-500'
+                    : 'text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] border-l-2 border-transparent',
+                )
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <Shield size={15} className={isActive ? 'text-amber-400' : ''} />
+                  {!collapsed && <span className="flex-1">Admin</span>}
+                </>
+              )}
+            </NavLink>
+          )}
         </div>
       </nav>
 
       {/* Usage */}
-      {!collapsed && usage && (usage.input_tokens > 0 || usage.output_tokens > 0) ? (
+      {isAdmin && !collapsed && usage && (usage.input_tokens > 0 || usage.output_tokens > 0) ? (
         <div className="mx-3 mb-2 px-3 py-2 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)]">
           <div className="flex items-center gap-1.5 mb-1.5">
             <Zap size={11} className="text-violet-400" />

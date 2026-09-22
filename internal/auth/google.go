@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 	"golang.org/x/oauth2"
@@ -64,6 +65,7 @@ func (h *GoogleHandler) Redirect(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   300,
 		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, h.cfg.AuthCodeURL(state, oauth2.AccessTypeOffline), http.StatusFound)
@@ -145,6 +147,17 @@ func fetchGoogleProfile(ctx context.Context, cfg *oauth2.Config, token *oauth2.T
 		return nil, err
 	}
 	return &p, nil
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	// Behind Caddy / other reverse proxies.
+	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	return false
 }
 
 func generateState() (string, error) {

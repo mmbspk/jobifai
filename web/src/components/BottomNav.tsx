@@ -10,7 +10,7 @@ const TABS = [
   { to: '/jobs/applied',       icon: Briefcase,       label: 'Applied',     end: false },
   { to: '/jobs/cannot-apply',  icon: AlertCircle,     label: 'Manual',      end: false },
   { to: '/review',             icon: Star,            label: 'Review',      badge: true, end: false },
-  { to: '/settings/general',   icon: Settings,        label: 'Settings',    end: false },
+  { to: '/settings/application', icon: Settings,        label: 'Settings',    end: false },
 ]
 
 export function BottomNav() {

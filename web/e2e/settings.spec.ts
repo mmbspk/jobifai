@@ -4,29 +4,26 @@ import { registerAndInjectTokens } from './helpers/auth'
 test.describe('Settings', () => {
   test.beforeEach(async ({ page, request }) => {
     await registerAndInjectTokens(page, request)
-    await page.goto('/settings/general')
+    await page.goto('/settings/application')
   })
 
-  test('General settings page loads with expected sections', async ({ page }) => {
-    await expect(page.getByText('LLM Configuration')).toBeVisible()
+  test('Application settings page loads with expected sections', async ({ page }) => {
     await expect(page.getByText('Job Filtering')).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Save Settings' })).toBeVisible()
+    await expect(page.getByText('Resume Defaults')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Save Application Settings' })).toBeVisible()
   })
 
   test('change Max Jobs Per Keyword, save, reload — value persists', async ({ page }) => {
-    // Field renders a flex row: <div label="Max Jobs Per Keyword"> ... </div><div shrink-0><input type="number"/></div>
-    // Traverse: text node → inner label div → field div → find the number input sibling
     const maxJobsInput = page
       .getByText('Max Jobs Per Keyword', { exact: true })
       .locator('../..')
       .locator('input[type="number"]')
 
     await maxJobsInput.fill('30')
-    await page.getByRole('button', { name: 'Save Settings' }).click()
+    await page.getByRole('button', { name: 'Save Application Settings' }).click()
 
-    // Button flashes "Saved" for 2 s, then returns to "Save Settings"
     await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Save Settings' })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('button', { name: 'Save Application Settings' })).toBeVisible({ timeout: 5000 })
 
     await page.reload()
     await expect(maxJobsInput).toHaveValue('30')
@@ -40,12 +37,11 @@ test.describe('Settings', () => {
     await expect(page.getByRole('button', { name: 'Save Preferences' })).toBeVisible()
   })
 
-  test('all settings tabs are accessible', async ({ page }) => {
+  test('user settings tabs are accessible', async ({ page }) => {
     for (const [path, landmark] of [
-      ['/settings/general',     'LLM Configuration'],
+      ['/settings/application', 'Job Filtering'],
       ['/settings/preferences', 'Location Searches'],
-      ['/settings/secrets',     'LLM API Keys'],
-      ['/settings/usage',       'Usage Statistics'],
+      ['/settings/platforms',   'Platform Connections'],
     ] as const) {
       await page.goto(path)
       await expect(page.getByText(landmark)).toBeVisible()
@@ -57,5 +53,11 @@ test.describe('Settings', () => {
     const initialChecked = await halalField.getAttribute('aria-checked')
     await halalField.click()
     await expect(halalField).toHaveAttribute('aria-checked', initialChecked === 'true' ? 'false' : 'true')
+  })
+
+  test('admin area is not reachable for regular users', async ({ page }) => {
+    await page.goto('/admin/defaults')
+    await expect(page.getByText('Default LLM')).not.toBeVisible()
+    await expect(page.getByText('Idle')).toBeVisible()
   })
 })

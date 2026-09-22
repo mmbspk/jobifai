@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
+	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/resume"
@@ -31,6 +32,7 @@ type ConfigReader interface {
 // SecretsReader is the subset of config.SecretsStore the Manager needs.
 type SecretsReader interface {
 	Get(userID, key string) (string, error)
+	Has(userID, key string) bool
 }
 
 type botEntry struct {
@@ -201,10 +203,8 @@ func (m *Manager) Status(userID string) domain.BotStatus {
 		e.status.TodayCount = n
 	}
 	if e.status.State == domain.BotStateIdle && m.cfgStore != nil {
-		var gs domain.GeneralSettings
-		if err := m.cfgStore.Get(userID, "general_settings", &gs); err == nil {
-			e.status.DailyLimit = gs.HumanBehavior.DailyApplicationLimit
-		}
+		gs := config.ResolveOperationalSettings(m.cfgStore, userID)
+		e.status.DailyLimit = gs.HumanBehavior.DailyApplicationLimit
 	}
 	s := e.status
 	if e.bot != nil {
@@ -661,10 +661,7 @@ func (m *Manager) InvalidateLinkedInBrowser(userID string) {
 }
 
 func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config, error) {
-	var gs domain.GeneralSettings
-	if err := m.cfgStore.Get(userID, "general_settings", &gs); err != nil {
-		log.Warn().Err(err).Str("user_id", userID).Msg("buildConfig: failed to load general settings, using defaults")
-	}
+	gs := config.ResolveOperationalSettings(m.cfgStore, userID)
 	if gs.HumanBehavior.DailyApplicationLimit == 0 {
 		gs.HumanBehavior.DailyApplicationLimit = 40
 	}
@@ -772,18 +769,9 @@ func (m *Manager) halalCheckerFor(gs domain.GeneralSettings) JobHalalChecker {
 // nil if no key is stored. When UseProxy is true, proxy_key takes precedence
 // over llm_api_key — matching the same logic used by the handler layer.
 func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.Client {
-	var apiKey string
-	if gs.LLM.UseProxy {
-		if pk, err := m.secrets.Get(userID, "proxy_key"); err == nil && pk != "" {
-			apiKey = pk
-		}
-	}
-	if apiKey == "" {
-		pk, err := m.secrets.Get(userID, "llm_api_key")
-		if err != nil || pk == "" {
-			return nil
-		}
-		apiKey = pk
+	apiKey, err := config.ResolveLLMAPIKey(m.secrets, userID, gs.LLM.UseProxy)
+	if err != nil || apiKey == "" {
+		return nil
 	}
 	return llm.New(gs.LLM, apiKey)
 }
@@ -799,10 +787,7 @@ func taskClient(base *llm.Client, tm map[string]domain.TaskModel, task string) *
 // setupBot loads user config and returns a ready Bot plus the resolved GeneralSettings.
 // market overrides DefaultResumeMarket when non-empty (used by ApplyFromURL).
 func (m *Manager) setupBot(userID string, platform domain.Platform, market string) (*Bot, domain.GeneralSettings, error) {
-	var gs domain.GeneralSettings
-	if err := m.cfgStore.Get(userID, "general_settings", &gs); err != nil {
-		log.Warn().Err(err).Msg("setupBot: load general settings")
-	}
+	gs := config.ResolveOperationalSettings(m.cfgStore, userID)
 	if market != "" {
 		gs.DefaultResumeMarket = market
 	}

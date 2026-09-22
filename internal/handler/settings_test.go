@@ -82,19 +82,66 @@ func TestSettings_Secrets_EmptyResponse(t *testing.T) {
 }
 
 func TestSettings_Secrets_APIKeyMasked(t *testing.T) {
-	svc, _ := newTestServices(t)
+	svc, db := newTestServices(t)
 	router := handler.NewRouter(svc)
-	token := registerAndLogin(t, router, "sec2@example.com", "password123")
+	email := "sec2@example.com"
+	token := registerAndLogin(t, router, email, "password123")
+	setUserAdmin(t, db, email)
 
-	wSet := authPost(t, router, "/api/settings/secrets/api-key", token, map[string]string{
+	wSet := authPost(t, router, "/api/admin/system/secrets/api-key", token, map[string]string{
 		"key_type": "llm_api_key", "value": "sk-real-secret",
 	})
 	assert.Equal(t, 200, wSet.Code)
 
-	wGet := authGet(t, router, "/api/settings/secrets", token)
-	var out domain.SecretsConfig
+	wGet := authGet(t, router, "/api/admin/system/secrets", token)
+	var out map[string]any
 	require.NoError(t, json.NewDecoder(wGet.Body).Decode(&out))
-	// The value must be masked, not the actual plaintext.
-	assert.NotEqual(t, "sk-real-secret", out.LLMAPIKey)
-	assert.NotEmpty(t, out.LLMAPIKey)
+	assert.Equal(t, true, out["has_default_api_key"])
+	assert.Equal(t, "****", out["llm_api_key"])
+}
+
+func TestAdmin_SystemAPIKeyForbiddenForNonAdmin(t *testing.T) {
+	svc, _ := newTestServices(t)
+	router := handler.NewRouter(svc)
+	token := registerAndLogin(t, router, "sec3@example.com", "password123")
+
+	wSet := authPost(t, router, "/api/admin/system/secrets/api-key", token, map[string]string{
+		"key_type": "llm_api_key", "value": "sk-real-secret",
+	})
+	assert.Equal(t, 403, wSet.Code)
+}
+
+func TestSettings_General_NonAdminCannotOverwriteLLM(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+	email := "gen3@example.com"
+	token := registerAndLogin(t, router, email, "password123")
+	setUserAdmin(t, db, email)
+
+	adminGS := domain.GeneralSettings{
+		LLM: domain.LLMConfig{Provider: "claude", Model: "claude-admin-model"},
+	}
+	wAdmin := authPost(t, router, "/api/settings/general", token, adminGS)
+	assert.Equal(t, 200, wAdmin.Code)
+
+	_, err := db.Exec(`UPDATE users SET is_admin = 0 WHERE email = ?`, email)
+	require.NoError(t, err)
+
+	userGS := domain.GeneralSettings{
+		JobSuitabilityScore: 8,
+		LLM:                 domain.LLMConfig{Provider: "openai", Model: "gpt-hacked"},
+	}
+	wUser := authPost(t, router, "/api/settings/general", token, userGS)
+	assert.Equal(t, 200, wUser.Code)
+
+	wGet := authGet(t, router, "/api/settings/general", token)
+	var got domain.GeneralSettings
+	require.NoError(t, json.NewDecoder(wGet.Body).Decode(&got))
+	assert.Equal(t, 8, got.JobSuitabilityScore)
+	assert.Empty(t, got.LLM.Model)
+
+	setUserAdmin(t, db, email)
+	wGetAdmin := authGet(t, router, "/api/settings/general", token)
+	require.NoError(t, json.NewDecoder(wGetAdmin.Body).Decode(&got))
+	assert.Equal(t, "claude-admin-model", got.LLM.Model)
 }
