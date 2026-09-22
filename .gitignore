@@ -36,6 +36,9 @@ tmp/
 .env
 .env.*
 
+# Local deployment (GCP scripts, env, secrets — not published)
+infra/
+
 # Playwright
 web/playwright-report/
 web/test-results/

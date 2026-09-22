@@ -1,6 +1,6 @@
 # jobifai API Reference
 
-Base URL: `http://localhost:8080`
+Base URL: `http://localhost:8081`
 
 OpenAPI 3.1 spec served at runtime: `GET /api/openapi.yaml` (public, no auth required).  
 Load it into Swagger UI, Insomnia, Postman, or any OpenAPI-compatible tool.
@@ -48,7 +48,7 @@ Create a new user account.
   - `409` — username already taken
 
 ```bash
-curl -X POST http://localhost:8080/auth/register \
+curl -X POST http://localhost:8081/auth/register \
   -H 'Content-Type: application/json' \
   -d '{"username":"alice","password":"s3cret"}'
 ```
@@ -66,7 +66,7 @@ Exchange credentials for JWT tokens.
   - `401` — invalid credentials
 
 ```bash
-curl -X POST http://localhost:8080/auth/login \
+curl -X POST http://localhost:8081/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"alice","password":"s3cret"}'
 ```
@@ -121,7 +121,7 @@ Return the authenticated user's profile.
 - **Response**: `200` — `{ "id": "...", "username": "alice" }`
 
 ```bash
-curl http://localhost:8080/api/me \
+curl http://localhost:8081/api/me \
   -H 'Authorization: Bearer <token>'
 ```
 
@@ -150,7 +150,7 @@ Open a browser window for the specified platform so the user can log in manually
   - `400` — invalid platform
 
 ```bash
-curl -X POST http://localhost:8080/api/auth/launch-browser \
+curl -X POST http://localhost:8081/api/auth/launch-browser \
   -H 'Authorization: Bearer <token>' \
   -H 'Content-Type: application/json' \
   -d '{"platform":"linkedin"}'
@@ -208,7 +208,7 @@ Start the automation bot for the specified platform.
   - `400` — already running or invalid platform
 
 ```bash
-curl -X POST http://localhost:8080/api/bot/start \
+curl -X POST http://localhost:8081/api/bot/start \
   -H 'Authorization: Bearer <token>' \
   -H 'Content-Type: application/json' \
   -d '{"platform":"seek"}'

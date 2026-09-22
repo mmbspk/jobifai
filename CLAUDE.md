@@ -69,8 +69,8 @@ web/src/
 ```
 make build          — compile Go binary
 make web-build      — compile React frontend → web/dist
-make web-dev        — start Vite dev server (proxies /api → Go on :8080)
-make run            — web-build + build + start server on :8080
+make web-dev        — start Vite dev server (proxies /api → Go on :8081)
+make run            — web-build + build + start server on :8081
 make start          — concurrent dev: Go + Vite dev server
 make dev            — run with air (hot reload)
 make test           — go test ./... -race -count=1
@@ -85,7 +85,7 @@ make test-e2e       — build frontend + run Playwright e2e tests
 make test-e2e-ui    — open Playwright interactive UI (local dev only)
 ```
 
-Dev workflow: the app is served from `:8080`. After any change, `make run` rebuilds and restarts everything. No separate Vite dev server is needed for testing.
+Dev workflow: the app is served from `:8081`. After any change, `make run` rebuilds and restarts everything. No separate Vite dev server is needed for testing.
 
 ## Testing
 

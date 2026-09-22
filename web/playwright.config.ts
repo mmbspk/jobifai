@@ -9,7 +9,7 @@ export default defineConfig({
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? 'github' : 'html',
   use: {
-    baseURL: 'http://localhost:8080',
+    baseURL: 'http://localhost:8081',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     viewport: { width: 1280, height: 720 },
@@ -17,7 +17,7 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
     command: 'make -C .. e2e-server',
-    url: 'http://localhost:8080',
+    url: 'http://localhost:8081',
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,
     env: { JWT_SECRET: 'e2e-test-secret-do-not-use-in-prod' },

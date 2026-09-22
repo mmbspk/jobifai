@@ -12,7 +12,7 @@ all: build
 build:
 	go build -trimpath -ldflags="-s -w" -o $(BINARY) $(MAIN)
 
-## web-dev: start Vite dev server (proxies /api → Go on :8080)
+## web-dev: start Vite dev server (proxies /api → Go on :8081)
 web-dev:
 	cd web && npm run dev
 
@@ -20,7 +20,7 @@ web-dev:
 web-build:
 	cd web && npm run build
 
-## run: build frontend + server then start (port 8080), killing any existing instance first
+## run: build frontend + server then start (port 8081), killing any existing instance first
 run: web-build build
 	@pkill -f '$(BINARY)' 2>/dev/null || true
 	@sleep 0.5
@@ -61,7 +61,7 @@ docker:
 ## docker-run: run the Docker image with persistent volumes
 docker-run:
 	docker run --rm -it \
-		-p 8080:8080 \
+		-p 8081:8081 \
 		-v "$$(pwd)/data:/app/data" \
 		-v "$$(pwd)/job_applications:/app/job_applications" \
 		-v "$$(pwd)/resume_style:/app/resume_style" \

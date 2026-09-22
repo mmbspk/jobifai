@@ -51,7 +51,7 @@ COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh \
     && mkdir -p resume_style job_applications uploads
 
-EXPOSE 8080
+EXPOSE 8081
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["-addr", ":8080", "-db", "/app/data/jobifai.db"]
+CMD ["-addr", ":8081", "-db", "/app/data/jobifai.db"]

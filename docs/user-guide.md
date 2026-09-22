@@ -14,7 +14,7 @@ Complete these steps once before running the bot for the first time.
 
 ### 1. Create an account
 
-Open `http://localhost:8080`, click **Register**, and create a username and password.
+Open `http://localhost:8081`, click **Register**, and create a username and password.
 
 ### 2. Enter your LLM API key
 

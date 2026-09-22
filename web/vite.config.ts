@@ -7,10 +7,10 @@ export default defineConfig({
   server: {
     host: true,
     proxy: {
-      '/api': 'http://localhost:8080',
-      '/auth': 'http://localhost:8080',
-      '/ws': { target: 'ws://localhost:8080', ws: true },
-      '/novnc': { target: 'http://localhost:8080', changeOrigin: true },
+      '/api': 'http://localhost:8081',
+      '/auth': 'http://localhost:8081',
+      '/ws': { target: 'ws://localhost:8081', ws: true },
+      '/novnc': { target: 'http://localhost:8081', changeOrigin: true },
     },
   },
   build: {

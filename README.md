@@ -27,11 +27,11 @@ AI-powered job application automation — searches supported platforms, scores l
 ### 1. Build and run
 
 ```bash
-# Build frontend + backend, then start the server on :8080
+# Build frontend + backend, then start the server on :8081
 make run
 ```
 
-The app is served at `http://localhost:8080`. Register an account on first launch.
+The app is served at `http://localhost:8081`. Register an account on first launch.
 
 ### 2. Configure your LLM
 
@@ -100,10 +100,10 @@ The OpenAPI 3.1 spec is served at runtime:
 GET /api/openapi.yaml
 ```
 
-No authentication required. You can load it into any OpenAPI-compatible tool (Swagger UI, Insomnia, Postman, etc.) pointed at `http://localhost:8080/api/openapi.yaml`.
+No authentication required. You can load it into any OpenAPI-compatible tool (Swagger UI, Insomnia, Postman, etc.) pointed at `http://localhost:8081/api/openapi.yaml`.
 
 ## Architecture
 
-Go backend (chi router, SQLite, Rod browser automation) + React 19 / Vite frontend served as a SPA from the same `:8080` port.
+Go backend (chi router, SQLite, Rod browser automation) + React 19 / Vite frontend served as a SPA from the same `:8081` port.
 
 See [CLAUDE.md](CLAUDE.md) for detailed architecture documentation, package layout, and development conventions.

@@ -25,7 +25,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":8080", "HTTP listen address")
+	addr := flag.String("addr", ":8081", "HTTP listen address")
 	dbPath := flag.String("db", "data/jobifai.db", "SQLite database path")
 	flag.Parse()
 
