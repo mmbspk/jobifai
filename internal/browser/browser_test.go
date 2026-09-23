@@ -17,7 +17,7 @@ func newTestSessionStore(t *testing.T) *browser.SessionStore {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := appdb.Open(dbPath)
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return browser.NewSessionStore(db, config.NewSecretsStore(db, "test-passphrase"))
 }
 

@@ -90,7 +90,7 @@ func extractDocxText(data []byte) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		defer rc.Close()
+		defer func() { _ = rc.Close() }()
 		xmlData, err := io.ReadAll(rc)
 		if err != nil {
 			return "", err

@@ -236,7 +236,6 @@ export function LogPanel({ lines, connected, onClear, className, currentJob }: P
             </span>
             <span
               className={cn('break-all', getMessageClass(line))}
-              // eslint-disable-next-line react/no-danger
               dangerouslySetInnerHTML={{ __html: buildHighlightedHtml(line.message, searchQuery) }}
             />
           </div>

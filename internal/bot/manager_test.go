@@ -19,7 +19,7 @@ func newTestManager(t *testing.T) *bot.Manager {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := appdb.Open(dbPath)
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	cfgStore := config.NewStore(db)
 	secrets := config.NewSecretsStore(db, "test-key")
@@ -71,7 +71,7 @@ func TestManager_Start_UnsupportedPlatform_ReturnsError(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := appdb.Open(dbPath)
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	cfgStore := config.NewStore(db)
 	secrets := config.NewSecretsStore(db, "test-key")

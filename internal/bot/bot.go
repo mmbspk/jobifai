@@ -75,6 +75,7 @@ func (l *lazyDocGen) peek() (resume, cover string) {
 func (l *lazyDocGen) preload() {
 	go l.get()
 }
+
 // It is computed once per job session and cached.
 func (l *lazyDocGen) formProfileJSON() []byte {
 	l.formOnce.Do(func() {
@@ -119,22 +120,22 @@ type JobHalalChecker interface {
 
 // Config bundles everything the bot needs to run.
 type Config struct {
-	Platform      domain.Platform
-	Settings      domain.GeneralSettings
-	Preferences   domain.WorkPreferences
-	Profile       *domain.ResumeProfile
-	ProfileLoader func() *domain.ResumeProfile // if set, called per-job to get the latest profile
-	Cookies       []browser.Cookie
-	Tailor        ResumeTailor    // nil = no LLM tailoring
-	Scorer        JobScorer       // nil = let all jobs through
-	HalalChecker  JobHalalChecker // nil = halal filter disabled
-	Renderer      ResumeRenderer
-	DB            *sql.DB
-	UserID        string // owner of this bot session
-	RequireReview bool
-	MarketDir     string // path to resume_markets/ directory
-	LLMTracker    *llm.UsageTracker // optional; tracks per-job token usage for success log
-	SeekEmail        string // stored credentials for auto-login on session expiry
+	Platform         domain.Platform
+	Settings         domain.GeneralSettings
+	Preferences      domain.WorkPreferences
+	Profile          *domain.ResumeProfile
+	ProfileLoader    func() *domain.ResumeProfile // if set, called per-job to get the latest profile
+	Cookies          []browser.Cookie
+	Tailor           ResumeTailor    // nil = no LLM tailoring
+	Scorer           JobScorer       // nil = let all jobs through
+	HalalChecker     JobHalalChecker // nil = halal filter disabled
+	Renderer         ResumeRenderer
+	DB               *sql.DB
+	UserID           string // owner of this bot session
+	RequireReview    bool
+	MarketDir        string            // path to resume_markets/ directory
+	LLMTracker       *llm.UsageTracker // optional; tracks per-job token usage for success log
+	SeekEmail        string            // stored credentials for auto-login on session expiry
 	SeekPassword     string
 	LinkedInEmail    string
 	LinkedInPassword string
@@ -402,7 +403,7 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 		log.Error().Err(err).Msg("linkedin: launch browser failed")
 		return
 	}
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 
 	b.warmSeenCache()
 
@@ -458,7 +459,7 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 			// (e.g. VPN reset) and attempt a reconnect before continuing.
 			if n == 0 && isCDPDead(page) {
 				log.Warn().Msg("linkedin: browser connection lost, attempting reconnect")
-				br.Close()
+				_ = br.Close()
 				newBr, newPage, err := b.launchBrowser(ctx)
 				if err != nil {
 					log.Error().Err(err).Msg("linkedin: reconnect failed, stopping")
@@ -515,7 +516,7 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 				log.Info().Int("port", port).Msg("browser: connected to existing Chrome via remote debug")
 				page, err := br.Page(proto.TargetCreateTarget{URL: "about:blank"})
 				if err != nil {
-					br.Close()
+					_ = br.Close()
 					return nil, nil, fmt.Errorf("open page: %w", err)
 				}
 				return br, page, nil
@@ -549,7 +550,7 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	// so the session cookies are present on the very first request.
 	page, err := br.Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
-		br.Close()
+					_ = br.Close()
 		return nil, nil, fmt.Errorf("open blank page: %w", err)
 	}
 	if len(b.cfg.Cookies) > 0 {
@@ -562,7 +563,7 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 		homeURL = "https://au.seek.com/jobs"
 	}
 	if err := page.Navigate(homeURL); err != nil {
-		br.Close()
+					_ = br.Close()
 		return nil, nil, fmt.Errorf("navigate %s: %w", b.cfg.Platform, err)
 	}
 	// Wait for the page to fully load and for Auth0 silent re-auth to complete.
@@ -573,11 +574,12 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 
 	// Recover a dead session with stored credentials before giving up.
-	if b.cfg.Platform == domain.PlatformSeek {
+	switch b.cfg.Platform {
+	case domain.PlatformSeek:
 		if err := b.seekEnsureLoggedIn(page); err != nil {
 			log.Warn().Err(err).Msg("browser: seek session not authenticated after warm-up")
 		}
-	} else if b.cfg.Platform == domain.PlatformLinkedIn {
+	case domain.PlatformLinkedIn:
 		if err := b.linkedinEnsureLoggedIn(page); err != nil {
 			log.Warn().Err(err).Msg("browser: linkedin session not authenticated after warm-up")
 		}
@@ -1295,7 +1297,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 		log.Error().Err(err).Msg("linkedin: open job page")
 		return false
 	}
-	defer jobPage.Close()
+	defer func() { _ = jobPage.Close() }()
 
 	if err := b.easyApply(ctx, jobPage, lazy); err != nil {
 		if errors.Is(err, errAlreadyApplied) {
@@ -2153,7 +2155,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			jobs = append(jobs, j)
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		log.Error().Err(err).Str("user_id", b.cfg.UserID).Msg("processApprovedQueue row iteration error")
 		return 0
@@ -2183,7 +2185,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		queueDetails := b.fetchJob(ctx, linkedInJob{URL: j.Link, Company: j.Company, Title: j.Role})
 		queueLazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: j.Company, Title: j.Role}, jobDesc: queueDetails.Description}
 		if err := b.platformApply(ctx, jobPage, queueLazy); err != nil {
-			jobPage.Close()
+			_ = jobPage.Close()
 			log.Error().Err(err).Str("job", j.Role).Msg("approved queue: apply failed")
 			var score int
 			_ = b.cfg.DB.QueryRow(
@@ -2195,7 +2197,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 				`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
 			continue
 		}
-		jobPage.Close()
+		_ = jobPage.Close()
 
 		// Record as applied and remove from queue.
 		// Fetch score from pending_review (may already be deleted, falls back to 0).
@@ -2272,10 +2274,6 @@ func (b *Bot) alreadyAppliedReason(jobID string) string {
 		return "in approved queue"
 	}
 	return ""
-}
-
-func (b *Bot) alreadyApplied(jobID string) bool {
-	return b.alreadyAppliedReason(jobID) != ""
 }
 
 // alreadyQueued returns true when a job with the same company+title is already in

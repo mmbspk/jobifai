@@ -15,7 +15,7 @@ func TestResolveOperationalSettings_SystemDefaultAPIKeyScope(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := appdb.Open(dbPath)
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	store := config.NewStore(db)
 	secrets := config.NewSecretsStore(db, "test-passphrase")
@@ -46,7 +46,7 @@ func TestResolveOperationalSettings_UserOverridesTaskModel(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := appdb.Open(dbPath)
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	store := config.NewStore(db)
 	sys := domain.GeneralSettings{

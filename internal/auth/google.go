@@ -141,7 +141,7 @@ func fetchGoogleProfile(ctx context.Context, cfg *oauth2.Config, token *oauth2.T
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var p googleProfile
 	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
 		return nil, err

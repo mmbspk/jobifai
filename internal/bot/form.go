@@ -846,7 +846,6 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		log.Debug().Msgf("form: field found type=%s q=%q inputType=%s", f.Type, f.Question, f.InputType)
 	}
 	log.Info().Int("count", len(fields)).Msg("form: fields to fill")
-	hasFields = true
 
 	fileUploadIdx := 0 // track how many file inputs we've processed
 

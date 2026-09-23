@@ -310,7 +310,7 @@ func runSeek(ctx context.Context, b *Bot) {
 		b.mu.Unlock()
 		return
 	}
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 
 	b.mu.Lock()
 	b.seekSessionExpired = false
@@ -404,7 +404,7 @@ func runSeek(ctx context.Context, b *Bot) {
 			// Detect a dropped CDP connection (e.g. VPN reset) and reconnect.
 			if n == 0 && isCDPDead(page) {
 				log.Warn().Msg("seek: browser connection lost, attempting reconnect")
-				br.Close()
+				_ = br.Close()
 				newBr, newPage, rerr := b.launchBrowser(ctx)
 				if rerr != nil {
 					log.Error().Err(rerr).Msg("seek: reconnect failed, stopping")
@@ -981,7 +981,7 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 		log.Warn().Err(err).Str("job", job.ID).Msg("seek: open job page for details")
 		return scraper.JobDetails{Description: job.Title + " at " + job.Company, PostedDate: job.PostedDate}
 	}
-	defer page.Close()
+	defer func() { _ = page.Close() }()
 	page = page.Timeout(30 * time.Second)
 
 	if err := page.WaitLoad(); err != nil {
@@ -1087,33 +1087,6 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 	return details
 }
 
-func (b *Bot) generateSeekDocs(ctx context.Context, job seekJob, jobDesc string) (resumePath, coverPath string) {
-	market := b.loadMarket()
-	profile := b.tailoredProfile(ctx, jobDesc, market)
-	if b.cfg.Renderer == nil || profile == nil {
-		return
-	}
-	cssOverride := ""
-	if market != nil && market.CSSFile != "" {
-		cssOverride = market.CSSFile
-	}
-	if pdf, err := b.cfg.Renderer.RenderResume(ctx, profile, "", cssOverride); err == nil {
-		resumePath = b.savePDF(pdf, job.Company, job.Title, "resume")
-	}
-	if b.cfg.Tailor != nil {
-		promptCtx := jobDesc
-		if market != nil && market.CoverLetterPrompt != "" {
-			promptCtx = market.CoverLetterPrompt + "\n" + jobDesc
-		}
-		if body, err := b.cfg.Tailor.WriteCoverLetter(ctx, profile, promptCtx); err == nil {
-			if pdf, err := b.cfg.Renderer.RenderCoverLetter(ctx, body, "", cssOverride); err == nil {
-				coverPath = b.savePDF(pdf, job.Company, job.Title, "cover_letter")
-			}
-		}
-	}
-	return
-}
-
 func (b *Bot) saveSeekPendingReview(ctx context.Context, p *domain.PendingReview) {
 	b.savePendingReview(ctx, p)
 	if p.EasyApply {
@@ -1162,7 +1135,7 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 				pending = append(pending, p)
 			}
 		}
-		rows.Close()
+		_ = rows.Close()
 	}
 
 	applied := 0
@@ -1199,7 +1172,7 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 		}
 
 		if !detectSeekEasyApply(page) {
-			appdb.ExecContextWithRetry(ctx, b.cfg.DB,
+			_, _ = appdb.ExecContextWithRetry(ctx, b.cfg.DB,
 				"UPDATE jobs_pending_review SET attempt_count = attempt_count + 1 WHERE job_id = ? AND user_id = ?",
 				p.jobID, b.cfg.UserID,
 			)
@@ -1220,7 +1193,7 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 		switch outcome {
 		case seekSubmitApplied, seekSubmitCannotApply:
 			// Applied → jobs_applied. Failed Quick Apply → Cannot Apply. Remove from Top Matches.
-			appdb.ExecContextWithRetry(ctx, b.cfg.DB,
+			_, _ = appdb.ExecContextWithRetry(ctx, b.cfg.DB,
 				"DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?",
 				p.jobID, b.cfg.UserID,
 			)
@@ -1228,7 +1201,7 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 				applied++
 			}
 		case seekSubmitTopMatches:
-			appdb.ExecContextWithRetry(ctx, b.cfg.DB,
+			_, _ = appdb.ExecContextWithRetry(ctx, b.cfg.DB,
 				"UPDATE jobs_pending_review SET attempt_count = attempt_count + 1 WHERE job_id = ? AND user_id = ?",
 				p.jobID, b.cfg.UserID,
 			)
@@ -1280,7 +1253,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 		b.recordSeekSkipped(job, "seek apply: open job page: "+err.Error(), score, reasoning, halalVerdict)
 		return seekSubmitCannotApply
 	}
-	defer jobPage.Close()
+	defer func() { _ = jobPage.Close() }()
 
 	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
 		log.Error().Err(err).Str("job", job.Title).Msg("seek: apply failed")
@@ -1405,7 +1378,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		log.Info().Msg("seek: possible silent Quick Apply success page — verifying on job page")
 		if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err != nil {
 			log.Warn().Err(err).Msg("seek: success-page signal without job-page Applied confirmation")
-			return fmt.Errorf("Seek showed a possible success page but the job page does not confirm the application — try again or apply manually on Seek")
+			return fmt.Errorf("seek showed a possible success page but the job page does not confirm the application — try again or apply manually on Seek")
 		}
 		log.Info().Msg("seek: Quick Apply submitted silently (pre-filled) ✓")
 		return nil
@@ -2319,14 +2292,9 @@ func seekDumpUploadDebug(page *rod.Page, slug string) {
 // If Seek's 10-resume library limit dialog appears, it selects the oldest bot-uploaded
 // resume from the dropdown, clicks the delete button (no further confirmation), then retries.
 func (b *Bot) seekUploadResume(page *rod.Page, filePath string) error {
-	radioSelected := false
-	if ok, _ := page.Eval(jsFillRadio, "resume-method", "upload"); ok != nil && ok.Value.Bool() {
-		radioSelected = true
-	}
-	if !radioSelected {
+	if ok, _ := page.Eval(jsFillRadio, "resume-method", "upload"); ok == nil || !ok.Value.Bool() {
 		// Text-based fallback for renamed radio groups.
 		if ok, _ := page.Eval(jsClickUploadByText, `^upload( a| an| new)? (resum|cv)`); ok != nil && ok.Value.Bool() {
-			radioSelected = true
 			log.Info().Msg("seek: resume upload radio selected via text fallback")
 		} else {
 			log.Warn().Msg("seek: resume-method=upload radio not found, upload may fail")
@@ -2415,13 +2383,8 @@ func seekHandleResumeLimitDialog(page *rod.Page) error {
 
 // seekUploadCoverLetter activates the "Upload a cover letter" radio and sets the cover letter file.
 func (b *Bot) seekUploadCoverLetter(page *rod.Page, filePath string) error {
-	radioSelected := false
-	if ok, _ := page.Eval(jsFillRadio, "coverLetter-method", "upload"); ok != nil && ok.Value.Bool() {
-		radioSelected = true
-	}
-	if !radioSelected {
+	if ok, _ := page.Eval(jsFillRadio, "coverLetter-method", "upload"); ok == nil || !ok.Value.Bool() {
 		if ok, _ := page.Eval(jsClickUploadByText, `^upload( a| an| new)? cover`); ok != nil && ok.Value.Bool() {
-			radioSelected = true
 			log.Info().Msg("seek: cover letter upload radio selected via text fallback")
 		} else {
 			log.Warn().Msg("seek: coverLetter-method=upload radio not found, upload may fail")

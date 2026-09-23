@@ -10,7 +10,7 @@ vi.hoisted(() => {
     setItem: (k: string, v: string): void => { store[k] = v },
     removeItem: (k: string): void => { delete store[k] },
     clear: (): void => { Object.keys(store).forEach(k => { delete store[k] }) },
-    key: (_i: number): null => null,
+    key: (): null => null,
     length: 0,
   }
   ;(globalThis as Record<string, unknown>).matchMedia = (_query: string) => ({

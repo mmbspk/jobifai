@@ -35,7 +35,7 @@ func (h *WSHandlers) Logs(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 
 	if h.svc.Logs != nil {
 		h.svc.Logs.Register(conn, userID)

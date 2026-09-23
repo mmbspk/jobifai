@@ -34,7 +34,7 @@ export function TopMatches() {
   const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get, staleTime: 300_000 })
   const halalEnabled = generalSettings?.halal_job_filter === true
 
-  const all = data?.pages.flat() ?? []
+  const all = useMemo(() => data?.pages.flat() ?? [], [data?.pages])
 
   const deleteMutation = useMutation({
     mutationFn: jobsApi.deletePendingReview,

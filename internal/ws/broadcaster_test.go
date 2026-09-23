@@ -26,7 +26,7 @@ func dialTest(t *testing.T, srv *httptest.Server, path string) *websocket.Conn {
 	t.Cleanup(cancel)
 	conn, _, err := websocket.Dial(ctx, url, nil)
 	require.NoError(t, err, "dial %s", url)
-	t.Cleanup(func() { conn.CloseNow() })
+	t.Cleanup(func() { _ = conn.CloseNow() })
 	return conn
 }
 
@@ -43,7 +43,7 @@ func serveWS(t *testing.T, b *jobws.Broadcaster) *httptest.Server {
 		b.Register(conn, "")
 		defer func() {
 			b.Unregister(conn)
-			conn.CloseNow()
+			_ = conn.CloseNow()
 		}()
 		// Hold the connection open until the client closes it or the request context is done.
 		<-r.Context().Done()
@@ -84,7 +84,7 @@ func TestBroadcaster_RegisterUnregister(t *testing.T) {
 	assert.Equal(t, "hello", asMap["message"])
 
 	// Close the connection — the server handler will Unregister it.
-	conn.CloseNow()
+	_ = conn.CloseNow()
 
 	// A small sleep so the server goroutine processes the close.
 	time.Sleep(50 * time.Millisecond)

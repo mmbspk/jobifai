@@ -74,7 +74,7 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]domain.AppliedJob, 0)
 	for rows.Next() {
@@ -123,7 +123,7 @@ func (h *JobHandlers) Skipped(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]domain.SkippedJob, 0)
 	for rows.Next() {
@@ -176,7 +176,7 @@ func (h *JobHandlers) CannotApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]domain.SkippedJob, 0)
 	for rows.Next() {
@@ -350,7 +350,7 @@ func (h *JobHandlers) RetryAllCannotApply(w http.ResponseWriter, r *http.Request
 			ids = append(ids, id)
 		}
 	}
-	rows.Close()
+	_ = rows.Close()
 
 	queued := 0
 	for _, id := range ids {
@@ -434,7 +434,7 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	out := make([]domain.PendingReview, 0)
 	for rows.Next() {

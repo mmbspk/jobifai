@@ -40,9 +40,10 @@ dev:
 test:
 	go test ./... -race -count=1
 
-## lint: run golangci-lint
+## lint: run golangci-lint and web ESLint
 lint:
 	golangci-lint run ./...
+	cd web && npm run lint
 
 ## tidy: tidy and verify modules
 tidy:

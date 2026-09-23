@@ -36,7 +36,7 @@ func TotalUsageByModel(db *sql.DB, userID string) ([]ModelUsage, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var result []ModelUsage
 	for rows.Next() {
 		var m ModelUsage

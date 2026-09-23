@@ -116,7 +116,7 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []domain.PendingReview
 	for rows.Next() {

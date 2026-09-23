@@ -19,5 +19,16 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // Form hydration and external-store sync legitimately set state in effects.
+      'react-hooks/set-state-in-effect': 'off',
+      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+    },
+  },
+  {
+    files: ['src/components/ui/**', 'src/contexts/**'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
   },
 ])

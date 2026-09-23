@@ -77,7 +77,7 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "resume_file field missing"})
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	text, err := h.svc.FileToText(f, fh.Filename)
 	if err != nil {
@@ -436,7 +436,7 @@ func fetchLocationSuggestions(ctx context.Context, q string, client *http.Client
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var hits []struct {
 		DisplayName string  `json:"display_name"`

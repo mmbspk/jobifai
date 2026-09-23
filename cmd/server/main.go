@@ -48,7 +48,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("open database")
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 	log.Info().Str("path", *dbPath).Msg("database ready")
 
 	// ── Config + Secrets ────────────────────────────────────────────────
@@ -119,9 +119,7 @@ func main() {
 	if tailor != nil {
 		botTailor = tailor.(bot.ResumeTailor)
 	}
-	if renderer != nil {
-		botRenderer = renderer.(bot.ResumeRenderer)
-	}
+	botRenderer = renderer.(bot.ResumeRenderer)
 	if llmClient != nil {
 		var gs domain.GeneralSettings
 		_ = cfgStore.Get("__default__", "general_settings", &gs)

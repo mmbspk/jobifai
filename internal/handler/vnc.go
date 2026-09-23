@@ -33,7 +33,7 @@ func (h *VNCHandlers) Websockify(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "VNC unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	defer vnc.Close()
+	defer func() { _ = vnc.Close() }()
 
 	opts := wsOptions(r)
 	opts.Subprotocols = []string{"binary"}
@@ -41,7 +41,7 @@ func (h *VNCHandlers) Websockify(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer conn.CloseNow()
+	defer func() { _ = conn.CloseNow() }()
 
 	ctx := r.Context()
 	done := make(chan struct{}, 2)

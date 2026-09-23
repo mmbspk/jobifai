@@ -176,10 +176,6 @@ func okMsg(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": msg})
 }
 
-func notImpl(w http.ResponseWriter) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"message": "not implemented"})
-}
-
 func notFound(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusNotFound, map[string]string{"message": msg})
 }

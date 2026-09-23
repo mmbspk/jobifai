@@ -57,7 +57,7 @@ func fetchJobPageOnce(ctx context.Context, rawURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		return "", fmt.Errorf("HTTP %d: page requires login or is unavailable", resp.StatusCode)

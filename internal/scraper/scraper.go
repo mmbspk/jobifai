@@ -39,7 +39,7 @@ func FetchJob(ctx context.Context, jobURL string) (JobDetails, error) {
 	if err != nil {
 		return JobDetails{}, fmt.Errorf("scraper: fetch %s: %w", jobURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		return JobDetails{}, fmt.Errorf("scraper: HTTP %d for %s", resp.StatusCode, jobURL)

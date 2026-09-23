@@ -210,7 +210,7 @@ func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) ([]byte, error
 	if err := b.Connect(); err != nil {
 		return nil, fmt.Errorf("connect chrome: %w", err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	page, err := b.Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
@@ -231,7 +231,7 @@ func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("print pdf: %w", err)
 	}
-	defer pdf.Close()
+	defer func() { _ = pdf.Close() }()
 
 	var buf bytes.Buffer
 	if _, err := buf.ReadFrom(pdf); err != nil {

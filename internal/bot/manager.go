@@ -295,17 +295,17 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		}
 		if navErr := newPage.Navigate(req.Link); navErr != nil {
 			log.Error().Err(navErr).Str("job", req.Role).Msg("approve: navigate to job")
-			newPage.Close()
+			_ = newPage.Close()
 			if ownsBr {
-				newBr.Close()
+				_ = newBr.Close()
 			}
 			return navErr
 		}
 		br, jobPage = newBr, newPage
 	}
-	defer jobPage.Close()
+	defer func() { _ = jobPage.Close() }()
 	if ownsBr {
-		defer br.Close()
+		defer func() { _ = br.Close() }()
 	}
 
 	var score int
@@ -939,7 +939,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 			return ApplyFromURLResult{}, fmt.Errorf("launch browser: %w", launchErr)
 		}
 		newPage, pageErr := newBr.Page(proto.TargetCreateTarget{URL: jobURL})
-		warmPage.Close()
+		_ = warmPage.Close()
 		if pageErr != nil {
 			return ApplyFromURLResult{}, fmt.Errorf("open job tab: %w", pageErr)
 		}
@@ -964,21 +964,21 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 			cu := cu.Value.String()
 			switch {
 			case strings.Contains(cu, "/feed") || strings.Contains(cu, "/authwall"):
-				jobPage.Close()
+				_ = jobPage.Close()
 				if ownsBr {
-					br.Close()
+					_ = br.Close()
 				}
 				return ApplyFromURLResult{}, fmt.Errorf("LinkedIn redirected to %s — your session may be expired, please log in via Settings → Secrets and try again", cu)
 			case strings.Contains(cu, "/login") || strings.Contains(cu, "/uas/login") || strings.Contains(cu, "/checkpoint"):
-				jobPage.Close()
+				_ = jobPage.Close()
 				if ownsBr {
-					br.Close()
+					_ = br.Close()
 				}
 				return ApplyFromURLResult{}, fmt.Errorf("LinkedIn requires login — please save a fresh LinkedIn session in Settings → Secrets")
 			case !strings.Contains(cu, "/jobs/"):
-				jobPage.Close()
+				_ = jobPage.Close()
 				if ownsBr {
-					br.Close()
+					_ = br.Close()
 				}
 				return ApplyFromURLResult{}, fmt.Errorf("unexpected LinkedIn page (%s) — paste a direct job URL (linkedin.com/jobs/view/…)", cu)
 			}
@@ -1003,9 +1003,9 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		pageApplied = b.linkedInPageApplied(jobPage)
 	}
 	if pageApplied {
-		jobPage.Close()
+		_ = jobPage.Close()
 		if ownsBr {
-			br.Close()
+			_ = br.Close()
 		}
 		// Always surface as already_applied — never nil (which the UI treats as fresh Applied ✓).
 		var alreadyTracked int
@@ -1066,9 +1066,9 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 			}
 			scoreCancel()
 		}
-		jobPage.Close()
+		_ = jobPage.Close()
 		if ownsBr {
-			br.Close()
+			_ = br.Close()
 		}
 		var pendingCount int
 		if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL).Scan(&pendingCount); err != nil {
@@ -1108,9 +1108,9 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 
 	// STEP 3: Score threshold (skip when force=true).
 	if !force && scoredOK && score < threshold {
-		jobPage.Close()
+		_ = jobPage.Close()
 		if ownsBr {
-			br.Close()
+			_ = br.Close()
 		}
 		return ApplyFromURLResult{
 			Company:      company,
@@ -1125,9 +1125,9 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	// STEP 4: Apply — use request ctx (includes 4m handler timeout) so a hung
 	// browser/form cannot block "Submitting application…" indefinitely.
 	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: company, Title: role}, jobDesc: jobDesc}
-	defer jobPage.Close()
+	defer func() { _ = jobPage.Close() }()
 	if ownsBr {
-		defer br.Close()
+		defer func() { _ = br.Close() }()
 	}
 
 	var applyErr error

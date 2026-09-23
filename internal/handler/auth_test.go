@@ -69,18 +69,18 @@ func (s *stubSessionStore) Delete(_, platform string) error {
 type stubBotCtrl struct{}
 
 func (stubBotCtrl) Start(_ context.Context, _ string, _ domain.Platform) error { return nil }
-func (stubBotCtrl) Stop(_ string)                                               {}
-func (stubBotCtrl) Pause(_ string)                                              {}
-func (stubBotCtrl) Resume(_ string)                                             {}
+func (stubBotCtrl) Stop(_ string)                                              {}
+func (stubBotCtrl) Pause(_ string)                                             {}
+func (stubBotCtrl) Resume(_ string)                                            {}
 func (stubBotCtrl) Status(_ string) domain.BotStatus {
 	return domain.BotStatus{State: domain.BotStateIdle}
 }
-func (stubBotCtrl) SubmitNow(_ string, _ bot.SubmitRequest)                              {}
-func (stubBotCtrl) SubmitSync(_ context.Context, _ string, _ bot.SubmitRequest) error    { return nil }
+func (stubBotCtrl) SubmitNow(_ string, _ bot.SubmitRequest)                           {}
+func (stubBotCtrl) SubmitSync(_ context.Context, _ string, _ bot.SubmitRequest) error { return nil }
 func (stubBotCtrl) ApplyFromURL(_ context.Context, _, _, _ string, _ bool) (bot.ApplyFromURLResult, error) {
 	return bot.ApplyFromURLResult{}, nil
 }
-func (stubBotCtrl) InvalidateSeekBrowser(_ string)    {}
+func (stubBotCtrl) InvalidateSeekBrowser(_ string)     {}
 func (stubBotCtrl) InvalidateLinkedInBrowser(_ string) {}
 
 func newAuthTestServices(t *testing.T, bm *stubBrowserMgr, ss *stubSessionStore) (*handler.Services, string) {
@@ -255,9 +255,10 @@ func TestAuth_RequiresAuth(t *testing.T) {
 	for _, tc := range paths {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			w := authPost(t, router, tc.path, "", nil)
-			if tc.method == "GET" {
+			switch tc.method {
+			case "GET":
 				w = authGet(t, router, tc.path, "")
-			} else if tc.method == "DELETE" {
+			case "DELETE":
 				w = authDelete(t, router, tc.path, "")
 			}
 			assert.Equal(t, 401, w.Code)

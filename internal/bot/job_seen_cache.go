@@ -53,7 +53,7 @@ func (c *jobSeenCache) load(db *sql.DB, userID string) (int, error) {
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {

@@ -42,7 +42,7 @@ func taskLabel(ctx context.Context) string {
 
 // Message is a single chat turn.
 type Message struct {
-	Role    string `json:"role"`    // "user" | "assistant" | "system"
+	Role    string `json:"role"` // "user" | "assistant" | "system"
 	Content string `json:"content"`
 }
 
@@ -119,10 +119,10 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 // ── Claude (Anthropic Messages API) ───────────────────────────────────────
 
 type claudeRequest struct {
-	Model     string           `json:"model"`
-	MaxTokens int              `json:"max_tokens"`
-	System    string           `json:"system,omitempty"`
-	Messages  []claudeMessage  `json:"messages"`
+	Model     string          `json:"model"`
+	MaxTokens int             `json:"max_tokens"`
+	System    string          `json:"system,omitempty"`
+	Messages  []claudeMessage `json:"messages"`
 }
 
 type claudeMessage struct {
@@ -158,7 +158,7 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 			system = m.Content
 			continue
 		}
-		turns = append(turns, claudeMessage{Role: m.Role, Content: m.Content})
+		turns = append(turns, claudeMessage(m))
 	}
 
 	maxTokens := c.cfg.MaxTokens
@@ -311,7 +311,7 @@ type openaiResponse struct {
 func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error) {
 	turns := make([]openaiMessage, len(msgs))
 	for i, m := range msgs {
-		turns[i] = openaiMessage{Role: m.Role, Content: m.Content}
+		turns[i] = openaiMessage(m)
 	}
 
 	body := openaiRequest{Model: c.cfg.Model, Messages: turns, MaxTokens: c.cfg.MaxTokens}
@@ -365,7 +365,7 @@ type ollamaResponse struct {
 func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (string, error) {
 	turns := make([]openaiMessage, len(msgs))
 	for i, m := range msgs {
-		turns[i] = openaiMessage{Role: m.Role, Content: m.Content}
+		turns[i] = openaiMessage(m)
 	}
 
 	baseURL := "http://localhost:11434"
@@ -411,7 +411,7 @@ func (c *Client) post(ctx context.Context, url string, headers map[string]string
 	if err != nil {
 		return nil, fmt.Errorf("llm http: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("llm read body: %w", err)

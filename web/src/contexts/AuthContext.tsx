@@ -32,7 +32,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const scheduleRefresh = useCallback((expiresIn: number) => {
+  const scheduleRefresh = useCallback(function scheduleRefresh(expiresIn: number) {
     if (refreshTimer.current) clearTimeout(refreshTimer.current)
     const delay = Math.max((expiresIn - 300) * 1000, 60_000) // refresh 5 min early
     refreshTimer.current = setTimeout(async () => {

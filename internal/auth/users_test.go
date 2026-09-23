@@ -17,7 +17,7 @@ func newUsersTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 

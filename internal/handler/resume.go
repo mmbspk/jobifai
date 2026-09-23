@@ -107,7 +107,7 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 
 	// Optional: override profile with uploaded file (uses LLM if configured)
 	if f, fh, ferr := r.FormFile("resume_file"); ferr == nil {
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		extractor, _ := h.svc.LLMFactory(userID)
 		if extractor != nil {
 			text, _ := h.svc.FileToText(f, fh.Filename)
