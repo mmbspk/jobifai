@@ -15,7 +15,7 @@ test.describe('Dashboard', () => {
 
   test('stats cards render with zero values for a new user', async ({ page }) => {
     await expect(page.getByText('Applied today')).toBeVisible()
-    await expect(page.getByText('In review')).toBeVisible()
+    await expect(page.getByText('Awaiting review')).toBeVisible()
     await expect(page.getByText('Skipped today')).toBeVisible()
   })
 

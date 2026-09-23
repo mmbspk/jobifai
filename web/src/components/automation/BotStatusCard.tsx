@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Pause, Play, RotateCcw, Square } from 'lucide-react'
+import { Pause, Play, RotateCcw, Square, Zap } from 'lucide-react'
 import { cn } from '../../lib'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
@@ -50,6 +50,18 @@ function stateBadgeVariant(state: BotState): 'accent' | 'warn' | 'danger' | 'mut
   return 'muted'
 }
 
+function stateHeadline(state: BotState): string {
+  switch (state) {
+    case 'idle': return 'Automation is ready'
+    case 'running': return 'Searching for your next strong match'
+    case 'paused': return 'Automation is paused'
+    case 'pending_review': return 'Waiting for your review'
+    case 'error': return 'Automation needs attention'
+    case 'stopped': return 'Automation has stopped'
+    default: return stateLabel(state)
+  }
+}
+
 export function BotStatusCard(props: BotStatusCardProps) {
   const {
     status, state, platform, onPlatformChange, startError, pendingReviewCount,
@@ -65,8 +77,8 @@ export function BotStatusCard(props: BotStatusCardProps) {
   return (
     <section
       className={cn(
-        'rounded-[var(--radius-xl)] border p-5 sm:p-6',
-        'bg-[var(--color-surface)] shadow-[var(--shadow-card)]',
+        'relative overflow-hidden rounded-[var(--radius-xl)] border p-5 sm:p-6',
+        'bg-[linear-gradient(125deg,var(--color-surface),var(--color-surface)_60%,var(--color-accent-soft))] shadow-[var(--shadow-card)]',
         state === 'error' && 'border-[var(--color-danger)]/40',
         (state === 'running' || state === 'pending_review') && 'border-[var(--color-accent)]/35',
         state === 'paused' && 'border-[var(--color-warn)]/35',
@@ -76,36 +88,33 @@ export function BotStatusCard(props: BotStatusCardProps) {
       <div className="flex flex-col gap-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="relative flex items-center justify-center w-10 h-10 shrink-0">
-              <div
-                className={cn(
-                  'w-2.5 h-2.5 rounded-full',
-                  state === 'running' && 'bg-[var(--color-accent)]',
-                  state === 'paused' && 'bg-[var(--color-warn)]',
-                  state === 'pending_review' && 'bg-[var(--color-warn)]',
-                  state === 'error' && 'bg-[var(--color-danger)]',
-                  !pulse && state !== 'error' && 'bg-[var(--color-text-dim)]',
-                )}
-              />
+            <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]">
+              <Zap size={20} />
               {pulse && (
                 <div
                   className={cn(
-                    'absolute w-2.5 h-2.5 rounded-full animate-ping opacity-50',
+                    'absolute right-0 top-0 h-2.5 w-2.5 rounded-full animate-ping opacity-50',
                     state === 'running' ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-warn)]',
                   )}
                 />
               )}
+              {pulse && (
+                <div className={cn(
+                  'absolute right-0 top-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--color-surface)]',
+                  state === 'running' ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-warn)]',
+                )} />
+              )}
             </div>
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-lg font-semibold text-[var(--color-text)]">
-                  {state === 'idle' ? 'Automation is ready' : stateLabel(state)}
-                </span>
+              <div className="mb-1 flex flex-wrap items-center gap-2">
                 <Badge variant={stateBadgeVariant(state)}>{stateLabel(state)}</Badge>
               </div>
+              <h2 className="text-lg font-semibold tracking-tight text-[var(--color-text)]">
+                {stateHeadline(state)}
+              </h2>
               {state === 'idle' && (
                 <p className="text-sm text-[var(--color-text-dim)] mt-1">
-                  Choose a platform and start when your profile and preferences are set.
+                  Choose a platform when your profile and preferences are ready.
                 </p>
               )}
               {status?.platform && isActive && (
@@ -117,9 +126,7 @@ export function BotStatusCard(props: BotStatusCardProps) {
               )}
             </div>
           </div>
-          {status?.platform && isActive && (
-            <Badge variant="muted" className="capitalize">{status.platform}</Badge>
-          )}
+          {status?.platform && isActive && <Badge variant="muted" className="capitalize">{status.platform}</Badge>}
         </div>
 
         {status?.current_job && isActive && (
@@ -198,6 +205,11 @@ export function BotStatusCard(props: BotStatusCardProps) {
           </div>
         </div>
       </div>
+      {pulse && (
+        <div className="absolute inset-x-0 bottom-0 h-px overflow-hidden">
+          <span className="block h-full w-1/3 animate-[status-scan_2.4s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-[var(--color-accent)] to-transparent" />
+        </div>
+      )}
     </section>
   )
 }
