@@ -1,10 +1,9 @@
 import { useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Briefcase, ClipboardCheck, Sparkles, Settings, Sun, Moon } from 'lucide-react'
+import { LayoutDashboard, Briefcase, ClipboardCheck, Sparkles, Settings } from 'lucide-react'
 import { cn } from '../../lib'
 import { useQuery } from '@tanstack/react-query'
 import { botApi } from '../../api/bot'
-import { useTheme } from '../../hooks/useTheme'
 import { DialogRoot, DialogTrigger, DialogContent } from '../ui/dialog'
 
 const TABS = [
@@ -32,16 +31,15 @@ export function AppBottomNav() {
     refetchInterval: 30000,
   })
   const pendingCount = pending?.length ?? 0
-  const { theme, toggle } = useTheme()
 
   const jobsActive = JOB_LINKS.some(j => location.pathname.startsWith(j.to))
 
   return (
     <nav
-      className="fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--color-border)] bg-[var(--color-surface)]/95 backdrop-blur-sm md:hidden"
+      className="fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--color-border)] bg-[var(--color-surface)]/96 backdrop-blur-xl md:hidden"
       style={{ paddingBottom: 'max(10px, env(safe-area-inset-bottom))' }}
     >
-      <div className="flex relative max-w-lg mx-auto">
+      <div className="flex max-w-lg mx-auto">
         {TABS.map(tab => {
           if ('key' in tab && tab.key === 'jobs') {
             return (
@@ -50,10 +48,10 @@ export function AppBottomNav() {
                   <button
                     type="button"
                     className={cn(
-                      'flex-1 flex flex-col items-center justify-center gap-0.5 py-2 min-h-[52px] text-[0.65rem] border-t-2 transition-colors',
+                      'flex-1 flex flex-col items-center justify-center gap-1 py-2 min-h-[56px] text-[0.65rem] transition-colors',
                       jobsActive
-                        ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
-                        : 'text-[var(--color-text-dim)] border-transparent',
+                        ? 'text-[var(--color-accent)]'
+                        : 'text-[var(--color-text-dim)]',
                     )}
                   >
                     <Briefcase size={20} strokeWidth={jobsActive ? 2.2 : 1.8} />
@@ -97,10 +95,10 @@ export function AppBottomNav() {
               end={end}
               className={({ isActive }) =>
                 cn(
-                  'flex-1 flex flex-col items-center justify-center gap-0.5 py-2 min-h-[52px] text-[0.65rem] relative border-t-2 transition-colors',
+                  'flex-1 flex flex-col items-center justify-center gap-1 py-2 min-h-[56px] text-[0.65rem] relative transition-colors',
                   isActive
-                    ? 'text-[var(--color-accent)] border-[var(--color-accent)]'
-                    : 'text-[var(--color-text-dim)] border-transparent',
+                    ? 'text-[var(--color-accent)]'
+                    : 'text-[var(--color-text-dim)]',
                 )
               }
             >
@@ -120,14 +118,6 @@ export function AppBottomNav() {
             </NavLink>
           )
         })}
-        <button
-          type="button"
-          onClick={toggle}
-          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-          className="absolute top-1 right-1 p-2 rounded-md text-[var(--color-text-dim)] hover:text-[var(--color-text)] min-w-[44px] min-h-[44px] flex items-center justify-center"
-        >
-          {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-        </button>
       </div>
     </nav>
   )

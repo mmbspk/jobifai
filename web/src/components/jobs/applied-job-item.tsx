@@ -23,13 +23,15 @@ export function AppliedJobItem({ job, onDelete, deletePending }: Props) {
         onClick={() => setOpen(v => !v)}
         className="w-full text-left px-4 py-4 hover:bg-[var(--color-surface-2)]/80 transition-colors"
       >
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+        <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-3 sm:grid-cols-[2.75rem_minmax(0,1fr)_auto]">
+          <span aria-hidden="true" className="flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] text-sm font-bold text-[var(--color-text-muted)] sm:h-11 sm:w-11">
+            {(job.company || '?').trim().charAt(0).toUpperCase()}
+          </span>
           <div className="flex-1 min-w-0">
-            <p className="font-medium text-[var(--color-text)] truncate">{job.company}</p>
-            <p className="text-sm text-[var(--color-text-muted)] line-clamp-2">{job.role}</p>
-            {job.location && <p className="text-xs text-[var(--color-text-dim)] mt-0.5 truncate">{job.location}</p>}
+            <p className="font-semibold text-[var(--color-text)] line-clamp-2">{job.role}</p>
+            <p className="text-sm text-[var(--color-text-muted)] truncate">{job.company}{job.location ? ` · ${job.location}` : ''}</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2 sm:justify-end shrink-0">
+          <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
             <PlatformBadge platform={job.platform} size="sm" />
             {job.suitability_score != null && job.suitability_score > 0 ? (
               <ScorePill score={job.suitability_score} compact />
@@ -37,7 +39,7 @@ export function AppliedJobItem({ job, onDelete, deletePending }: Props) {
             <span className="text-xs text-[var(--color-text-dim)] tabular-nums" title={formatDate(job.applied_at)}>
               {relativeTime(job.applied_at)}
             </span>
-            <ChevronDown size={14} className={cn('text-[var(--color-text-dim)] transition-transform', open && 'rotate-180')} />
+            <ChevronDown size={14} className={cn('hidden text-[var(--color-text-dim)] transition-transform sm:block', open && 'rotate-180')} />
           </div>
         </div>
       </button>

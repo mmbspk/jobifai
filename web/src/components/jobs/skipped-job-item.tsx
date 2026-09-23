@@ -29,14 +29,17 @@ export function SkippedJobItem({ job, halalEnabled, onDelete, deletePending }: P
           expandable ? 'hover:bg-[var(--color-surface-2)]/80 cursor-pointer' : '',
         )}
       >
-        <div className="flex flex-col sm:flex-row sm:items-start gap-2 sm:gap-4">
+        <div className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-start gap-3">
+          <span aria-hidden="true" className="flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] text-sm font-bold text-[var(--color-text-muted)]">
+            {(job.company || '?').trim().charAt(0).toUpperCase()}
+          </span>
           <div className="flex-1 min-w-0">
-            <p className="font-medium text-[var(--color-text)]">{job.company}</p>
-            <p className="text-sm text-[var(--color-text-muted)]">{job.role}</p>
+            <p className="font-semibold text-[var(--color-text)]">{job.role}</p>
+            <p className="text-sm text-[var(--color-text-muted)]">{job.company}{job.location ? ` · ${job.location}` : ''}</p>
             <p className="text-xs text-[var(--color-warn)] mt-2 font-medium">Skipped</p>
             <p className="text-xs text-[var(--color-text-dim)] mt-1 line-clamp-2">{job.skip_reason}</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
             <PlatformBadge platform={job.platform} size="sm" />
             {job.suitability_score != null && job.suitability_score > 0 ? (
               <ScorePill score={job.suitability_score} compact />

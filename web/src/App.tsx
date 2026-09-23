@@ -39,18 +39,22 @@ const ADMIN_TABS = [
 
 function SettingsLayout() {
   return (
-    <div className="space-y-6">
-      <SettingsTabNav tabs={SETTINGS_TABS} />
-      <Routes>
-        <Route path="application" element={<ApplicationSettingsPage />} />
-        <Route path="preferences" element={<Preferences />} />
-        <Route path="resume"      element={<Resume />} />
-        <Route path="platforms"   element={<PlatformsSettingsPage />} />
-        <Route path="general"     element={<Navigate to="/settings/application" replace />} />
-        <Route path="secrets"     element={<Navigate to="/settings/platforms" replace />} />
-        <Route path="usage"       element={<Navigate to="/" replace />} />
-        <Route index element={<Navigate to="application" replace />} />
-      </Routes>
+    <div className="grid gap-6 lg:grid-cols-[190px_minmax(0,1fr)] lg:items-start">
+      <div className="lg:sticky lg:top-8">
+        <SettingsTabNav tabs={SETTINGS_TABS} />
+      </div>
+      <div className="min-w-0">
+        <Routes>
+          <Route path="application" element={<ApplicationSettingsPage />} />
+          <Route path="preferences" element={<Preferences />} />
+          <Route path="resume"      element={<Resume />} />
+          <Route path="platforms"   element={<PlatformsSettingsPage />} />
+          <Route path="general"     element={<Navigate to="/settings/application" replace />} />
+          <Route path="secrets"     element={<Navigate to="/settings/platforms" replace />} />
+          <Route path="usage"       element={<Navigate to="/" replace />} />
+          <Route index element={<Navigate to="application" replace />} />
+        </Routes>
+      </div>
     </div>
   )
 }

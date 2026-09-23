@@ -244,9 +244,11 @@ export function Generate() {
         description="Evaluate fit, tailor documents, answer questions, or apply from a job URL."
       />
 
+      <section className="rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[var(--shadow-card)] sm:p-6">
+      <div className="space-y-6">
       {/* Tabs */}
       <div className="overflow-x-auto -mx-1 px-1 pb-1">
-        <div className="flex gap-1 p-1 min-w-min bg-[var(--color-surface)] rounded-[var(--radius-lg)] border border-[var(--color-border)]">
+        <div className="flex gap-1 p-1 min-w-min bg-[var(--color-surface-2)] rounded-[var(--radius-lg)] border border-[var(--color-border)]">
           {visibleTabs.map(t => (
             <button key={t.key} type="button" onClick={() => setTab(t.key)}
               className={cn('py-2 px-3 rounded-[var(--radius-md)] text-sm font-medium transition-all whitespace-nowrap min-h-[44px] sm:min-h-0',
@@ -665,6 +667,8 @@ export function Generate() {
             style={{ height: '60vh' }} title="PDF Preview" />
         </div>
       )}
+      </div>
+      </section>
     </div>
   )
 }

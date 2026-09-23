@@ -34,7 +34,7 @@ export function JobSearchBar({
   children?: React.ReactNode
 }) {
   return (
-    <div className="flex flex-col sm:flex-row gap-2">
+    <div className="flex flex-col sm:flex-row gap-2 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 shadow-[var(--shadow-sm)]">
       <input
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -83,7 +83,7 @@ export function ActiveFilterChip({ label, onClear }: { label: string; onClear: (
 
 export function JobListPanel({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] divide-y divide-[var(--color-border-subtle)] overflow-hidden shadow-[var(--shadow-sm)]">
+    <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] divide-y divide-[var(--color-border-subtle)] overflow-hidden shadow-[var(--shadow-card)]">
       {children}
     </div>
   )

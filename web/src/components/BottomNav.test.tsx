@@ -12,10 +12,6 @@ vi.mock('../api/bot', () => ({
   },
 }))
 
-vi.mock('../hooks/useTheme', () => ({
-  useTheme: () => ({ theme: 'dark', toggle: vi.fn() }),
-}))
-
 const mockedReviewPending = vi.mocked(botApi.reviewPending)
 
 function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -52,9 +48,10 @@ test('opens jobs menu with job routes', async () => {
   expect(screen.getByText('Cannot Apply')).toBeInTheDocument()
 })
 
-test('renders a theme toggle button', () => {
+test('keeps the mobile navigation focused on the five primary destinations', () => {
   render(<BottomNav />, { wrapper: Wrapper })
-  expect(screen.getByTitle('Switch to light mode')).toBeInTheDocument()
+  expect(screen.getAllByRole('link')).toHaveLength(4)
+  expect(screen.getByRole('button', { name: 'Jobs' })).toBeInTheDocument()
 })
 
 test('shows pending badge count when there are pending reviews', async () => {
