@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ClipboardCheck, Star, Settings } from 'lucide-react'
+import { CircleSlash2, ClipboardCheck, Send, Settings, Star } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useBot } from '../hooks/useBot'
 import { useLogs } from '../hooks/useLogs'
@@ -12,9 +12,11 @@ import { Button } from '../components/Button'
 import { jobsApi } from '../api/jobs'
 import { botApi } from '../api/bot'
 import type { Platform } from '../types'
+import { useAuth } from '../contexts/AuthContext'
 
 export function Dashboard() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const { status, start, stop, pause, resume, startError } = useBot()
   const { lines, connected, clear } = useLogs()
   const [platform, setPlatform] = useState<Platform>('linkedin')
@@ -39,12 +41,22 @@ export function Dashboard() {
   })
 
   const pendingCount = pending?.length ?? 0
+  const firstName = user?.display_name?.trim().split(/\s+/)[0]
+  const greeting = `${dashboardGreeting()}${firstName ? `, ${firstName}` : ''}`
+
+  const description = isRunning
+    ? pendingCount > 0
+      ? `Automation is working. ${pendingCount} application${pendingCount === 1 ? '' : 's'} need your review.`
+      : 'Automation is working and your latest activity is shown below.'
+    : pendingCount > 0
+      ? `${pendingCount} application${pendingCount === 1 ? '' : 's'} need your review before submission.`
+      : 'Your search, applications, and review controls are ready.'
 
   return (
     <div className="space-y-8">
       <PageHeader
-        title={dashboardGreeting()}
-        description="Here's what Jobifai is doing today."
+        title={greeting}
+        description={description}
         actions={
           <Button variant="secondary" size="sm" leftIcon={<Settings size={14} />} onClick={() => navigate('/settings/application')}>
             Settings
@@ -74,26 +86,38 @@ export function Dashboard() {
             resumePending={resume.isPending}
           />
 
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <StatCard
               label="Applied today"
               value={stats?.applied_today ?? 0}
+              sub="Submitted applications"
+              icon={<Send size={18} />}
+              tone="success"
               onClick={() => navigate('/jobs/applied?today=true')}
             />
             <StatCard
-              label="In review"
+              label="Awaiting review"
               value={pendingCount}
+              sub={pendingCount > 0 ? 'Ready for your decision' : 'Nothing waiting'}
+              icon={<ClipboardCheck size={18} />}
+              tone="accent"
               accent={pendingCount > 0}
               onClick={() => navigate('/review')}
             />
             <StatCard
               label="Top matches"
               value={stats?.top_matches_count ?? 0}
+              sub="Strong roles to consider"
+              icon={<Star size={18} />}
+              tone="info"
               onClick={() => navigate('/jobs/top-matches')}
             />
             <StatCard
               label="Skipped today"
               value={stats?.skipped_today ?? 0}
+              sub="Outside your criteria"
+              icon={<CircleSlash2 size={18} />}
+              tone="muted"
               onClick={() => navigate('/jobs/skipped?today=true')}
             />
           </div>

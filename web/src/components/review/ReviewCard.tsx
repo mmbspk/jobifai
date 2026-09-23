@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { Check, X, FileText, ExternalLink } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { BriefcaseBusiness, CalendarDays, Check, Clock3, ExternalLink, FileText, X } from 'lucide-react'
 import { cn } from '../../lib'
 import { getToken } from '../../api/client'
 import type { PendingReview } from '../../types'
@@ -22,6 +22,16 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
   const [swipeDir, setSwipeDir] = useState<'approve' | 'reject' | null>(null)
   const [dismissed, setDismissed] = useState(false)
 
+  const triggerApprove = useCallback(() => {
+    setDismissed(true)
+    setTimeout(onApprove, 200)
+  }, [onApprove])
+
+  const triggerReject = useCallback(() => {
+    setDismissed(true)
+    setTimeout(onReject, 200)
+  }, [onReject])
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (document.activeElement !== document.body && document.activeElement?.tagName !== 'BODY') return
@@ -32,16 +42,7 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onApprove, onReject])
-
-  function triggerApprove() {
-    setDismissed(true)
-    setTimeout(onApprove, 200)
-  }
-  function triggerReject() {
-    setDismissed(true)
-    setTimeout(onReject, 200)
-  }
+  }, [triggerApprove, triggerReject])
 
   function onTouchStart(e: React.TouchEvent) {
     touchStartX.current = e.touches[0].clientX
@@ -61,6 +62,12 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
 
   const isDoubtful = halalEnabled && review.halal_verdict?.verdict === 'DOUBTFUL'
   const hasScore = (review.suitability_score ?? 0) > 0
+  const postedDate = review.posted_date
+    ? new Date(review.posted_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+    : null
+  const dueDate = review.due_date
+    ? new Date(review.due_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+    : null
 
   return (
     <article
@@ -76,19 +83,28 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
         className,
       )}
     >
-      <header className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
-        <div className="min-w-0 order-2 sm:order-1">
-          <h2 className="text-lg font-semibold text-[var(--color-text)]">{review.company || '—'}</h2>
-          <p className="text-sm text-[var(--color-text-muted)] mt-0.5">{review.role}</p>
-          {review.location && (
-            <p className="text-xs text-[var(--color-text-dim)] mt-1">{review.location}</p>
-          )}
+      <header className="grid grid-cols-[3rem_minmax(0,1fr)_auto] items-start gap-3 sm:grid-cols-[3.5rem_minmax(0,1fr)_auto] mb-5">
+        <div
+          aria-hidden="true"
+          className="flex h-12 w-12 items-center justify-center rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] text-base font-bold text-[var(--color-text-muted)] sm:h-14 sm:w-14"
+        >
+          {(review.company || '?').trim().charAt(0).toUpperCase()}
         </div>
-        <div className="flex items-center gap-2 shrink-0 order-1 sm:order-2">
-          {hasScore ? <ScorePill score={review.suitability_score!} showLabel /> : null}
+        <div className="min-w-0">
           <PlatformBadge platform={review.platform} />
+          <h2 className="mt-1.5 text-lg font-semibold leading-tight tracking-tight text-[var(--color-text)] sm:text-xl">{review.role}</h2>
+          <p className="mt-1 text-sm text-[var(--color-text-muted)]">
+            {review.company || '—'}{review.location ? ` · ${review.location}` : ''}
+          </p>
         </div>
+        {hasScore ? <ScorePill score={review.suitability_score!} showLabel /> : null}
       </header>
+
+      <div className="mb-4 flex flex-wrap gap-x-5 gap-y-2 border-y border-[var(--color-border-subtle)] py-3 text-xs text-[var(--color-text-muted)]">
+        <span className="flex items-center gap-1.5"><BriefcaseBusiness size={14} />{review.easy_apply ? 'Easy apply' : 'Manual application'}</span>
+        {postedDate && <span className="flex items-center gap-1.5"><Clock3 size={14} />Posted {postedDate}</span>}
+        {dueDate && <span className="flex items-center gap-1.5"><CalendarDays size={14} />Closes {dueDate}</span>}
+      </div>
 
       <JobMatchReasoning reasoning={review.suitability_reasoning} className="mb-4" />
 
@@ -97,16 +113,17 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
       )}
 
       {(review.resume_path || review.cover_letter_path) && (
-        <div className="flex flex-wrap gap-3 mb-5">
+        <div className="grid gap-2 sm:grid-cols-2 mb-5">
           {review.resume_path && (
             <a
               href={`/api/files/${review.resume_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-sm text-[var(--color-accent)] hover:underline"
+              className="group flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3.5 py-3 text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
             >
-              <FileText size={14} />
-              Resume preview
+              <span className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"><FileText size={15} /></span>
+              <span className="min-w-0 flex-1"><span className="block font-medium">Tailored resume</span><span className="block text-xs text-[var(--color-text-dim)]">Preview document</span></span>
+              <ExternalLink size={14} className="text-[var(--color-text-dim)] group-hover:text-[var(--color-accent)]" />
             </a>
           )}
           {review.cover_letter_path && (
@@ -114,10 +131,11 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
               href={`/api/files/${review.cover_letter_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-sm text-[var(--color-accent)] hover:underline"
+              className="group flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3.5 py-3 text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
             >
-              <FileText size={14} />
-              Cover letter
+              <span className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"><FileText size={15} /></span>
+              <span className="min-w-0 flex-1"><span className="block font-medium">Cover letter</span><span className="block text-xs text-[var(--color-text-dim)]">Preview document</span></span>
+              <ExternalLink size={14} className="text-[var(--color-text-dim)] group-hover:text-[var(--color-accent)]" />
             </a>
           )}
         </div>
