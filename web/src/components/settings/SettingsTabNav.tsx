@@ -3,18 +3,18 @@ import { cn } from '../../lib'
 
 export function SettingsTabNav({ tabs }: { tabs: readonly { to: string; label: string }[] }) {
   return (
-    <div className="overflow-x-auto -mx-1 px-1 pb-1">
-      <div className="flex gap-1 p-1 min-w-min bg-[var(--color-surface)] rounded-[var(--radius-lg)] border border-[var(--color-border)]">
+    <div className="overflow-x-auto -mx-1 px-1 pb-1 lg:overflow-visible">
+      <div className="flex gap-1 min-w-min lg:flex-col lg:min-w-0">
         {tabs.map(t => (
           <NavLink
             key={t.to}
             to={t.to}
             className={({ isActive }) =>
               cn(
-                'py-2 px-3 rounded-[var(--radius-md)] text-sm font-medium transition-all text-center whitespace-nowrap min-h-[44px] sm:min-h-0 flex items-center',
+                'min-h-[44px] px-3 py-2 rounded-[var(--radius-md)] text-sm font-medium transition-all text-center whitespace-nowrap flex items-center lg:text-left',
                 isActive
-                  ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] border border-[var(--color-accent)]/30'
-                  : 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] border border-transparent',
+                  ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-2)]',
               )
             }
           >

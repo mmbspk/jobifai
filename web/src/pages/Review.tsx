@@ -74,7 +74,7 @@ export function Review() {
         }
       />
 
-      <div className="flex items-center justify-between gap-2 max-w-[800px] mx-auto">
+      <div className="flex items-center justify-between gap-2 max-w-[1024px] mx-auto">
         <Button
           variant="ghost"
           size="sm"

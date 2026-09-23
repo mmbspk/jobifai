@@ -75,7 +75,7 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       className={cn(
-        'rounded-[var(--radius-xl)] border p-5 sm:p-6 transition-all duration-200 shadow-[var(--shadow-card)] max-w-[800px] mx-auto',
+        'rounded-[var(--radius-xl)] border p-5 sm:p-6 transition-all duration-200 shadow-[var(--shadow-card)] max-w-[1024px] mx-auto',
         isDoubtful ? 'border-[var(--color-warn)]/35 bg-[var(--color-warn-soft)]/40' : 'bg-[var(--color-surface)] border-[var(--color-border)]',
         swipeDir === 'approve' && 'border-[var(--color-success)]/45 translate-x-2',
         swipeDir === 'reject' && 'border-[var(--color-danger)]/45 -translate-x-2',
@@ -83,6 +83,8 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
         className,
       )}
     >
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_270px]">
+      <div className="min-w-0">
       <header className="grid grid-cols-[3rem_minmax(0,1fr)_auto] items-start gap-3 sm:grid-cols-[3.5rem_minmax(0,1fr)_auto] mb-5">
         <div
           aria-hidden="true"
@@ -111,15 +113,18 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
       {halalEnabled && review.halal_verdict && (
         <EthicsVerdict verdict={review.halal_verdict} className="mb-4" />
       )}
+      </div>
 
-      {(review.resume_path || review.cover_letter_path) && (
-        <div className="grid gap-2 sm:grid-cols-2 mb-5">
+      <aside className="h-fit rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface-2)]/55 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-[var(--color-text)]">Application preview</h3>
+      {(review.resume_path || review.cover_letter_path) ? (
+        <div className="grid gap-2">
           {review.resume_path && (
             <a
               href={`/api/files/${review.resume_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="group flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3.5 py-3 text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
+              className="group flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3 text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
             >
               <span className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"><FileText size={15} /></span>
               <span className="min-w-0 flex-1"><span className="block font-medium">Tailored resume</span><span className="block text-xs text-[var(--color-text-dim)]">Preview document</span></span>
@@ -131,7 +136,7 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
               href={`/api/files/${review.cover_letter_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="group flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3.5 py-3 text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
+              className="group flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3 text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
             >
               <span className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"><FileText size={15} /></span>
               <span className="min-w-0 flex-1"><span className="block font-medium">Cover letter</span><span className="block text-xs text-[var(--color-text-dim)]">Preview document</span></span>
@@ -139,6 +144,8 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
             </a>
           )}
         </div>
+      ) : (
+        <p className="text-xs leading-5 text-[var(--color-text-dim)]">No tailored documents were generated for this application.</p>
       )}
 
       {review.link && (
@@ -146,14 +153,16 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
           href={review.link}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-accent)] mb-6"
+          className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
         >
           View original listing
           <ExternalLink size={14} />
         </a>
       )}
+      </aside>
+      </div>
 
-      <p className="text-xs text-[var(--color-text-dim)] mb-4 md:hidden">
+      <p className="mt-5 text-xs text-[var(--color-text-dim)] mb-4 md:hidden">
         Swipe right to approve · Swipe left to reject
       </p>
 

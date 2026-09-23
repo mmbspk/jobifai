@@ -49,10 +49,10 @@ function NavItem({
       title={collapsed ? label : undefined}
       className={({ isActive }) =>
         cn(
-          'flex items-center py-2 rounded-[var(--radius-md)] text-sm transition-colors',
-          collapsed ? 'justify-center px-0' : 'gap-2.5 pl-2.5 pr-3',
+          'flex min-h-[43px] items-center rounded-[var(--radius-md)] text-sm transition-colors',
+          collapsed ? 'justify-center px-0' : 'gap-3 px-3',
           isActive
-            ? 'bg-[var(--color-accent-soft)] text-[var(--color-text)] font-medium'
+            ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] font-semibold'
             : 'text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)]',
         )
       }
@@ -133,12 +133,12 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
       <aside
         className={cn(
           'hidden md:flex flex-col fixed left-0 top-0 bottom-0 z-40',
-          'border-r border-[var(--color-border)] bg-[var(--color-surface)]/95 backdrop-blur-sm',
-          expanded ? 'md:w-16 lg:w-56' : 'md:w-16 lg:w-14',
+          'border-r border-[var(--color-border-subtle)] bg-[var(--color-surface)]/96 backdrop-blur-xl',
+          expanded ? 'md:w-20 lg:w-64' : 'md:w-20',
         )}
         style={{ transition: 'width 200ms' }}
       >
-        <div className="flex items-center px-3 py-4 border-b border-[var(--color-border)] gap-1">
+        <div className="flex h-[76px] items-center px-5 gap-1">
           <NavLink to="/" className="flex items-center flex-1 min-w-0 overflow-hidden">
             <JobifaiLogo markSize={28} showWordmark={expanded} className="text-sm" />
           </NavLink>
@@ -152,7 +152,7 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
           </button>
         </div>
 
-        <nav className="flex-1 px-2 py-3 overflow-y-auto space-y-4">
+        <nav className="flex-1 px-3 py-2 overflow-y-auto space-y-5">
           <div className="space-y-0.5">
             {PRIMARY_NAV.map(item => (
               <NavItem

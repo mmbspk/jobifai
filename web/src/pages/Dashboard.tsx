@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { CircleSlash2, ClipboardCheck, Send, Settings, Star } from 'lucide-react'
+import { ChevronRight, CircleSlash2, ClipboardCheck, Send, Settings, Star } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useBot } from '../hooks/useBot'
 import { useLogs } from '../hooks/useLogs'
@@ -14,6 +14,7 @@ import { jobsApi } from '../api/jobs'
 import { botApi } from '../api/bot'
 import type { Platform } from '../types'
 import { useAuth } from '../contexts/AuthContext'
+import { ScorePill } from '../components/ScorePill'
 
 export function Dashboard() {
   const navigate = useNavigate()
@@ -38,6 +39,12 @@ export function Dashboard() {
     queryKey: ['review-pending'],
     queryFn: botApi.reviewPending,
     staleTime: 30_000,
+    refetchInterval: isActive ? 30_000 : false,
+  })
+  const { data: topMatches = [] } = useQuery({
+    queryKey: ['jobs-top-matches', 'dashboard-preview'],
+    queryFn: () => jobsApi.topMatches({ limit: 3, offset: 0 }),
+    staleTime: 60_000,
     refetchInterval: isActive ? 30_000 : false,
   })
 
@@ -136,31 +143,38 @@ export function Dashboard() {
             </Link>
           )}
 
-          <div>
-            <h2 className="text-sm font-semibold text-[var(--color-text)] mb-3">Quick actions</h2>
-            <div className="grid sm:grid-cols-2 gap-3">
-              <Link
-                to="/review"
-                className="flex items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-4 hover:border-[var(--color-accent)]/35 hover:bg-[var(--color-accent-soft)]/40 transition-all"
-              >
-                <ClipboardCheck size={18} className="text-[var(--color-accent)]" />
-                <div>
-                  <div className="text-sm font-medium text-[var(--color-text)]">Review applications</div>
-                  <div className="text-xs text-[var(--color-text-dim)]">Approve before submission</div>
-                </div>
-              </Link>
-              <Link
-                to="/jobs/top-matches"
-                className="flex items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-4 hover:border-[var(--color-accent)]/35 hover:bg-[var(--color-accent-soft)]/40 transition-all"
-              >
-                <Star size={18} className="text-[var(--color-accent)]" />
-                <div>
-                  <div className="text-sm font-medium text-[var(--color-text)]">Top matches</div>
-                  <div className="text-xs text-[var(--color-text-dim)]">High-fit roles to apply manually</div>
-                </div>
+          <section className="overflow-hidden rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface)] shadow-[var(--shadow-card)]">
+            <div className="flex items-center justify-between gap-4 px-5 py-4">
+              <div>
+                <h2 className="text-base font-semibold text-[var(--color-text)]">Top matches</h2>
+                <p className="mt-1 text-xs text-[var(--color-text-dim)]">The strongest roles from your latest search.</p>
+              </div>
+              <Link to="/jobs/top-matches" className="flex items-center gap-1 text-xs font-medium text-[var(--color-accent)] hover:underline">
+                View all <ChevronRight size={14} />
               </Link>
             </div>
-          </div>
+            <div className="divide-y divide-[var(--color-border-subtle)] border-t border-[var(--color-border-subtle)]">
+              {topMatches.length > 0 ? topMatches.map(job => (
+                <Link key={job.job_id} to="/jobs/top-matches" className="grid grid-cols-[2.5rem_minmax(0,1fr)_auto] items-center gap-3 px-5 py-4 transition-colors hover:bg-[var(--color-surface-2)]">
+                  <span aria-hidden="true" className="flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] text-sm font-bold text-[var(--color-text-muted)]">
+                    {(job.company || '?').trim().charAt(0).toUpperCase()}
+                  </span>
+                  <span className="min-w-0">
+                    <strong className="block truncate text-sm font-semibold text-[var(--color-text)]">{job.role}</strong>
+                    <span className="block truncate text-xs text-[var(--color-text-muted)]">{job.company}{job.location ? ` · ${job.location}` : ''}</span>
+                  </span>
+                  {job.suitability_score != null && job.suitability_score > 0
+                    ? <ScorePill score={job.suitability_score} compact />
+                    : <ChevronRight size={16} className="text-[var(--color-text-dim)]" />}
+                </Link>
+              )) : (
+                <div className="px-5 py-8 text-center">
+                  <p className="text-sm text-[var(--color-text-muted)]">No strong manual matches yet.</p>
+                  <Link to="/generate" className="mt-2 inline-block text-xs font-medium text-[var(--color-accent)] hover:underline">Evaluate a role</Link>
+                </div>
+              )}
+            </div>
+          </section>
 
           <div className="xl:hidden">
             <ActivitySection lines={lines} connected={connected} onClear={clear} currentJob={status?.current_job} />
