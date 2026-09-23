@@ -8,19 +8,19 @@ test.describe('Dashboard', () => {
   })
 
   test('bot status label and Start button are visible', async ({ page }) => {
-    await expect(page.getByText('Idle')).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Start' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled()
+    await expect(page.getByText('Automation is ready')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start automation' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start automation' })).toBeEnabled()
   })
 
   test('stats cards render with zero values for a new user', async ({ page }) => {
-    await expect(page.getByText('Applied Today')).toBeVisible()
-    await expect(page.getByText('Total Applied')).toBeVisible()
-    await expect(page.getByText('Total Skipped')).toBeVisible()
+    await expect(page.getByText('Applied today')).toBeVisible()
+    await expect(page.getByText('In review')).toBeVisible()
+    await expect(page.getByText('Skipped today')).toBeVisible()
   })
 
-  test('Live Logs heading and platform selector are visible', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Live Logs' })).toBeVisible()
+  test('Activity heading and platform selector are visible', async ({ page }) => {
+    await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible()
     await expect(page.getByText('LinkedIn')).toBeVisible()
     await expect(page.getByText('Seek')).toBeVisible()
   })

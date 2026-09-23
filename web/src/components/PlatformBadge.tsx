@@ -1,10 +1,8 @@
 import { cn } from '../lib'
-import type { Platform } from '../types'
 
-const PLATFORM_STYLES: Record<Platform | string, { bg: string; text: string; label: string }> = {
-  linkedin: { bg: 'bg-[#0077b5]/15', text: 'text-[#0aa3e0]', label: 'LinkedIn' },
-  seek:     { bg: 'bg-emerald-500/10', text: 'text-emerald-400', label: 'Seek' },
-  all:      { bg: 'bg-violet-500/10', text: 'text-violet-400',  label: 'All' },
+const LABELS: Record<string, string> = {
+  linkedin: 'LinkedIn',
+  seek: 'Seek',
 }
 
 interface Props {
@@ -12,17 +10,18 @@ interface Props {
   size?: 'sm' | 'md'
 }
 
+/** Text-first neutral platform badge (no third-party logo marks). */
 export function PlatformBadge({ platform, size = 'md' }: Props) {
-  const style = PLATFORM_STYLES[platform] ?? PLATFORM_STYLES.all
+  const label = LABELS[platform] ?? platform.charAt(0).toUpperCase() + platform.slice(1)
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-full font-medium',
-        style.bg, style.text,
-        size === 'sm' ? 'px-2 py-0.5 text-xs' : 'px-2.5 py-1 text-xs',
+        'inline-flex items-center rounded-full border font-medium',
+        'bg-[var(--color-surface-2)] text-[var(--color-text-muted)] border-[var(--color-border)]',
+        size === 'sm' ? 'px-2 py-0.5 text-[0.65rem]' : 'px-2.5 py-0.5 text-xs',
       )}
     >
-      {style.label}
+      {label}
     </span>
   )
 }

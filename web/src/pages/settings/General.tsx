@@ -218,7 +218,7 @@ export function GeneralSettingsPage() {
           <div className="flex items-center gap-3">
             <input type="range" min={0} max={10} step={1} value={form.job_suitability_score ?? 7}
               onChange={e => set('job_suitability_score', Number(e.target.value))}
-              className="w-28 accent-violet-500"
+              className="w-28 accent-[var(--color-accent)]"
             />
             <span className="text-sm font-mono text-[var(--color-text)] w-4">{form.job_suitability_score ?? 7}</span>
           </div>

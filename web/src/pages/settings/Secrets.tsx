@@ -1,86 +1,16 @@
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
-import { Eye, EyeOff, Check, MonitorCheck, Trash2 } from 'lucide-react'
+import { Check, Eye, EyeOff, MonitorCheck, Trash2 } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { authApi } from '../../api/auth'
 import { getToken, apiGet } from '../../api/client'
 import { PlatformBadge } from '../../components/PlatformBadge'
-
-interface MaskedInputProps {
-  readonly value: string
-  readonly onSave: (v: string) => Promise<void>
-  readonly onDelete?: () => Promise<void>
-  readonly label: string
-}
-
-function MaskedInput({ value, onSave, onDelete, label }: MaskedInputProps) {
-  const [editing, setEditing] = useState(false)
-  const [val, setVal] = useState('')
-  const [show, setShow] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [deleting, setDeleting] = useState(false)
-
-  async function save() {
-    setSaving(true)
-    await onSave(val)
-    setSaving(false)
-    setEditing(false)
-    setVal('')
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter') { save() }
-    else if (e.key === 'Escape') { setEditing(false) }
-  }
-
-  async function handleDelete() {
-    if (!onDelete) return
-    setDeleting(true)
-    await onDelete()
-    setDeleting(false)
-  }
-
-  if (!editing) {
-    return (
-      <div className="flex items-center gap-3">
-        <span className="text-sm font-mono text-[var(--color-text-muted)]">
-          {value ? '•'.repeat(16) : <span className="text-[var(--color-text-dim)] not-italic font-sans">Not set</span>}
-        </span>
-        <button onClick={() => setEditing(true)} className="text-xs text-violet-400 hover:text-violet-300">
-          {value ? 'Update' : 'Set'}
-        </button>
-        {value && onDelete && (
-          <button onClick={handleDelete} disabled={deleting} className="text-xs text-[var(--color-danger)] hover:opacity-80 disabled:opacity-50">
-            {deleting ? '…' : 'Delete'}
-          </button>
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <div className="relative flex-1">
-        <input
-          autoFocus
-          type={show ? 'text' : 'password'}
-          value={val}
-          onChange={e => setVal(e.target.value)}
-          placeholder={`Enter ${label}`}
-          className="w-full bg-[var(--color-surface-2)] border border-violet-500/50 rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] outline-none pr-8"
-          onKeyDown={handleKeyDown}
-        />
-        <button onClick={() => setShow(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)]">
-          {show ? <EyeOff size={13} /> : <Eye size={13} />}
-        </button>
-      </div>
-      <button onClick={save} disabled={!val || saving} className="px-3 py-1.5 bg-violet-500 text-white rounded-lg text-xs disabled:opacity-50">
-        {saving ? '…' : 'Save'}
-      </button>
-      <button onClick={() => setEditing(false)} className="text-xs text-[var(--color-text-dim)]">Cancel</button>
-    </div>
-  )
-}
+import { PageHeader } from '../../components/shell/PageHeader'
+import { SettingsField, SettingsSection } from '../../components/settings/settings-ui'
+import { MaskedSecretField } from '../../components/settings/MaskedSecretField'
+import { inputClassName } from '../../components/ui/input'
+import { Button } from '../../components/ui/button'
+import { cn } from '../../lib'
 
 const PLATFORMS = ['linkedin', 'seek'] as const
 
@@ -89,7 +19,6 @@ interface CredentialsCardProps {
   readonly hasCreds: boolean
 }
 
-// Credentials form split out to reduce cognitive complexity of the parent card
 function CredsForm({ platform, hasCreds }: { readonly platform: string; readonly hasCreds: boolean }) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -126,12 +55,12 @@ function CredsForm({ platform, hasCreds }: { readonly platform: string; readonly
       <div className="flex items-center gap-1.5">
         {hasCreds && <span className="text-xs text-[var(--color-text-dim)]">· credentials saved</span>}
         {saved && <Check size={13} className="text-emerald-400" />}
-        <button onClick={() => setOpen(v => !v)} className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]">
+        <button type="button" onClick={() => setOpen(v => !v)} className="text-xs font-medium text-[var(--color-accent)] hover:underline">
           {buttonLabel}
         </button>
         {hasCreds && !open && (
-          <button onClick={deleteCredentials} disabled={deleting}
-            className="text-xs text-[var(--color-danger)] hover:opacity-80 disabled:opacity-50 flex items-center gap-0.5">
+          <button type="button" onClick={deleteCredentials} disabled={deleting}
+            className="text-xs text-[var(--color-danger)] hover:underline disabled:opacity-50 flex items-center gap-0.5">
             <Trash2 size={11} />{deleting ? '…' : 'Delete'}
           </button>
         )}
@@ -140,22 +69,20 @@ function CredsForm({ platform, hasCreds }: { readonly platform: string; readonly
         <div className="px-4 pb-4 space-y-3 border-t border-[var(--color-border-subtle)]">
           <div className="pt-3 space-y-2">
             <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="Email"
-              className="w-full bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50"
+              className={inputClassName}
             />
             <div className="relative">
               <input value={password} onChange={e => setPassword(e.target.value)} type={showPw ? 'text' : 'password'} placeholder="Password"
-                className="w-full bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50 pr-8"
+                className={cn(inputClassName, 'pr-10')}
               />
-              <button onClick={() => setShowPw(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)]">
+              <button type="button" onClick={() => setShowPw(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--color-text-dim)] p-1">
                 {showPw ? <EyeOff size={13} /> : <Eye size={13} />}
               </button>
             </div>
           </div>
-          <button onClick={save} disabled={!email || !password || saving}
-            className="w-full py-1.5 bg-violet-500 text-white rounded-lg text-sm disabled:opacity-50"
-          >
-            {saving ? 'Saving…' : 'Save credentials'}
-          </button>
+          <Button variant="primary" fullWidth disabled={!email || !password || saving} loading={saving} onClick={() => void save()}>
+            Save credentials
+          </Button>
           <p className="text-xs text-[var(--color-text-dim)] text-center">Encrypted with AES-GCM using a machine-specific key</p>
         </div>
       )}
@@ -220,8 +147,8 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
   else if (sessionId) launchLabel = 'Browser open'
 
   return (
-    <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3">
+    <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 py-3">
         <div className="flex items-center gap-3">
           <PlatformBadge platform={platform} />
           {hasSession
@@ -229,13 +156,13 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
             : <span className="text-xs text-[var(--color-text-dim)]">No session</span>
           }
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {hasSession
-            ? <button onClick={() => disconnect.mutate()} className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-danger)] flex items-center gap-1 transition-colors">
+            ? <button type="button" onClick={() => disconnect.mutate()} className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-danger)] flex items-center gap-1 transition-colors">
                 <Trash2 size={11} /> Disconnect
               </button>
-            : <button onClick={() => { setSessionError(null); launch.mutate() }} disabled={launch.isPending || !!sessionId}
-                className="text-xs text-violet-400 hover:text-violet-300 disabled:opacity-50"
+            : <button type="button" onClick={() => { setSessionError(null); launch.mutate() }} disabled={launch.isPending || !!sessionId}
+                className="text-xs font-medium text-[var(--color-accent)] hover:underline disabled:opacity-50"
               >
                 {launchLabel}
               </button>
@@ -246,15 +173,13 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
 
       {sessionId && (
         <div className="px-4 pb-4 border-t border-[var(--color-border-subtle)] pt-3 space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <p className="text-xs text-[var(--color-text-muted)]">
               Log in to <span className="capitalize">{platform}</span> fully (including MFA). For Seek, open a job and confirm you can see Quick Apply, then click <strong>Save session</strong>.
             </p>
-            <button onClick={() => saveSession.mutate()} disabled={saveSession.isPending}
-              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium disabled:opacity-50 transition-colors flex-shrink-0 ml-3"
-            >
-              {saveSession.isPending ? 'Saving…' : 'Save session'}
-            </button>
+            <Button variant="primary" size="sm" disabled={saveSession.isPending} loading={saveSession.isPending} onClick={() => saveSession.mutate()} className="shrink-0">
+              Save session
+            </Button>
           </div>
           {vncEnabled && <VNCFrame />}
         </div>
@@ -268,15 +193,28 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
 }
 
 export function PlatformsSettingsPage() {
+  const qc = useQueryClient()
   const { data: secrets } = useQuery({ queryKey: ['settings-secrets'], queryFn: settingsApi.secrets.get })
 
   return (
-    <div className="space-y-4">
-      <div>
-        <div className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider mb-3">Platform Connections</div>
-        <p className="text-sm text-[var(--color-text-dim)] mb-4">
-          Connect LinkedIn or Seek so the bot can sign in and submit applications on your behalf.
-        </p>
+    <div className="space-y-6">
+      <PageHeader
+        title="Platforms"
+        description="Connect job boards and configure the AI provider used for scoring and document generation."
+      />
+
+      <SettingsSection title="AI provider" description="Your API key is stored encrypted and never shown again after saving.">
+        <SettingsField label="LLM API key" sub="Used when you run Generate, automation, and profile extraction">
+          <MaskedSecretField
+            configured={!!secrets?.llm_api_key}
+            label="API key"
+            onSave={v => settingsApi.secrets.setApiKey('llm_api_key', v).then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
+            onDelete={() => settingsApi.secrets.deleteApiKey().then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
+          />
+        </SettingsField>
+      </SettingsSection>
+
+      <SettingsSection title="Job board connections" description="Sign in so Jobifai can search listings and submit applications on your behalf.">
         <div className="space-y-2">
           {PLATFORMS.map(p => (
             <CredentialsCard
@@ -286,7 +224,7 @@ export function PlatformsSettingsPage() {
             />
           ))}
         </div>
-      </div>
+      </SettingsSection>
     </div>
   )
 }
@@ -297,20 +235,16 @@ export function AdminSecretsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
-        <div className="px-4 py-3 border-b border-[var(--color-border)] text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">LLM API Keys</div>
-        <div className="p-4 space-y-4">
-          <div>
-            <div className="text-sm text-[var(--color-text)] mb-2">API Key</div>
-            <MaskedInput
-              label="API key"
-              value={secrets?.llm_api_key ?? ''}
-              onSave={v => settingsApi.secrets.setApiKey('llm_api_key', v).then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
-              onDelete={() => settingsApi.secrets.deleteApiKey().then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
-            />
-          </div>
-        </div>
-      </div>
+      <SettingsSection title="LLM API keys">
+        <SettingsField label="API key">
+          <MaskedSecretField
+            configured={!!secrets?.llm_api_key}
+            label="API key"
+            onSave={v => settingsApi.secrets.setApiKey('llm_api_key', v).then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
+            onDelete={() => settingsApi.secrets.deleteApiKey().then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
+          />
+        </SettingsField>
+      </SettingsSection>
     </div>
   )
 }

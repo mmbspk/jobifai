@@ -49,11 +49,20 @@ beforeEach(() => {
     user: { email: 'test@example.com', display_name: 'Test User' },
     logout: mockLogout,
   })
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes('1024px'),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  })
 })
 
 test('renders all navigation items', () => {
   render(<Sidebar {...defaultProps} />, { wrapper: Wrapper })
-  expect(screen.getByText('Dashboard')).toBeInTheDocument()
+  expect(screen.getByText('Home')).toBeInTheDocument()
   expect(screen.getByText('Applied')).toBeInTheDocument()
   expect(screen.getByText('Skipped')).toBeInTheDocument()
   expect(screen.getByText('Cannot Apply')).toBeInTheDocument()

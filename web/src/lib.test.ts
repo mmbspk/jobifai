@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { cn, scoreColor, scoreBg, relativeTime, formatDate, formatPostedDisplay } from './lib'
+import { cn, scoreColor, scoreBg, scoreBand, scoreBandLabel, relativeTime, formatDate, formatPostedDisplay } from './lib'
 
 describe('cn', () => {
   test('merges class names', () => {
@@ -23,35 +23,30 @@ describe('cn', () => {
   })
 })
 
+describe('scoreBand', () => {
+  test('maps scores to semantic bands', () => {
+    expect(scoreBand(2)).toBe('low')
+    expect(scoreBand(5)).toBe('moderate')
+    expect(scoreBand(7.5)).toBe('strong')
+    expect(scoreBand(9)).toBe('excellent')
+  })
+
+  test('labels bands for display', () => {
+    expect(scoreBandLabel('strong')).toBe('Strong')
+  })
+})
+
 describe('scoreColor', () => {
-  test('returns an hsl string', () => {
-    expect(scoreColor(5)).toMatch(/^hsl\(\d+, 70%, 55%\)$/)
-  })
-
-  test('score 0 maps to hue 0 (red)', () => {
-    expect(scoreColor(0)).toBe('hsl(0, 70%, 55%)')
-  })
-
-  test('score 10 maps to hue 120 (green)', () => {
-    expect(scoreColor(10)).toBe('hsl(120, 70%, 55%)')
-  })
-
-  test('score 5 maps to hue 60 (amber)', () => {
-    expect(scoreColor(5)).toBe('hsl(60, 70%, 55%)')
+  test('returns CSS variable references', () => {
+    expect(scoreColor(2)).toBe('var(--color-danger)')
+    expect(scoreColor(9)).toBe('var(--color-success)')
   })
 })
 
 describe('scoreBg', () => {
-  test('returns an hsla string', () => {
-    expect(scoreBg(5)).toMatch(/^hsla\(\d+, 70%, 55%, 0\.15\)$/)
-  })
-
-  test('score 0 maps to hue 0', () => {
-    expect(scoreBg(0)).toBe('hsla(0, 70%, 55%, 0.15)')
-  })
-
-  test('score 10 maps to hue 120', () => {
-    expect(scoreBg(10)).toBe('hsla(120, 70%, 55%, 0.15)')
+  test('returns soft background tokens', () => {
+    expect(scoreBg(5)).toBe('var(--color-warn-soft)')
+    expect(scoreBg(8)).toBe('var(--color-accent-soft)')
   })
 })
 

@@ -27,13 +27,13 @@ function isSuccessMessage(msg: string): boolean {
 }
 
 function getBadgeClass(line: LogLine): string {
-  if (line.llmCall) return line.message.includes('call failed') ? 'text-red-400' : 'text-violet-400'
+  if (line.llmCall) return line.message.includes('call failed') ? 'text-red-400' : 'text-[var(--color-accent)]'
   if (isSuccessMessage(line.message)) return 'text-emerald-400'
   return LEVEL_STYLE[line.level]
 }
 
 function getMessageClass(line: LogLine): string {
-  if (line.llmCall) return line.message.includes('call failed') ? 'text-red-400' : 'text-violet-400'
+  if (line.llmCall) return line.message.includes('call failed') ? 'text-red-400' : 'text-[var(--color-accent)]'
   if (isSuccessMessage(line.message)) return 'text-emerald-400'
   if (line.level === 'error' || line.level === 'critical') return LEVEL_STYLE[line.level]
   return 'text-[var(--color-text-muted)]'
@@ -141,7 +141,7 @@ export function LogPanel({ lines, connected, onClear, className, currentJob }: P
           {currentJob && (
             <>
               <span className="text-[var(--color-text-dim)]">·</span>
-              <span className="text-violet-400 truncate max-w-[260px]">
+              <span className="text-[var(--color-accent)] truncate max-w-[260px]">
                 {currentJob.company}, {currentJob.role}
               </span>
             </>
@@ -165,7 +165,7 @@ export function LogPanel({ lines, connected, onClear, className, currentJob }: P
             className={cn(
               'text-xs px-2 py-0.5 rounded',
               autoScroll
-                ? 'bg-violet-500/15 text-violet-400'
+                ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
                 : 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]',
             )}
           >

@@ -6,6 +6,22 @@ export interface TestUser {
   accessToken: string
 }
 
+/** Seeded on fresh DB via migration 010 + admin flag in 015. */
+const SEEDED_ADMIN = {
+  email: 'admin@jobifai.local',
+  password: 'jobifai2024!',
+} as const
+
+async function injectSession(page: Page, accessToken: string, refreshToken: string) {
+  await page.goto('/')
+  await page.evaluate(({ at, rt }: { at: string; rt: string }) => {
+    localStorage.setItem('access_token', at)
+    localStorage.setItem('refresh_token', rt)
+  }, { at: accessToken, rt: refreshToken })
+  await page.goto('/')
+  await expect(page.locator('aside').getByRole('link', { name: 'Home' })).toBeVisible()
+}
+
 /**
  * Registers a unique user via the REST API and injects tokens into
  * localStorage so the SPA loads as authenticated on the next navigation.
@@ -24,17 +40,33 @@ export async function registerAndInjectTokens(
   expect(resp.ok()).toBeTruthy()
   const { access_token, refresh_token } = await resp.json()
 
-  // Establish origin first (page must have a URL before localStorage is accessible)
-  await page.goto('/')
-  await page.evaluate(({ at, rt }: { at: string; rt: string }) => {
-    localStorage.setItem('access_token', at)
-    localStorage.setItem('refresh_token', rt)
-  }, { at: access_token, rt: refresh_token })
-  // Reload so AuthContext picks up the tokens from localStorage on mount.
-  // Then wait for the dashboard to confirm auth succeeded (React's async /me
-  // check completes after the load event, so we must wait explicitly).
-  await page.goto('/')
-  await expect(page.getByText('Idle')).toBeVisible()
+  await injectSession(page, access_token, refresh_token)
 
   return { email, password, accessToken: access_token }
+}
+
+/**
+ * Signs in as the migration-seeded admin user and injects tokens.
+ * Requires the Playwright webServer test DB (see `make e2e-server`).
+ */
+export async function registerAdminAndInjectTokens(
+  page: Page,
+  request: APIRequestContext,
+): Promise<TestUser> {
+  const resp = await request.post('/auth/login', {
+    data: { email: SEEDED_ADMIN.email, password: SEEDED_ADMIN.password },
+  })
+  expect(resp.ok()).toBeTruthy()
+  const { access_token, refresh_token } = await resp.json()
+
+  await injectSession(page, access_token, refresh_token)
+
+  const me = await request.get('/api/me', {
+    headers: { Authorization: `Bearer ${access_token}` },
+  })
+  expect(me.ok()).toBeTruthy()
+  const body = await me.json() as { is_admin?: boolean }
+  expect(body.is_admin).toBe(true)
+
+  return { email: SEEDED_ADMIN.email, password: SEEDED_ADMIN.password, accessToken: access_token }
 }

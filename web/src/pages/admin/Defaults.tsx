@@ -3,16 +3,21 @@ import { useEffect, useState } from 'react'
 import { Check } from 'lucide-react'
 import { adminApi } from '../../api/admin'
 import { Button } from '../../components/Button'
+import { PageHeader } from '../../components/shell/PageHeader'
+import { SettingsField, SettingsSection, SettingsSelect } from '../../components/settings/settings-ui'
+import { MaskedSecretField } from '../../components/settings/MaskedSecretField'
+import { Switch } from '../../components/ui/switch'
+import { inputClassName } from '../../components/ui/input'
 import { cn } from '../../lib'
 import type { LLMConfig } from '../../types'
 
 const TASKS = [
-  { key: 'scoring', label: 'Suitability Scoring', hint: 'Once per job. Haiku recommended.' },
-  { key: 'halal', label: 'Halal Filter', hint: 'No profile sent. Haiku recommended.' },
-  { key: 'tailoring', label: 'Resume Tailoring', hint: 'Sonnet+ recommended.' },
-  { key: 'cover_letter', label: 'Cover Letter', hint: 'Haiku or Sonnet.' },
+  { key: 'scoring', label: 'Suitability scoring', hint: 'Once per job. Haiku recommended.' },
+  { key: 'halal', label: 'Halal filter', hint: 'No profile sent. Haiku recommended.' },
+  { key: 'tailoring', label: 'Resume tailoring', hint: 'Sonnet+ recommended.' },
+  { key: 'cover_letter', label: 'Cover letter', hint: 'Haiku or Sonnet.' },
   { key: 'form_filling', label: 'Form Q&A', hint: 'Per question. Haiku recommended.' },
-  { key: 'questions', label: 'Interview Questions', hint: 'Batch Q&A.' },
+  { key: 'questions', label: 'Interview questions', hint: 'Batch Q&A.' },
 ] as const
 
 export function AdminDefaultsPage() {
@@ -20,7 +25,6 @@ export function AdminDefaultsPage() {
   const { data: system } = useQuery({ queryKey: ['admin-system'], queryFn: adminApi.system.get })
   const { data: secrets } = useQuery({ queryKey: ['admin-system-secrets'], queryFn: adminApi.systemSecrets.get })
   const [llm, setLlm] = useState<LLMConfig>({})
-  const [apiKey, setApiKey] = useState('')
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
@@ -31,14 +35,9 @@ export function AdminDefaultsPage() {
     mutationFn: async () => {
       const base = system ?? {}
       await adminApi.system.set({ ...base, llm })
-      if (apiKey.trim()) {
-        await adminApi.systemSecrets.setApiKey(apiKey.trim())
-        setApiKey('')
-      }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-system'] })
-      qc.invalidateQueries({ queryKey: ['admin-system-secrets'] })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     },
@@ -52,78 +51,73 @@ export function AdminDefaultsPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-[var(--color-text-dim)]">
-        Deployment-wide LLM defaults. Every account inherits these unless an admin sets per-user overrides on the Users tab.
-      </p>
+    <div className="space-y-6">
+      <PageHeader
+        title="Defaults"
+        description="Deployment-wide LLM settings. Accounts inherit these unless overridden on the Users tab."
+      />
 
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-4">
-        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Default LLM</div>
+      <SettingsSection title="Default LLM">
         <div className="flex flex-wrap gap-4">
-          <label className="text-sm space-y-1">
-            <span className="text-[var(--color-text-muted)]">Provider</span>
-            <select value={llm.provider ?? 'claude'} onChange={e => setLlm({ ...llm, provider: e.target.value })}
-              className="block bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm">
+          <SettingsField label="Provider" layout="column">
+            <SettingsSelect value={llm.provider ?? 'claude'} onChange={e => setLlm({ ...llm, provider: e.target.value })}>
               <option value="claude">Claude</option>
               <option value="openai">OpenAI</option>
               <option value="ollama">Ollama</option>
-            </select>
-          </label>
-          <label className="text-sm space-y-1 flex-1 min-w-[200px]">
-            <span className="text-[var(--color-text-muted)]">Default model</span>
-            <input value={llm.model ?? ''} onChange={e => setLlm({ ...llm, model: e.target.value })}
+            </SettingsSelect>
+          </SettingsField>
+          <SettingsField label="Default model" layout="column">
+            <input
+              value={llm.model ?? ''}
+              onChange={e => setLlm({ ...llm, model: e.target.value })}
               placeholder="claude-sonnet-4-6"
-              className="w-full bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm" />
-          </label>
+              className={cn(inputClassName, 'min-w-[200px]')}
+            />
+          </SettingsField>
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={llm.use_proxy ?? false} onChange={e => setLlm({ ...llm, use_proxy: e.target.checked })} className="accent-violet-500" />
-          Route through proxy
-        </label>
+        <Switch
+          label="Route through proxy"
+          checked={llm.use_proxy ?? false}
+          onCheckedChange={v => setLlm({ ...llm, use_proxy: v })}
+        />
         {llm.use_proxy && (
-          <input value={llm.proxy_url ?? ''} onChange={e => setLlm({ ...llm, proxy_url: e.target.value })}
+          <input
+            value={llm.proxy_url ?? ''}
+            onChange={e => setLlm({ ...llm, proxy_url: e.target.value })}
             placeholder="Proxy URL"
-            className="w-full bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm" />
+            className={inputClassName}
+          />
         )}
-      </div>
+      </SettingsSection>
 
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-3">
-        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Default task models</div>
+      <SettingsSection title="Default task models" description="Leave blank to inherit the default model above.">
         {TASKS.map(t => (
-          <div key={t.key} className="flex items-center justify-between gap-4">
-            <div>
-              <div className="text-sm">{t.label}</div>
-              <div className="text-xs text-[var(--color-text-dim)]">{t.hint}</div>
-            </div>
+          <SettingsField key={t.key} label={t.label} sub={t.hint} layout="column">
             <input
               value={llm.task_models?.[t.key]?.model ?? ''}
               onChange={e => setTaskModel(t.key, e.target.value)}
               placeholder={llm.model ?? 'inherit default'}
-              className="w-48 bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm"
+              className={cn(inputClassName, 'max-w-md')}
             />
-          </div>
+          </SettingsField>
         ))}
-      </div>
+      </SettingsSection>
 
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-2">
-        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Default API key</div>
-        <p className="text-xs text-[var(--color-text-dim)]">
-          {secrets?.has_default_api_key ? 'A default key is configured (shown masked).' : 'No default key yet — all users need a per-user key or set one here.'}
-        </p>
-        <input
-          type="password"
-          value={apiKey}
-          onChange={e => setApiKey(e.target.value)}
-          placeholder={secrets?.has_default_api_key ? 'Enter new key to replace' : 'sk-…'}
-          className="w-full max-w-md bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm"
+      <SettingsSection title="Default API key" description="Used when a user has not set their own key on Platforms.">
+        <MaskedSecretField
+          configured={!!secrets?.has_default_api_key}
+          label="API key"
+          helper={secrets?.has_default_api_key ? 'A deployment default is configured.' : 'No default key — each user must supply one.'}
+          onSave={v => adminApi.systemSecrets.setApiKey(v).then(() => qc.invalidateQueries({ queryKey: ['admin-system-secrets'] }))}
+          onDelete={() => adminApi.systemSecrets.deleteApiKey().then(() => qc.invalidateQueries({ queryKey: ['admin-system-secrets'] }))}
         />
-      </div>
+      </SettingsSection>
 
-      <Button variant="primary" loading={saveSystem.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => saveSystem.mutate()}>
-        {saved ? 'Saved' : 'Save defaults'}
+      <Button variant="primary" fullWidth loading={saveSystem.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => saveSystem.mutate()}>
+        {saved ? 'Saved' : 'Save changes'}
       </Button>
       {saveSystem.isError && (
-        <div className={cn('text-xs text-red-400')}>{(saveSystem.error as Error).message}</div>
+        <p className="text-xs text-[var(--color-danger)] text-center">{(saveSystem.error as Error).message}</p>
       )}
     </div>
   )

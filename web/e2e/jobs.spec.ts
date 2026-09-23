@@ -13,22 +13,22 @@ test.describe('Jobs pages — empty states', () => {
 
   test('/jobs/skipped shows empty state', async ({ page }) => {
     await page.goto('/jobs/skipped')
-    await expect(page.getByText('No skipped jobs')).toBeVisible()
+    await expect(page.getByText('No skipped roles in this view')).toBeVisible()
   })
 
   test('/jobs/cannot-apply shows empty state', async ({ page }) => {
     await page.goto('/jobs/cannot-apply')
-    await expect(page.getByText('No jobs here')).toBeVisible()
+    await expect(page.getByText('No manual-step jobs right now')).toBeVisible()
   })
 
   test('/jobs/top-matches shows empty state', async ({ page }) => {
     await page.goto('/jobs/top-matches')
-    await expect(page.getByText(/No top matches yet/)).toBeVisible()
+    await expect(page.getByText(/No strong manual matches yet/)).toBeVisible()
   })
 
   test('/review shows no pending reviews', async ({ page }) => {
     await page.goto('/review')
-    await expect(page.getByText('No pending reviews')).toBeVisible()
+    await expect(page.getByText("You're all caught up")).toBeVisible()
   })
 
   test('/jobs/applied has a search input', async ({ page }) => {

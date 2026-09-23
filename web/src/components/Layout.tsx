@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { Sidebar } from './Sidebar'
 import { BottomNav } from './BottomNav'
 import { Outlet } from 'react-router-dom'
+import { cn } from '../lib'
 
 export function Layout() {
   const [collapsed, setCollapsed] = useState(
-    () => localStorage.getItem('sidebar-collapsed') === 'true'
+    () => localStorage.getItem('sidebar-collapsed') === 'true',
   )
 
   function toggleCollapsed() {
@@ -21,10 +22,13 @@ export function Layout() {
       <Sidebar collapsed={collapsed} onToggle={toggleCollapsed} />
       <BottomNav />
       <main
-        className={collapsed ? 'md:pl-14 pb-16 md:pb-0' : 'md:pl-56 pb-16 md:pb-0'}
+        className={cn(
+          'max-md:pb-[calc(4rem+env(safe-area-inset-bottom))]',
+          collapsed ? 'md:pl-16 lg:pl-14' : 'md:pl-16 lg:pl-56',
+        )}
         style={{ transition: 'padding-left 200ms' }}
       >
-        <div className="max-w-5xl mx-auto px-4 py-6 md:px-6">
+        <div className="max-w-[1024px] mx-auto px-4 py-6 md:px-6 lg:py-8">
           <Outlet />
         </div>
       </main>

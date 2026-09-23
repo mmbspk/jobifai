@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi } from 'vitest'
@@ -33,16 +34,27 @@ beforeEach(() => {
 test('renders all navigation labels', () => {
   render(<BottomNav />, { wrapper: Wrapper })
   expect(screen.getByText('Home')).toBeInTheDocument()
-  expect(screen.getByText('Applied')).toBeInTheDocument()
-  expect(screen.getByText('Manual')).toBeInTheDocument()
+  expect(screen.getByText('Jobs')).toBeInTheDocument()
   expect(screen.getByText('Review')).toBeInTheDocument()
+  expect(screen.getByText('Generate')).toBeInTheDocument()
   expect(screen.getByText('Settings')).toBeInTheDocument()
+})
+
+test('opens jobs menu with job routes', async () => {
+  const user = userEvent.setup()
+  render(<BottomNav />, { wrapper: Wrapper })
+
+  await user.click(screen.getByRole('button', { name: 'Jobs' }))
+
+  expect(screen.getByText('Applied')).toBeInTheDocument()
+  expect(screen.getByText('Top Matches')).toBeInTheDocument()
+  expect(screen.getByText('Skipped')).toBeInTheDocument()
+  expect(screen.getByText('Cannot Apply')).toBeInTheDocument()
 })
 
 test('renders a theme toggle button', () => {
   render(<BottomNav />, { wrapper: Wrapper })
-  const toggle = screen.getByRole('button')
-  expect(toggle).toBeInTheDocument()
+  expect(screen.getByTitle('Switch to light mode')).toBeInTheDocument()
 })
 
 test('shows pending badge count when there are pending reviews', async () => {
@@ -60,9 +72,8 @@ test('does not show a badge when there are no pending reviews', async () => {
   mockedReviewPending.mockResolvedValue([])
   render(<BottomNav />, { wrapper: Wrapper })
 
-  // Give react-query time to resolve before asserting badge is absent
   await waitFor(() => expect(mockedReviewPending).toHaveBeenCalled())
-  expect(screen.queryByText(/^\d+$/)).not.toBeInTheDocument()
+  expect(screen.queryByText('3')).not.toBeInTheDocument()
 })
 
 test('caps badge at 9 for more than 9 pending reviews', async () => {

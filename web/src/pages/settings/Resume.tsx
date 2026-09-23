@@ -4,6 +4,7 @@ import { Check, Plus, Trash2, Upload, Download, ChevronDown, FileText, X, Loader
 import { settingsApi } from '../../api/settings'
 import { cn } from '../../lib'
 import { Button } from '../../components/Button'
+import { PageHeader } from '../../components/shell/PageHeader'
 import { TagInput } from '../../components/TagInput'
 import type {
   ResumeProfile, EducationDetail, ExperienceDetail, Language,
@@ -53,7 +54,7 @@ function Textarea({ value, onChange, placeholder, rows = 3 }: { value: string; o
 
 function AddButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <button onClick={onClick} className="flex items-center gap-1.5 text-sm text-violet-400 hover:text-violet-300 transition-colors">
+    <button onClick={onClick} className="flex items-center gap-1.5 text-sm text-[var(--color-accent)] hover:underline transition-colors">
       <Plus size={14} /> {label}
     </button>
   )
@@ -295,11 +296,16 @@ export function Resume() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      <PageHeader
+        title="Profile"
+        description="Your experience and contact details — used for scoring, tailoring, and form filling."
+      />
+
       {/* Import / Export */}
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-3">
+      <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-3 shadow-[var(--shadow-sm)]">
         <div className="flex items-center justify-between">
-          <span className="text-sm font-medium text-[var(--color-text)]">Import Profile</span>
+          <span className="text-sm font-medium text-[var(--color-text)]">Import profile</span>
           <a href={settingsApi.resume.downloadUrl()} download="resume.yaml"
             className="flex items-center gap-1.5 text-xs text-[var(--color-text-dim)] hover:text-[var(--color-text)] transition-colors">
             <Download size={12} /> Export YAML
@@ -307,7 +313,7 @@ export function Resume() {
         </div>
         {!selectedFile && !extracting && (
           <button onClick={() => fileRef.current?.click()}
-            className="w-full flex flex-col items-center justify-center gap-2 py-6 rounded-lg border border-dashed border-[var(--color-border)] hover:border-violet-500/50 hover:bg-violet-500/5 transition-all text-[var(--color-text-dim)] hover:text-[var(--color-text)]">
+            className="w-full flex flex-col items-center justify-center gap-2 py-6 rounded-lg border border-dashed border-[var(--color-border)] hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent-soft)] transition-all text-[var(--color-text-dim)] hover:text-[var(--color-text)]">
             <Upload size={20} className="opacity-60" />
             <span className="text-sm">Choose file or drag &amp; drop</span>
             <span className="text-xs opacity-50">PDF, DOCX, TXT</span>
@@ -318,20 +324,20 @@ export function Resume() {
         {selectedFile && !extracting && (
           <div className="space-y-3">
             <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)]">
-              <FileText size={16} className="text-violet-400 shrink-0" />
+              <FileText size={16} className="text-[var(--color-accent)] shrink-0" />
               <span className="text-sm text-[var(--color-text)] truncate flex-1">{selectedFile.name}</span>
               <span className="text-xs text-[var(--color-text-dim)] shrink-0">{(selectedFile.size / 1024).toFixed(0)} KB</span>
               <button onClick={clearFile} className="text-[var(--color-text-dim)] hover:text-red-400 shrink-0 transition-colors"><X size={14} /></button>
             </div>
             <button onClick={handleExtract}
-              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-violet-500 hover:bg-violet-400 text-white text-sm font-medium transition-all shadow-[0_0_12px_var(--color-accent-glow)]">
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-sm font-medium transition-all shadow-[var(--shadow-sm)]">
               <Sparkles size={14} /> Extract with AI
             </button>
           </div>
         )}
         {extracting && (
           <div className="flex flex-col items-center gap-3 py-4">
-            <Loader2 size={20} className="text-violet-400 animate-spin" />
+            <Loader2 size={20} className="text-[var(--color-accent)] animate-spin" />
             <div className="space-y-1 text-center">
               {EXTRACT_STEPS.map((step, i) => (
                 <p key={step} className={cn('text-sm transition-all duration-300',
@@ -600,7 +606,7 @@ export function Resume() {
         leftIcon={saved ? <Check size={14} /> : undefined}
         onClick={() => save.mutate()}
       >
-        {saved ? 'Saved' : 'Save Profile'}
+        {saved ? 'Saved' : 'Save changes'}
       </Button>
     </div>
   )

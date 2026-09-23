@@ -17,7 +17,7 @@ function applyTheme(t: Theme) {
   document.documentElement.dataset.theme = t
   localStorage.setItem('theme', t)
   const meta = document.querySelector('meta[name="theme-color"]')
-  if (meta) meta.setAttribute('content', t === 'dark' ? '#0d0d11' : '#fafafe')
+  if (meta) meta.setAttribute('content', t === 'dark' ? '#171821' : '#f8f9fc')
   listeners.forEach(fn => fn(t))
 }
 

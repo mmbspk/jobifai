@@ -20,6 +20,9 @@ export default defineConfig({
     url: 'http://localhost:8081',
     timeout: 120_000,
     reuseExistingServer: !process.env.CI,
-    env: { JWT_SECRET: 'e2e-test-secret-do-not-use-in-prod' },
+    env: {
+      JWT_SECRET: 'e2e-test-secret-do-not-use-in-prod',
+      JOBIFAI_E2E: '1',
+    },
   },
 })

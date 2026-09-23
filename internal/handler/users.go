@@ -5,10 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/user/jobifai/internal/auth"
 )
+
+func e2eBootstrapAdmin(email string) bool {
+	if os.Getenv("JOBIFAI_E2E") != "1" {
+		return false
+	}
+	return strings.HasPrefix(email, "admin-") && strings.HasSuffix(email, "@e2e.test")
+}
 
 // UserHandlers groups user account and auth handlers.
 type UserHandlers struct {
@@ -61,6 +69,13 @@ func (h *UserHandlers) Register(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
+	}
+
+	if e2eBootstrapAdmin(req.Email) {
+		if err := h.users.SetAdmin(user.ID, true); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not grant admin"})
+			return
+		}
 	}
 
 	tokens, err := h.issueTokens(user.ID, user.Email)

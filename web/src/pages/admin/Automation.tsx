@@ -3,6 +3,10 @@ import { useEffect, useState } from 'react'
 import { Check } from 'lucide-react'
 import { adminApi } from '../../api/admin'
 import { Button } from '../../components/Button'
+import { PageHeader } from '../../components/shell/PageHeader'
+import { SettingsField, SettingsNumberInput, SettingsSection } from '../../components/settings/settings-ui'
+import { Switch } from '../../components/ui/switch'
+import { inputClassName } from '../../components/ui/input'
 import type { BrowserConfig, GeneralSettings, HumanBehaviorConfig } from '../../types'
 
 export function AdminAutomationPage() {
@@ -30,38 +34,48 @@ export function AdminAutomationPage() {
   })
 
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-[var(--color-text-dim)]">
-        Browser and pacing defaults for all users on this deployment.
-      </p>
+    <div className="space-y-6">
+      <PageHeader
+        title="Automation"
+        description="Browser visibility and pacing defaults for every account on this deployment."
+      />
 
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-3">
-        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Browser</div>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={browser.show_browser ?? true} onChange={e => setBrowser({ ...browser, show_browser: e.target.checked })} className="accent-violet-500" />
-          Show browser window
-        </label>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={browser.use_chrome_profile ?? true} onChange={e => setBrowser({ ...browser, use_chrome_profile: e.target.checked })} className="accent-violet-500" />
-          Use Chrome profile
-        </label>
-        <input value={browser.chrome_profile_path ?? ''} onChange={e => setBrowser({ ...browser, chrome_profile_path: e.target.value })}
-          placeholder="Chrome profile path (optional)"
-          className="w-full bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm" />
-      </div>
+      <SettingsSection title="Browser">
+        <Switch
+          label="Show browser window"
+          helper="When off, automation runs headless."
+          checked={browser.show_browser ?? true}
+          onCheckedChange={v => setBrowser({ ...browser, show_browser: v })}
+        />
+        <Switch
+          label="Use Chrome profile"
+          helper="Reuse an existing Chrome profile for cookies and extensions."
+          checked={browser.use_chrome_profile ?? true}
+          onCheckedChange={v => setBrowser({ ...browser, use_chrome_profile: v })}
+        />
+        <SettingsField label="Chrome profile path" sub="Optional — leave empty for the default profile">
+          <input
+            value={browser.chrome_profile_path ?? ''}
+            onChange={e => setBrowser({ ...browser, chrome_profile_path: e.target.value })}
+            placeholder="/path/to/profile"
+            className={inputClassName}
+          />
+        </SettingsField>
+      </SettingsSection>
 
-      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-3">
-        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Human behaviour</div>
-        <label className="text-sm space-y-1 block max-w-xs">
-          <span className="text-[var(--color-text-muted)]">Daily application limit</span>
-          <input type="number" min={1} max={200} value={hb.daily_application_limit ?? 40}
-            onChange={e => setHb({ ...hb, daily_application_limit: Number(e.target.value) })}
-            className="w-full bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm" />
-        </label>
-      </div>
+      <SettingsSection title="Human behaviour">
+        <SettingsField label="Daily application limit" sub="Cap submissions per user per day across platforms">
+          <SettingsNumberInput
+            value={hb.daily_application_limit ?? 40}
+            onChange={v => setHb({ ...hb, daily_application_limit: v })}
+            min={1}
+            max={200}
+          />
+        </SettingsField>
+      </SettingsSection>
 
-      <Button variant="primary" loading={save.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => save.mutate()}>
-        {saved ? 'Saved' : 'Save automation'}
+      <Button variant="primary" fullWidth loading={save.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => save.mutate()}>
+        {saved ? 'Saved' : 'Save changes'}
       </Button>
     </div>
   )

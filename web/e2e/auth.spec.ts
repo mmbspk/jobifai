@@ -12,7 +12,7 @@ test.describe('Auth flows', () => {
     await page.getByRole('button', { name: 'Create account' }).click()
 
     await page.waitForURL('/')
-    await expect(page.getByText('Idle')).toBeVisible()
+    await expect(page.getByText('Automation is ready')).toBeVisible()
   })
 
   test('login via UI → dashboard → logout → back to /login', async ({ page, request }) => {
@@ -27,11 +27,11 @@ test.describe('Auth flows', () => {
     await page.getByRole('button', { name: 'Sign in' }).click()
 
     await page.waitForURL('/')
-    await expect(page.getByText('Idle')).toBeVisible()
+    await expect(page.getByText('Automation is ready')).toBeVisible()
 
     await page.getByTitle('Sign out').click()
     await page.waitForURL('/login')
-    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible()
   })
 
   test('protected routes redirect unauthenticated users to /login', async ({ page }) => {
@@ -58,7 +58,7 @@ test.describe('Auth flows', () => {
 
   test('registerAndInjectTokens helper loads dashboard directly', async ({ page, request }) => {
     await registerAndInjectTokens(page, request)
-    await expect(page.getByText('Idle')).toBeVisible()
+    await expect(page.getByText('Automation is ready')).toBeVisible()
     await expect(page).toHaveURL('/')
   })
 })

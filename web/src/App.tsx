@@ -1,4 +1,4 @@
-import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Layout } from './components/Layout'
 import { Dashboard } from './pages/Dashboard'
 import { JobsApplied } from './pages/JobsApplied'
@@ -18,7 +18,10 @@ import { UsagePage } from './pages/settings/Usage'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
-import { cn } from './lib'
+import { SettingsTabNav } from './components/settings/SettingsTabNav'
+import { AdminTabNav } from './components/admin/AdminTabNav'
+import { Badge } from './components/ui/badge'
+import { PageHeader } from './components/shell/PageHeader'
 
 const SETTINGS_TABS = [
   { to: '/settings/application', label: 'Application' },
@@ -37,24 +40,7 @@ const ADMIN_TABS = [
 function SettingsLayout() {
   return (
     <div className="space-y-6">
-      <div className="flex gap-1 p-1 bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
-        {SETTINGS_TABS.map(t => (
-          <NavLink
-            key={t.to}
-            to={t.to}
-            className={({ isActive }) =>
-              cn(
-                'flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all text-center whitespace-nowrap',
-                isActive
-                  ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
-                  : 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]',
-              )
-            }
-          >
-            {t.label}
-          </NavLink>
-        ))}
-      </div>
+      <SettingsTabNav tabs={SETTINGS_TABS} />
       <Routes>
         <Route path="application" element={<ApplicationSettingsPage />} />
         <Route path="preferences" element={<Preferences />} />
@@ -72,28 +58,14 @@ function SettingsLayout() {
 function AdminLayout() {
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold text-[var(--color-text)]">Admin</h1>
-        <p className="text-sm text-[var(--color-text-dim)]">System configuration — not visible to regular users.</p>
+      <div className="space-y-3">
+        <Badge variant="admin">Admin</Badge>
+        <PageHeader
+          title="System"
+          description="Deployment configuration — only visible to administrators."
+        />
       </div>
-      <div className="flex gap-1 p-1 bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
-        {ADMIN_TABS.map(t => (
-          <NavLink
-            key={t.to}
-            to={t.to}
-            className={({ isActive }) =>
-              cn(
-                'flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all text-center whitespace-nowrap',
-                isActive
-                  ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                  : 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]',
-              )
-            }
-          >
-            {t.label}
-          </NavLink>
-        ))}
-      </div>
+      <AdminTabNav tabs={ADMIN_TABS} />
       <Routes>
         <Route path="defaults"   element={<AdminDefaultsPage />} />
         <Route path="automation" element={<AdminAutomationPage />} />

@@ -79,7 +79,7 @@ help:
 e2e-server:
 	rm -f /tmp/e2e-test.db
 	go build -trimpath -o /tmp/jobifai-e2e $(MAIN)
-	JWT_SECRET=e2e-test-secret-do-not-use-in-prod /tmp/jobifai-e2e -db /tmp/e2e-test.db
+	JWT_SECRET=e2e-test-secret-do-not-use-in-prod JOBIFAI_E2E=1 /tmp/jobifai-e2e -db /tmp/e2e-test.db
 
 ## test-e2e: build frontend then run Playwright e2e tests
 test-e2e: web-build

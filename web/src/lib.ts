@@ -14,15 +14,47 @@ export function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
+export type ScoreBand = 'low' | 'moderate' | 'strong' | 'excellent'
+
+/** Semantic score bands (1–3 low, 4–6 moderate, 7–8 strong, 9–10 excellent). */
+export function scoreBand(score: number): ScoreBand {
+  if (score <= 3) return 'low'
+  if (score <= 6) return 'moderate'
+  if (score <= 8) return 'strong'
+  return 'excellent'
+}
+
+export function scoreBandLabel(band: ScoreBand): string {
+  switch (band) {
+    case 'low': return 'Low'
+    case 'moderate': return 'Moderate'
+    case 'strong': return 'Strong'
+    case 'excellent': return 'Excellent'
+  }
+}
+
+/** Foreground color for inline use (charts); pills prefer CSS classes. */
 export function scoreColor(score: number): string {
-  // Smooth gradient: red (0) → amber (5) → green (10)
-  const h = Math.round(score * 12) // 0 → 0°, 10 → 120°
-  return `hsl(${h}, 70%, 55%)`
+  switch (scoreBand(score)) {
+    case 'low': return 'var(--color-danger)'
+    case 'moderate': return 'var(--color-warn)'
+    case 'strong': return 'var(--color-info)'
+    case 'excellent': return 'var(--color-success)'
+  }
 }
 
 export function scoreBg(score: number): string {
-  const h = Math.round(score * 12)
-  return `hsla(${h}, 70%, 55%, 0.15)`
+  switch (scoreBand(score)) {
+    case 'low': return 'var(--color-danger-soft)'
+    case 'moderate': return 'var(--color-warn-soft)'
+    case 'strong': return 'var(--color-accent-soft)'
+    case 'excellent': return 'var(--color-success-soft)'
+  }
+}
+
+export function formatScore(score: number): string {
+  const rounded = Math.round(score * 10) / 10
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)
 }
 
 export function relativeTime(iso: string): string {

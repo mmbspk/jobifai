@@ -5,26 +5,15 @@ import { settingsApi } from '../../api/settings'
 import { TagInput } from '../../components/TagInput'
 import { SearchTargetList } from '../../components/SearchTargetList'
 import { Button } from '../../components/Button'
+import { PageHeader } from '../../components/shell/PageHeader'
+import { SettingsSection } from '../../components/settings/settings-ui'
 import type { SearchTarget, WorkPreferences } from '../../types'
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
-      <div className="py-3 pr-4 pl-3 border-b border-[var(--color-border)] border-l-2 border-l-[var(--color-accent)] text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider">{title}</div>
-      <div className="p-4">{children}</div>
-    </div>
-  )
-}
+import { cn } from '../../lib'
 
 function Radio({ label, checked, onChange }: { label: string; checked: boolean; onChange: () => void }) {
   return (
-    <label className="flex items-center gap-2.5 cursor-pointer select-none">
-      <input
-        type="radio"
-        checked={checked}
-        onChange={onChange}
-        className="accent-[var(--color-accent)]"
-      />
+    <label className="flex items-center gap-2.5 cursor-pointer select-none min-h-[44px] sm:min-h-0">
+      <input type="radio" checked={checked} onChange={onChange} className="accent-[var(--color-accent)]" />
       <span className="text-sm text-[var(--color-text-muted)]">{label}</span>
     </label>
   )
@@ -52,13 +41,19 @@ function dateFilterRecord(key: DateFilterKey): WorkPreferences['date_filters'] {
 
 function Checkbox({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <label className="flex items-center gap-2.5 cursor-pointer select-none">
-      <div
+    <label className="flex items-center gap-2.5 cursor-pointer select-none min-h-[44px] sm:min-h-0">
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${checked ? 'bg-[var(--color-accent)] border-[var(--color-accent)]' : 'border-[var(--color-border)]'}`}
+        className={cn(
+          'w-4 h-4 rounded border flex items-center justify-center transition-colors shrink-0',
+          checked ? 'bg-[var(--color-accent)] border-[var(--color-accent)]' : 'border-[var(--color-border)]',
+        )}
       >
         {checked && <Check size={10} strokeWidth={3} className="text-white" />}
-      </div>
+      </button>
       <span className="text-sm text-[var(--color-text-muted)]">{label}</span>
     </label>
   )
@@ -101,6 +96,10 @@ function normalizePrefs(p: WorkPreferences): WorkPreferences {
   }
 }
 
+function formatLabel(key: string): string {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+}
+
 export function Preferences() {
   const qc = useQueryClient()
   const { data } = useQuery({ queryKey: ['settings-preferences'], queryFn: settingsApi.preferences.get })
@@ -126,100 +125,87 @@ export function Preferences() {
   const targets = form.search_targets?.length ? form.search_targets : [DEFAULT_TARGET]
 
   return (
-    <div className="space-y-4">
-      <Section title="Experience Level">
-        <p className="text-[10px] text-[var(--color-text-dim)] mb-3">
-          Filters LinkedIn search (f_E). Seek listings are matched by job title after search.
-        </p>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {(['internship','entry','associate','mid_senior_level','senior','director','executive'] as const).map(k => (
-            <Checkbox key={k} label={k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+    <div className="space-y-6">
+      <PageHeader
+        title="Preferences"
+        description="Target roles, locations, and filters used when searching job boards."
+      />
+
+      <SettingsSection title="Target roles">
+        <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5 min-h-11">
+          <TagInput values={form.positions ?? []} onChange={v => setForm(f => ({ ...f, positions: v }))} placeholder="Add target title…" />
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="Search targets" description="Location searches and work arrangements per region.">
+        <p className="text-xs text-[var(--color-text-dim)] -mt-2 mb-2">Location searches</p>
+        <SearchTargetList targets={targets} onChange={search_targets => setForm(f => ({ ...f, search_targets }))} />
+      </SettingsSection>
+
+      <SettingsSection title="Experience level" description="Filters LinkedIn search (Seek matches by title after search).">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {(['internship', 'entry', 'associate', 'mid_senior_level', 'senior', 'director', 'executive'] as const).map(k => (
+            <Checkbox
+              key={k}
+              label={formatLabel(k)}
               checked={(form.experience_level as Record<string, boolean>)?.[k] ?? false}
               onChange={() => toggle('experience_level', k)}
             />
           ))}
         </div>
-      </Section>
+      </SettingsSection>
 
-      <Section title="Job Types">
-        <p className="text-[10px] text-[var(--color-text-dim)] mb-3">
-          Multi-select. LinkedIn uses all types; Seek maps full-time, part-time, contract, and temporary only.
-        </p>
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-          {(['full_time','contract','part_time','temporary','internship','volunteer','other'] as const).map(k => (
-            <Checkbox key={k} label={k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+      <SettingsSection title="Job types">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {(['full_time', 'contract', 'part_time', 'temporary', 'internship', 'volunteer', 'other'] as const).map(k => (
+            <Checkbox
+              key={k}
+              label={formatLabel(k)}
               checked={(form.job_types as Record<string, boolean>)?.[k] ?? false}
               onChange={() => toggle('job_types', k)}
             />
           ))}
         </div>
-      </Section>
+      </SettingsSection>
 
-      <Section title="Date Filter">
-        <p className="text-[10px] text-[var(--color-text-dim)] mb-3">
-          One period applies to Seek and LinkedIn search (most recent wins if legacy data had several selected).
-        </p>
-        <div className="flex flex-wrap gap-6">
+      <SettingsSection title="Listing age">
+        <div className="flex flex-wrap gap-x-6 gap-y-2">
           {DATE_FILTER_KEYS.map(k => (
             <Radio
               key={k}
-              label={k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+              label={formatLabel(k)}
               checked={selectedDateFilter === k}
               onChange={() => setForm(f => ({ ...f, date_filters: dateFilterRecord(k) }))}
             />
           ))}
         </div>
-      </Section>
+      </SettingsSection>
 
-      <Section title="Search Targets">
+      <SettingsSection title="Blacklists">
         <div className="space-y-4">
           <div>
-            <div className="text-xs text-[var(--color-text-dim)] mb-1.5">Job Titles / Positions</div>
-            <div className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg p-2.5 min-h-10">
-              <TagInput values={form.positions ?? []} onChange={v => setForm(f => ({ ...f, positions: v }))} placeholder="Add title…" />
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-[var(--color-text-dim)] mb-1.5">Location Searches</div>
-            <SearchTargetList
-              targets={targets}
-              onChange={search_targets => setForm(f => ({ ...f, search_targets }))}
-            />
-          </div>
-        </div>
-      </Section>
-
-      <Section title="Blacklists">
-        <div className="space-y-4">
-          <div>
-            <div className="text-xs text-red-400/80 mb-1.5">Blacklisted Companies</div>
-            <div className="bg-[var(--color-surface-2)] border border-red-500/20 rounded-lg p-2.5 min-h-10">
+            <p className="text-xs text-[var(--color-text-dim)] mb-1.5">Companies</p>
+            <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5 min-h-10">
               <TagInput values={form.company_blacklist ?? []} onChange={v => setForm(f => ({ ...f, company_blacklist: v }))} placeholder="Add company…" />
             </div>
           </div>
           <div>
-            <div className="text-xs text-red-400/80 mb-1.5">Blacklisted Job Titles</div>
-            <div className="bg-[var(--color-surface-2)] border border-red-500/20 rounded-lg p-2.5 min-h-10">
+            <p className="text-xs text-[var(--color-text-dim)] mb-1.5">Titles</p>
+            <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5 min-h-10">
               <TagInput values={form.title_blacklist ?? []} onChange={v => setForm(f => ({ ...f, title_blacklist: v }))} placeholder="Add title…" />
             </div>
           </div>
           <div>
-            <div className="text-xs text-red-400/80 mb-1.5">Blacklisted Locations</div>
-            <div className="bg-[var(--color-surface-2)] border border-red-500/20 rounded-lg p-2.5 min-h-10">
+            <p className="text-xs text-[var(--color-text-dim)] mb-1.5">Locations</p>
+            <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface-2)] p-2.5 min-h-10">
               <TagInput values={form.location_blacklist ?? []} onChange={v => setForm(f => ({ ...f, location_blacklist: v }))} placeholder="Add location…" />
             </div>
           </div>
         </div>
-      </Section>
+      </SettingsSection>
 
-      <Button
-        variant="primary"
-        fullWidth
-        loading={save.isPending}
-        leftIcon={saved ? <Check size={14} /> : undefined}
-        onClick={() => save.mutate()}
-      >
-        {saved ? 'Saved' : 'Save Preferences'}
+      <Button variant="primary" fullWidth loading={save.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => save.mutate()}>
+        {saved ? 'Saved' : 'Save changes'}
       </Button>
     </div>
   )

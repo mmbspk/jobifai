@@ -3,13 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#09090b" />
+    <meta name="theme-color" content="#171821" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="description" content="Jobifai, automated job applications with AI" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="description" content="Jobifai — automated job applications with AI. Your calm application partner." />
+    <meta property="og:title" content="Jobifai" />
+    <meta property="og:description" content="Automated job applications with AI. Find roles. Evaluate fit. Apply with confidence." />
+    <meta property="og:image" content="/og-dark-1200x630.png" />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.json" />
-    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <title>Jobifai</title>
     <script>
       (function () {
@@ -19,7 +24,7 @@
         }
         document.documentElement.dataset.theme = t;
         var meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.setAttribute('content', t === 'light' ? '#f6f6f7' : '#09090b');
+        if (meta) meta.setAttribute('content', t === 'light' ? '#f8f9fc' : '#171821');
       })();
     </script>
   </head>

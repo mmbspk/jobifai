@@ -95,7 +95,7 @@ function LocationSuggestInput({ value, onChange }: { value: string; onChange: (v
               onMouseDown={() => pick(s)}
               className={cn(
                 'px-3 py-2 text-xs cursor-pointer text-[var(--color-text)]',
-                i === activeIdx ? 'bg-violet-500/20 text-violet-300' : 'hover:bg-[var(--color-surface-2)]',
+                i === activeIdx ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]' : 'hover:bg-[var(--color-surface-2)]',
               )}
             >
               {s}

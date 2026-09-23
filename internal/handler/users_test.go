@@ -25,6 +25,35 @@ func TestUsers_Register_Success(t *testing.T) {
 	assert.NotEmpty(t, tokens.RefreshToken)
 }
 
+func TestUsers_Register_E2EAdminBootstrap(t *testing.T) {
+	t.Setenv("JOBIFAI_E2E", "1")
+	svc, _ := newTestServices(t)
+	router := handler.NewRouter(svc)
+
+	w := authPost(t, router, "/auth/register", "", map[string]string{
+		"email": "admin-bootstrap@e2e.test", "password": "password123",
+	})
+	assert.Equal(t, 201, w.Code)
+
+	var tokens auth.Tokens
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&tokens))
+	wMe := authGet(t, router, "/api/me", tokens.AccessToken)
+	var me map[string]any
+	require.NoError(t, json.NewDecoder(wMe.Body).Decode(&me))
+	assert.Equal(t, true, me["is_admin"])
+
+	w2 := authPost(t, router, "/auth/register", "", map[string]string{
+		"email": "test-member@e2e.test", "password": "password123",
+	})
+	assert.Equal(t, 201, w2.Code)
+	var tokens2 auth.Tokens
+	require.NoError(t, json.NewDecoder(w2.Body).Decode(&tokens2))
+	wMe2 := authGet(t, router, "/api/me", tokens2.AccessToken)
+	var me2 map[string]any
+	require.NoError(t, json.NewDecoder(wMe2.Body).Decode(&me2))
+	assert.Equal(t, false, me2["is_admin"])
+}
+
 func TestUsers_Register_DuplicateEmail(t *testing.T) {
 	svc, _ := newTestServices(t)
 	router := handler.NewRouter(svc)

@@ -8,6 +8,10 @@ import { settingsApi } from '../api/settings'
 import { botApi } from '../api/bot'
 import type { ApplyURLResponse } from '../api/bot'
 import { ScorePill } from '../components/ScorePill'
+import { PageHeader } from '../components/shell/PageHeader'
+import { EthicsVerdict } from '../components/review/EthicsVerdict'
+import { inputClassName } from '../components/ui/input'
+import { Button } from '../components/ui/button'
 import { generationStore, useGenerationState, STEPS, type GenTab } from '../state/generationStore'
 
 type Tab = GenTab | 'apply'
@@ -22,7 +26,10 @@ const TABS: { key: Tab; label: string; desc: string }[] = [
 
 const APPLY_STEPS = ['Detecting platform…', 'Scoring job fit…', 'Verifying Easy Apply…', 'Submitting application…']
 
-const INPUT_CLS = 'w-full bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg px-3 py-2 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-violet-500/50'
+const TAB_ACTIVE = 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] border border-[var(--color-accent)]/30'
+const TAB_IDLE = 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] border border-transparent'
+const CHIP_ACTIVE = 'border-[var(--color-accent)]/60 bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+const LOADING_PANEL = 'rounded-[var(--radius-lg)] border border-[var(--color-accent)]/20 bg-[var(--color-accent-soft)]/50 p-6 text-center space-y-3'
 
 export function Generate() {
   const [searchParams] = useSearchParams()
@@ -177,7 +184,7 @@ export function Generate() {
             onChange={e => generationStore.setForm({ resumeFile: e.target.files?.[0] ?? null })} />
           {f.resumeFile ? (
             <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[var(--color-surface-2)] border border-[var(--color-border)]">
-              <Upload size={14} className="text-violet-400 shrink-0" />
+              <Upload size={14} className="text-[var(--color-accent)] shrink-0" />
               <span className="text-sm text-[var(--color-text)] truncate flex-1">{f.resumeFile.name}</span>
               <button onClick={() => { generationStore.setForm({ resumeFile: null }); if (fileRef.current) fileRef.current.value = '' }}
                 className="text-[var(--color-text-dim)] hover:text-red-400 transition-colors shrink-0">
@@ -186,7 +193,7 @@ export function Generate() {
             </div>
           ) : (
             <button onClick={() => fileRef.current?.click()}
-              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-[var(--color-border)] hover:border-violet-500/50 hover:bg-violet-500/5 transition-all text-sm text-[var(--color-text-dim)] hover:text-[var(--color-text)]">
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-[var(--color-border)] hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent-soft)] transition-all text-sm text-[var(--color-text-dim)] hover:text-[var(--color-text)]">
               <Upload size={14} /> Choose file
             </button>
           )}
@@ -199,12 +206,12 @@ export function Generate() {
           <div>
             <p className="text-xs text-[var(--color-text-dim)] mb-2">LinkedIn URL <span className="opacity-50">(optional)</span></p>
             <input value={f.linkedinUrl} onChange={e => generationStore.setForm({ linkedinUrl: e.target.value })}
-              placeholder="https://linkedin.com/in/yourname" className={INPUT_CLS} />
+              placeholder="https://linkedin.com/in/yourname" className={inputClassName} />
           </div>
           <div>
             <p className="text-xs text-[var(--color-text-dim)] mb-2">GitHub URL <span className="opacity-50">(optional)</span></p>
             <input value={f.githubUrl} onChange={e => generationStore.setForm({ githubUrl: e.target.value })}
-              placeholder="https://github.com/yourname" className={INPUT_CLS} />
+              placeholder="https://github.com/yourname" className={inputClassName} />
           </div>
         </div>
       )}
@@ -217,7 +224,7 @@ export function Generate() {
             placeholder={tab === 'cover'
               ? 'e.g. Emphasise leadership experience, keep it under 300 words'
               : 'e.g. Highlight Python and ML skills, downplay frontend experience'}
-            className={cn(INPUT_CLS, 'resize-none')} />
+            className={cn(inputClassName, 'resize-none')} />
         </div>
       )}
     </div>
@@ -232,16 +239,21 @@ export function Generate() {
 
   return (
     <div className="space-y-6">
+      <PageHeader
+        title="Generate"
+        description="Evaluate fit, tailor documents, answer questions, or apply from a job URL."
+      />
+
       {/* Tabs */}
-      <div className="flex gap-1 p-1 bg-[var(--color-surface)] rounded-xl border border-[var(--color-border)]">
-        {visibleTabs.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={cn('flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all',
-              tab === t.key
-                ? 'bg-violet-500/20 text-violet-300 border border-violet-500/30'
-                : 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)]')}
-          >{t.label}</button>
-        ))}
+      <div className="overflow-x-auto -mx-1 px-1 pb-1">
+        <div className="flex gap-1 p-1 min-w-min bg-[var(--color-surface)] rounded-[var(--radius-lg)] border border-[var(--color-border)]">
+          {visibleTabs.map(t => (
+            <button key={t.key} type="button" onClick={() => setTab(t.key)}
+              className={cn('py-2 px-3 rounded-[var(--radius-md)] text-sm font-medium transition-all whitespace-nowrap min-h-[44px] sm:min-h-0',
+                tab === t.key ? TAB_ACTIVE : TAB_IDLE)}
+            >{t.label}</button>
+          ))}
+        </div>
       </div>
 
       <div className="text-sm text-[var(--color-text-muted)]">{tabDesc}</div>
@@ -254,14 +266,14 @@ export function Generate() {
             <button onClick={() => { generationStore.setForm({ market: '' }); setMarketTouched(true) }}
               className={cn('px-3 py-1.5 rounded-lg text-xs border transition-all',
                 f.market === ''
-                  ? 'border-violet-500/60 bg-violet-500/15 text-violet-300'
+                  ? CHIP_ACTIVE
                   : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] bg-[var(--color-surface)]')}
             >Generic</button>
             {markets.filter(m => m.name !== 'Generic').map(m => (
               <button key={m.yaml_file} onClick={() => { generationStore.setForm({ market: m.name }); setMarketTouched(true) }}
                 className={cn('px-3 py-1.5 rounded-lg text-xs border transition-all',
                   f.market === m.name
-                    ? 'border-violet-500/60 bg-violet-500/15 text-violet-300'
+                    ? CHIP_ACTIVE
                     : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] bg-[var(--color-surface)]')}
               >{m.name}</button>
             ))}
@@ -278,7 +290,7 @@ export function Generate() {
             </p>
             <input value={f.jobUrl} onChange={e => { generationStore.setForm({ jobUrl: e.target.value }); generationStore.setUrlAlert(genTab ?? 'resume', false) }}
               placeholder="https://linkedin.com/jobs/view/…"
-              className={INPUT_CLS.replace('py-2', 'py-2.5')}
+              className={inputClassName.replace('py-2', 'py-2.5')}
             />
           </div>
 
@@ -306,7 +318,7 @@ export function Generate() {
             </p>
             <textarea value={f.jobDesc} onChange={e => { generationStore.setForm({ jobDesc: e.target.value }); generationStore.setUrlAlert(genTab ?? 'resume', false) }} rows={5}
               placeholder="Paste the full job description here…"
-              className={cn(INPUT_CLS, 'resize-none', urlAlert && 'border-amber-500/50 focus:border-amber-400')} />
+              className={cn(inputClassName, 'resize-none', urlAlert && 'border-amber-500/50 focus:border-amber-400')} />
           </div>
 
           {/* Collapsible extra options */}
@@ -318,7 +330,7 @@ export function Generate() {
               <span className="text-[var(--color-text-muted)] font-medium flex items-center gap-2">
                 More Options
                 {activeOpts > 0 && (
-                  <span className="px-1.5 py-0.5 rounded-md text-xs bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                  <span className="px-1.5 py-0.5 rounded-md text-xs bg-[var(--color-accent-soft)] text-[var(--color-accent)] border border-[var(--color-accent)]/30">
                     {activeOpts} set
                   </span>
                 )}
@@ -341,7 +353,7 @@ export function Generate() {
             <p className="text-xs text-[var(--color-text-dim)] mb-2">Job Posting URL</p>
             <input value={f.jobUrl} onChange={e => { generationStore.setForm({ jobUrl: e.target.value }); generationStore.setUrlAlert(genTab ?? 'resume', false) }}
               placeholder="https://linkedin.com/jobs/view/…"
-              className={INPUT_CLS.replace('py-2', 'py-2.5')}
+              className={inputClassName.replace('py-2', 'py-2.5')}
             />
           </div>
 
@@ -369,7 +381,7 @@ export function Generate() {
             </p>
             <textarea value={f.jobDesc} onChange={e => { generationStore.setForm({ jobDesc: e.target.value }); generationStore.setUrlAlert(genTab ?? 'resume', false) }} rows={5}
               placeholder="Paste the full job description here…"
-              className={cn(INPUT_CLS, 'resize-none', urlAlert && 'border-amber-500/50 focus:border-amber-400')} />
+              className={cn(inputClassName, 'resize-none', urlAlert && 'border-amber-500/50 focus:border-amber-400')} />
           </div>
 
           {/* Questions input — only shown for the questions tab */}
@@ -387,7 +399,7 @@ export function Generate() {
                     }}
                     rows={2}
                     placeholder={`Question ${i + 1}…`}
-                    className={cn(INPUT_CLS, 'resize-none flex-1')}
+                    className={cn(inputClassName, 'resize-none flex-1')}
                   />
                   {f.questions.length > 1 && (
                     <button
@@ -401,7 +413,7 @@ export function Generate() {
               ))}
               <button
                 onClick={() => generationStore.setForm({ questions: [...f.questions, { id: nextQuestionId.current++, value: '' }] })}
-                className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 transition-colors mt-1"
+                className="flex items-center gap-1.5 text-xs text-[var(--color-accent)] hover:underline transition-colors mt-1"
               >
                 <Plus size={13} /> Add question
               </button>
@@ -419,43 +431,37 @@ export function Generate() {
             </p>
             <input value={applyUrl} onChange={e => setApplyUrl(e.target.value)}
               placeholder="https://linkedin.com/jobs/view/… or https://seek.com.au/job/…"
-              className={INPUT_CLS.replace('py-2', 'py-2.5')}
+              className={inputClassName.replace('py-2', 'py-2.5')}
             />
           </div>
 
           <div className="flex gap-2">
-            <button
-              onClick={() => applyJob()}
+            <Button
+              variant="primary"
+              size="lg"
+              fullWidth
               disabled={!canStartApply || applyLoading}
-              className={cn(
-                'flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all',
-                canStartApply && !applyLoading
-                  ? 'bg-violet-500 text-white hover:bg-violet-400 shadow-[0_0_20px_var(--color-accent-glow)]'
-                  : 'bg-[var(--color-surface-2)] text-[var(--color-text-dim)] cursor-not-allowed',
-              )}
+              loading={applyLoading}
+              leftIcon={!applyLoading ? <ArrowRight size={15} /> : undefined}
+              onClick={() => applyJob()}
             >
-              {applyLoading ? <Loader2 size={15} className="animate-spin" /> : <ArrowRight size={15} />}
               AI Apply
-            </button>
+            </Button>
             {applyLoading && (
-              <button
-                type="button"
-                onClick={cancelApply}
-                className="px-4 py-3 rounded-xl text-sm font-medium border border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] transition-colors shrink-0"
-              >
+              <Button type="button" variant="secondary" size="lg" onClick={cancelApply} className="shrink-0">
                 Cancel
-              </button>
+              </Button>
             )}
           </div>
 
           {applyLoading && (
-            <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-6 text-center space-y-3">
-              <Loader2 size={24} className="mx-auto text-violet-400 animate-spin" />
-              <div className="text-sm text-violet-300">{APPLY_STEPS[applyStep]}</div>
+            <div className={LOADING_PANEL}>
+              <Loader2 size={24} className="mx-auto text-[var(--color-accent)] animate-spin" />
+              <div className="text-sm text-[var(--color-text)]">{APPLY_STEPS[applyStep]}</div>
               <div className="flex justify-center gap-1">
                 {APPLY_STEPS.map((label, i) => (
                   <div key={label} className={cn('h-1 rounded-full transition-all',
-                    i <= applyStep ? 'w-6 bg-violet-400' : 'w-2 bg-violet-500/20')} />
+                    i <= applyStep ? 'w-6 bg-[var(--color-accent)]' : 'w-2 bg-[var(--color-accent)]/20')} />
                 ))}
               </div>
               <p className="text-[10px] text-[var(--color-text-dim)]">
@@ -519,14 +525,12 @@ export function Generate() {
                 <p className="text-sm text-[var(--color-text-muted)] leading-relaxed">{applyResponse.reasoning}</p>
               )}
               <div className="flex gap-3">
-                <button onClick={applyAnyway} disabled={applyLoading}
-                  className="flex-1 py-2 rounded-lg text-sm font-medium bg-violet-500 text-white hover:bg-violet-400 transition-colors disabled:opacity-50">
-                  Apply Anyway
-                </button>
-                <button onClick={skipJob} disabled={applyLoading}
-                  className="flex-1 py-2 rounded-lg text-sm font-medium border border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] transition-colors disabled:opacity-50">
+                <Button variant="primary" fullWidth disabled={applyLoading} loading={applyLoading} onClick={applyAnyway}>
+                  Apply anyway
+                </Button>
+                <Button variant="secondary" fullWidth disabled={applyLoading} onClick={skipJob}>
                   Skip
-                </button>
+                </Button>
               </div>
             </div>
           )}
@@ -537,7 +541,7 @@ export function Generate() {
               <p className="text-sm text-[var(--color-text-muted)]">
                 Successfully applied to <strong>{applyResponse.role}</strong> at <strong>{applyResponse.company}</strong>.
               </p>
-              <a href="/jobs/applied" className="flex items-center gap-1.5 text-sm text-violet-400 hover:text-violet-300 transition-colors">
+              <a href="/jobs/applied" className="flex items-center gap-1.5 text-sm text-[var(--color-accent)] hover:underline transition-colors">
                 View Applied Jobs <ArrowRight size={14} />
               </a>
             </div>
@@ -548,39 +552,34 @@ export function Generate() {
       {/* Generate / Evaluate button */}
       {tab !== 'apply' && (
         <div className="flex gap-2">
-          <button
-            onClick={() => generate()}
+          <Button
+            variant="primary"
+            size="lg"
+            fullWidth
             disabled={!canGenerate}
-            className={cn(
-              'flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium transition-all',
-              canGenerate
-                ? 'bg-violet-500 text-white hover:bg-violet-400 shadow-[0_0_20px_var(--color-accent-glow)]'
-                : 'bg-[var(--color-surface-2)] text-[var(--color-text-dim)] cursor-not-allowed',
-            )}
+            loading={loading}
+            leftIcon={<FileText size={15} />}
+            onClick={() => generate()}
           >
-            <FileText size={15} /> {generateLabel}
-          </button>
+            {generateLabel}
+          </Button>
           {loading && genTab && (
-            <button
-              type="button"
-              onClick={() => generationStore.cancelGenerate(genTab)}
-              className="px-4 py-3 rounded-xl text-sm font-medium border border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-2)] hover:text-[var(--color-text)] transition-colors shrink-0"
-            >
+            <Button type="button" variant="secondary" size="lg" onClick={() => generationStore.cancelGenerate(genTab)} className="shrink-0">
               Cancel
-            </button>
+            </Button>
           )}
         </div>
       )}
 
       {/* Loading */}
       {loading && (
-        <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-6 text-center space-y-3">
-          <Loader2 size={24} className="mx-auto text-violet-400 animate-spin" />
-          <div className="text-sm text-violet-300">{STEPS[activeStepKey]?.[stepIdx]}</div>
+        <div className={LOADING_PANEL}>
+          <Loader2 size={24} className="mx-auto text-[var(--color-accent)] animate-spin" />
+          <div className="text-sm text-[var(--color-text)]">{STEPS[activeStepKey]?.[stepIdx]}</div>
           <div className="flex justify-center gap-1">
             {STEPS[activeStepKey]?.map((label, i) => (
               <div key={label} className={cn('h-1 rounded-full transition-all',
-                i <= stepIdx ? 'w-6 bg-violet-400' : 'w-2 bg-violet-500/20')} />
+                i <= stepIdx ? 'w-6 bg-[var(--color-accent)]' : 'w-2 bg-[var(--color-accent)]/20')} />
             ))}
           </div>
           <p className="text-[10px] text-[var(--color-text-dim)]">
@@ -609,42 +608,17 @@ export function Generate() {
           </div>
           <p className="text-sm text-[var(--color-text-muted)] leading-relaxed">{scoreResult.reasoning}</p>
           <button
+            type="button"
             onClick={() => { setTab('resume'); generationStore.clearOutput('evaluate') }}
-            className="flex items-center gap-2 text-sm text-violet-400 hover:text-violet-300 transition-colors"
+            className="flex items-center gap-2 text-sm text-[var(--color-accent)] hover:underline transition-colors"
           >
-            Generate Tailored Resume <ArrowRight size={14} />
+            Generate tailored resume <ArrowRight size={14} />
           </button>
         </div>
       )}
 
-      {/* Halal verdict card */}
       {halalResult && !loading && (
-        <div className={cn('rounded-xl border p-4 space-y-2',
-          halalResult.verdict === 'HALAL'    && 'border-emerald-500/30 bg-emerald-500/5',
-          halalResult.verdict === 'HARAM'    && 'border-red-500/30 bg-red-500/5',
-          halalResult.verdict === 'DOUBTFUL' && 'border-amber-500/30 bg-amber-500/5',
-        )}>
-          <div className="flex items-center gap-2">
-            <span className={cn('text-xs font-semibold px-2 py-0.5 rounded-full',
-              halalResult.verdict === 'HALAL'    && 'bg-emerald-500/20 text-emerald-300',
-              halalResult.verdict === 'HARAM'    && 'bg-red-500/20 text-red-300',
-              halalResult.verdict === 'DOUBTFUL' && 'bg-amber-500/20 text-amber-300',
-            )}>{halalResult.verdict}</span>
-            <span className="text-xs text-[var(--color-text-dim)]">{halalResult.confidence} confidence · Islamic ethics check</span>
-          </div>
-          <p className="text-sm text-[var(--color-text-muted)]">{halalResult.summary}</p>
-          {halalResult.reasons.length > 0 && (
-            <ul className="text-xs text-[var(--color-text-dim)] space-y-0.5 list-disc list-inside">
-              {halalResult.reasons.map(r => <li key={r}>{r}</li>)}
-            </ul>
-          )}
-          {halalResult.caveats && (
-            <p className="text-xs text-[var(--color-text-dim)] italic border-t border-[var(--color-border)] pt-2 mt-2">{halalResult.caveats}</p>
-          )}
-          {halalResult.scholar_note && (
-            <p className="text-xs text-[var(--color-text-dim)]">Scholar note: {halalResult.scholar_note}</p>
-          )}
-        </div>
+        <EthicsVerdict verdict={halalResult} defaultOpen={halalResult.verdict !== 'HALAL'} />
       )}
 
       {/* Question answers result */}
@@ -661,7 +635,7 @@ export function Generate() {
                     setCopiedIdx(i)
                     setTimeout(() => setCopiedIdx(null), 2000)
                   }}
-                  className="shrink-0 text-[var(--color-text-dim)] hover:text-violet-400 transition-colors mt-0.5"
+                  className="shrink-0 text-[var(--color-text-dim)] hover:text-[var(--color-accent)] transition-colors mt-0.5"
                   title="Copy answer"
                 >
                   {copiedIdx === i ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}

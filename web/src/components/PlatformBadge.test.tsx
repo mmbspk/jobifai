@@ -11,12 +11,7 @@ test('renders Seek label for seek platform', () => {
   expect(screen.getByText('Seek')).toBeInTheDocument()
 })
 
-test('renders All label for unknown platform', () => {
+test('title-cases unknown platform slugs', () => {
   render(<PlatformBadge platform="unknown-platform" />)
-  expect(screen.getByText('All')).toBeInTheDocument()
-})
-
-test('renders All label for explicit all platform', () => {
-  render(<PlatformBadge platform="all" />)
-  expect(screen.getByText('All')).toBeInTheDocument()
+  expect(screen.getByText('Unknown-platform')).toBeInTheDocument()
 })
