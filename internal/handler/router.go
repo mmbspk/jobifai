@@ -32,8 +32,11 @@ func NewRouter(svc *Services) *chi.Mux {
 	ws := NewWSHandlers(svc)
 	users := NewUserHandlers(svc, svc.Users, svc.TokenManager, svc.DB)
 	usage := NewUsageHandlers(svc)
+	quotaH := NewQuotaHandlers(svc)
+	billingH := NewBillingHandlers(svc)
 
 	// ── Public: user accounts + OAuth ────────────────────────────────────
+	r.Post("/api/billing/webhook", billingH.Webhook)
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/register", users.Register)
 		r.Post("/login", users.Login)
@@ -81,10 +84,16 @@ func NewRouter(svc *Services) *chi.Mux {
 		r.Get("/api/me", users.Me)
 		r.Put("/api/me", users.UpdateMe)
 
+		r.Get("/api/quota/status", quotaH.Status)
+		r.Post("/api/billing/checkout", billingH.Checkout)
+		r.Post("/api/billing/topup", billingH.TopUp)
+		r.Post("/api/billing/portal", billingH.Portal)
+
 		// ── Platform auth (browser + session) ───────────────────────────
 		r.Route("/api/auth", func(r chi.Router) {
 			r.Post("/launch-browser", authH.LaunchBrowser)
 			r.Post("/save-session", authH.SaveSession)
+			r.Get("/{platform}/browser-pending", authH.BrowserPending)
 			r.Get("/{platform}/status", authH.PlatformStatus)
 			r.Delete("/{platform}/session", authH.DeleteSession)
 		})
@@ -149,6 +158,13 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/locations/suggest", settings.LocationSuggest)
 		})
 
+		// ── E2E fixtures (test server only) ───────────────────────────────
+		if os.Getenv("JOBIFAI_E2E") == "1" {
+			e2eH := NewE2EFixtureHandlers(svc)
+			r.Post("/api/e2e/seed-jobs", e2eH.SeedJobs)
+			r.Post("/api/e2e/clear-jobs", e2eH.ClearJobs)
+		}
+
 		// ── Admin-only ────────────────────────────────────────────────────
 		adminH := NewAdminHandlers(svc)
 		r.Group(func(r chi.Router) {
@@ -163,10 +179,14 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/api/admin/users", adminH.UsersList)
 			r.Get("/api/admin/users/{user_id}", adminH.UserGet)
 			r.Put("/api/admin/users/{user_id}", adminH.UserUpdate)
+			r.Delete("/api/admin/users/{user_id}", adminH.UserDelete)
+			r.Post("/api/admin/users/prune-e2e", adminH.PruneE2EUsers)
 			r.Post("/api/admin/users/{user_id}/secrets/api-key", adminH.UserSetAPIKey)
 			r.Delete("/api/admin/users/{user_id}/secrets/api-key", adminH.UserDeleteAPIKey)
 			r.Get("/api/usage/session", usage.Session)
 			r.Get("/api/usage/totals", usage.Totals)
+			r.Get("/api/admin/quota/defaults", adminH.QuotaDefaultsGet)
+			r.Put("/api/admin/quota/defaults", adminH.QuotaDefaultsSet)
 		})
 	})
 

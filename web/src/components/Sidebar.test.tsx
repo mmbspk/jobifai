@@ -18,6 +18,11 @@ vi.mock('../api/usage', () => ({
   },
 }))
 
+vi.mock('../hooks/useQuota', () => ({
+  useQuota: () => ({ data: { unlimited: true }, unlimited: true, isLoading: false }),
+  QUOTA_QUERY_KEY: ['quota-status'],
+}))
+
 vi.mock('../hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'dark', toggle: vi.fn() }),
 }))

@@ -59,8 +59,14 @@ Return to the **Dashboard** and press **Start**. The bot will search for roles, 
 ```bash
 make start          # concurrent: Go server + Vite dev server (hot reload)
 make dev            # Go only with air hot reload
-make test           # go test ./... -race -count=1
-make lint           # golangci-lint run ./...
+make test           # Go tests (race detector)
+make test-web       # Vitest unit tests
+make test-all       # Go + frontend unit tests
+make test-coverage  # Go + frontend coverage (informational; used in CI)
+make test-all-e2e   # test-all + Playwright e2e
+
+CI on pull requests: lint → test-coverage → Playwright e2e (mock LLM/OAuth/bot tests run via `make test`).
+make lint           # golangci-lint + ESLint
 make tidy           # go mod tidy + verify
 make web-build      # build React frontend → web/dist
 make build          # compile Go binary

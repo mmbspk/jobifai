@@ -4,7 +4,10 @@ MAIN    := ./cmd/server
 IMAGE   := $(APP):latest
 DB      := data/$(APP).db
 
-.PHONY: all build run dev start test lint clean docker docker-run web-dev web-build e2e-server test-e2e test-e2e-ui
+.PHONY: all build run dev start test test-web test-coverage test-all test-all-e2e lint clean docker docker-run web-dev web-build e2e-server test-e2e test-e2e-ui
+
+# Application packages only (excludes vendored Go under web/node_modules).
+GO_PACKAGES := $(shell go list ./... | grep -v node_modules)
 
 all: build
 
@@ -36,9 +39,25 @@ start:
 dev:
 	air
 
-## test: run all tests
+## test: run Go tests (race detector)
 test:
-	go test ./... -race -count=1
+	go test $(GO_PACKAGES) -race -count=1
+
+## test-web: run frontend unit tests (Vitest)
+test-web:
+	cd web && npm test
+
+## test-coverage: Go + frontend coverage reports (informational)
+test-coverage:
+	go test $(GO_PACKAGES) -race -count=1 -coverprofile=coverage.out
+	go tool cover -func=coverage.out | tail -1
+	cd web && npm run test:coverage
+
+## test-all: Go unit/integration + frontend unit tests
+test-all: test test-web
+
+## test-all-e2e: test-all + Playwright e2e (builds frontend first)
+test-all-e2e: test-all test-e2e
 
 ## lint: run golangci-lint and web ESLint
 lint:
@@ -70,7 +89,7 @@ docker-run:
 
 ## migrate-status: show current migration version
 migrate-status: build
-	@sqlite3 $(DB) "SELECT version FROM goose_db_version ORDER BY id DESC LIMIT 1;" 2>/dev/null || echo "no db yet"
+	@sqlite3 $(DB) "SELECT version_id FROM goose_db_version ORDER BY id DESC LIMIT 1;" 2>/dev/null || echo "no db yet"
 
 ## help: list targets with descriptions
 help:
@@ -80,7 +99,7 @@ help:
 e2e-server:
 	rm -f /tmp/e2e-test.db
 	go build -trimpath -o /tmp/jobifai-e2e $(MAIN)
-	JWT_SECRET=e2e-test-secret-do-not-use-in-prod JOBIFAI_E2E=1 /tmp/jobifai-e2e -db /tmp/e2e-test.db
+	JWT_SECRET=e2e-test-secret-do-not-use-in-prod JOBIFAI_E2E=1 /tmp/jobifai-e2e -db /tmp/e2e-test.db -addr :18081
 
 ## test-e2e: build frontend then run Playwright e2e tests
 test-e2e: web-build

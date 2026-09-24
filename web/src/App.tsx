@@ -11,10 +11,12 @@ import { ApplicationSettingsPage } from './pages/settings/Application'
 import { AdminDefaultsPage } from './pages/admin/Defaults'
 import { AdminAutomationPage } from './pages/admin/Automation'
 import { AdminUsersPage } from './pages/admin/Users'
+import { AdminQuotaPage } from './pages/admin/Quota'
 import { Preferences } from './pages/settings/Preferences'
 import { Resume } from './pages/settings/Resume'
 import { PlatformsSettingsPage } from './pages/settings/Platforms'
 import { UsagePage } from './pages/settings/Usage'
+import { PlanPage } from './pages/settings/Plan'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
@@ -28,12 +30,14 @@ const SETTINGS_TABS = [
   { to: '/settings/preferences', label: 'Preferences' },
   { to: '/settings/resume',      label: 'Profile' },
   { to: '/settings/platforms',   label: 'Platforms' },
+  { to: '/settings/plan',        label: 'Plan' },
 ]
 
 const ADMIN_TABS = [
   { to: '/admin/defaults',   label: 'Defaults' },
   { to: '/admin/automation', label: 'Automation' },
   { to: '/admin/users',      label: 'Users' },
+  { to: '/admin/quota',      label: 'Credits' },
   { to: '/admin/usage',      label: 'Usage' },
 ]
 
@@ -49,6 +53,7 @@ function SettingsLayout() {
           <Route path="preferences" element={<Preferences />} />
           <Route path="resume"      element={<Resume />} />
           <Route path="platforms"   element={<PlatformsSettingsPage />} />
+          <Route path="plan"        element={<PlanPage />} />
           <Route path="general"     element={<Navigate to="/settings/application" replace />} />
           <Route path="secrets"     element={<Navigate to="/settings/platforms" replace />} />
           <Route path="usage"       element={<Navigate to="/" replace />} />
@@ -74,6 +79,7 @@ function AdminLayout() {
         <Route path="defaults"   element={<AdminDefaultsPage />} />
         <Route path="automation" element={<AdminAutomationPage />} />
         <Route path="users"      element={<AdminUsersPage />} />
+        <Route path="quota"      element={<AdminQuotaPage />} />
         <Route path="usage"      element={<UsagePage />} />
         <Route path="system"     element={<Navigate to="/admin/defaults" replace />} />
         <Route path="secrets"    element={<Navigate to="/admin/defaults" replace />} />

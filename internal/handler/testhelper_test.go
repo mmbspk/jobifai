@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,8 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/config"
+	"github.com/user/jobifai/internal/domain"
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/handler"
+	"github.com/user/jobifai/internal/testutil/mockllm"
 	"github.com/user/jobifai/internal/ws"
 )
 
@@ -111,4 +114,47 @@ func authDelete(t *testing.T, router http.Handler, path, token string) *httptest
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	return w
+}
+
+// authPostMultipart sends multipart/form-data with optional fields.
+func authPostMultipart(t *testing.T, router http.Handler, path, token string, fields map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for k, v := range fields {
+		require.NoError(t, w.WriteField(k, v))
+	}
+	require.NoError(t, w.Close())
+
+	req := httptest.NewRequest(http.MethodPost, path, &body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+// saveResumeProfile stores a profile via the settings API.
+func saveResumeProfile(t *testing.T, router http.Handler, token string, profile domain.ResumeProfile) {
+	t.Helper()
+	w := authPost(t, router, "/api/settings/resume", token, profile)
+	require.Equal(t, http.StatusOK, w.Code, "save profile: %s", w.Body.String())
+}
+
+// userIDFromToken returns the authenticated user's id.
+func userIDFromToken(t *testing.T, router http.Handler, token string) string {
+	t.Helper()
+	w := authGet(t, router, "/api/me", token)
+	require.Equal(t, http.StatusOK, w.Code)
+	var me map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&me))
+	return me["id"].(string)
+}
+
+// wireMockLLMUser stores proxy LLM settings + API key for userID (httptest server URL).
+func wireMockLLMUser(t *testing.T, svc *handler.Services, userID, proxyURL string) {
+	t.Helper()
+	mockllm.StoreUserLLMConfig(t, svc.Config, svc.Secrets, userID, proxyURL)
 }

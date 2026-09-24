@@ -26,5 +26,6 @@ type AdminUserRow struct {
 // AdminUserDetail extends the list row with LLM override payload for editing.
 type AdminUserDetail struct {
 	AdminUserRow
-	LLMOverrides LLMOverrides `json:"llm_overrides"`
+	LLMOverrides   LLMOverrides       `json:"llm_overrides"`
+	QuotaOverrides QuotaUserOverrides `json:"quota_overrides,omitempty"`
 }

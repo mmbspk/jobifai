@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +19,7 @@ import (
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
 	"github.com/user/jobifai/internal/scraper"
 )
@@ -61,6 +61,24 @@ type Manager struct {
 	browserMu        sync.Mutex              // protects seekBrowsers + linkedInBrowsers
 	applyMu          sync.Mutex              // protects applyInProgress
 	applyInProgress  map[string]bool         // userID → AI Apply call in flight
+	quotaSessions    SessionQuota   // optional grace sessions for subscribers
+	llmQuota         quota.LLMGuard // optional cost enforcement on bot LLM calls
+}
+
+// SessionQuota coordinates subscriber grace sessions (see internal/quota).
+type SessionQuota interface {
+	BeginSubscriberSession(userID string)
+	EndSubscriberSession(userID string)
+}
+
+// SetSessionQuota attaches quota grace session callbacks (optional).
+func (m *Manager) SetSessionQuota(q SessionQuota) {
+	m.quotaSessions = q
+}
+
+// SetLLMQuota attaches quota checks to bot-side LLM clients.
+func (m *Manager) SetLLMQuota(g quota.LLMGuard) {
+	m.llmQuota = g
 }
 
 func NewManager(
@@ -134,6 +152,10 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 	}
 
 	go func() {
+		if m.quotaSessions != nil {
+			m.quotaSessions.BeginSubscriberSession(userID)
+			defer m.quotaSessions.EndSubscriberSession(userID)
+		}
 		_ = e.bot.Start(botCtx)
 		cancel()
 		m.mu.Lock()
@@ -678,7 +700,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	}
 
 	resolved := platform
-	if !slices.Contains(domain.SupportedPlatforms, platform) {
+	if _, ok := runnerRegistry[resolved]; !ok {
 		return nil, errors.New("unsupported platform: " + string(platform))
 	}
 
@@ -773,7 +795,11 @@ func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.C
 	if err != nil || apiKey == "" {
 		return nil
 	}
-	return llm.New(gs.LLM, apiKey)
+	client := llm.New(gs.LLM, apiKey)
+	if m.llmQuota != nil {
+		client = client.WithQuota(m.llmQuota, userID)
+	}
+	return client
 }
 
 // taskClient returns a client with model/token overrides for the given task key.

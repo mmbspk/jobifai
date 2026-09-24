@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Check, Eye, EyeOff, MonitorCheck, Trash2 } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { authApi } from '../../api/auth'
@@ -105,6 +105,13 @@ function VNCFrame() {
   )
 }
 
+function connectBrowserSaveHint(platform: string): string {
+  if (platform.toLowerCase() === 'seek') {
+    return 'Sign in, open a job, confirm Quick Apply works, then save.'
+  }
+  return 'Finish signing in (including MFA if prompted), then save.'
+}
+
 function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
   const qc = useQueryClient()
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -122,15 +129,40 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
     queryFn: () => authApi.platformStatus(platform),
   })
 
+  const { data: browserPending } = useQuery({
+    queryKey: ['browser-pending', platform],
+    queryFn: () => authApi.browserPending(platform),
+    refetchOnWindowFocus: true,
+  })
+
+  useEffect(() => {
+    if (browserPending?.pending && browserPending.session_id) {
+      setSessionId(browserPending.session_id)
+    }
+  }, [browserPending?.pending, browserPending?.session_id])
+
   const launch = useMutation({
-    mutationFn: () => authApi.launchBrowser(platform),
-    onSuccess: (res) => { setSessionId(res.session_id); setSessionError(null) },
+    mutationFn: (force: boolean) => authApi.launchBrowser(platform, { force }),
+    onSuccess: (res) => {
+      setSessionId(res.session_id)
+      setSessionError(null)
+    },
     onError: (err: Error) => setSessionError(err.message),
   })
 
+  function connectBrowser() {
+    setSessionError(null)
+    const force = !!(sessionId || browserPending?.pending)
+    launch.mutate(force)
+  }
+
   const saveSession = useMutation({
     mutationFn: () => authApi.saveSession(sessionId!, platform),
-    onSuccess: () => { setSessionId(null); qc.invalidateQueries({ queryKey: ['platform-session', platform] }) },
+    onSuccess: () => {
+      setSessionId(null)
+      qc.invalidateQueries({ queryKey: ['platform-session', platform] })
+      qc.invalidateQueries({ queryKey: ['browser-pending', platform] })
+    },
     onError: (err: Error) => setSessionError(err.message),
   })
 
@@ -142,9 +174,11 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
 
   const hasSession = session?.has_session ?? false
 
+  const browserAwaitingSave = !!(sessionId || browserPending?.pending)
+
   let launchLabel = 'Connect browser'
   if (launch.isPending) launchLabel = 'Opening…'
-  else if (sessionId) launchLabel = 'Browser open'
+  else if (browserAwaitingSave) launchLabel = 'Open new browser window'
 
   return (
     <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
@@ -161,7 +195,7 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
             ? <button type="button" onClick={() => disconnect.mutate()} className="text-xs text-[var(--color-text-dim)] hover:text-[var(--color-danger)] flex items-center gap-1 transition-colors">
                 <Trash2 size={11} /> Disconnect
               </button>
-            : <button type="button" onClick={() => { setSessionError(null); launch.mutate() }} disabled={launch.isPending || !!sessionId}
+            : <button type="button" onClick={connectBrowser} disabled={launch.isPending}
                 className="text-xs font-medium text-[var(--color-accent)] hover:underline disabled:opacity-50"
               >
                 {launchLabel}
@@ -171,12 +205,17 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
         </div>
       </div>
 
-      {sessionId && (
+      {browserAwaitingSave && sessionId && (
         <div className="px-4 pb-4 border-t border-[var(--color-border-subtle)] pt-3 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-            <p className="text-xs text-[var(--color-text-muted)]">
-              Log in to <span className="capitalize">{platform}</span> fully (including MFA). For Seek, open a job and confirm you can see Quick Apply, then click <strong>Save session</strong>.
-            </p>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="space-y-1">
+              <p className="text-xs text-[var(--color-text-muted)]">{connectBrowserSaveHint(platform)}</p>
+              {!vncEnabled && (
+                <p className="text-xs text-[var(--color-text-dim)]">
+                  Window missing? Use <strong>Open new browser window</strong> above.
+                </p>
+              )}
+            </div>
             <Button variant="primary" size="sm" disabled={saveSession.isPending} loading={saveSession.isPending} onClick={() => saveSession.mutate()} className="shrink-0">
               Save session
             </Button>

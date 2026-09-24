@@ -16,6 +16,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/quota"
 )
 
 const contentTypeJSON = "application/json"
@@ -52,6 +53,8 @@ type Client struct {
 	apiKey  string
 	httpCli *http.Client
 	tracker *UsageTracker // optional; if set, accumulates token usage per call
+	guard   quota.LLMGuard
+	userID  string
 }
 
 // New creates an LLM client from the current settings.
@@ -71,6 +74,13 @@ func (c *Client) WithTracker(t *UsageTracker) *Client {
 	return c
 }
 
+// WithQuota attaches quota enforcement for the given user.
+func (c *Client) WithQuota(g quota.LLMGuard, userID string) *Client {
+	c.guard = g
+	c.userID = userID
+	return c
+}
+
 // WithModel returns a shallow copy of the client with an overridden model and
 // optional max-token limit. All other config (provider, proxy, api key,
 // tracker) is inherited unchanged. Passing maxTokens=0 keeps the current value.
@@ -80,13 +90,35 @@ func (c *Client) WithModel(model string, maxTokens int) *Client {
 	if maxTokens > 0 {
 		cfg.MaxTokens = maxTokens
 	}
-	return &Client{cfg: cfg, apiKey: c.apiKey, httpCli: c.httpCli, tracker: c.tracker}
+	return &Client{cfg: cfg, apiKey: c.apiKey, httpCli: c.httpCli, tracker: c.tracker, guard: c.guard, userID: c.userID}
+}
+
+func (c *Client) checkQuota(ctx context.Context, estInputChars int, estOutputTokens int) error {
+	if c.guard == nil || c.userID == "" || c.cfg.Provider == "ollama" {
+		return nil
+	}
+	estIn := estInputChars / 4
+	if estIn < 1 {
+		estIn = 1
+	}
+	out := estOutputTokens
+	if out <= 0 {
+		out = 4096
+	}
+	return c.guard.BeforeLLM(ctx, c.userID, c.cfg.Model, estIn, out)
 }
 
 // Chat sends messages and returns the assistant reply.
 // Retries up to 3 times total (2 retries) with a 2 s pause between attempts.
 // Non-retryable HTTP 4xx errors (except 429 Too Many Requests) are returned immediately.
 func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
+	inChars := 0
+	for _, m := range msgs {
+		inChars += len(m.Content)
+	}
+	if err := c.checkQuota(ctx, inChars, c.cfg.MaxTokens); err != nil {
+		return "", err
+	}
 	const maxAttempts = 3
 	var err error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -210,6 +242,9 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt string) (string, error) {
 	if c.cfg.Provider != "claude" {
 		return "", fmt.Errorf("ChatWithImage: unsupported provider %q (claude only)", c.cfg.Provider)
+	}
+	if err := c.checkQuota(ctx, len(imageBytes)+len(prompt), c.cfg.MaxTokens); err != nil {
+		return "", err
 	}
 
 	type imageSource struct {

@@ -43,8 +43,7 @@ var defaultOperationalSettings = domain.GeneralSettings{
 		PauseBetweenJobsMax:   15,
 	},
 	JobSuitabilityScore:       7,
-	MaxJobsPerKeyword:         25,
-	InterviewQuestionsEnabled: true,
+	MaxJobsPerKeyword: 25,
 }
 
 func getGeneral(store ConfigGetter, userID string) (domain.GeneralSettings, error) {
@@ -88,7 +87,6 @@ func applyUserApplicationFields(base, user domain.GeneralSettings, hasUser bool)
 	}
 	out.HalalJobFilter = user.HalalJobFilter
 	out.GenerateNewResumeDocs = user.GenerateNewResumeDocs
-	out.InterviewQuestionsEnabled = user.InterviewQuestionsEnabled
 	return out
 }
 

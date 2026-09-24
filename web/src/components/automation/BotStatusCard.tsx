@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { Pause, Play, RotateCcw, Square, Zap } from 'lucide-react'
+import { QuotaAlert } from '../quota/QuotaAlert'
 import { cn } from '../../lib'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
@@ -29,6 +30,10 @@ interface BotStatusCardProps {
   readonly stopPending: boolean
   readonly pausePending: boolean
   readonly resumePending: boolean
+  readonly setupReady?: boolean
+  readonly setupHint?: string
+  readonly aiDisabled?: boolean
+  readonly quotaHint?: string
 }
 
 function stateLabel(state: BotState): string {
@@ -68,7 +73,11 @@ export function BotStatusCard(props: BotStatusCardProps) {
     isActive, isRunning, isPaused,
     onStart, onStop, onPause, onResume,
     startPending, stopPending, pausePending, resumePending,
+    setupReady = true, setupHint,
+    aiDisabled = false, quotaHint,
   } = props
+
+  const canStart = setupReady && !isActive && !aiDisabled
 
   const pulse = state === 'running' || state === 'pending_review'
   const todayCount = status?.today_count ?? 0
@@ -114,7 +123,9 @@ export function BotStatusCard(props: BotStatusCardProps) {
               </h2>
               {state === 'idle' && (
                 <p className="text-sm text-[var(--color-text-dim)] mt-1">
-                  Choose a platform when your profile and preferences are ready.
+                  {setupReady
+                    ? 'Choose a platform, then start automation when you are ready.'
+                    : `Complete setup first${setupHint ? `: ${setupHint}` : ''}.`}
                 </p>
               )}
               {status?.platform && isActive && (
@@ -145,6 +156,10 @@ export function BotStatusCard(props: BotStatusCardProps) {
               Review applications
             </Link>
           </p>
+        )}
+
+        {aiDisabled && !isActive && quotaHint && (
+          <QuotaAlert message={quotaHint} title="Cannot start automation" />
         )}
 
         {(status?.error || startError) && (
@@ -197,6 +212,8 @@ export function BotStatusCard(props: BotStatusCardProps) {
               variant={isActive ? 'danger' : 'primary'}
               size="md"
               loading={isActive ? stopPending : startPending}
+              disabled={!isActive && !canStart}
+              title={aiDisabled && !isActive ? 'AI credits used up' : undefined}
               leftIcon={isActive ? <Square size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
               onClick={isActive ? onStop : onStart}
             >

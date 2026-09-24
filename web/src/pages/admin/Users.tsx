@@ -4,13 +4,13 @@ import { Check } from 'lucide-react'
 import { adminApi } from '../../api/admin'
 import { Button } from '../../components/Button'
 import { PageHeader } from '../../components/shell/PageHeader'
-import { SettingsField, SettingsSection } from '../../components/settings/settings-ui'
+import { SettingsField, SettingsNumberInput, SettingsSection } from '../../components/settings/settings-ui'
 import { MaskedSecretField } from '../../components/settings/MaskedSecretField'
 import { Badge } from '../../components/ui/badge'
 import { Switch } from '../../components/ui/switch'
 import { inputClassName } from '../../components/ui/input'
 import { cn } from '../../lib'
-import type { AdminUserRow, LLMOverrides } from '../../types'
+import type { AdminUserRow, LLMOverrides, QuotaUserOverrides } from '../../types'
 
 const TASKS = [
   { key: 'scoring', label: 'Suitability scoring' },
@@ -31,10 +31,14 @@ export function AdminUsersPage() {
     enabled: !!selectedId,
   })
   const [overrides, setOverrides] = useState<LLMOverrides>({})
+  const [quotaOverrides, setQuotaOverrides] = useState<QuotaUserOverrides>({})
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
-    if (detail) setOverrides(detail.llm_overrides ?? {})
+    if (detail) {
+      setOverrides(detail.llm_overrides ?? {})
+      setQuotaOverrides(detail.quota_overrides ?? {})
+    }
   }, [detail])
 
   const selectUser = (u: AdminUserRow) => {
@@ -45,7 +49,7 @@ export function AdminUsersPage() {
   const save = useMutation({
     mutationFn: async () => {
       if (!selectedId) return
-      await adminApi.users.update(selectedId, { llm_overrides: overrides })
+      await adminApi.users.update(selectedId, { llm_overrides: overrides, quota_overrides: quotaOverrides })
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-users'] })
@@ -63,12 +67,41 @@ export function AdminUsersPage() {
     },
   })
 
+  const pruneE2E = useMutation({
+    mutationFn: () => adminApi.users.pruneE2E(),
+    onSuccess: () => {
+      setSelectedId(null)
+      qc.invalidateQueries({ queryKey: ['admin-users'] })
+    },
+  })
+
+  const deleteUser = useMutation({
+    mutationFn: (userId: string) => adminApi.users.delete(userId),
+    onSuccess: () => {
+      setSelectedId(null)
+      qc.invalidateQueries({ queryKey: ['admin-users'] })
+    },
+  })
+
+  const e2eCount = users.filter(u => u.email.endsWith('@e2e.test')).length
+
   return (
     <div className="space-y-6">
       <PageHeader
         title="Users"
-        description="Grant admin access, set per-account LLM overrides, and manage API keys."
+        description="Grant admin access, credit enforcement, LLM overrides, and API keys."
       />
+
+      {e2eCount > 0 && (
+        <div className="rounded-[var(--radius-lg)] border border-amber-500/30 bg-amber-500/5 px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+          <p className="text-sm text-[var(--color-text-muted)] flex-1">
+            {e2eCount} Playwright test account{e2eCount === 1 ? '' : 's'} (@e2e.test) — usually created when E2E ran against the dev server instead of the isolated test DB.
+          </p>
+          <Button variant="secondary" loading={pruneE2E.isPending} onClick={() => pruneE2E.mutate()}>
+            Remove test accounts
+          </Button>
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-2 gap-6">
         <section className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden shadow-[var(--shadow-sm)]">
@@ -110,6 +143,38 @@ export function AdminUsersPage() {
                   checked={detail.is_admin}
                   onCheckedChange={v => toggleAdmin.mutate(v)}
                 />
+              </SettingsSection>
+
+              <SettingsSection title="Credits & enforcement" description="Per-account quota overrides. Admins are always unlimited.">
+                <Switch
+                  label="Enforce credit limits"
+                  helper="When off, this account can use AI without credit deductions (not recommended for production users)."
+                  checked={quotaOverrides.enforcement_enabled ?? true}
+                  onCheckedChange={v => setQuotaOverrides({ ...quotaOverrides, enforcement_enabled: v })}
+                />
+                <SettingsField label="Trial credits override" layout="column" sub="Only applies while account is on trial">
+                  <SettingsNumberInput
+                    value={quotaOverrides.trial_credits ?? 0}
+                    min={0}
+                    className="w-full max-w-[140px]"
+                    onChange={v =>
+                      setQuotaOverrides({ ...quotaOverrides, trial_credits: v > 0 ? v : undefined })
+                    }
+                  />
+                </SettingsField>
+                <SettingsField label="Period allowance override" layout="column" sub="Credits per billing period (starter/pro)">
+                  <SettingsNumberInput
+                    value={Number(quotaOverrides.period_allowance_credits ?? 0)}
+                    min={0}
+                    className="w-full max-w-[140px]"
+                    onChange={v =>
+                      setQuotaOverrides({
+                        ...quotaOverrides,
+                        period_allowance_credits: v > 0 ? v : undefined,
+                      })
+                    }
+                  />
+                </SettingsField>
               </SettingsSection>
 
               <SettingsSection title="LLM overrides" description="Optional — leave blank to inherit deployment defaults.">
@@ -158,6 +223,22 @@ export function AdminUsersPage() {
               <Button variant="primary" fullWidth loading={save.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => save.mutate()}>
                 {saved ? 'Saved' : 'Save changes'}
               </Button>
+
+              {detail.id !== '__default__' && (
+                <Button
+                  variant="secondary"
+                  fullWidth
+                  loading={deleteUser.isPending}
+                  className="text-[var(--color-danger)] border-[var(--color-danger)]/30 hover:bg-red-500/10"
+                  onClick={() => {
+                    if (window.confirm(`Delete ${detail.email} and all of their data?`)) {
+                      deleteUser.mutate(detail.id)
+                    }
+                  }}
+                >
+                  Delete account
+                </Button>
+              )}
             </div>
           )}
         </div>

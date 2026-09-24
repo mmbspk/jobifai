@@ -39,6 +39,10 @@ tmp/
 # Local deployment (GCP scripts, env, secrets — not published)
 infra/
 
+# Coverage
+coverage.out
+web/coverage/
+
 # Playwright
 web/playwright-report/
 web/test-results/

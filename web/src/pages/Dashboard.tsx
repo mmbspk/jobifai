@@ -15,11 +15,18 @@ import { botApi } from '../api/bot'
 import type { Platform } from '../types'
 import { useAuth } from '../contexts/AuthContext'
 import { ScorePill } from '../components/ScorePill'
+import { SetupGuide } from '../components/onboarding/SetupGuide'
+import { useSetupReadiness } from '../hooks/useSetupReadiness'
+import { useQuota } from '../hooks/useQuota'
+import { quotaBlockMessage } from '../lib/quotaMessages'
 
 export function Dashboard() {
   const navigate = useNavigate()
   const { user } = useAuth()
   const { status, start, stop, pause, resume, startError } = useBot()
+  const setup = useSetupReadiness()
+  const { aiDisabled, data: quota } = useQuota()
+  const quotaHint = aiDisabled ? quotaBlockMessage(quota?.block_code, quota?.plan) : undefined
   const { lines, connected, clear } = useLogs()
   const [platform, setPlatform] = useState<Platform>('linkedin')
 
@@ -72,6 +79,15 @@ export function Dashboard() {
         }
       />
 
+      <SetupGuide
+        steps={setup.steps}
+        ready={setup.ready}
+        progress={setup.progress}
+        nextStep={setup.nextStep}
+        loading={setup.loading}
+        onRefresh={setup.refresh}
+      />
+
       <div className="xl:grid xl:grid-cols-[minmax(0,1fr)_360px] xl:gap-6 xl:items-start space-y-8 xl:space-y-0">
         <div className="space-y-8 min-w-0">
           <BotStatusCard
@@ -84,6 +100,10 @@ export function Dashboard() {
             isActive={isActive}
             isRunning={isRunning}
             isPaused={isPaused}
+            setupReady={setup.ready}
+            setupHint={setup.nextStep?.title}
+            aiDisabled={aiDisabled}
+            quotaHint={quotaHint}
             onStart={() => start.mutate(platform)}
             onStop={() => stop.mutate()}
             onPause={() => pause.mutate()}

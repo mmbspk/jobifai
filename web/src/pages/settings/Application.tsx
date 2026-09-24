@@ -14,7 +14,6 @@ const DEFAULT: GeneralSettings = {
   job_suitability_score: 7,
   max_jobs_per_keyword: 25,
   halal_job_filter: false,
-  interview_questions_enabled: true,
 }
 
 export function ApplicationSettingsPage() {
@@ -112,12 +111,6 @@ export function ApplicationSettingsPage() {
           }
           checked={form.generate_new_resume_docs ?? false}
           onCheckedChange={v => set('generate_new_resume_docs', v)}
-        />
-        <Switch
-          label="Interview questions in Generate"
-          helper="Show the Questions tab to answer application or interview prompts from your profile."
-          checked={form.interview_questions_enabled ?? true}
-          onCheckedChange={v => set('interview_questions_enabled', v)}
         />
       </SettingsSection>
 

@@ -17,6 +17,33 @@ type AdminHandlers struct{ svc *Services }
 
 func NewAdminHandlers(svc *Services) *AdminHandlers { return &AdminHandlers{svc: svc} }
 
+// GET /api/admin/quota/defaults
+func (h *AdminHandlers) QuotaDefaultsGet(w http.ResponseWriter, r *http.Request) {
+	if h.svc.Quota == nil {
+		writeJSON(w, http.StatusOK, domain.QuotaDefaults{EnforcementDefault: true, CreditsPerUSD: 1000, TrialCredits: 500, TrialDays: 7})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.svc.Quota.LoadDefaults())
+}
+
+// PUT /api/admin/quota/defaults
+func (h *AdminHandlers) QuotaDefaultsSet(w http.ResponseWriter, r *http.Request) {
+	if h.svc.Quota == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "quota not enabled"})
+		return
+	}
+	var incoming domain.QuotaDefaults
+	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
+	if err := h.svc.Quota.SaveDefaults(incoming); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	okMsg(w, "quota defaults saved")
+}
+
 // GET /api/admin/system
 func (h *AdminHandlers) SystemGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, config.SystemGeneralKV(h.svc.Config))
@@ -129,6 +156,10 @@ func (h *AdminHandlers) UserGet(w http.ResponseWriter, r *http.Request) {
 	}
 	var overrides domain.LLMOverrides
 	_ = h.svc.Config.Get(userID, config.KeyLLMOverrides, &overrides)
+	var quotaOverrides domain.QuotaUserOverrides
+	if h.svc.Quota != nil {
+		quotaOverrides = h.svc.Quota.UserOverrides(userID)
+	}
 	writeJSON(w, http.StatusOK, domain.AdminUserDetail{
 		AdminUserRow: domain.AdminUserRow{
 			ID:          u.ID,
@@ -138,7 +169,8 @@ func (h *AdminHandlers) UserGet(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:   u.CreatedAt.Format(time.RFC3339),
 			HasAPIKey:   config.HasUserLLMAPIKey(h.svc.Secrets, u.ID),
 		},
-		LLMOverrides: overrides,
+		LLMOverrides:    overrides,
+		QuotaOverrides:  quotaOverrides,
 	})
 }
 
@@ -154,8 +186,9 @@ func (h *AdminHandlers) UserUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		IsAdmin      *bool                `json:"is_admin"`
-		LLMOverrides *domain.LLMOverrides `json:"llm_overrides"`
+		IsAdmin         *bool                      `json:"is_admin"`
+		LLMOverrides    *domain.LLMOverrides       `json:"llm_overrides"`
+		QuotaOverrides  *domain.QuotaUserOverrides `json:"quota_overrides"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
@@ -171,6 +204,15 @@ func (h *AdminHandlers) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		if err := h.svc.Config.Set(userID, config.KeyLLMOverrides, *req.LLMOverrides); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 			return
+		}
+	}
+	if req.QuotaOverrides != nil && h.svc.Quota != nil {
+		if err := h.svc.Quota.SaveUserOverrides(userID, *req.QuotaOverrides); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+			return
+		}
+		if req.QuotaOverrides.EnforcementEnabled != nil {
+			_ = h.svc.Quota.SetEnforcement(userID, *req.QuotaOverrides.EnforcementEnabled)
 		}
 	}
 	okMsg(w, "user updated")
@@ -205,4 +247,35 @@ func (h *AdminHandlers) UserDeleteAPIKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	okMsg(w, "user API key removed")
+}
+
+// DELETE /api/admin/users/{user_id}
+func (h *AdminHandlers) UserDelete(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "user_id")
+	callerID := auth.UserIDFromCtx(r.Context())
+	if userID == callerID {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "cannot delete your own account"})
+		return
+	}
+	if err := h.svc.Users.DeleteUser(userID); errors.Is(err, auth.ErrProtectedUser) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	} else if errors.Is(err, auth.ErrUserNotFound) {
+		notFound(w, "user not found")
+		return
+	} else if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	okMsg(w, "user deleted")
+}
+
+// POST /api/admin/users/prune-e2e
+func (h *AdminHandlers) PruneE2EUsers(w http.ResponseWriter, r *http.Request) {
+	n, err := h.svc.Users.PruneE2ETestUsers()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
 }

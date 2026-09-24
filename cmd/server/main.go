@@ -19,6 +19,7 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
 	jobws "github.com/user/jobifai/internal/ws"
 	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
@@ -76,6 +77,7 @@ func main() {
 	}
 	tokenManager := auth.NewTokenManager(jwtSecret)
 	userStore := auth.NewUserStore(database)
+	quotaSvc := quota.NewService(database, cfgStore, userStore)
 
 	// ── Google OAuth (optional, requires env vars) ──────────────────────
 	var googleHandler handler.GoogleOAuthHandler
@@ -91,11 +93,12 @@ func main() {
 			},
 			database,
 			tokenManager,
-			func(_ context.Context, googleID, email, name, avatar string) (string, error) {
+			func(ctx context.Context, googleID, email, name, avatar string) (string, error) {
 				u, err := userStore.UpsertGoogle(googleID, email, name, avatar)
 				if err != nil {
 					return "", err
 				}
+				_ = quotaSvc.InitTrial(ctx, u.ID)
 				return u.ID, nil
 			},
 		)
@@ -109,7 +112,7 @@ func main() {
 	sessionStore := browser.NewSessionStore(database, secretsStore)
 
 	// ── LLM deps (nil if no API key stored yet) ─────────────────────────
-	extractor, tailor, renderer, llmClient := buildLLMDeps("__default__", cfgStore, secretsStore, nil)
+	extractor, tailor, renderer, llmClient := buildLLMDeps("__default__", cfgStore, secretsStore, nil, nil)
 
 	// ── Bot manager ──────────────────────────────────────────────────────
 	var botTailor bot.ResumeTailor
@@ -135,7 +138,12 @@ func main() {
 		if err := db.IncrementUsage(database, userID, model, input, output, calls); err != nil {
 			log.Error().Err(err).Str("user_id", userID).Msg("persist usage")
 		}
+		if err := quotaSvc.RecordLLM(context.Background(), userID, model, input, output); err != nil {
+			log.Error().Err(err).Str("user_id", userID).Msg("quota record")
+		}
 	}
+	botMgr.SetSessionQuota(quotaSvc)
+	botMgr.SetLLMQuota(quotaSvc)
 
 	// ── Router ──────────────────────────────────────────────────────────
 	svc := &handler.Services{
@@ -186,13 +194,14 @@ func main() {
 		TokenManager: tokenManager,
 		Google:       googleHandler,
 		UsageStore:   &usageStoreAdapter{s: usageStore},
+		Quota:        quotaSvc,
 		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
 		LLMFactory: func(userID string) (handler.ResumeExtractor, handler.ResumeTailor) {
-			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID))
+			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
 			return e, t
 		},
 		EvaluatorFactory: func(userID string) handler.JobEvaluator {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID))
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
 			if client == nil {
 				return nil
 			}
@@ -200,7 +209,7 @@ func main() {
 			return resume.NewScorer(taskClient(client, gs.LLM.TaskModels, "scoring"))
 		},
 		HalalCheckerFactory: func(userID string) handler.JobHalalChecker {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID))
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
 			if client == nil {
 				return nil
 			}
@@ -208,7 +217,7 @@ func main() {
 			return resume.NewHalalChecker(taskClient(client, gs.LLM.TaskModels, "halal"))
 		},
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID))
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
 			if client == nil {
 				return nil
 			}
@@ -254,7 +263,7 @@ func main() {
 // userID scopes the config/secrets lookup; pass "__default__" for startup bootstrapping.
 // Extractor/Tailor/Client are nil if no API key is saved yet.
 // tracker is optional; if non-nil the returned client will accumulate token usage into it.
-func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
+func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
 	renderer := resume.NewPDFRenderer("resume_style")
 
 	gs := config.ResolveOperationalSettings(cfgStore, userID)
@@ -266,6 +275,9 @@ func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.Secrets
 	client := llm.New(gs.LLM, apiKey)
 	if tracker != nil {
 		client = client.WithTracker(tracker)
+	}
+	if quotaGuard != nil && userID != "" && userID != "__default__" {
+		client = client.WithQuota(quotaGuard, userID)
 	}
 	tm := gs.LLM.TaskModels
 	tailor := resume.NewTailor(

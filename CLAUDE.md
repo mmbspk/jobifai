@@ -74,7 +74,11 @@ make run            — web-build + build + start server on :8081
 make start          — concurrent dev: Go + Vite dev server
 make dev            — run with air (hot reload)
 make test           — go test ./... -race -count=1
-make lint           — golangci-lint run ./...
+make test-web       — Vitest (web/)
+make test-all       — Go + frontend unit tests
+make test-coverage  — Go + frontend coverage reports
+make test-all-e2e   — test-all + Playwright e2e
+make lint           — golangci-lint + ESLint
 make tidy           — go mod tidy + verify
 make clean          — remove binary + local DB
 make docker         — build Docker image
@@ -99,8 +103,18 @@ Test files exist across most packages. When adding new tests:
   ```
 - Handler auth bypass: `internal/auth/testing.go` exports `TestContext(ctx context.Context, userID string) context.Context` so test packages can inject a user ID without depending on unexported context keys.
 - React: `vitest` + `@testing-library/react` + `@testing-library/user-event` + `jsdom` are configured in `web/vitest.config.ts`.
-- E2E: Playwright tests live in `web/e2e/`. Use `make test-e2e` to run them; `make test-e2e-ui` opens the interactive Playwright UI.
-- Run all Go tests: `make test`
+- E2E: Playwright tests live in `web/e2e/`. Use `make test-e2e` to run them; `make test-e2e-ui` opens the interactive Playwright UI. With `JOBIFAI_E2E=1`, `/api/e2e/seed-jobs` seeds job fixtures for populated UI tests.
+- Prefer `make test-all` before pushing; CI runs `make lint`, `make test`, `make test-web`, `make test-coverage`, and `make test-e2e`.
+- **Where tests live:**
+  - `internal/testutil/mockllm` — shared mock Claude HTTP server (+ `server_test.go`)
+  - `internal/auth/google_test.go` — OAuth handler unit tests
+  - `internal/handler/auth_google_test.go` — `/auth/google` routes on the chi router
+  - `internal/handler/resume_test.go` — resume HTTP tests (stubs + mock LLM factory shape)
+  - `internal/handler/bot_test.go` — bot HTTP tests (stub controller + `test_automation` integration)
+  - `internal/bot/manager_automation_test.go` — manager + mock LLM + DB (no Rod)
+  - `web/e2e/jobs-populated.spec.ts` — UI with `/api/e2e/seed-jobs` fixtures
+- `TestMain` in `internal/handler/main_test.go` and `internal/bot/main_test.go` registers `test_automation` runner automatically.
+- Handler stubs: `internal/handler/test_stubs_test.go`; shared helpers: `testhelper_test.go` (`wireMockLLMUser`).
 
 ## Field-Agnostic Language
 

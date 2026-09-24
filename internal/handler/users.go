@@ -51,6 +51,10 @@ func (h *UserHandlers) Register(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "password must be at least 8 characters"})
 		return
 	}
+	if err := auth.RejectE2ERegistrationUnlessEnabled(req.Email, os.Getenv("JOBIFAI_E2E") == "1"); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"message": err.Error()})
+		return
+	}
 
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
@@ -76,6 +80,10 @@ func (h *UserHandlers) Register(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not grant admin"})
 			return
 		}
+	}
+
+	if h.svc.Quota != nil {
+		_ = h.svc.Quota.InitTrial(r.Context(), user.ID)
 	}
 
 	tokens, err := h.issueTokens(user.ID, user.Email)

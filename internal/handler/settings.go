@@ -137,7 +137,6 @@ var defaultGeneralSettings = domain.GeneralSettings{
 	},
 	JobSuitabilityScore:       7,
 	MaxJobsPerKeyword:         25,
-	InterviewQuestionsEnabled: true,
 }
 
 func (h *SettingsHandlers) isAdmin(r *http.Request) bool {
@@ -155,8 +154,7 @@ func userFacingGeneral(s domain.GeneralSettings) domain.GeneralSettings {
 		JobSuitabilityScore:       s.JobSuitabilityScore,
 		MaxJobsPerKeyword:         s.MaxJobsPerKeyword,
 		HalalJobFilter:            s.HalalJobFilter,
-		GenerateNewResumeDocs:     s.GenerateNewResumeDocs,
-		InterviewQuestionsEnabled: s.InterviewQuestionsEnabled,
+		GenerateNewResumeDocs: s.GenerateNewResumeDocs,
 	}
 }
 
@@ -168,7 +166,6 @@ func mergeUserGeneralUpdate(stored, incoming domain.GeneralSettings) domain.Gene
 	out.MaxJobsPerKeyword = incoming.MaxJobsPerKeyword
 	out.HalalJobFilter = incoming.HalalJobFilter
 	out.GenerateNewResumeDocs = incoming.GenerateNewResumeDocs
-	out.InterviewQuestionsEnabled = incoming.InterviewQuestionsEnabled
 	return out
 }
 

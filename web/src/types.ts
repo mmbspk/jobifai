@@ -248,6 +248,7 @@ export interface AdminUserRow {
 
 export interface AdminUserDetail extends AdminUserRow {
   llm_overrides: LLMOverrides
+  quota_overrides?: QuotaUserOverrides
 }
 
 export interface GeneralSettings {
@@ -260,7 +261,6 @@ export interface GeneralSettings {
   max_jobs_per_keyword?: number
   halal_job_filter?: boolean
   generate_new_resume_docs?: boolean
-  interview_questions_enabled?: boolean
 }
 
 export interface QuestionAnswer {
@@ -333,4 +333,52 @@ export interface SessionUsage {
   output_tokens: number
   calls: number
   estimated_cost_usd: number | null
+}
+
+export interface TopUpPack {
+  credits: number
+  stripe_price_id?: string
+  label?: string
+}
+
+export interface QuotaDefaults {
+  enforcement_default: boolean
+  credits_per_usd: number
+  service_markup: number
+  per_call_fee_usd: number
+  trial_credits: number
+  trial_days: number
+  starter_credits_monthly: number
+  pro_credits_monthly: number
+  subscriber_grace_credits: number
+  stripe_price_starter?: string
+  stripe_price_pro?: string
+  top_up_packs?: TopUpPack[]
+}
+
+export interface QuotaUserOverrides {
+  enforcement_enabled?: boolean
+  trial_credits?: number
+  period_allowance_credits?: number
+}
+
+export interface QuotaStatus {
+  enforcement_enabled: boolean
+  plan: string
+  unlimited?: boolean
+  used_credits: number
+  allowance_credits: number
+  remaining_credits: number
+  usage_percent: number
+  topup_credits_remaining: number
+  period_start?: string
+  period_end?: string
+  trial_ends_at?: string
+  trial_remaining_credits?: number | null
+  overage_debt_credits: number
+  blocked: boolean
+  block_code?: string
+  grace_session_active?: boolean
+  stripe_configured?: boolean
+  top_up_packs?: TopUpPack[]
 }

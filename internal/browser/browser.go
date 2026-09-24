@@ -161,20 +161,53 @@ func ReleaseProfileForLaunch(dir string) {
 	time.Sleep(400 * time.Millisecond)
 }
 
-// Launch opens a visible (non-headless) Chrome window navigated to the
-// platform's login page. Returns the session ID the caller must pass to
-// CaptureCookies later.
-//
-// When useProfile is true, Chrome uses a persistent user-data-dir (profilePath
-// or ProfileDir default) so Auth0 SPA state in localStorage is preserved.
-func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool) (string, error) {
+// PendingSession returns the open connect-browser session ID for userID+platform, if any.
+func (m *Manager) PendingSession(userID, platform string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.sessions {
+		if s.UserID == userID && s.Platform == platform {
+			return s.ID, true
+		}
+	}
+	return "", false
+}
+
+func (m *Manager) closeSessionLocked(sess *Session) {
+	delete(m.sessions, sess.ID)
+	if sess.Browser != nil {
+		_ = sess.Browser.Close()
+	}
+}
+
+// ClosePendingSession closes an in-progress connect-browser window for userID+platform.
+func (m *Manager) ClosePendingSession(userID, platform string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.sessions {
+		if s.UserID == userID && s.Platform == platform {
+			m.closeSessionLocked(s)
+			return true
+		}
+	}
+	return false
+}
+
+// Launch opens a visible Chrome window for manual login. When force is false and a
+// session is already open for this user+platform, the existing session ID is returned.
+// When force is true, any existing session is closed first.
+func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool, force bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Enforce one open session per platform
 	for _, s := range m.sessions {
-		if s.Platform == platform {
-			return "", ErrAlreadyOpen
+		if s.UserID == userID && s.Platform == platform {
+			if force {
+				m.closeSessionLocked(s)
+			} else {
+				return s.ID, nil
+			}
+			break
 		}
 	}
 

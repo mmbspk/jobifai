@@ -61,6 +61,8 @@ type Services struct {
 	QuestionAnswererFactory func(userID string) JobQuestionAnswerer
 	// UsageStore accumulates per-user LLM token usage for the lifetime of the process.
 	UsageStore UsageStore
+	// Quota enforces cost-based trial and subscription AI limits (nil disables enforcement wiring).
+	Quota QuotaService
 	// HTTPClient is used for outbound HTTP requests (e.g. location suggestions).
 	// Falls back to http.DefaultClient if nil.
 	HTTPClient *http.Client
@@ -139,7 +141,8 @@ type SecretsStore interface {
 
 // BrowserManager manages visible browser windows for manual platform login.
 type BrowserManager interface {
-	Launch(userID, platform, profilePath string, useProfile bool) (string, error)
+	Launch(userID, platform, profilePath string, useProfile bool, force bool) (string, error)
+	PendingSession(userID, platform string) (sessionID string, ok bool)
 	CaptureCookies(ctx context.Context, userID, sessionID string) ([]byte, error)
 }
 
@@ -155,6 +158,26 @@ type LogBroadcaster interface {
 	io.Writer
 	Register(conn *websocket.Conn, userID string)
 	Unregister(conn *websocket.Conn)
+}
+
+// QuotaService enforces AI usage limits and exposes status for the UI.
+type QuotaService interface {
+	Status(ctx context.Context, userID string) (domain.QuotaStatus, error)
+	InitTrial(ctx context.Context, userID string) error
+	BeforeLLM(ctx context.Context, userID, model string, estInput, estOutput int) error
+	RecordLLM(ctx context.Context, userID, model string, input, output int64) error
+	BeginSubscriberSession(userID string)
+	EndSubscriberSession(userID string)
+	LoadDefaults() domain.QuotaDefaults
+	SaveDefaults(d domain.QuotaDefaults) error
+	SaveUserOverrides(userID string, o domain.QuotaUserOverrides) error
+	UserOverrides(userID string) domain.QuotaUserOverrides
+	SetEnforcement(userID string, enabled bool) error
+	RowForUser(userID string) (domain.UserQuotaRow, error)
+	RowByStripeCustomer(customerID string) (domain.UserQuotaRow, error)
+	SetStripeCustomer(userID, customerID string) error
+	ApplySubscriptionPeriod(userID, plan, customerID, subID string, start, end int64, allowanceCredits int64) error
+	AddTopUpCredits(userID string, credits int64) error
 }
 
 // UsageStore provides per-user LLM token usage snapshots.

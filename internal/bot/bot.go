@@ -2307,7 +2307,7 @@ func (b *Bot) recordApplied(job linkedInJob, resumePath, coverPath string, score
 	if _, err := appdb.ExecWithRetry(b.cfg.DB,
 		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		job.ID, b.cfg.UserID, string(domain.PlatformLinkedIn), job.Company, job.Title,
+		job.ID, b.cfg.UserID, string(b.cfg.Platform), job.Company, job.Title,
 		job.Location, job.URL, resumePath, coverPath, score, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
@@ -2325,7 +2325,7 @@ func (b *Bot) recordSkipped(job linkedInJob, reason string, score int, reasoning
 	if _, err := appdb.ExecWithRetry(b.cfg.DB,
 		`INSERT OR IGNORE INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,halal_verdict,viewed_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		job.ID, b.cfg.UserID, string(domain.PlatformLinkedIn), job.Company, job.Title,
+		job.ID, b.cfg.UserID, string(b.cfg.Platform), job.Company, job.Title,
 		job.Location, job.URL, reason, score, reasoning, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {

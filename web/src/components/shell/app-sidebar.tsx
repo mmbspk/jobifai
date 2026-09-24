@@ -12,6 +12,7 @@ import { usageApi } from '../../api/usage'
 import { useTheme } from '../../hooks/useTheme'
 import { useAuth } from '../../contexts/AuthContext'
 import { JobifaiLogo } from '../brand/JobifaiLogo'
+import { SidebarCreditsMeter } from '../quota/SidebarCreditsMeter'
 
 const PRIMARY_NAV = [
   { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
@@ -218,6 +219,8 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             </div>
           )}
         </nav>
+
+        <SidebarCreditsMeter expanded={expanded} />
 
         {isAdmin && expanded && usage && (usage.input_tokens > 0 || usage.output_tokens > 0) ? (
           <div className="mx-3 mb-2 px-3 py-2 rounded-[var(--radius-md)] bg-[var(--color-surface-2)] border border-[var(--color-border)]">

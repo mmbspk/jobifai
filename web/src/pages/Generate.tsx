@@ -13,6 +13,8 @@ import { EthicsVerdict } from '../components/review/EthicsVerdict'
 import { inputClassName } from '../components/ui/input'
 import { Button } from '../components/ui/button'
 import { generationStore, useGenerationState, STEPS, type GenTab } from '../state/generationStore'
+import { useQuota } from '../hooks/useQuota'
+import { QuotaLimitNotice } from '../components/quota/QuotaLimitNotice'
 
 type Tab = GenTab | 'apply'
 
@@ -83,6 +85,7 @@ export function Generate() {
 
   const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
   const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
+  const { aiDisabled } = useQuota()
 
   const [marketTouched, setMarketTouched] = useState(false)
   useEffect(() => {
@@ -90,8 +93,6 @@ export function Generate() {
       generationStore.setForm({ market: generalSettings.default_resume_market })
     }
   }, [generalSettings?.default_resume_market, marketTouched, f.market])
-
-  const visibleTabs = TABS.filter(t => t.key !== 'questions' || (generalSettings?.interview_questions_enabled ?? true))
 
   function cancelApply() {
     applyAbortRef.current?.abort()
@@ -149,8 +150,13 @@ export function Generate() {
   const needsUrl = tab === 'evaluate' || tab === 'questions'
   const hasJobInput = f.jobUrl.trim().startsWith('http') || f.jobDesc.trim().length > 20
   const hasQuestions = f.questions.some(q => q.value.trim().length > 0)
-  const canGenerate = !loading && tab !== 'apply' && (!needsUrl || hasJobInput) && (tab !== 'questions' || hasQuestions)
-  const canStartApply = !applyError && applyUrl.trim().startsWith('http')
+  const canGenerate =
+    !aiDisabled &&
+    !loading &&
+    tab !== 'apply' &&
+    (!needsUrl || hasJobInput) &&
+    (tab !== 'questions' || hasQuestions)
+  const canStartApply = !aiDisabled && !applyError && applyUrl.trim().startsWith('http')
   const filename = tab === 'cover' ? 'cover-letter.pdf' : 'resume.pdf'
 
   let tabDesc: string
@@ -244,12 +250,14 @@ export function Generate() {
         description="Evaluate fit, tailor documents, answer questions, or apply from a job URL."
       />
 
+      <QuotaLimitNotice />
+
       <section className="rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[var(--shadow-card)] sm:p-6">
       <div className="space-y-6">
       {/* Tabs */}
       <div className="overflow-x-auto -mx-1 px-1 pb-1">
         <div className="flex gap-1 p-1 min-w-min bg-[var(--color-surface-2)] rounded-[var(--radius-lg)] border border-[var(--color-border)]">
-          {visibleTabs.map(t => (
+          {TABS.map(t => (
             <button key={t.key} type="button" onClick={() => setTab(t.key)}
               className={cn('py-2 px-3 rounded-[var(--radius-md)] text-sm font-medium transition-all whitespace-nowrap min-h-[44px] sm:min-h-0',
                 tab === t.key ? TAB_ACTIVE : TAB_IDLE)}
@@ -527,7 +535,7 @@ export function Generate() {
                 <p className="text-sm text-[var(--color-text-muted)] leading-relaxed">{applyResponse.reasoning}</p>
               )}
               <div className="flex gap-3">
-                <Button variant="primary" fullWidth disabled={applyLoading} loading={applyLoading} onClick={applyAnyway}>
+                <Button variant="primary" fullWidth disabled={applyLoading || aiDisabled} loading={applyLoading} onClick={applyAnyway}>
                   Apply anyway
                 </Button>
                 <Button variant="secondary" fullWidth disabled={applyLoading} onClick={skipJob}>

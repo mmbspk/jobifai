@@ -20,14 +20,19 @@ type GoogleConfig struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
+	// Endpoint overrides OAuth URLs (used in tests with httptest servers). Zero value → google.Endpoint.
+	Endpoint oauth2.Endpoint
+	// UserInfoURL overrides the Google profile endpoint (tests only).
+	UserInfoURL string
 }
 
 // GoogleHandler handles the Google OAuth2 flow.
 type GoogleHandler struct {
-	cfg     *oauth2.Config
-	db      *sql.DB
-	tm      *TokenManager
-	onUpsert func(ctx context.Context, googleID, email, name, avatar string) (string, error)
+	cfg        *oauth2.Config
+	db         *sql.DB
+	tm         *TokenManager
+	userInfoURL string
+	onUpsert   func(ctx context.Context, googleID, email, name, avatar string) (string, error)
 }
 
 // NewGoogleHandler creates a GoogleHandler.
@@ -39,14 +44,18 @@ func NewGoogleHandler(
 	tm *TokenManager,
 	onUpsert func(ctx context.Context, googleID, email, name, avatar string) (string, error),
 ) *GoogleHandler {
+	ep := gcfg.Endpoint
+	if ep.AuthURL == "" {
+		ep = google.Endpoint
+	}
 	cfg := &oauth2.Config{
 		ClientID:     gcfg.ClientID,
 		ClientSecret: gcfg.ClientSecret,
 		RedirectURL:  gcfg.RedirectURL,
 		Scopes:       []string{"openid", "profile", "email"},
-		Endpoint:     google.Endpoint,
+		Endpoint:     ep,
 	}
-	return &GoogleHandler{cfg: cfg, db: db, tm: tm, onUpsert: onUpsert}
+	return &GoogleHandler{cfg: cfg, db: db, tm: tm, userInfoURL: gcfg.UserInfoURL, onUpsert: onUpsert}
 }
 
 // Redirect redirects the user to Google's consent page.
@@ -92,7 +101,7 @@ func (h *GoogleHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch user info from Google.
-	profile, err := fetchGoogleProfile(r.Context(), h.cfg, oauthToken)
+	profile, err := fetchGoogleProfile(r.Context(), h.cfg, oauthToken, h.userInfoURL)
 	if err != nil {
 		log.Error().Err(err).Msg("google profile fetch failed")
 		http.Error(w, "failed to fetch google profile", http.StatusInternalServerError)
@@ -135,9 +144,12 @@ type googleProfile struct {
 	Picture string `json:"picture"`
 }
 
-func fetchGoogleProfile(ctx context.Context, cfg *oauth2.Config, token *oauth2.Token) (*googleProfile, error) {
+func fetchGoogleProfile(ctx context.Context, cfg *oauth2.Config, token *oauth2.Token, userInfoURL string) (*googleProfile, error) {
+	if userInfoURL == "" {
+		userInfoURL = "https://www.googleapis.com/oauth2/v3/userinfo"
+	}
 	client := cfg.Client(ctx, token)
-	resp, err := client.Get("https://www.googleapis.com/oauth2/v3/userinfo")
+	resp, err := client.Get(userInfoURL)
 	if err != nil {
 		return nil, err
 	}

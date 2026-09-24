@@ -36,6 +36,20 @@ func (h *BotHandlers) Start(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "platform is required"})
 		return
 	}
+	if h.svc.Quota != nil {
+		st, err := h.svc.Quota.Status(r.Context(), userID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+			return
+		}
+		if st.Blocked {
+			writeJSON(w, http.StatusPaymentRequired, map[string]string{
+				"code":    st.BlockCode,
+				"message": "AI usage limit reached — subscribe to continue",
+			})
+			return
+		}
+	}
 	if err := h.svc.Bot.Start(r.Context(), userID, req.Platform); err != nil {
 		conflict(w, err.Error())
 		return
@@ -56,6 +70,9 @@ func (h *BotHandlers) Stop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.svc.Bot.Stop(userID)
+	if h.svc.Quota != nil {
+		h.svc.Quota.EndSubscriberSession(userID)
+	}
 	okMsg(w, "stop signal sent")
 }
 

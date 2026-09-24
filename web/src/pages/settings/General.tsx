@@ -89,7 +89,6 @@ const DEFAULT: GeneralSettings = {
   job_suitability_score: 7,
   max_jobs_per_keyword: 25,
   halal_job_filter: false,
-  interview_questions_enabled: true,
 }
 
 export function GeneralSettingsPage() {
@@ -231,9 +230,6 @@ export function GeneralSettingsPage() {
         </Field>
         <Field label="Halal Job Filter" sub="Automatically skip jobs that are impermissible or doubtful under Islamic employment ethics">
           <Toggle checked={form.halal_job_filter ?? false} onChange={v => set('halal_job_filter', v)} />
-        </Field>
-        <Field label="Interview Questions" sub="Show the Questions tab in Generate to answer application or interview questions using your profile">
-          <Toggle checked={form.interview_questions_enabled ?? true} onChange={v => set('interview_questions_enabled', v)} />
         </Field>
       </Section>
 

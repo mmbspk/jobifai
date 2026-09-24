@@ -293,7 +293,6 @@ type GeneralSettings struct {
 	MaxJobsPerKeyword          int                 `json:"max_jobs_per_keyword,omitempty"`
 	HalalJobFilter             bool                `json:"halal_job_filter,omitempty"`
 	GenerateNewResumeDocs      bool                `json:"generate_new_resume_docs,omitempty"`
-	InterviewQuestionsEnabled  bool                `json:"interview_questions_enabled,omitempty"`
 }
 
 // AnswerQuestionsRequest is the payload for POST /api/resume/answer-questions.

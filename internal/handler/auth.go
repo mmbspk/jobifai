@@ -23,6 +23,7 @@ func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
 		Platform    string `json:"platform"`
 		UseProfile  bool   `json:"use_profile"`
 		ProfilePath string `json:"profile_path"`
+		Force       bool   `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid JSON"})
@@ -53,11 +54,17 @@ func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
 	profileDir := browser.ProfileDir(userID, req.Platform, profilePath)
 	browser.ReleaseProfileForLaunch(profileDir)
 
-	sess, err := h.svc.BrowserMgr.Launch(userID, req.Platform, profilePath, true)
-	if errors.Is(err, domain.ErrAlreadyOpen) {
-		conflict(w, "a browser session is already open for "+req.Platform)
-		return
+	if !req.Force {
+		if id, ok := h.svc.BrowserMgr.PendingSession(userID, req.Platform); ok {
+			writeJSON(w, http.StatusOK, map[string]string{
+				"session_id": id,
+				"message":    "Browser already open — finish signing in, then click Save session. If you closed the window, click Connect browser again to open a fresh one.",
+			})
+			return
+		}
 	}
+
+	sess, err := h.svc.BrowserMgr.Launch(userID, req.Platform, profilePath, true, req.Force)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
@@ -65,8 +72,22 @@ func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"session_id": sess,
-		"message":    "Chrome opened, log in manually then call /api/auth/save-session",
+		"message":    "Chrome opened — log in manually, then click Save session",
 	})
+}
+
+// GET /api/auth/{platform}/browser-pending
+func (h *AuthHandlers) BrowserPending(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	platform := chi.URLParam(r, "platform")
+	if id, ok := h.svc.BrowserMgr.PendingSession(userID, platform); ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"pending":    true,
+			"session_id": id,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pending": false})
 }
 
 // POST /api/auth/save-session

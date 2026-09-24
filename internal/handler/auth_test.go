@@ -17,12 +17,20 @@ import (
 type stubBrowserMgr struct {
 	launchID   string
 	launchErr  error
+	pendingID  string
 	cookies    []byte
 	captureErr error
 }
 
-func (s *stubBrowserMgr) Launch(_, _, _ string, _ bool) (string, error) {
+func (s *stubBrowserMgr) Launch(_, _, _ string, _, _ bool) (string, error) {
 	return s.launchID, s.launchErr
+}
+
+func (s *stubBrowserMgr) PendingSession(_, _ string) (string, bool) {
+	if s.pendingID != "" {
+		return s.pendingID, true
+	}
+	return "", false
 }
 
 func (s *stubBrowserMgr) CaptureCookies(_ context.Context, _, _ string) ([]byte, error) {
@@ -120,15 +128,19 @@ func TestAuth_LaunchBrowser_MissingPlatform(t *testing.T) {
 	assert.Equal(t, 400, w.Code)
 }
 
-func TestAuth_LaunchBrowser_AlreadyOpen(t *testing.T) {
-	bm := &stubBrowserMgr{launchErr: domain.ErrAlreadyOpen}
+func TestAuth_LaunchBrowser_ReturnsExistingPending(t *testing.T) {
+	bm := &stubBrowserMgr{launchID: "sess-new", pendingID: "sess-existing"}
 	svc, token := newAuthTestServices(t, bm, newStubSessionStore())
 	router := handler.NewRouter(svc)
 
 	w := authPost(t, router, "/api/auth/launch-browser", token, map[string]any{
 		"platform": "linkedin",
 	})
-	assert.Equal(t, 409, w.Code)
+	assert.Equal(t, 200, w.Code)
+
+	var resp map[string]string
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.Equal(t, "sess-existing", resp["session_id"])
 }
 
 // ── SaveSession ───────────────────────────────────────────────────────────────

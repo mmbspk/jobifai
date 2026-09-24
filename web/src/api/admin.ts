@@ -1,5 +1,5 @@
 import { apiDelete, apiGet, apiPost, apiPut } from './client'
-import type { AdminUserDetail, AdminUserRow, GeneralSettings, LLMOverrides } from '../types'
+import type { AdminUserDetail, AdminUserRow, GeneralSettings, LLMOverrides, QuotaUserOverrides } from '../types'
 
 export interface SystemSecretsStatus {
   has_default_api_key: boolean
@@ -22,11 +22,15 @@ export const adminApi = {
   users: {
     list: () => apiGet<AdminUserRow[]>('/admin/users'),
     get: (userId: string) => apiGet<AdminUserDetail>(`/admin/users/${userId}`),
-    update: (userId: string, body: { is_admin?: boolean; llm_overrides?: LLMOverrides }) =>
-      apiPut<void>(`/admin/users/${userId}`, body),
+    update: (
+      userId: string,
+      body: { is_admin?: boolean; llm_overrides?: LLMOverrides; quota_overrides?: QuotaUserOverrides },
+    ) => apiPut<void>(`/admin/users/${userId}`, body),
     setApiKey: (userId: string, value: string) =>
       apiPost<void>(`/admin/users/${userId}/secrets/api-key`, { value }),
     deleteApiKey: (userId: string) =>
       apiDelete(`/admin/users/${userId}/secrets/api-key`),
+    delete: (userId: string) => apiDelete(`/admin/users/${userId}`),
+    pruneE2E: () => apiPost<{ deleted: number }>('/admin/users/prune-e2e', {}),
   },
 }
