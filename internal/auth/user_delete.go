@@ -80,7 +80,7 @@ func (s *UserStore) PruneE2ETestUsers() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var ids []string
 	for rows.Next() {
 		var id string

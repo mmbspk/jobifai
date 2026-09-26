@@ -244,7 +244,7 @@ func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool, 
 			Launch()
 	}
 	if err != nil {
-		return "", fmt.Errorf("browser: launch chrome: %w", err)
+		return "", wrapChromeLaunchErr(err)
 	}
 
 	b := rod.New().ControlURL(url).MustConnect()
@@ -487,4 +487,12 @@ func ToCookieParams(cookies []Cookie) []*proto.NetworkCookieParam {
 		out = append(out, p)
 	}
 	return out
+}
+
+func wrapChromeLaunchErr(err error) error {
+	msg := err.Error()
+	if strings.Contains(msg, "Missing X server") || strings.Contains(msg, "$DISPLAY") || strings.Contains(msg, "ozone_platform_x11") {
+		return fmt.Errorf("browser: no display available — run Jobifai via Docker (Xvfb + noVNC) or set DISPLAY to a running Xvfb : %w", err)
+	}
+	return fmt.Errorf("browser: launch chrome: %w", err)
 }

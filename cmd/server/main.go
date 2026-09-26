@@ -108,6 +108,9 @@ func main() {
 	}
 
 	// ── Browser + Session store ─────────────────────────────────────────
+	if err := browser.InitVirtualDisplay(); err != nil {
+		log.Warn().Err(err).Msg("virtual display not available — Connect browser needs Docker/Xvfb on Linux servers")
+	}
 	browserMgr := browser.NewManager()
 	sessionStore := browser.NewSessionStore(database, secretsStore)
 

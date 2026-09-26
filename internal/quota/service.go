@@ -240,8 +240,6 @@ func (s *Service) deductPaid(row *domain.UserQuotaRow, burn int64) {
 	if monthlyLeft > 0 {
 		row.PeriodUsedCredits += monthlyLeft
 		burn -= monthlyLeft
-	} else if monthlyLeft < 0 {
-		// already over allowance; consume top-up only
 	}
 	row.TopUpCreditsRemaining -= burn
 	if row.TopUpCreditsRemaining < 0 {

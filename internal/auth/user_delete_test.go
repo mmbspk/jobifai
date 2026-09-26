@@ -13,7 +13,7 @@ import (
 func TestUserStore_PruneE2ETestUsers(t *testing.T) {
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	users := auth.NewUserStore(db)
 	_, err = users.Create("keep@example.com", "hash", "Keep")
@@ -39,7 +39,7 @@ func TestUserStore_PruneE2ETestUsers(t *testing.T) {
 func TestUserStore_DeleteUser_ProtectsDefault(t *testing.T) {
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 
 	users := auth.NewUserStore(db)
 	err = users.DeleteUser("__default__")

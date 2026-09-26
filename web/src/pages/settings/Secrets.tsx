@@ -210,9 +210,11 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div className="space-y-1">
               <p className="text-xs text-[var(--color-text-muted)]">{connectBrowserSaveHint(platform)}</p>
-              {!vncEnabled && (
+              {vncEnabled ? (
+                <p className="text-xs text-[var(--color-text-dim)]">Sign in using the browser panel below, then save.</p>
+              ) : (
                 <p className="text-xs text-[var(--color-text-dim)]">
-                  Window missing? Use <strong>Open new browser window</strong> above.
+                  This deployment has no embedded browser panel. On Linux production, run the official Docker image (Xvfb + noVNC). Locally, Chrome opens on your machine — if you closed it, use <strong>Open new browser window</strong> above.
                 </p>
               )}
             </div>

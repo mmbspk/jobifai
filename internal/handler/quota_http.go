@@ -1,28 +1,10 @@
 package handler
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/user/jobifai/internal/auth"
-	"github.com/user/jobifai/internal/quota"
 )
-
-func writeQuotaExceeded(w http.ResponseWriter, err error) {
-	var ex *quota.ExceededError
-	if errors.As(err, &ex) {
-		writeJSON(w, http.StatusPaymentRequired, map[string]string{
-			"code":   ex.Code,
-			"scope":  ex.Scope,
-			"message": "AI usage limit reached",
-		})
-		return
-	}
-	writeJSON(w, http.StatusPaymentRequired, map[string]string{
-		"code":    "quota_exceeded",
-		"message": err.Error(),
-	})
-}
 
 // QuotaHandlers serves quota status for the current user.
 type QuotaHandlers struct{ svc *Services }
