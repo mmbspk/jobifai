@@ -37,6 +37,7 @@ func NewRouter(svc *Services) *chi.Mux {
 
 	// ── Public: user accounts + OAuth ────────────────────────────────────
 	r.Post("/api/billing/webhook", billingH.Webhook)
+	r.Get("/api/public/plans", billingH.PublicPlans)
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/register", users.Register)
 		r.Post("/login", users.Login)
