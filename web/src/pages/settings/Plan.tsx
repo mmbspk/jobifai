@@ -13,9 +13,24 @@ import { CreditProgress } from '../../components/quota/CreditProgress'
 import { QuotaAlert } from '../../components/quota/QuotaAlert'
 import { quotaBlockMessage } from '../../lib/quotaMessages'
 import { markPlanReviewed } from '../../lib/setupChecklist'
+import { usePublicPlans } from '../../hooks/usePublicPlans'
+import type { PublicPlan } from '../../api/plans'
 
 function fmtCredits(n: number): string {
   return n.toLocaleString()
+}
+
+function formatPlanPrice(plan: PublicPlan): string {
+  if (plan.unit_amount == null || !plan.currency) return 'Price at checkout'
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: plan.currency,
+      maximumFractionDigits: plan.unit_amount % 100 === 0 ? 0 : 2,
+    }).format(plan.unit_amount / 100)
+  } catch {
+    return `${plan.currency} ${(plan.unit_amount / 100).toFixed(2)}`
+  }
 }
 
 function planBadgeLabel(plan: string): string {
@@ -35,6 +50,7 @@ export function PlanPage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const { data, isLoading, isFetching, refreshQuota } = useQuota()
+  const { data: publicPlans = [] } = usePublicPlans()
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const paymentSyncStarted = useRef(false)
 
@@ -184,20 +200,73 @@ export function PlanPage() {
         </div>
       </SettingsSection>
 
-      {data.stripe_configured && (
-        <SettingsSection title="Subscribe" description="Monthly billing — cancel anytime before the next period.">
-          <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" disabled={checkout.isPending} onClick={() => checkout.mutate('starter')}>
-              Starter
+      {data.stripe_configured && isTrial && (
+        <SettingsSection
+          title="Choose a plan"
+          description="Keep the full Jobifai workflow and choose the monthly credit allowance that fits your search."
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            {publicPlans
+              .filter((plan): plan is PublicPlan & { id: 'starter' | 'pro' } =>
+                plan.id === 'starter' || plan.id === 'pro',
+              )
+              .map(plan => (
+              <div
+                key={plan.id}
+                className={[
+                  'rounded-[var(--radius-lg)] border p-4',
+                  plan.id === 'pro'
+                    ? 'border-[var(--color-accent)]/40 bg-[var(--color-accent-soft)]/20'
+                    : 'border-[var(--color-border)] bg-[var(--color-surface)]',
+                ].join(' ')}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-[var(--color-text)]">{plan.name}</p>
+                    <p className="mt-1 text-2xl font-bold tracking-tight text-[var(--color-text)]">
+                      {formatPlanPrice(plan)}
+                      {plan.unit_amount != null && (
+                        <span className="ml-1 text-xs font-normal text-[var(--color-text-dim)]">/{plan.interval || 'month'}</span>
+                      )}
+                    </p>
+                  </div>
+                  {plan.id === 'pro' && <Badge variant="accent">Recommended</Badge>}
+                </div>
+                <p className="mt-3 text-sm text-[var(--color-text-muted)]">
+                  {fmtCredits(plan.credits)} AI credits each month
+                </p>
+                <Button
+                  className="mt-4"
+                  variant={plan.id === 'pro' ? 'primary' : 'secondary'}
+                  disabled={checkout.isPending}
+                  onClick={() => checkout.mutate(plan.id)}
+                >
+                  Choose {plan.name}
+                </Button>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-[var(--color-text-dim)]">
+            Monthly billing. Your final price, currency, and any applicable taxes are confirmed in Stripe Checkout.
+          </p>
+        </SettingsSection>
+      )}
+
+      {data.stripe_configured && !isTrial && (
+        <SettingsSection
+          title="Subscription"
+          description="Payment methods, invoices, cancellation, and plan changes are managed securely in Stripe."
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="min-w-[180px] flex-1">
+              <p className="text-sm font-semibold text-[var(--color-text)]">{planBadgeLabel(data.plan)}</p>
+              <p className="mt-1 text-sm text-[var(--color-text-muted)]">
+                {fmtCredits(data.allowance_credits)} AI credits each billing period
+              </p>
+            </div>
+            <Button variant="secondary" disabled={portal.isPending} onClick={() => portal.mutate()}>
+              Manage billing
             </Button>
-            <Button variant="primary" disabled={checkout.isPending} onClick={() => checkout.mutate('pro')}>
-              Pro
-            </Button>
-            {!isTrial && (
-              <Button variant="ghost" disabled={portal.isPending} onClick={() => portal.mutate()}>
-                Manage billing
-              </Button>
-            )}
           </div>
         </SettingsSection>
       )}

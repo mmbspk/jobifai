@@ -19,6 +19,8 @@ import { UsagePage } from './pages/settings/Usage'
 import { PlanPage } from './pages/settings/Plan'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
+import { Landing } from './pages/Landing'
+import { Pricing } from './pages/Pricing'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { SettingsTabNav } from './components/settings/SettingsTabNav'
 import { AdminTabNav } from './components/admin/AdminTabNav'
@@ -110,7 +112,9 @@ function AdminRoute({ children }: Readonly<{ children: React.ReactNode }>) {
 function AppRoutes() {
   return (
     <Routes>
-      {/* Public auth pages */}
+      {/* Public pages — kept outside the authenticated app shell. */}
+      <Route path="/welcome"  element={<Landing />} />
+      <Route path="/pricing"  element={<Pricing />} />
       <Route path="/login"    element={<Login />} />
       <Route path="/register" element={<Register />} />
 
