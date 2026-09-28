@@ -10,10 +10,9 @@ const fallbackPlans: PublicPlan[] = [
 export function usePublicPlans() {
   return useQuery({
     queryKey: ['public-plans'],
-    queryFn: plansApi.list,
+    queryFn: async () => (await plansApi.list()).plans,
     staleTime: 5 * 60 * 1000,
     retry: 1,
-    select: data => data.plans,
     placeholderData: fallbackPlans,
   })
 }

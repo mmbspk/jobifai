@@ -206,7 +206,11 @@ export function PlanPage() {
           description="Keep the full Jobifai workflow and choose the monthly credit allowance that fits your search."
         >
           <div className="grid gap-3 sm:grid-cols-2">
-            {publicPlans.filter(plan => plan.id === 'starter' || plan.id === 'pro').map(plan => (
+            {publicPlans
+              .filter((plan): plan is PublicPlan & { id: 'starter' | 'pro' } =>
+                plan.id === 'starter' || plan.id === 'pro',
+              )
+              .map(plan => (
               <div
                 key={plan.id}
                 className={[
