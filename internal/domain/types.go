@@ -247,7 +247,7 @@ type ResumeProfile struct {
 // ─── Settings ──────────────────────────────────────────────────────────────
 
 // TaskModel overrides the model and token limit for a specific LLM task.
-// Keys: "scoring", "halal", "tailoring", "cover_letter", "form_filling", "questions".
+// Keys: "scoring", "halal", "tailoring", "cover_letter", "form_filling", "form_vision", "questions".
 type TaskModel struct {
 	Provider       string   `json:"provider,omitempty"`
 	Model          string   `json:"model,omitempty"`

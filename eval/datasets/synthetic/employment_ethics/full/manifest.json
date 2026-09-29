@@ -1,0 +1,11 @@
+{
+  "case_count": 50,
+  "cases_file": "cases.jsonl",
+  "classification": "synthetic",
+  "created_at": "2026-09-29T10:56:35Z",
+  "description": "Synthetic employment_ethics dataset (full)",
+  "schema_version": 1,
+  "sha256": "0e683ac050cd7e8712b8503afc702d8e422314a3b8c7e4ddf467a1a33b9351ab",
+  "task": "employment_ethics",
+  "version": "full"
+}

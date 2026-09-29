@@ -1,0 +1,11 @@
+{
+  "case_count": 5,
+  "cases_file": "cases.jsonl",
+  "classification": "synthetic",
+  "created_at": "2026-09-29T10:56:35Z",
+  "description": "Synthetic form_answer dataset (smoke)",
+  "schema_version": 1,
+  "sha256": "7100206269dd44a345b8811e072c578e8d7fed2ef1a19f781bf6c183da7c99fc",
+  "task": "form_answer",
+  "version": "smoke"
+}

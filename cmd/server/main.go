@@ -311,8 +311,9 @@ func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.Secrets
 	extractC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskResumeExtract, userID)
 	tailorC := taskApplyWithFallback(client, gs, policyStore, catalog, "tailoring", userID)
 	coverC := taskApplyWithFallback(client, gs, policyStore, catalog, "cover_letter", userID)
-	formC := taskApplyWithFallback(client, gs, policyStore, catalog, "form_filling", userID)
-	tailor := resume.NewTailor(tailorC, coverC, formC)
+	formAnswerC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskFormAnswer, userID)
+	formVisionC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskFormVision, userID)
+	tailor := resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC)
 	return resume.NewExtractor(extractC), tailor, renderer, client
 }
 

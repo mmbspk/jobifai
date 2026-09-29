@@ -1,0 +1,11 @@
+{
+  "case_count": 4,
+  "cases_file": "cases.jsonl",
+  "classification": "synthetic",
+  "created_at": "2026-09-29T10:56:35Z",
+  "description": "Synthetic employment_ethics dataset (smoke)",
+  "schema_version": 1,
+  "sha256": "5d472a2dfb3f3ea79a81ce8847bd71d3fe6f5d82278b6a298afb89fe437534cf",
+  "task": "employment_ethics",
+  "version": "smoke"
+}

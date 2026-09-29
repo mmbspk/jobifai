@@ -13,6 +13,7 @@ import { AdminAutomationPage } from './pages/admin/Automation'
 import { AdminUsersPage } from './pages/admin/Users'
 import { AdminQuotaPage } from './pages/admin/Quota'
 import { AdminEconomicsPage } from './pages/admin/Economics'
+import { AdminModelsPage } from './pages/admin/Models'
 import { Preferences } from './pages/settings/Preferences'
 import { Resume } from './pages/settings/Resume'
 import { PlatformsSettingsPage } from './pages/settings/Platforms'
@@ -42,6 +43,7 @@ const ADMIN_TABS = [
   { to: '/admin/users',      label: 'Users' },
   { to: '/admin/quota',      label: 'Credits' },
   { to: '/admin/economics',  label: 'AI economics' },
+  { to: '/admin/models',     label: 'Models' },
   { to: '/admin/usage',      label: 'Usage' },
 ]
 
@@ -85,6 +87,7 @@ function AdminLayout() {
         <Route path="users"      element={<AdminUsersPage />} />
         <Route path="quota"      element={<AdminQuotaPage />} />
         <Route path="economics"  element={<AdminEconomicsPage />} />
+        <Route path="models"     element={<AdminModelsPage />} />
         <Route path="usage"      element={<UsagePage />} />
         <Route path="system"     element={<Navigate to="/admin/defaults" replace />} />
         <Route path="secrets"    element={<Navigate to="/admin/defaults" replace />} />

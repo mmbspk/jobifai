@@ -21,5 +21,33 @@ func ApplyTask(base *llm.Client, global domain.LLMConfig, taskModels map[string]
 	if res.Provider != global.Provider {
 		return nil, fmt.Errorf("task policy provider %q must match base provider %q (cross-provider not supported yet)", res.Provider, global.Provider)
 	}
-	return base.WithModel(res.Model, res.MaxTokens), nil
+	effort, err := llm.NormalizeEffort(res.Effort)
+	if err != nil {
+		if res.Source == "policy_approved" {
+			return nil, fmt.Errorf("%w: %w", ErrApprovedPolicy, err)
+		}
+		return nil, err
+	}
+	if effort != "" && !llm.EffortSupported(global.Provider, res.Model, effort) {
+		msg := fmt.Errorf("effort %q not supported for %s/%s", effort, global.Provider, res.Model)
+		if res.Source == "policy_approved" {
+			return nil, fmt.Errorf("%w: %w", ErrApprovedPolicy, msg)
+		}
+		return nil, msg
+	}
+	mode := res.Mode
+	if mode == "" {
+		mode = "pinned"
+	}
+	out := base.WithModel(res.Model, res.MaxTokens).WithTaskRuntime(llm.TaskRuntime{
+		Effort:         effort,
+		Mode:           mode,
+		MaxCostUSD:     res.MaxCostUSD,
+		TimeoutSec:     res.TimeoutSec,
+		FallbackModels: res.FallbackModels,
+	})
+	if res.MaxCostUSD > 0 && catalog != nil {
+		out = out.WithCostCeiling(catalog, res.MaxCostUSD)
+	}
+	return out, nil
 }

@@ -144,7 +144,7 @@ func newResumeRouterWithMockLLM(t *testing.T, llmResponse string) (http.Handler,
 			return nil, nil
 		}
 		client := mockllm.NewClaudeClient(t, srv)
-		tailor := resume.NewTailor(client, client, client)
+		tailor := resume.NewTailor(client, client, client, client)
 		return resume.NewExtractor(client), tailor
 	}
 

@@ -81,7 +81,7 @@ func NewExtractor(client *llm.Client) *Extractor {
 // ExtractFromText calls the LLM to parse resume text into a structured profile.
 func (e *Extractor) ExtractFromText(ctx context.Context, resumeText string) (*domain.ResumeProfile, error) {
 	msgs := []llm.Message{
-		{Role: "user", Content: extractPrompt + resumeText},
+		{Role: "user", Content: BuildExtractPrompt(resumeText)},
 	}
 	raw, err := e.client.Chat(llm.WithTask(ctx, "extract resume"), msgs)
 	if err != nil {

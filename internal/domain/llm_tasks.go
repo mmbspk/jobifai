@@ -55,8 +55,10 @@ func StableToLegacyTaskModelKey(task string) string {
 		return "tailoring"
 	case TaskCoverLetter:
 		return "cover_letter"
-	case TaskFormAnswer, TaskFormVision:
+	case TaskFormAnswer:
 		return "form_filling"
+	case TaskFormVision:
+		return "form_vision"
 	case TaskApplicationQuestions:
 		return "questions"
 	case TaskResumeExtract:

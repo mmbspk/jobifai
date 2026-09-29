@@ -50,16 +50,26 @@ type Message struct {
 
 // Client dispatches LLM requests based on the active configuration.
 type Client struct {
-	cfg     domain.LLMConfig
-	apiKey  string
-	httpCli *http.Client
-	tracker *UsageTracker // optional; if set, accumulates token usage per call
-	billing BillingHooks
-	guard   quota.LLMGuard
-	userID  string
+	cfg         domain.LLMConfig
+	apiKey      string
+	httpCli     *http.Client
+	tracker     *UsageTracker // optional; if set, accumulates token usage per call
+	billing     BillingHooks
+	guard       quota.LLMGuard
+	userID      string
+	taskRuntime TaskRuntime
+	costCeiling *costCeiling
 }
 
 // New creates an LLM client from the current settings.
+// ModelName returns the configured model id for this client copy.
+func (c *Client) ModelName() string {
+	if c == nil {
+		return ""
+	}
+	return c.cfg.Model
+}
+
 func New(cfg domain.LLMConfig, apiKey string) *Client {
 	return &Client{
 		cfg:    cfg,
@@ -97,7 +107,18 @@ func (c *Client) WithModel(model string, maxTokens int) *Client {
 	if maxTokens > 0 {
 		cfg.MaxTokens = maxTokens
 	}
-	return &Client{cfg: cfg, apiKey: c.apiKey, httpCli: c.httpCli, tracker: c.tracker, billing: c.billing, guard: c.guard, userID: c.userID}
+	return &Client{
+		cfg: cfg, apiKey: c.apiKey, httpCli: c.httpCli, tracker: c.tracker,
+		billing: c.billing, guard: c.guard, userID: c.userID,
+		taskRuntime: c.taskRuntime, costCeiling: c.costCeiling,
+	}
+}
+
+// WithTaskRuntime attaches resolved per-task options (effort, timeout, mode, etc.).
+func (c *Client) WithTaskRuntime(r TaskRuntime) *Client {
+	nc := *c
+	nc.taskRuntime = r
+	return &nc
 }
 
 func (c *Client) prepareCallContext(ctx context.Context) context.Context {
@@ -130,9 +151,21 @@ func (c *Client) checkQuota(ctx context.Context, estInputChars int, estOutputTok
 // Retries up to 3 times total (2 retries) with a 2 s pause between attempts.
 // Non-retryable HTTP 4xx errors (except 429 Too Many Requests) are returned immediately.
 func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
+	if c.taskRuntime.TimeoutSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(c.taskRuntime.TimeoutSec)*time.Second)
+		defer cancel()
+	}
 	inChars := 0
 	for _, m := range msgs {
 		inChars += len(m.Content)
+	}
+	maxOut := c.cfg.MaxTokens
+	if maxOut <= 0 {
+		maxOut = 8192
+	}
+	if err := c.checkCostCeiling(inChars, maxOut); err != nil {
+		return "", err
 	}
 	if err := c.checkQuota(ctx, inChars, c.cfg.MaxTokens); err != nil {
 		return "", err
@@ -204,10 +237,15 @@ func (c *Client) recordTerminalFailure(ctx context.Context, errCode string) {
 // ── Claude (Anthropic Messages API) ───────────────────────────────────────
 
 type claudeRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens int             `json:"max_tokens"`
-	System    string          `json:"system,omitempty"`
-	Messages  []claudeMessage `json:"messages"`
+	Model        string              `json:"model"`
+	MaxTokens    int                 `json:"max_tokens"`
+	System       string              `json:"system,omitempty"`
+	Messages     []claudeMessage     `json:"messages"`
+	OutputConfig *claudeOutputConfig `json:"output_config,omitempty"`
+}
+
+type claudeOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type claudeMessage struct {
@@ -291,6 +329,9 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 		System:    system,
 		Messages:  turns,
 	}
+	if c.taskRuntime.Effort != "" {
+		body.OutputConfig = &claudeOutputConfig{Effort: c.taskRuntime.Effort}
+	}
 
 	baseURL := "https://api.anthropic.com"
 	if c.cfg.UseProxy && c.cfg.ProxyURL != "" {
@@ -343,8 +384,20 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 // Claude provider; all others return an error.
 func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt string) (string, error) {
 	start := time.Now()
+	if c.taskRuntime.TimeoutSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(c.taskRuntime.TimeoutSec)*time.Second)
+		defer cancel()
+	}
 	if c.cfg.Provider != "claude" {
 		return "", fmt.Errorf("ChatWithImage: unsupported provider %q (claude only)", c.cfg.Provider)
+	}
+	maxOut := c.cfg.MaxTokens
+	if maxOut <= 0 {
+		maxOut = 8192
+	}
+	if err := c.checkCostCeiling(len(imageBytes)+len(prompt), maxOut); err != nil {
+		return "", err
 	}
 	if err := c.checkQuota(ctx, len(imageBytes)+len(prompt), c.cfg.MaxTokens); err != nil {
 		return "", err

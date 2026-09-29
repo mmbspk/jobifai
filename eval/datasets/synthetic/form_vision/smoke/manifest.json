@@ -1,0 +1,11 @@
+{
+  "case_count": 3,
+  "cases_file": "cases.jsonl",
+  "classification": "synthetic",
+  "created_at": "2026-09-29T10:56:35Z",
+  "description": "Synthetic form_vision dataset (smoke)",
+  "schema_version": 1,
+  "sha256": "886241b6c083ef9ae1710d275343acfcb7b7ea873f65ff22ff9772b566ba45a0",
+  "task": "form_vision",
+  "version": "smoke"
+}

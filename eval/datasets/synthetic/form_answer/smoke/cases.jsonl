@@ -1,0 +1,5 @@
+{"classification":"synthetic","expect":{"exact":"Yes"},"id":"form_answer-0001","input":{"options":["Yes","No"],"question":"Are you authorized to work?"},"task":"form_answer"}
+{"classification":"synthetic","expect":{"exact":"Yes"},"id":"form_answer-0002","input":{"options":["Yes","No"],"question":"Are you authorized to work?"},"task":"form_answer"}
+{"classification":"synthetic","expect":{"exact":"Yes"},"id":"form_answer-0003","input":{"options":["Yes","No"],"question":"Are you authorized to work?"},"task":"form_answer"}
+{"classification":"synthetic","expect":{"exact":"Yes"},"id":"form_answer-0004","input":{"options":["Yes","No"],"question":"Are you authorized to work?"},"task":"form_answer"}
+{"classification":"synthetic","expect":{"exact":"Yes"},"id":"form_answer-0005","input":{"options":["Yes","No"],"question":"Are you authorized to work?"},"task":"form_answer"}
