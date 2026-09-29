@@ -132,6 +132,8 @@ type Config struct {
 	Renderer         ResumeRenderer
 	DB               *sql.DB
 	UserID           string // owner of this bot session
+	AutomationRunID  string // one ID per automation session for LLM billing attribution
+	ApplicationID    string // set when applying to a specific application record
 	RequireReview    bool
 	MarketDir        string            // path to resume_markets/ directory
 	LLMTracker       *llm.UsageTracker // optional; tracks per-job token usage for success log
@@ -1123,6 +1125,21 @@ func detectLinkedInEasyApply(page *rod.Page) bool {
 	return false
 }
 
+func (b *Bot) llmCtx(ctx context.Context, task, jobID string) context.Context {
+	attr := domain.LLMCallContext{
+		UserID:          b.cfg.UserID,
+		AutomationRunID: b.cfg.AutomationRunID,
+		JobID:           jobID,
+	}
+	if jobID != "" {
+		attr.ApplicationID = jobID
+	} else if b.cfg.ApplicationID != "" {
+		attr.ApplicationID = b.cfg.ApplicationID
+	}
+	ctx = llm.AttachAttribution(ctx, attr)
+	return llm.WithTask(ctx, task)
+}
+
 func (b *Bot) fetchJob(ctx context.Context, job linkedInJob) scraper.JobDetails {
 	details, err := scraper.FetchJob(ctx, job.URL)
 	if err != nil {
@@ -1140,7 +1157,7 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	if b.cfg.Scorer == nil {
 		return minScore, "", nil, true
 	}
-	result, err := b.cfg.Scorer.EvaluateJob(ctx, b.currentProfile(), jobDesc)
+	result, err := b.cfg.Scorer.EvaluateJob(b.llmCtx(ctx, "evaluate job", job.ID), b.currentProfile(), jobDesc)
 	if err != nil {
 		b.abortOnLLMFailure(err)
 		return 0, "", nil, false
@@ -1155,7 +1172,7 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	// Halal check, only runs after score passes to avoid wasted LLM calls.
 	// HARAM → skip; DOUBTFUL → let through but carry verdict for storage.
 	if b.cfg.HalalChecker != nil {
-		verdict, err := b.cfg.HalalChecker.CheckHalal(ctx, job.Title, job.Company, jobDesc)
+		verdict, err := b.cfg.HalalChecker.CheckHalal(b.llmCtx(ctx, "halal check", job.ID), job.Title, job.Company, jobDesc)
 		if err != nil {
 			log.Warn().Err(err).Msg("halal check failed, letting job through")
 		} else if verdict.Verdict == "HARAM" {
@@ -1221,7 +1238,7 @@ func (b *Bot) loadMarket() *resume.MarketPrompts {
 
 func (b *Bot) generateDocs(ctx context.Context, job linkedInJob, jobDesc string) (resumePath, coverPath string) {
 	market := b.loadMarket()
-	profile := b.tailoredProfile(ctx, jobDesc, market)
+	profile := b.tailoredProfile(ctx, job.ID, jobDesc, market)
 	if b.cfg.Renderer == nil || profile == nil {
 		return
 	}
@@ -1246,7 +1263,7 @@ func (b *Bot) currentProfile() *domain.ResumeProfile {
 	return b.cfg.Profile
 }
 
-func (b *Bot) tailoredProfile(ctx context.Context, jobDesc string, market *resume.MarketPrompts) *domain.ResumeProfile {
+func (b *Bot) tailoredProfile(ctx context.Context, jobID, jobDesc string, market *resume.MarketPrompts) *domain.ResumeProfile {
 	profile := b.currentProfile()
 	if b.cfg.Tailor == nil || profile == nil {
 		return profile
@@ -1255,7 +1272,7 @@ func (b *Bot) tailoredProfile(ctx context.Context, jobDesc string, market *resum
 	if market != nil && market.TailoredPrompt != "" {
 		promptCtx = market.TailoredPrompt + "\n" + jobDesc
 	}
-	tailored, err := b.cfg.Tailor.TailorProfile(ctx, profile, promptCtx)
+	tailored, err := b.cfg.Tailor.TailorProfile(b.llmCtx(ctx, "tailor resume", jobID), profile, promptCtx)
 	if err != nil {
 		log.Warn().Err(err).Msg("linkedin: tailoring failed, using base profile")
 		return profile
@@ -1271,7 +1288,7 @@ func (b *Bot) generateCoverLetter(ctx context.Context, profile *domain.ResumePro
 	if market != nil && market.CoverLetterPrompt != "" {
 		promptCtx = market.CoverLetterPrompt + "\n" + jobDesc
 	}
-	body, err := b.cfg.Tailor.WriteCoverLetter(ctx, profile, promptCtx)
+	body, err := b.cfg.Tailor.WriteCoverLetter(b.llmCtx(ctx, "cover letter", job.ID), profile, promptCtx)
 	if err != nil {
 		return ""
 	}

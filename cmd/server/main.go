@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"net/http"
 	"os"
@@ -19,7 +20,10 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/llmpolicy"
+	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
+	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/resume"
 	jobws "github.com/user/jobifai/internal/ws"
 	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
@@ -114,8 +118,21 @@ func main() {
 	browserMgr := browser.NewManager()
 	sessionStore := browser.NewSessionStore(database, secretsStore)
 
+	catalog := pricing.DefaultCatalog()
+	policyStore := &llmpolicy.Store{DB: database}
+	usageLedger := &usage.Ledger{
+		DB:      database,
+		Catalog: catalog,
+		Quota:   quotaSvc,
+		Defaults: func() domain.QuotaDefaults {
+			return quotaSvc.LoadDefaults()
+		},
+	}
+	usageStore := llm.NewUserUsageStore()
+	quotaSvc.SetPricingCatalog(catalog)
+
 	// ── LLM deps (nil if no API key stored yet) ─────────────────────────
-	extractor, tailor, renderer, llmClient := buildLLMDeps("__default__", cfgStore, secretsStore, nil, nil)
+	extractor, tailor, renderer, llmClient := buildLLMDeps("__default__", cfgStore, secretsStore, usageStore.For("__default__"), quotaSvc, usageLedger, policyStore, catalog)
 
 	// ── Bot manager ──────────────────────────────────────────────────────
 	var botTailor bot.ResumeTailor
@@ -129,24 +146,18 @@ func main() {
 	if llmClient != nil {
 		var gs domain.GeneralSettings
 		_ = cfgStore.Get("__default__", "general_settings", &gs)
-		tm := gs.LLM.TaskModels
-		botScorer = resume.NewScorer(taskClient(llmClient, tm, "scoring"))
-		botHalalChecker = resume.NewHalalChecker(taskClient(llmClient, tm, "halal"))
+		if scoreC, err := taskApply(llmClient, gs, policyStore, catalog, "scoring"); err == nil {
+			botScorer = resume.NewScorer(scoreC)
+		}
+		if halalC, err := taskApply(llmClient, gs, policyStore, catalog, "halal"); err == nil {
+			botHalalChecker = resume.NewHalalChecker(halalC)
+		}
 	}
 	botMgr := bot.NewManager(shutdownCtx, database, cfgStore, secretsStore, sessionStore, botTailor, botScorer, botHalalChecker, botRenderer, "resume_markets")
 
-	// ── Usage tracking ───────────────────────────────────────────────────
-	usageStore := llm.NewUserUsageStore()
-	usageStore.OnAdd = func(userID, model string, input, output int64, calls int) {
-		if err := db.IncrementUsage(database, userID, model, input, output, calls); err != nil {
-			log.Error().Err(err).Str("user_id", userID).Msg("persist usage")
-		}
-		if err := quotaSvc.RecordLLM(context.Background(), userID, model, input, output); err != nil {
-			log.Error().Err(err).Str("user_id", userID).Msg("quota record")
-		}
-	}
 	botMgr.SetSessionQuota(quotaSvc)
 	botMgr.SetLLMQuota(quotaSvc)
+	botMgr.SetLLMBilling(policyStore, catalog, usageLedger)
 
 	// ── Router ──────────────────────────────────────────────────────────
 	svc := &handler.Services{
@@ -200,32 +211,44 @@ func main() {
 		Quota:        quotaSvc,
 		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
 		LLMFactory: func(userID string) (handler.ResumeExtractor, handler.ResumeTailor) {
-			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
+			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog)
 			return e, t
 		},
 		EvaluatorFactory: func(userID string) handler.JobEvaluator {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog)
 			if client == nil {
 				return nil
 			}
 			gs := config.ResolveOperationalSettings(cfgStore, userID)
-			return resume.NewScorer(taskClient(client, gs.LLM.TaskModels, "scoring"))
+			scoreC, err := taskApply(client, gs, policyStore, catalog, "scoring")
+			if err != nil {
+				return nil
+			}
+			return resume.NewScorer(scoreC)
 		},
 		HalalCheckerFactory: func(userID string) handler.JobHalalChecker {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog)
 			if client == nil {
 				return nil
 			}
 			gs := config.ResolveOperationalSettings(cfgStore, userID)
-			return resume.NewHalalChecker(taskClient(client, gs.LLM.TaskModels, "halal"))
+			halalC, err := taskApply(client, gs, policyStore, catalog, "halal")
+			if err != nil {
+				return nil
+			}
+			return resume.NewHalalChecker(halalC)
 		},
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog)
 			if client == nil {
 				return nil
 			}
 			gs := config.ResolveOperationalSettings(cfgStore, userID)
-			return resume.NewQuestionAnswerer(taskClient(client, gs.LLM.TaskModels, "questions"))
+			qC, err := taskApply(client, gs, policyStore, catalog, "questions")
+			if err != nil {
+				return nil
+			}
+			return resume.NewQuestionAnswerer(qC)
 		},
 	}
 	router := handler.NewRouter(svc)
@@ -266,7 +289,7 @@ func main() {
 // userID scopes the config/secrets lookup; pass "__default__" for startup bootstrapping.
 // Extractor/Tailor/Client are nil if no API key is saved yet.
 // tracker is optional; if non-nil the returned client will accumulate token usage into it.
-func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
+func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard, ledger *usage.Ledger, policyStore *llmpolicy.Store, catalog *pricing.Catalog) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
 	renderer := resume.NewPDFRenderer("resume_style")
 
 	gs := config.ResolveOperationalSettings(cfgStore, userID)
@@ -275,29 +298,53 @@ func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.Secrets
 		return nil, nil, renderer, nil
 	}
 
-	client := llm.New(gs.LLM, apiKey)
+	client := llm.New(gs.LLM, apiKey).WithUserID(userID)
 	if tracker != nil {
 		client = client.WithTracker(tracker)
 	}
 	if quotaGuard != nil && userID != "" && userID != "__default__" {
 		client = client.WithQuota(quotaGuard, userID)
 	}
-	tm := gs.LLM.TaskModels
-	tailor := resume.NewTailor(
-		taskClient(client, tm, "tailoring"),
-		taskClient(client, tm, "cover_letter"),
-		taskClient(client, tm, "form_filling"),
-	)
-	return resume.NewExtractor(client), tailor, renderer, client
+	if ledger != nil {
+		client = client.WithBilling(llm.BillingHooks{Ledger: ledger})
+	}
+	extractC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskResumeExtract, userID)
+	tailorC := taskApplyWithFallback(client, gs, policyStore, catalog, "tailoring", userID)
+	coverC := taskApplyWithFallback(client, gs, policyStore, catalog, "cover_letter", userID)
+	formC := taskApplyWithFallback(client, gs, policyStore, catalog, "form_filling", userID)
+	tailor := resume.NewTailor(tailorC, coverC, formC)
+	return resume.NewExtractor(extractC), tailor, renderer, client
 }
 
-// taskClient returns a client with model/token overrides for the given task key,
-// or the base client if no override is configured.
-func taskClient(base *llm.Client, tm map[string]domain.TaskModel, task string) *llm.Client {
-	if m, ok := tm[task]; ok && m.Model != "" {
-		return base.WithModel(m.Model, m.MaxTokens)
+// taskApplyWithFallback uses the base client for legacy/user misconfiguration only.
+// Invalid approved system policies fail loudly (HTTP handlers may still fall back to base).
+func taskApplyWithFallback(base *llm.Client, gs domain.GeneralSettings, policyStore *llmpolicy.Store, catalog *pricing.Catalog, task, userID string) *llm.Client {
+	c, err := taskApply(base, gs, policyStore, catalog, task)
+	if err != nil {
+		if errors.Is(err, llmpolicy.ErrApprovedPolicy) {
+			log.Error().Err(err).Str("event", "approved_task_policy_invalid").Str("user_id", userID).Str("task", task).
+				Msg("approved task policy invalid; refusing task override (using base client for this request)")
+		} else {
+			log.Error().Err(err).Str("user_id", userID).Str("task", task).Msg("task model resolution failed; using base LLM client")
+		}
+		return base
 	}
-	return base
+	if c == nil {
+		return base
+	}
+	return c
+}
+
+func taskApply(base *llm.Client, gs domain.GeneralSettings, policyStore *llmpolicy.Store, catalog *pricing.Catalog, task string) (*llm.Client, error) {
+	var pol *domain.TaskModelPolicyRow
+	if policyStore != nil {
+		p, err := policyStore.ApprovedPolicy(task)
+		if err != nil {
+			return nil, err
+		}
+		pol = p
+	}
+	return llmpolicy.ApplyTask(base, gs.LLM, gs.LLM.TaskModels, pol, catalog, task)
 }
 
 // usageStoreAdapter adapts *llm.UserUsageStore to the handler.UsageStore interface.

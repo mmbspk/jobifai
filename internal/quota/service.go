@@ -8,6 +8,7 @@ import (
 
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/pricing"
 )
 
 // Service enforces credit-based AI quotas (trial + starter/pro subscriptions).
@@ -15,9 +16,15 @@ type Service struct {
 	db    *sql.DB
 	cfg   settingsKV
 	users *auth.UserStore
+	catalog *pricing.Catalog
 
 	mu       sync.Mutex
 	sessions map[string]*graceSession
+}
+
+// SetPricingCatalog wires authoritative model pricing for pre-call estimates.
+func (s *Service) SetPricingCatalog(c *pricing.Catalog) {
+	s.catalog = c
 }
 
 type graceSession struct {
@@ -62,17 +69,7 @@ func (s *Service) getOrCreateRow(userID string) (domain.UserQuotaRow, error) {
 }
 
 func (s *Service) applyOverrides(userID string, row domain.UserQuotaRow) domain.UserQuotaRow {
-	o := loadOverrides(s.cfg, userID)
-	if o.EnforcementEnabled != nil {
-		row.EnforcementEnabled = *o.EnforcementEnabled
-	}
-	if o.TrialCredits != nil && row.Plan == domain.QuotaPlanTrial {
-		row.TrialRemainingCredits = int64(*o.TrialCredits)
-	}
-	if o.PeriodAllowanceCredits != nil && row.Plan != domain.QuotaPlanTrial {
-		row.PeriodAllowanceCredits = *o.PeriodAllowanceCredits
-	}
-	return row
+	return applyOverridesToRow(row, loadOverrides(s.cfg, userID))
 }
 
 // InitTrial creates a trial quota row if one does not exist.
@@ -112,7 +109,7 @@ func (s *Service) totalRemaining(row domain.UserQuotaRow) int64 {
 	return m + row.TopUpCreditsRemaining
 }
 
-func (s *Service) fillStatus(st *domain.QuotaStatus, row domain.UserQuotaRow, def domain.QuotaDefaults) {
+func (s *Service) fillStatus(st *domain.QuotaStatus, row domain.UserQuotaRow, def domain.QuotaDefaults, overrides domain.QuotaUserOverrides) {
 	st.EnforcementEnabled = row.EnforcementEnabled
 	st.Plan = row.Plan
 	st.OverageDebtCredits = row.OverageDebtCredits
@@ -123,8 +120,9 @@ func (s *Service) fillStatus(st *domain.QuotaStatus, row domain.UserQuotaRow, de
 	if row.Plan == domain.QuotaPlanTrial {
 		st.TrialRemainingCredits = &row.TrialRemainingCredits
 		st.TrialEndsAt = rfc3339(row.TrialEndsAt)
-		st.AllowanceCredits = int64(def.TrialCredits)
-		used := int64(def.TrialCredits) - row.TrialRemainingCredits
+		allowance := effectiveTrialAllowance(def, overrides)
+		st.AllowanceCredits = allowance
+		used := allowance - row.TrialRemainingCredits
 		if used < 0 {
 			used = 0
 		}
@@ -174,12 +172,13 @@ func (s *Service) Status(_ context.Context, userID string) (domain.QuotaStatus, 
 		return domain.QuotaStatus{}, err
 	}
 	def := loadDefaults(s.cfg)
+	overrides := loadOverrides(s.cfg, userID)
 	var st domain.QuotaStatus
 	if !row.EnforcementEnabled {
 		st.Unlimited = true
 		return st, nil
 	}
-	s.fillStatus(&st, row, def)
+	s.fillStatus(&st, row, def, overrides)
 	return st, nil
 }
 
@@ -197,6 +196,9 @@ func (s *Service) BeforeLLM(_ context.Context, userID, model string, estInput, e
 	}
 	def := loadDefaults(s.cfg)
 	est := EstimateBurnCredits(def, model, estInput, estOutput)
+	if s.catalog != nil {
+		est = EstimateBurnCreditsCatalog(def, s.catalog, model, estInput, estOutput)
+	}
 	if est <= 0 {
 		est = 1
 	}
@@ -245,6 +247,36 @@ func (s *Service) deductPaid(row *domain.UserQuotaRow, burn int64) {
 	if row.TopUpCreditsRemaining < 0 {
 		row.TopUpCreditsRemaining = 0
 	}
+}
+
+// RecordLLMBurn deducts a pre-calculated credit amount (from usage ledger).
+func (s *Service) RecordLLMBurn(_ context.Context, userID string, credits int64) error {
+	if credits <= 0 || s.isAdmin(userID) {
+		return nil
+	}
+	row, err := s.getOrCreateRow(userID)
+	if err != nil {
+		return err
+	}
+	if err := s.applyBurn(&row, credits); err != nil {
+		return err
+	}
+	return updateRow(s.db, row)
+}
+
+func (s *Service) applyBurn(row *domain.UserQuotaRow, credits int64) error {
+	if !row.EnforcementEnabled {
+		return nil
+	}
+	if row.Plan == domain.QuotaPlanTrial {
+		row.TrialRemainingCredits -= credits
+		if row.TrialRemainingCredits < 0 {
+			row.TrialRemainingCredits = 0
+		}
+		return nil
+	}
+	s.deductPaid(row, credits)
+	return nil
 }
 
 // RecordLLM deducts credits after a successful LLM call.
@@ -388,6 +420,19 @@ func (s *Service) SaveDefaults(d domain.QuotaDefaults) error {
 }
 
 func (s *Service) SaveUserOverrides(userID string, o domain.QuotaUserOverrides) error {
+	def := loadDefaults(s.cfg)
+	prev := loadOverrides(s.cfg, userID)
+	oldAllow := effectiveTrialAllowance(def, prev)
+	newAllow := effectiveTrialAllowance(def, o)
+	if oldAllow != newAllow {
+		row, err := getRow(s.db, userID)
+		if err == nil && row.Plan == domain.QuotaPlanTrial {
+			row.TrialRemainingCredits = reconcileTrialRemaining(row.TrialRemainingCredits, oldAllow, newAllow)
+			if err := updateRow(s.db, row); err != nil {
+				return err
+			}
+		}
+	}
 	return saveOverrides(s.cfg, userID, o)
 }
 

@@ -1,0 +1,110 @@
+package usage_test
+
+import (
+	"context"
+	"database/sql"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	appdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/pricing"
+	"github.com/user/jobifai/internal/quota"
+	"github.com/user/jobifai/internal/usage"
+)
+
+type stubQuota struct {
+	credits int64
+}
+
+func (s *stubQuota) RecordLLMBurn(_ context.Context, _ string, credits int64) error {
+	s.credits += credits
+	return nil
+}
+
+func (s *stubQuota) PrepareTransactionalBurn(_ string, credits int64) (quota.BurnPrepare, error) {
+	if credits <= 0 {
+		return quota.BurnPrepare{SkipBurn: true}, nil
+	}
+	return quota.BurnPrepare{}, nil
+}
+
+func (s *stubQuota) CommitTransactionalBurn(_ *sql.Tx, _ string, credits int64, prep quota.BurnPrepare) error {
+	if prep.SkipBurn {
+		return nil
+	}
+	s.credits += credits
+	return nil
+}
+
+func TestLedger_RecordSuccessfulCall(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqldb, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	q := &stubQuota{}
+	ledger := &usage.Ledger{
+		DB:      sqldb,
+		Catalog: pricing.DefaultCatalog(),
+		Quota:   q,
+		Defaults: func() domain.QuotaDefaults {
+			return domain.QuotaDefaults{CreditsPerUSD: 1000, ServiceMarkup: 0.5, PerCallFeeUSD: 0.002}
+		},
+	}
+	err = ledger.Record(context.Background(), usage.RecordInput{
+		Call: domain.LLMCallContext{
+			Task:        domain.TaskJobScoring,
+			UserID:      "user-1",
+			JobID:       "job-1",
+			OperationID: "op-1",
+		},
+		Provider:  "claude",
+		Requested: "claude-sonnet-4-6",
+		Actual:    "claude-sonnet-4-6",
+		Tokens:    pricing.TokenUsage{InputTokens: 5000, OutputTokens: 500},
+		Success:   true,
+		LogicalOp: true,
+	})
+	require.NoError(t, err)
+	require.Greater(t, q.credits, int64(0))
+
+	var n int
+	require.NoError(t, sqldb.QueryRow(`SELECT COUNT(*) FROM llm_usage_events WHERE user_id='user-1'`).Scan(&n))
+	require.Equal(t, 1, n)
+}
+
+func TestLedger_PropagatesRunAndJobIDs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqldb, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	ledger := &usage.Ledger{
+		DB:      sqldb,
+		Catalog: pricing.DefaultCatalog(),
+		Quota:   &stubQuota{},
+	}
+	err = ledger.Record(context.Background(), usage.RecordInput{
+		Call: domain.LLMCallContext{
+			Task:            domain.TaskJobScoring,
+			UserID:          "user-1",
+			JobID:           "job-99",
+			AutomationRunID: "run-abc",
+			OperationID:     "op-99",
+		},
+		Provider:  "claude",
+		Requested: "claude-sonnet-4-6",
+		Actual:    "claude-sonnet-4-6",
+		Tokens:    pricing.TokenUsage{InputTokens: 100, OutputTokens: 10},
+		Success:   true,
+		LogicalOp: true,
+	})
+	require.NoError(t, err)
+
+	var jobID, runID string
+	require.NoError(t, sqldb.QueryRow(`SELECT COALESCE(job_id,''), COALESCE(automation_run_id,'') FROM llm_usage_events LIMIT 1`).Scan(&jobID, &runID))
+	require.Equal(t, "job-99", jobID)
+	require.Equal(t, "run-abc", runID)
+}

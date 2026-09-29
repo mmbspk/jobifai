@@ -19,8 +19,11 @@ import (
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/llmpolicy"
+	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
+	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/scraper"
 )
 
@@ -63,6 +66,9 @@ type Manager struct {
 	applyInProgress  map[string]bool         // userID → AI Apply call in flight
 	quotaSessions    SessionQuota   // optional grace sessions for subscribers
 	llmQuota         quota.LLMGuard // optional cost enforcement on bot LLM calls
+	llmPolicy        *llmpolicy.Store
+	llmCatalog       *pricing.Catalog
+	usageLedger      *usage.Ledger
 }
 
 // SessionQuota coordinates subscriber grace sessions (see internal/quota).
@@ -79,6 +85,13 @@ func (m *Manager) SetSessionQuota(q SessionQuota) {
 // SetLLMQuota attaches quota checks to bot-side LLM clients.
 func (m *Manager) SetLLMQuota(g quota.LLMGuard) {
 	m.llmQuota = g
+}
+
+// SetLLMBilling wires task policy resolution and synchronous usage ledger for bot LLM clients.
+func (m *Manager) SetLLMBilling(store *llmpolicy.Store, catalog *pricing.Catalog, ledger *usage.Ledger) {
+	m.llmPolicy = store
+	m.llmCatalog = catalog
+	m.usageLedger = ledger
 }
 
 func NewManager(
@@ -709,21 +722,10 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		return nil, errors.New("no saved session for " + string(resolved) + ", log in via Settings → Secrets first")
 	}
 
-	// Build per-user LLM components respecting task-model overrides.
-	// Falls back to startup-time components when no API key is available.
-	tailor := m.tailor
-	scorer := m.scorer
-	var tracker *llm.UsageTracker
-	if client := m.userLLMClient(userID, gs); client != nil {
-		tracker = &llm.UsageTracker{}
-		client = client.WithTracker(tracker)
-		tm := gs.LLM.TaskModels
-		tailor = resume.NewTailor(
-			taskClient(client, tm, "tailoring"),
-			taskClient(client, tm, "cover_letter"),
-			taskClient(client, tm, "form_filling"),
-		)
-		scorer = resume.NewScorer(taskClient(client, tm, "scoring"))
+	runID := uuid.NewString()
+	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg := &Config{
@@ -741,11 +743,12 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		Cookies:       cookies,
 		Tailor:        tailor,
 		Scorer:        scorer,
-		HalalChecker:  m.halalCheckerFor(gs),
+		HalalChecker:  halal,
 		Renderer:      m.renderer,
 		DB:            m.db,
-		UserID:        userID,
-		RequireReview: gs.RequireReview,
+		UserID:          userID,
+		AutomationRunID: runID,
+		RequireReview:   gs.RequireReview,
 		MarketDir:     m.marketDir,
 		LLMTracker:    tracker,
 		Sessions:      m.sessions,
@@ -779,12 +782,44 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	return cfg, nil
 }
 
-// halalCheckerFor returns the halal checker when the setting is enabled, or nil.
-func (m *Manager) halalCheckerFor(gs domain.GeneralSettings) JobHalalChecker {
-	if gs.HalalJobFilter {
-		return m.halal
+// buildPerUserLLM constructs task-resolved LLM clients for one user session.
+// Returns startup defaults when no API key is available.
+func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings) (ResumeTailor, JobScorer, JobHalalChecker, *llm.UsageTracker, error) {
+	client := m.userLLMClient(userID, gs)
+	if client == nil {
+		var halal JobHalalChecker
+		if gs.HalalJobFilter {
+			halal = m.halal
+		}
+		return m.tailor, m.scorer, halal, nil, nil
 	}
-	return nil
+	tracker := &llm.UsageTracker{}
+	client = client.WithTracker(tracker)
+	tailorC, err := m.taskClient(client, gs, "tailoring")
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("tailoring task: %w", err)
+	}
+	coverC, err := m.taskClient(client, gs, "cover_letter")
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("cover_letter task: %w", err)
+	}
+	formC, err := m.taskClient(client, gs, "form_filling")
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("form_filling task: %w", err)
+	}
+	scoreC, err := m.taskClient(client, gs, "scoring")
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("scoring task: %w", err)
+	}
+	var halal JobHalalChecker
+	if gs.HalalJobFilter {
+		halalC, err := m.taskClient(client, gs, "halal")
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("halal task: %w", err)
+		}
+		halal = resume.NewHalalChecker(halalC)
+	}
+	return resume.NewTailor(tailorC, coverC, formC), resume.NewScorer(scoreC), halal, tracker, nil
 }
 
 // userLLMClient resolves the API key for userID and returns a ready client, or
@@ -795,19 +830,26 @@ func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.C
 	if err != nil || apiKey == "" {
 		return nil
 	}
-	client := llm.New(gs.LLM, apiKey)
+	client := llm.New(gs.LLM, apiKey).WithUserID(userID)
+	if m.usageLedger != nil {
+		client = client.WithBilling(llm.BillingHooks{Ledger: m.usageLedger})
+	}
 	if m.llmQuota != nil {
 		client = client.WithQuota(m.llmQuota, userID)
 	}
 	return client
 }
 
-// taskClient returns a client with model/token overrides for the given task key.
-func taskClient(base *llm.Client, tm map[string]domain.TaskModel, task string) *llm.Client {
-	if m, ok := tm[task]; ok && m.Model != "" {
-		return base.WithModel(m.Model, m.MaxTokens)
+func (m *Manager) taskClient(base *llm.Client, gs domain.GeneralSettings, task string) (*llm.Client, error) {
+	var pol *domain.TaskModelPolicyRow
+	if m.llmPolicy != nil {
+		p, err := m.llmPolicy.ApprovedPolicy(task)
+		if err != nil {
+			return nil, err
+		}
+		pol = p
 	}
-	return base
+	return llmpolicy.ApplyTask(base, gs.LLM, gs.LLM.TaskModels, pol, m.llmCatalog, task)
 }
 
 // setupBot loads user config and returns a ready Bot plus the resolved GeneralSettings.
@@ -831,19 +873,10 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		cookies = nil // Seek: getSeekBrowser handles session loading
 	}
 
-	tailor := m.tailor
-	scorer := m.scorer
-	var tracker *llm.UsageTracker
-	if client := m.userLLMClient(userID, gs); client != nil {
-		tracker = &llm.UsageTracker{}
-		client = client.WithTracker(tracker)
-		tm := gs.LLM.TaskModels
-		tailor = resume.NewTailor(
-			taskClient(client, tm, "tailoring"),
-			taskClient(client, tm, "cover_letter"),
-			taskClient(client, tm, "form_filling"),
-		)
-		scorer = resume.NewScorer(taskClient(client, tm, "scoring"))
+	runID := uuid.NewString()
+	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs)
+	if err != nil {
+		return nil, gs, err
 	}
 
 	b := &Bot{
@@ -852,10 +885,11 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 			Settings:     gs,
 			Cookies:      cookies,
 			DB:           m.db,
-			UserID:       userID,
-			Tailor:       tailor,
+			UserID:          userID,
+			AutomationRunID: runID,
+			Tailor:          tailor,
 			Scorer:       scorer,
-			HalalChecker: m.halalCheckerFor(gs),
+			HalalChecker: halal,
 			Renderer:     m.renderer,
 			Profile:      &profile,
 			MarketDir:    m.marketDir,

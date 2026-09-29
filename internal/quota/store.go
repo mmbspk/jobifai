@@ -8,38 +8,48 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
-func getRow(db *sql.DB, userID string) (domain.UserQuotaRow, error) {
-	var row domain.UserQuotaRow
+func scanQuotaRow(row *sql.Row) (domain.UserQuotaRow, error) {
+	var r domain.UserQuotaRow
 	var periodStart, periodEnd, trialEnds sql.NullTime
 	var enforce int
-	err := db.QueryRow(`
-		SELECT user_id, plan, enforcement_enabled, trial_remaining_micro,
-		       period_allowance_micro, period_used_micro, period_start_at, period_end_at,
-		       overage_debt_micro, COALESCE(stripe_customer_id,''), COALESCE(stripe_subscription_id,''),
-		       trial_ends_at, topup_credits_remaining
-		FROM user_quota WHERE user_id = ?`, userID).Scan(
-		&row.UserID, &row.Plan, &enforce, &row.TrialRemainingCredits,
-		&row.PeriodAllowanceCredits, &row.PeriodUsedCredits, &periodStart, &periodEnd,
-		&row.OverageDebtCredits, &row.StripeCustomerID, &row.StripeSubscriptionID,
-		&trialEnds, &row.TopUpCreditsRemaining,
+	err := row.Scan(
+		&r.UserID, &r.Plan, &enforce, &r.TrialRemainingCredits,
+		&r.PeriodAllowanceCredits, &r.PeriodUsedCredits, &periodStart, &periodEnd,
+		&r.OverageDebtCredits, &r.StripeCustomerID, &r.StripeSubscriptionID,
+		&trialEnds, &r.TopUpCreditsRemaining,
 	)
 	if err != nil {
 		return domain.UserQuotaRow{}, err
 	}
-	row.EnforcementEnabled = enforce != 0
+	r.EnforcementEnabled = enforce != 0
 	if periodStart.Valid {
 		t := periodStart.Time
-		row.PeriodStart = &t
+		r.PeriodStart = &t
 	}
 	if periodEnd.Valid {
 		t := periodEnd.Time
-		row.PeriodEnd = &t
+		r.PeriodEnd = &t
 	}
 	if trialEnds.Valid {
 		t := trialEnds.Time
-		row.TrialEndsAt = &t
+		r.TrialEndsAt = &t
 	}
-	return row, nil
+	return r, nil
+}
+
+const quotaSelectSQL = `
+		SELECT user_id, plan, enforcement_enabled, trial_remaining_micro,
+		       period_allowance_micro, period_used_micro, period_start_at, period_end_at,
+		       overage_debt_micro, COALESCE(stripe_customer_id,''), COALESCE(stripe_subscription_id,''),
+		       trial_ends_at, topup_credits_remaining
+		FROM user_quota WHERE user_id = ?`
+
+func getRow(db *sql.DB, userID string) (domain.UserQuotaRow, error) {
+	return scanQuotaRow(db.QueryRow(quotaSelectSQL, userID))
+}
+
+func getRowTx(tx *sql.Tx, userID string) (domain.UserQuotaRow, error) {
+	return scanQuotaRow(tx.QueryRow(quotaSelectSQL, userID))
 }
 
 func insertTrialRow(db *sql.DB, userID string, trialCredits int64, trialEnds time.Time, enforce bool) error {
@@ -54,7 +64,9 @@ func insertTrialRow(db *sql.DB, userID string, trialCredits int64, trialEnds tim
 	return err
 }
 
-func updateRow(db *sql.DB, row domain.UserQuotaRow) error {
+func updateRowTx(exec interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}, row domain.UserQuotaRow) error {
 	en := 0
 	if row.EnforcementEnabled {
 		en = 1
@@ -69,7 +81,7 @@ func updateRow(db *sql.DB, row domain.UserQuotaRow) error {
 	if row.TrialEndsAt != nil {
 		te = *row.TrialEndsAt
 	}
-	_, err := db.Exec(`
+	_, err := exec.Exec(`
 		UPDATE user_quota SET
 			plan = ?, enforcement_enabled = ?, trial_remaining_micro = ?,
 			period_allowance_micro = ?, period_used_micro = ?,
@@ -86,6 +98,10 @@ func updateRow(db *sql.DB, row domain.UserQuotaRow) error {
 		te, row.TopUpCreditsRemaining,
 		row.UserID)
 	return err
+}
+
+func updateRow(db *sql.DB, row domain.UserQuotaRow) error {
+	return updateRowTx(db, row)
 }
 
 func nullIfEmpty(s string) any {

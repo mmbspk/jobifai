@@ -188,6 +188,9 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/api/usage/totals", usage.Totals)
 			r.Get("/api/admin/quota/defaults", adminH.QuotaDefaultsGet)
 			r.Put("/api/admin/quota/defaults", adminH.QuotaDefaultsSet)
+			r.Get("/api/admin/economics/overview", adminH.EconomicsOverview)
+			r.Get("/api/admin/economics/tasks", adminH.EconomicsTasks)
+			r.Get("/api/admin/economics/application/{job_id}", adminH.EconomicsApplication)
 		})
 	})
 
