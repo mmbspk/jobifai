@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/user/jobifai/internal/eval/runmeta"
 )
 
 type runCompletion struct {
@@ -67,6 +69,17 @@ func WaitForRunWithDiagnostics(db *sql.DB, id string, timeout time.Duration) err
 	defer cancel()
 	if err := WaitForRun(ctx, id); err != nil {
 		return fmt.Errorf("%w: %s", err, RunDiagnostics(db, id))
+	}
+	var status string
+	var planned, completed int
+	if err := db.QueryRow(`SELECT status, cases_planned, cases_completed FROM model_eval_runs WHERE id=?`, id).
+		Scan(&status, &planned, &completed); err != nil {
+		return fmt.Errorf("load run after async wait: %w: %s", err, RunDiagnostics(db, id))
+	}
+	switch status {
+	case runmeta.StatusCompleted, runmeta.StatusFailed, runmeta.StatusCancelled, runmeta.StatusBudgetExhausted:
+	default:
+		return fmt.Errorf("run still non-terminal status %q: %s", status, RunDiagnostics(db, id))
 	}
 	return nil
 }

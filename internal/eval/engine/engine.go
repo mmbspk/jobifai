@@ -72,6 +72,7 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 		baseline = candidate.Spec{Provider: run.BaselineProvider, Model: run.BaselineModel, Effort: run.BaselineEffort}
 	}
 	all := append([]candidate.Spec{baseline}, cands...)
+	workTotal := len(bundle.Cases) * len(all)
 	concurrency := s.Config.MaxConcurrency
 	if concurrency <= 0 {
 		concurrency = 3
@@ -120,7 +121,7 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 				if persistErr != nil {
 					return
 				}
-				if err := s.insertResult(ctx, runID, spec, c, obs, err == nil, vr); err != nil {
+				if err := s.insertResult(context.WithoutCancel(ctx), runID, spec, c, obs, err == nil, vr); err != nil {
 					persistErr = err
 					return
 				}
@@ -164,6 +165,9 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 		finalStatus = runmeta.StatusCancelled
 	} else if stopScheduling && budget > 0 && spent >= budget {
 		finalStatus = runmeta.StatusBudgetExhausted
+	}
+	if finalStatus == runmeta.StatusCompleted && completed != workTotal {
+		return s.failRun(ctx, runID, fmt.Errorf("completed %d of %d planned case executions", completed, workTotal))
 	}
 	baseM := metricsFromAcc(aggregates[baseline.ID()])
 	var candMetrics []recommend.Metrics

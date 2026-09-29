@@ -74,6 +74,7 @@ func (s *Service) CreateRun(ctx context.Context, p RunParams) (string, error) {
 			ctx2, cancel := context.WithCancel(context.Background())
 			Runs.Register(id, cancel)
 			defer func() {
+				cancel()
 				Runs.Unregister(id)
 				completeRun(id)
 			}()

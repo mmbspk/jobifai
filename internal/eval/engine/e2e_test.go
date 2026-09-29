@@ -49,7 +49,6 @@ func TestEvalE2E_FakeRunCannotApprovePolicy(t *testing.T) {
 }
 
 func TestEvalE2E_AsyncExecuteRunCompletes(t *testing.T) {
-	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	sqldb, err := appdb.Open(dbPath)
 	require.NoError(t, err)
@@ -65,7 +64,15 @@ func TestEvalE2E_AsyncExecuteRunCompletes(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, engine.WaitForRunWithDiagnostics(sqldb, id, 60*time.Second))
+
+	var status string
 	var completed, planned int
-	require.NoError(t, sqldb.QueryRow(`SELECT cases_completed, cases_planned FROM model_eval_runs WHERE id=?`, id).Scan(&completed, &planned))
-	require.Equal(t, planned, completed)
+	require.NoError(t, sqldb.QueryRow(`SELECT status, cases_completed, cases_planned FROM model_eval_runs WHERE id=?`, id).
+		Scan(&status, &completed, &planned), engine.RunDiagnostics(sqldb, id))
+	require.Equal(t, runmeta.StatusCompleted, status, engine.RunDiagnostics(sqldb, id))
+	require.Equal(t, planned, completed, engine.RunDiagnostics(sqldb, id))
+
+	var resultRows int
+	require.NoError(t, sqldb.QueryRow(`SELECT COUNT(*) FROM model_eval_results WHERE eval_run_id=?`, id).Scan(&resultRows))
+	require.Equal(t, planned, resultRows, engine.RunDiagnostics(sqldb, id))
 }
