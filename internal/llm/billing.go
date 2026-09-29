@@ -29,6 +29,7 @@ type UsageObservation struct {
 type BillingHooks struct {
 	Ledger       *usage.Ledger
 	Catalog      *pricing.Catalog         // optional; used for eval cost when Ledger is nil
+	EvalPrice    func(model string) (pricing.LookupResult, error)
 	EvalObserver func(UsageObservation) // optional; never writes llm_usage_events
 }
 
@@ -61,8 +62,17 @@ func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int
 			cat = c.billing.Ledger.Catalog
 		}
 		if cat != nil {
-			if res, err := cat.Resolve(bu.ActualModel, false); err == nil {
+			res, err := cat.Resolve(bu.ActualModel, true)
+			if err == nil && res.Known && !res.UsedFallback {
 				rawMicro = pricing.RawCostMicroUSD(res.Record, bu.TokenUsage)
+			} else if c.billing.EvalPrice != nil {
+				if er, e2 := c.billing.EvalPrice(bu.ActualModel); e2 == nil {
+					rawMicro = pricing.RawCostMicroUSD(er.Record, bu.TokenUsage)
+				}
+			}
+		} else if c.billing.EvalPrice != nil {
+			if er, e2 := c.billing.EvalPrice(bu.ActualModel); e2 == nil {
+				rawMicro = pricing.RawCostMicroUSD(er.Record, bu.TokenUsage)
 			}
 		}
 		c.billing.EvalObserver(UsageObservation{

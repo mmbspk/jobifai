@@ -1,5 +1,5 @@
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Full name","type":"text"}]},"id":"form_vision-0001","input":{"fixture_png":"text_input.png"},"task":"form_vision"}
-{"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Cover note","type":"textarea"}]},"id":"form_vision-0002","input":{"fixture_png":"textarea.png"},"task":"form_vision"}
+{"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Cover note","type":"text"}]},"id":"form_vision-0002","input":{"fixture_png":"textarea.png"},"task":"form_vision"}
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":["Australia","New Zealand"],"question":"Country","type":"select"}]},"id":"form_vision-0003","input":{"fixture_png":"select.png"},"task":"form_vision"}
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":["Yes","No"],"question":"Work authorization","type":"radio"}]},"id":"form_vision-0004","input":{"fixture_png":"radio_group.png"},"task":"form_vision"}
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Email","type":"text"},{"options":[],"question":"Phone","type":"text"}]},"id":"form_vision-0005","input":{"fixture_png":"multi_field.png"},"task":"form_vision"}
@@ -11,7 +11,7 @@
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"City","type":"text"},{"options":[],"question":"State","type":"text"}]},"id":"form_vision-0011","input":{"fixture_png":"two_column.png"},"task":"form_vision"}
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":["Email","E-mail"],"question":"Preferred contact","type":"radio"}]},"id":"form_vision-0012","input":{"fixture_png":"similar_options.png"},"task":"form_vision"}
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Full name","type":"text"}]},"id":"form_vision-0013","input":{"fixture_png":"text_input.png"},"task":"form_vision"}
-{"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Cover note","type":"textarea"}]},"id":"form_vision-0014","input":{"fixture_png":"textarea.png"},"task":"form_vision"}
+{"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Cover note","type":"text"}]},"id":"form_vision-0014","input":{"fixture_png":"textarea.png"},"task":"form_vision"}
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":["Australia","New Zealand"],"question":"Country","type":"select"}]},"id":"form_vision-0015","input":{"fixture_png":"select.png"},"task":"form_vision"}
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":["Yes","No"],"question":"Work authorization","type":"radio"}]},"id":"form_vision-0016","input":{"fixture_png":"radio_group.png"},"task":"form_vision"}
 {"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Email","type":"text"},{"options":[],"question":"Phone","type":"text"}]},"id":"form_vision-0017","input":{"fixture_png":"multi_field.png"},"task":"form_vision"}

@@ -23,6 +23,20 @@ func TestSyntheticFullDatasets_NoPlaceholders(t *testing.T) {
 			for _, c := range b.Cases {
 				require.NoError(t, ValidateCaseContent(c))
 			}
+			r := BuildQualityReport(b)
+			require.Greater(t, r.UniqueInputs, 0)
+			switch task {
+			case domain.TaskJobScoring:
+				require.NoError(t, AssertMinimumDiversity(b, 10))
+				require.Greater(t, r.ExpectPassCount, 0)
+				require.Greater(t, r.ExpectSkipCount, 0)
+			case domain.TaskEmploymentEthics:
+				require.NoError(t, AssertMinimumDiversity(b, 15))
+			case domain.TaskFormAnswer:
+				require.NoError(t, AssertMinimumDiversity(b, 10))
+			case domain.TaskApplicationQuestions:
+				require.NoError(t, AssertMinimumDiversity(b, 5))
+			}
 			if task == domain.TaskFormVision {
 				for _, c := range b.Cases {
 					var in struct {

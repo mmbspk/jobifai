@@ -287,12 +287,23 @@ func (s *Service) insertResult(ctx context.Context, runID string, spec candidate
 }
 
 func (s *Service) insertRecommendation(ctx context.Context, runID string, rec recommend.Recommendation) error {
-	_, err := s.DB.ExecContext(ctx, `
+	base, err := recommend.MarshalJSON(rec.Baseline)
+	if err != nil {
+		return err
+	}
+	cand, err := recommend.MarshalJSON(rec.Candidate)
+	if err != nil {
+		return err
+	}
+	metrics, err := recommend.MarshalJSON(rec.Metrics)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx, `
 		INSERT INTO model_eval_recommendations (id, eval_run_id, task, outcome, baseline_json, candidate_json, metrics_json, reason, deployable)
 		VALUES (?,?,?,?,?,?,?,?,?)`,
 		uuid.NewString(), runID, rec.Task, rec.Outcome,
-		recommend.MustJSON(rec.Baseline), recommend.MustJSON(rec.Candidate), recommend.MustJSON(rec.Metrics),
-		rec.Reason, boolInt(rec.Deployable),
+		base, cand, metrics, rec.Reason, boolInt(rec.Deployable),
 	)
 	return err
 }

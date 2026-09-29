@@ -137,8 +137,9 @@ func Aggregate(spec candidate.Spec, passes, successes, critical int, latencies [
 	if negDenom > 0 {
 		m.ScoringFalsePosRate = float64(scoringFP) / float64(negDenom)
 	}
-	if m.CaseCount > 0 {
-		m.ScoringAccuracy = float64(scoringTP+scoringTN) / float64(scoringTP+scoringTN+scoringFP+scoringFN)
+	classTotal := scoringTP + scoringTN + scoringFP + scoringFN
+	if classTotal > 0 {
+		m.ScoringAccuracy = float64(scoringTP+scoringTN) / float64(classTotal)
 	}
 	if scoringTP+scoringFP > 0 {
 		m.ScoringPrecision = float64(scoringTP) / float64(scoringTP+scoringFP)
@@ -165,7 +166,20 @@ func p90(v []int64) float64 {
 	return float64(cp[idx])
 }
 
+// MarshalJSON encodes recommendation payloads; errors must fail persistence.
+func MarshalJSON(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// MustJSON is deprecated for eval persistence; kept for tests only.
 func MustJSON(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
+	s, err := MarshalJSON(v)
+	if err != nil {
+		return ""
+	}
+	return s
 }

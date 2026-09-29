@@ -89,26 +89,27 @@ func validateJobScoring(output string, expect json.RawMessage, critical bool) Re
 	if exp.MaxScore > 0 && js.Score > exp.MaxScore {
 		res.Errors = append(res.Errors, fmt.Sprintf("score %d above max %d", js.Score, exp.MaxScore))
 	}
-	if exp.ExpectPass && js.Score < exp.PassThreshold {
+	predictedPass := js.Score >= exp.PassThreshold
+	if exp.ExpectPass && !predictedPass {
 		res.Errors = append(res.Errors, "false negative: expected pass")
 		res.CriticalFail = critical
 	}
-	if exp.ExpectSkip && js.Score >= exp.PassThreshold {
+	if exp.ExpectSkip && predictedPass {
 		res.Errors = append(res.Errors, "false positive: expected skip")
 	}
 	res.Pass = len(res.Errors) == 0
 	if res.Pass {
 		res.DeterministicScore = 1
 	}
-	res.Metrics = map[string]any{"score_in_range": res.Pass}
+	res.Metrics = map[string]any{"score_in_range": res.Pass, "predicted_pass": predictedPass}
 	switch {
-	case exp.ExpectPass && res.Pass:
+	case exp.ExpectPass && predictedPass:
 		res.Metrics["scoring_cell"] = "tp"
-	case exp.ExpectPass && !res.Pass:
+	case exp.ExpectPass && !predictedPass:
 		res.Metrics["scoring_cell"] = "fn"
-	case exp.ExpectSkip && res.Pass:
+	case exp.ExpectSkip && !predictedPass:
 		res.Metrics["scoring_cell"] = "tn"
-	case exp.ExpectSkip && !res.Pass:
+	case exp.ExpectSkip && predictedPass:
 		res.Metrics["scoring_cell"] = "fp"
 	}
 	return res

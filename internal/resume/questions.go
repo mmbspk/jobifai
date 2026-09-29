@@ -52,13 +52,17 @@ func NewQuestionAnswerer(client *llm.Client) *QuestionAnswerer {
 
 // AnswerQuestions sends all questions in a single LLM call and returns individual answers.
 func (qa *QuestionAnswerer) AnswerQuestions(ctx context.Context, profile *domain.ResumeProfile, jobContext string, questions []string) ([]domain.QuestionAnswer, error) {
-	sys, user, err := BuildApplicationQuestionsPrompt(profile, jobContext, questions)
+	qRaw := make([]json.RawMessage, len(questions))
+	for i, q := range questions {
+		qRaw[i], _ = json.Marshal(map[string]string{"text": q})
+	}
+	in, err := json.Marshal(map[string]any{"profile": profile, "job_context": jobContext, "questions": qRaw})
+	if err != nil {
+		return nil, fmt.Errorf("questions: marshal input: %w", err)
+	}
+	msgs, err := ProviderMessages(domain.TaskApplicationQuestions, in)
 	if err != nil {
 		return nil, fmt.Errorf("questions: build prompt: %w", err)
-	}
-	msgs := []llm.Message{
-		{Role: "system", Content: sys},
-		{Role: "user", Content: user},
 	}
 	raw, err := qa.client.Chat(llm.WithTask(ctx, "answer questions"), msgs)
 	if err != nil {

@@ -131,14 +131,15 @@ type promptData struct {
 // TailorProfile rewrites profile JSON targeting the given job description.
 // jobDesc may be prefixed with market instructions via the caller.
 func (t *Tailor) TailorProfile(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (*domain.ResumeProfile, error) {
-	prompt, err := BuildTailorPrompt(profile, jobDesc)
+	in, err := json.Marshal(map[string]any{"profile": profile, "job_description": jobDesc})
+	if err != nil {
+		return nil, fmt.Errorf("tailor: marshal input: %w", err)
+	}
+	msgs, err := ProviderMessages(domain.TaskResumeTailoring, in)
 	if err != nil {
 		return nil, fmt.Errorf("tailor: render prompt: %w", err)
 	}
-
-	raw, err := t.tailorClient.Chat(llm.WithTask(ctx, "tailor resume"), []llm.Message{
-		{Role: "user", Content: prompt},
-	})
+	raw, err := t.tailorClient.Chat(llm.WithTask(ctx, "tailor resume"), msgs)
 	if err != nil {
 		return nil, fmt.Errorf("tailor: llm: %w", err)
 	}
@@ -153,14 +154,15 @@ func (t *Tailor) TailorProfile(ctx context.Context, profile *domain.ResumeProfil
 
 // WriteCoverLetter generates a cover letter body for the profile + job description.
 func (t *Tailor) WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (string, error) {
-	prompt, err := BuildCoverLetterPrompt(profile, jobDesc)
+	in, err := json.Marshal(map[string]any{"profile": profile, "job_description": jobDesc})
+	if err != nil {
+		return "", fmt.Errorf("cover letter: marshal input: %w", err)
+	}
+	msgs, err := ProviderMessages(domain.TaskCoverLetter, in)
 	if err != nil {
 		return "", fmt.Errorf("cover letter: render prompt: %w", err)
 	}
-
-	body, err := t.coverClient.Chat(llm.WithTask(ctx, "cover letter"), []llm.Message{
-		{Role: "user", Content: prompt},
-	})
+	body, err := t.coverClient.Chat(llm.WithTask(ctx, "cover letter"), msgs)
 	if err != nil {
 		return "", fmt.Errorf("cover letter: llm: %w", err)
 	}
@@ -171,9 +173,12 @@ func (t *Tailor) WriteCoverLetter(ctx context.Context, profile *domain.ResumePro
 // profileJSON is a pre-serialized trimmed profile (caller caches this once per job session).
 // options is non-nil for radio/select questions; nil for free-text fields.
 func (t *Tailor) AnswerFormQuestion(ctx context.Context, profileJSON []byte, question string, options []string) (string, error) {
-	prompt := BuildFormAnswerPrompt(profileJSON, question, options)
-
-	answer, err := t.formAnswerClient.Chat(llm.WithTask(ctx, "form question"), []llm.Message{{Role: "user", Content: prompt}})
+	in, _ := json.Marshal(map[string]any{"profile_json": profileJSON, "question": question, "options": options})
+	msgs, err := ProviderMessages(domain.TaskFormAnswer, in)
+	if err != nil {
+		return "", fmt.Errorf("form answer: %w", err)
+	}
+	answer, err := t.formAnswerClient.Chat(llm.WithTask(ctx, "form question"), msgs)
 	if err != nil {
 		return "", fmt.Errorf("form answer: llm: %w", err)
 	}

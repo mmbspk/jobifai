@@ -85,86 +85,11 @@ func synthCase(task string, i int) map[string]any {
 	id := fmt.Sprintf("%s-%04d", task, i+1)
 	switch task {
 	case "job_scoring":
-		prof := professions[i%len(professions)]
-		seniority := []string{"junior", "mid", "senior", "lead"}[i%4]
-		pass := i%4 != 0
-		exp := map[string]any{"pass_threshold": 7}
-		if pass {
-			exp["expect_pass"] = true
-			exp["min_score"] = 7
-			exp["max_score"] = 10
-		} else {
-			exp["expect_skip"] = true
-			exp["max_score"] = 4
-		}
-		remote := i%3 == 0
-		arrange := "onsite"
-		if remote {
-			arrange = "remote"
-		}
-		return map[string]any{
-			"id": id, "task": task, "classification": "synthetic", "critical": pass,
-			"input": map[string]any{
-				"profile": map[string]any{
-					"skills": []string{prof, fmt.Sprintf("%s tooling", prof)},
-					"experience_details": []map[string]any{{
-						"position": fmt.Sprintf("%s %s", seniority, prof),
-						"company":  fmt.Sprintf("%s Partners %d", prof, i%7),
-						"employment_period": fmt.Sprintf("%d – Present", 2015+(i%8)),
-					}},
-				},
-				"job_description": fmt.Sprintf("%s %s role (%s, %s). Requires %s experience and qualification track %d.",
-					seniority, prof, arrange, []string{"Sydney", "Melbourne", "Brisbane", "Perth"}[i%4], prof, i%6),
-			},
-			"expect": exp,
-		}
+		return synthJobScoring(i)
 	case "employment_ethics":
-		scenarios := []struct {
-			title, company, desc, verdict string
-			critical                      bool
-		}{
-			{"Software Engineer", "City Hospital", "Maintain patient scheduling systems", "HALAL", true},
-			{"Loan Officer", "Retail Bank", "Set interest rates for consumer loans", "HARAM", true},
-			{"Logistics Coordinator", "Mixed Retail Group", "Warehouse operations for varied consumer goods", "DOUBTFUL", false},
-			{"Content Editor", "Media Studio", "Edit educational videos", "DOUBTFUL", false},
-		}
-		s := scenarios[i%len(scenarios)]
-		extra := []string{
-			"Operates outpatient clinics.", "Processes consumer lending.", "Mixed retail supply chain.", "Educational media production.",
-		}[i%4]
-		return map[string]any{
-			"id": id, "task": task, "classification": "synthetic", "critical": s.critical,
-			"input": map[string]any{
-				"title": s.title, "company": fmt.Sprintf("%s %d", s.company, i%5),
-				"description": s.desc + ". " + extra,
-			},
-			"expect": map[string]any{"verdict": s.verdict},
-		}
+		return synthEmploymentEthics(i)
 	case "form_answer":
-		questions := []struct {
-			q, exact string
-			opts     []string
-		}{
-			{"Are you authorized to work in this country?", "Yes", []string{"Yes", "No"}},
-			{"Do you require employer sponsorship?", "No", []string{"Yes", "No"}},
-			{"What is your notice period?", "4 weeks", nil},
-			{"How many years of project management experience do you have?", "7", nil},
-			{"Preferred phone number?", "+61400111222", nil},
-		}
-		qq := questions[i%len(questions)]
-		in := map[string]any{
-			"question": qq.q,
-			"profile_json": map[string]any{
-				"application_defaults": map[string]any{"requires_sponsorship": false, "notice_period": "4 weeks"},
-				"personal_information": map[string]any{"phone": "+61400111222"},
-				"experience_details":   []map[string]any{{"position": "Project Manager", "employment_period": "2017 – Present"}},
-			},
-		}
-		if len(qq.opts) > 0 {
-			in["options"] = qq.opts
-		}
-		exp := map[string]any{"exact": qq.exact}
-		return map[string]any{"id": id, "task": task, "classification": "synthetic", "input": in, "expect": exp}
+		return synthFormAnswer(i)
 	case "form_vision":
 		fx := formVisionFixtures[i%len(formVisionFixtures)]
 		return map[string]any{
@@ -228,30 +153,7 @@ func synthCase(task string, i int) map[string]any {
 			},
 		}
 	case "application_questions":
-		prof := professions[i%len(professions)]
-		qs := []map[string]any{
-			{"id": "auth", "text": "Are you authorized to work?"},
-			{"id": "years", "text": fmt.Sprintf("Years of %s experience?", prof)},
-			{"id": "reloc", "text": "Willing to relocate?"},
-		}
-		return map[string]any{
-			"id": id, "task": task, "classification": "synthetic", "critical": true,
-			"input": map[string]any{
-				"profile": map[string]any{
-					"personal_information": map[string]any{"full_name": fmt.Sprintf("Casey %s", prof)},
-					"experience_details":   []map[string]any{{"position": prof, "employment_period": "2016 – Present"}},
-				},
-				"questions": qs,
-			},
-			"expect": map[string]any{
-				"answer_count": 3,
-				"answers": []map[string]any{
-					{"question_id": "auth", "match": "exact", "value": "Yes"},
-					{"question_id": "years", "match": "contains", "contains": "2016"},
-					{"question_id": "reloc", "match": "exact", "value": "Yes", "max_words": 12},
-				},
-			},
-		}
+		return synthApplicationQuestions(i)
 	default:
 		panic("unknown task " + task)
 	}

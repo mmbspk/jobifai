@@ -8,25 +8,25 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
-func TestPromptParity_JobScoringEvalMatchesProduction(t *testing.T) {
+func TestPromptParity_ProviderMessagesMatchDirectBuilders(t *testing.T) {
 	t.Parallel()
 	prof := domain.ResumeProfile{
 		PersonalInformation: domain.PersonalInformation{Name: "Alex", Surname: "Example"},
 		ExperienceDetails:   []domain.ExperienceDetail{{Position: "Project Manager", Company: "Harbor Co"}},
 	}
 	job := "Project manager role coordinating regional programs."
-	p1, err := BuildJobScoringPrompt(&prof, job)
+	in, err := json.Marshal(map[string]any{"profile": prof, "job_description": job})
 	require.NoError(t, err)
-	p2, err := BuildJobScoringPrompt(&prof, job)
+	msgs, err := ProviderMessages(domain.TaskJobScoring, in)
 	require.NoError(t, err)
-	require.Equal(t, p1, p2)
-}
+	direct, err := BuildJobScoringPrompt(&prof, job)
+	require.NoError(t, err)
+	require.Equal(t, direct, msgs[0].Content)
 
-func TestPromptParity_FormAnswerStable(t *testing.T) {
-	t.Parallel()
 	profile := json.RawMessage(`{"personal_information":{"full_name":"Sam"}}`)
 	q := "Are you authorized to work?"
-	p1 := BuildFormAnswerPrompt(profile, q, []string{"Yes", "No"})
-	p2 := BuildFormAnswerPrompt(profile, q, []string{"Yes", "No"})
-	require.Equal(t, p1, p2)
+	faIn, _ := json.Marshal(map[string]any{"profile_json": profile, "question": q, "options": []string{"Yes", "No"}})
+	faMsgs, err := ProviderMessages(domain.TaskFormAnswer, faIn)
+	require.NoError(t, err)
+	require.Equal(t, BuildFormAnswerPrompt(profile, q, []string{"Yes", "No"}), faMsgs[0].Content)
 }

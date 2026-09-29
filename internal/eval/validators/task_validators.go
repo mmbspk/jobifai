@@ -178,18 +178,47 @@ func validateResumeExtract(output string, expect json.RawMessage, critical bool)
 	}
 	missing, wrong, invented := 0, 0, 0
 	outText := strings.ToLower(raw)
-	if exp.Personal.FullName != "" {
-		if !strings.Contains(outText, strings.ToLower(exp.Personal.FullName)) {
-			missing++
-			res.Errors = append(res.Errors, "missing name")
-		}
+	if exp.Personal.FullName != "" && !fieldPresent(outText, exp.Personal.FullName) {
+		missing++
+		res.Errors = append(res.Errors, "missing name")
+	}
+	if exp.Personal.Email != "" && !fieldPresent(outText, exp.Personal.Email) {
+		missing++
+		res.Errors = append(res.Errors, "missing email")
 	}
 	for _, e := range exp.Employers {
-		if e.Company != "" && !strings.Contains(outText, strings.ToLower(e.Company)) {
+		if e.Company != "" && !fieldPresent(outText, e.Company) {
 			missing++
+			res.Errors = append(res.Errors, "missing employer")
+		}
+		if e.Title != "" {
+			pos := positionAtCompany(prof, e.Company)
+			if pos == "" && !fieldPresent(outText, e.Title) {
+				missing++
+				res.Errors = append(res.Errors, "missing title")
+			} else if pos != "" && !titlesAlign(pos, e.Title) {
+				wrong++
+				res.Errors = append(res.Errors, "incorrect title")
+			} else if pos == "" && fieldPresent(outText, e.Title) && !titleMatches(prof, e.Title) {
+				wrong++
+				res.Errors = append(res.Errors, "incorrect title")
+			}
+		}
+		if e.Start != "" && !fieldPresent(outText, e.Start) {
+			wrong++
+			res.Errors = append(res.Errors, "incorrect start date")
+		}
+		if e.End != "" && !fieldPresent(outText, e.End) {
+			wrong++
+			res.Errors = append(res.Errors, "incorrect end date")
 		}
 	}
-	// invented: employers in output not in expect
+	for _, sk := range exp.Skills {
+		if sk != "" && !fieldPresent(outText, sk) {
+			missing++
+			res.Errors = append(res.Errors, "missing skill")
+		}
+	}
 	for _, ex := range prof.ExperienceDetails {
 		if ex.Company != "" && !employerExpected(ex.Company, exp.Employers) {
 			invented++
@@ -261,6 +290,11 @@ func validateResumeTailoring(output string, expect json.RawMessage, critical boo
 			res.Errors = append(res.Errors, "missing publication: "+pub)
 		}
 	}
+	for _, emp := range exp.RequiredEmployers {
+		if emp != "" && !strings.Contains(low, strings.ToLower(emp)) {
+			res.Errors = append(res.Errors, "missing employer: "+emp)
+		}
+	}
 	res.Pass = len(res.Errors) == 0
 	if res.Pass {
 		res.DeterministicScore = 1
@@ -312,7 +346,7 @@ func validateCoverLetter(output string, expect json.RawMessage, critical bool) R
 	if maxP == 0 {
 		maxP = 4
 	}
-	if paras < minP || paras > maxP+1 {
+	if paras < minP || paras > maxP {
 		res.Errors = append(res.Errors, fmt.Sprintf("expected %d-%d paragraphs, got %d", minP, maxP, paras))
 	}
 	if exp.MaxWords > 0 && wordCount(text) > exp.MaxWords {
@@ -359,6 +393,7 @@ func looksLikeLetterhead(s string) bool {
 type appQExpect struct {
 	AnswerCount int `json:"answer_count"`
 	Answers     []struct {
+		Question   string `json:"question"`
 		QuestionID string `json:"question_id"`
 		Match      string `json:"match"`
 		Value      string `json:"value"`
@@ -372,7 +407,10 @@ func validateApplicationQuestions(output string, expect json.RawMessage, critica
 	_ = json.Unmarshal(expect, &exp)
 	res := Result{Metrics: map[string]any{}}
 	raw := stripJSON(output)
-	var got []map[string]any
+	var got []struct {
+		Question string `json:"question"`
+		Answer   string `json:"answer"`
+	}
 	if err := json.Unmarshal([]byte(raw), &got); err != nil {
 		res.Errors = append(res.Errors, "invalid answers json")
 		if critical {
@@ -388,7 +426,14 @@ func validateApplicationQuestions(output string, expect json.RawMessage, critica
 			res.Errors = append(res.Errors, "missing answer slot")
 			continue
 		}
-		ans, _ := got[i]["answer"].(string)
+		wantQ := strings.TrimSpace(rule.Question)
+		if wantQ == "" {
+			wantQ = strings.TrimSpace(rule.QuestionID)
+		}
+		if wantQ != "" && normLabel(got[i].Question) != normLabel(wantQ) {
+			res.Errors = append(res.Errors, "question order/mapping mismatch")
+		}
+		ans := got[i].Answer
 		switch rule.Match {
 		case "exact":
 			if strings.TrimSpace(ans) != strings.TrimSpace(rule.Value) {
@@ -411,5 +456,35 @@ func validateApplicationQuestions(output string, expect json.RawMessage, critica
 		res.DeterministicScore = 1
 	}
 	return res
+}
+
+func fieldPresent(lowText, want string) bool {
+	return strings.Contains(lowText, strings.ToLower(strings.TrimSpace(want)))
+}
+
+func titleMatches(prof domain.ResumeProfile, wantTitle string) bool {
+	want := strings.ToLower(strings.TrimSpace(wantTitle))
+	for _, ex := range prof.ExperienceDetails {
+		if strings.Contains(strings.ToLower(ex.Position), want) || strings.Contains(want, strings.ToLower(ex.Position)) {
+			return true
+		}
+	}
+	return false
+}
+
+func positionAtCompany(prof domain.ResumeProfile, company string) string {
+	c := strings.ToLower(strings.TrimSpace(company))
+	for _, ex := range prof.ExperienceDetails {
+		if c != "" && strings.Contains(strings.ToLower(ex.Company), c) {
+			return ex.Position
+		}
+	}
+	return ""
+}
+
+func titlesAlign(got, want string) bool {
+	g := strings.ToLower(strings.TrimSpace(got))
+	w := strings.ToLower(strings.TrimSpace(want))
+	return g == w || strings.Contains(g, w) || strings.Contains(w, g)
 }
 

@@ -13,7 +13,7 @@ var formVisionFixtures = []struct {
 	fields []map[string]any
 }{
 	{"text_input.png", []map[string]any{{"type": "text", "question": "Full name", "options": []string{}}}},
-	{"textarea.png", []map[string]any{{"type": "textarea", "question": "Cover note", "options": []string{}}}},
+	{"textarea.png", []map[string]any{{"type": "text", "question": "Cover note", "options": []string{}}}},
 	{"select.png", []map[string]any{{"type": "select", "question": "Country", "options": []string{"Australia", "New Zealand"}}}},
 	{"radio_group.png", []map[string]any{{"type": "radio", "question": "Work authorization", "options": []string{"Yes", "No"}}}},
 	{"multi_field.png", []map[string]any{

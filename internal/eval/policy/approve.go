@@ -110,19 +110,21 @@ func (a *Approver) applyPolicyTx(ctx context.Context, task, evalRunID, adminID s
 	defer func() { _ = tx.Rollback() }()
 
 	var curProvider, curModel, curMode, curEffort string
-	var curMax int
+	var curMax, curTimeout int
+	var curMaxCost float64
 	var prevJSON sql.NullString
 	_ = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(provider,''), COALESCE(model,''), COALESCE(mode,''), COALESCE(max_tokens,0),
-		       COALESCE(effort,''), COALESCE(previous_json,'')
+		       COALESCE(effort,''), COALESCE(timeout_sec,0), COALESCE(max_cost_usd,0), COALESCE(previous_json,'')
 		FROM task_model_policies WHERE task=?`, task).Scan(
-		&curProvider, &curModel, &curMode, &curMax, &curEffort, &prevJSON)
+		&curProvider, &curModel, &curMode, &curMax, &curEffort, &curTimeout, &curMaxCost, &prevJSON)
 
 	prev := prevJSON.String
 	if curModel != "" {
 		b, _ := json.Marshal(domain.TaskModelPolicyRow{
 			Task: task, State: domain.PolicyStateApproved,
 			Provider: curProvider, Model: curModel, Mode: curMode, MaxTokens: curMax, Effort: curEffort,
+			TimeoutSec: curTimeout, MaxCostUSD: curMaxCost,
 		})
 		prev = string(b)
 	}
@@ -165,28 +167,31 @@ func (a *Approver) Rollback(ctx context.Context, task, adminID string) error {
 	defer func() { _ = tx.Rollback() }()
 
 	var curProvider, curModel, curMode, curEffort string
-	var curMax int
+	var curMax, curTimeout int
+	var curMaxCost float64
 	var prevJSON sql.NullString
 	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(provider,''), COALESCE(model,''), COALESCE(mode,''), COALESCE(max_tokens,0),
-		       COALESCE(effort,''), previous_json
+		       COALESCE(effort,''), COALESCE(timeout_sec,0), COALESCE(max_cost_usd,0), previous_json
 		FROM task_model_policies WHERE task=?`, task).Scan(
-		&curProvider, &curModel, &curMode, &curMax, &curEffort, &prevJSON)
+		&curProvider, &curModel, &curMode, &curMax, &curEffort, &curTimeout, &curMaxCost, &prevJSON)
 	if err != nil || !prevJSON.Valid || prevJSON.String == "" {
 		return fmt.Errorf("no previous policy to restore")
 	}
 	currentJSON, _ := json.Marshal(domain.TaskModelPolicyRow{
 		Task: task, State: domain.PolicyStateApproved,
 		Provider: curProvider, Model: curModel, Mode: curMode, MaxTokens: curMax, Effort: curEffort,
+		TimeoutSec: curTimeout, MaxCostUSD: curMaxCost,
 	})
 	var restore domain.TaskModelPolicyRow
 	if err := json.Unmarshal([]byte(prevJSON.String), &restore); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `
-		UPDATE task_model_policies SET state='approved', provider=?, model=?, max_tokens=?, effort=?,
-			previous_json=NULL, updated_at=CURRENT_TIMESTAMP WHERE task=?`,
-		restore.Provider, restore.Model, restore.MaxTokens, restore.Effort, task,
+		UPDATE task_model_policies SET state='approved', provider=?, model=?, mode=?, max_tokens=?, effort=?,
+			timeout_sec=?, max_cost_usd=?, previous_json=NULL, updated_at=CURRENT_TIMESTAMP WHERE task=?`,
+		restore.Provider, restore.Model, restore.Mode, restore.MaxTokens, restore.Effort,
+		restore.TimeoutSec, restore.MaxCostUSD, task,
 	)
 	if err != nil {
 		return err
