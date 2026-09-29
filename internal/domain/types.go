@@ -247,10 +247,16 @@ type ResumeProfile struct {
 // ─── Settings ──────────────────────────────────────────────────────────────
 
 // TaskModel overrides the model and token limit for a specific LLM task.
-// Keys: "scoring", "halal", "tailoring", "cover_letter", "form_filling".
+// Keys: "scoring", "halal", "tailoring", "cover_letter", "form_filling", "questions".
 type TaskModel struct {
-	Model     string `json:"model,omitempty"`
-	MaxTokens int    `json:"max_tokens,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	MaxTokens      int      `json:"max_tokens,omitempty"`
+	Effort         string   `json:"effort,omitempty"`
+	FallbackModels []string `json:"fallback_models,omitempty"`
+	Mode           string   `json:"mode,omitempty"` // pinned | recommended
+	MaxCostUSD     float64  `json:"max_cost_usd,omitempty"`
+	TimeoutSec     int      `json:"timeout_sec,omitempty"`
 }
 
 type LLMConfig struct {

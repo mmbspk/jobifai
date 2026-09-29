@@ -19,7 +19,9 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
+	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/resume"
 	jobws "github.com/user/jobifai/internal/ws"
 	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
@@ -114,8 +116,19 @@ func main() {
 	browserMgr := browser.NewManager()
 	sessionStore := browser.NewSessionStore(database, secretsStore)
 
+	catalog := pricing.DefaultCatalog()
+	usageLedger := &usage.Ledger{
+		DB:      database,
+		Catalog: catalog,
+		Quota:   quotaSvc,
+		Defaults: func() domain.QuotaDefaults {
+			return quotaSvc.LoadDefaults()
+		},
+	}
+	usageStore := llm.NewUserUsageStore()
+
 	// ── LLM deps (nil if no API key stored yet) ─────────────────────────
-	extractor, tailor, renderer, llmClient := buildLLMDeps("__default__", cfgStore, secretsStore, nil, nil)
+	extractor, tailor, renderer, llmClient := buildLLMDeps("__default__", cfgStore, secretsStore, usageStore.For("__default__"), quotaSvc, usageLedger)
 
 	// ── Bot manager ──────────────────────────────────────────────────────
 	var botTailor bot.ResumeTailor
@@ -135,16 +148,6 @@ func main() {
 	}
 	botMgr := bot.NewManager(shutdownCtx, database, cfgStore, secretsStore, sessionStore, botTailor, botScorer, botHalalChecker, botRenderer, "resume_markets")
 
-	// ── Usage tracking ───────────────────────────────────────────────────
-	usageStore := llm.NewUserUsageStore()
-	usageStore.OnAdd = func(userID, model string, input, output int64, calls int) {
-		if err := db.IncrementUsage(database, userID, model, input, output, calls); err != nil {
-			log.Error().Err(err).Str("user_id", userID).Msg("persist usage")
-		}
-		if err := quotaSvc.RecordLLM(context.Background(), userID, model, input, output); err != nil {
-			log.Error().Err(err).Str("user_id", userID).Msg("quota record")
-		}
-	}
 	botMgr.SetSessionQuota(quotaSvc)
 	botMgr.SetLLMQuota(quotaSvc)
 
@@ -200,11 +203,11 @@ func main() {
 		Quota:        quotaSvc,
 		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
 		LLMFactory: func(userID string) (handler.ResumeExtractor, handler.ResumeTailor) {
-			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
+			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger)
 			return e, t
 		},
 		EvaluatorFactory: func(userID string) handler.JobEvaluator {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger)
 			if client == nil {
 				return nil
 			}
@@ -212,7 +215,7 @@ func main() {
 			return resume.NewScorer(taskClient(client, gs.LLM.TaskModels, "scoring"))
 		},
 		HalalCheckerFactory: func(userID string) handler.JobHalalChecker {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger)
 			if client == nil {
 				return nil
 			}
@@ -220,7 +223,7 @@ func main() {
 			return resume.NewHalalChecker(taskClient(client, gs.LLM.TaskModels, "halal"))
 		},
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc)
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger)
 			if client == nil {
 				return nil
 			}
@@ -266,7 +269,7 @@ func main() {
 // userID scopes the config/secrets lookup; pass "__default__" for startup bootstrapping.
 // Extractor/Tailor/Client are nil if no API key is saved yet.
 // tracker is optional; if non-nil the returned client will accumulate token usage into it.
-func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
+func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard, ledger *usage.Ledger) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
 	renderer := resume.NewPDFRenderer("resume_style")
 
 	gs := config.ResolveOperationalSettings(cfgStore, userID)
@@ -281,6 +284,9 @@ func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.Secrets
 	}
 	if quotaGuard != nil && userID != "" && userID != "__default__" {
 		client = client.WithQuota(quotaGuard, userID)
+	}
+	if ledger != nil {
+		client = client.WithBilling(llm.BillingHooks{Ledger: ledger})
 	}
 	tm := gs.LLM.TaskModels
 	tailor := resume.NewTailor(

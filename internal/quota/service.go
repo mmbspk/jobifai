@@ -247,6 +247,29 @@ func (s *Service) deductPaid(row *domain.UserQuotaRow, burn int64) {
 	}
 }
 
+// RecordLLMBurn deducts a pre-calculated credit amount (from usage ledger).
+func (s *Service) RecordLLMBurn(_ context.Context, userID string, credits int64) error {
+	if credits <= 0 || s.isAdmin(userID) {
+		return nil
+	}
+	row, err := s.getOrCreateRow(userID)
+	if err != nil {
+		return err
+	}
+	if !row.EnforcementEnabled {
+		return nil
+	}
+	if row.Plan == domain.QuotaPlanTrial {
+		row.TrialRemainingCredits -= credits
+		if row.TrialRemainingCredits < 0 {
+			row.TrialRemainingCredits = 0
+		}
+		return updateRow(s.db, row)
+	}
+	s.deductPaid(&row, credits)
+	return updateRow(s.db, row)
+}
+
 // RecordLLM deducts credits after a successful LLM call.
 func (s *Service) RecordLLM(_ context.Context, userID, model string, input, output int64) error {
 	if s.isAdmin(userID) {

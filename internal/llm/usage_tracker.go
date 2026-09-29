@@ -19,9 +19,14 @@ type UsageTracker struct {
 	onAdd        func(userID, model string, input, output int64, calls int) // optional persist hook
 }
 
-// Add accumulates usage from a single call. No-op if u is nil.
+// Add accumulates in-memory usage. DB/quota persistence is handled by usage.Ledger via recordUsage.
 func (t *UsageTracker) Add(u *Usage, model string) {
-	if u == nil {
+	t.AddSync(u, model)
+}
+
+// AddSync updates in-memory totals only (DB persistence handled by usage.Ledger).
+func (t *UsageTracker) AddSync(u *Usage, model string) {
+	if t == nil || u == nil {
 		return
 	}
 	in := int64(u.InputTokens)
@@ -30,12 +35,8 @@ func (t *UsageTracker) Add(u *Usage, model string) {
 	t.inputTokens += in
 	t.outputTokens += out
 	t.calls++
-	onAdd := t.onAdd
-	userID := t.userID
 	t.mu.Unlock()
-	if onAdd != nil {
-		go onAdd(userID, model, in, out, 1)
-	}
+	_ = model
 }
 
 // Snapshot returns a point-in-time copy of the accumulated totals.

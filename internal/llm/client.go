@@ -29,14 +29,13 @@ type nonRetryableError struct{ err error }
 func (e *nonRetryableError) Error() string { return e.err.Error() }
 func (e *nonRetryableError) Unwrap() error { return e.err }
 
-// WithTask returns a context annotated with a task label shown in LLM log lines.
-func WithTask(ctx context.Context, task string) context.Context {
-	return context.WithValue(ctx, ctxKey{}, task)
-}
-
 func taskLabel(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKey{}).(string); ok && v != "" {
 		return " [" + v + "]"
+	}
+	call := CallContextFrom(ctx)
+	if call.Task != "" {
+		return " [" + call.Task + "]"
 	}
 	return ""
 }
@@ -53,6 +52,7 @@ type Client struct {
 	apiKey  string
 	httpCli *http.Client
 	tracker *UsageTracker // optional; if set, accumulates token usage per call
+	billing BillingHooks
 	guard   quota.LLMGuard
 	userID  string
 }
@@ -90,7 +90,7 @@ func (c *Client) WithModel(model string, maxTokens int) *Client {
 	if maxTokens > 0 {
 		cfg.MaxTokens = maxTokens
 	}
-	return &Client{cfg: cfg, apiKey: c.apiKey, httpCli: c.httpCli, tracker: c.tracker, guard: c.guard, userID: c.userID}
+	return &Client{cfg: cfg, apiKey: c.apiKey, httpCli: c.httpCli, tracker: c.tracker, billing: c.billing, guard: c.guard, userID: c.userID}
 }
 
 func (c *Client) checkQuota(ctx context.Context, estInputChars int, estOutputTokens int) error {
@@ -122,6 +122,9 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 	const maxAttempts = 3
 	var err error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		call := CallContextFrom(ctx)
+		call.Attempt = attempt
+		ctx = WithCallContext(ctx, call)
 		if attempt > 1 {
 			log.Warn().Msgf("llm: retry %d/%d after error: %v", attempt, maxAttempts, err)
 			time.Sleep(2 * time.Second)
@@ -183,6 +186,7 @@ type openaiUsage struct {
 }
 
 func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error) {
+	start := time.Now()
 	var system string
 	var turns []claudeMessage
 	for _, m := range msgs {
@@ -229,10 +233,21 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 	if len(cr.Content) == 0 {
 		return "", fmt.Errorf("claude: empty response")
 	}
-	if c.tracker != nil {
-		c.tracker.Add(&Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens}, c.cfg.Model)
-	}
-	log.Debug().Bool("llm_call", true).Msgf("llm: claude/%s%s ✓ in=%d out=%d", c.cfg.Model, taskLabel(ctx), cr.Usage.InputTokens, cr.Usage.OutputTokens)
+	u := &Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens}
+	c.recordUsage(ctx, c.cfg.Model, u, time.Since(start).Milliseconds(), true, "", true)
+	log.Info().
+		Str("event", "llm_call").
+		Str("task", CallContextFrom(ctx).Task).
+		Str("provider", c.cfg.Provider).
+		Str("requested_model", c.cfg.Model).
+		Str("actual_model", c.cfg.Model).
+		Int("input_tokens", u.InputTokens).
+		Int("output_tokens", u.OutputTokens).
+		Int64("duration_ms", time.Since(start).Milliseconds()).
+		Bool("success", true).
+		Str("job_id", CallContextFrom(ctx).JobID).
+		Str("run_id", CallContextFrom(ctx).AutomationRunID).
+		Msg("llm call completed")
 	return cr.Content[0].Text, nil
 }
 
@@ -240,6 +255,7 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 // prompt to Claude and returns the assistant reply. Only supported for the
 // Claude provider; all others return an error.
 func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt string) (string, error) {
+	start := time.Now()
 	if c.cfg.Provider != "claude" {
 		return "", fmt.Errorf("ChatWithImage: unsupported provider %q (claude only)", c.cfg.Provider)
 	}
@@ -311,10 +327,8 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 	if len(cr.Content) == 0 {
 		return "", fmt.Errorf("claude vision: empty response")
 	}
-	if c.tracker != nil {
-		c.tracker.Add(&Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens}, c.cfg.Model)
-	}
-	log.Debug().Bool("llm_call", true).Msgf("llm: claude/%s vision%s ✓ in=%d out=%d", c.cfg.Model, taskLabel(ctx), cr.Usage.InputTokens, cr.Usage.OutputTokens)
+	u := &Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens}
+	c.recordUsage(ctx, c.cfg.Model, u, time.Since(start).Milliseconds(), true, "", true)
 	return cr.Content[0].Text, nil
 }
 
@@ -344,6 +358,7 @@ type openaiResponse struct {
 }
 
 func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error) {
+	start := time.Now()
 	turns := make([]openaiMessage, len(msgs))
 	for i, m := range msgs {
 		turns[i] = openaiMessage(m)
@@ -375,10 +390,8 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error)
 	if len(or.Choices) == 0 {
 		return "", fmt.Errorf("openai: empty response")
 	}
-	if c.tracker != nil {
-		c.tracker.Add(&Usage{InputTokens: or.Usage.PromptTokens, OutputTokens: or.Usage.CompletionTokens}, c.cfg.Model)
-	}
-	log.Debug().Bool("llm_call", true).Msgf("llm: openai/%s%s ✓ in=%d out=%d", c.cfg.Model, taskLabel(ctx), or.Usage.PromptTokens, or.Usage.CompletionTokens)
+	u := &Usage{InputTokens: or.Usage.PromptTokens, OutputTokens: or.Usage.CompletionTokens}
+	c.recordUsage(ctx, c.cfg.Model, u, time.Since(start).Milliseconds(), true, "", true)
 	return or.Choices[0].Message.Content, nil
 }
 
