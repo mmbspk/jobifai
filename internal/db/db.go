@@ -29,9 +29,8 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	goose.SetBaseFS(migrations)
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return nil, fmt.Errorf("goose dialect: %w", err)
+	if err := initGoose(); err != nil {
+		return nil, fmt.Errorf("goose init: %w", err)
 	}
 	if err := goose.Up(db, "migrations"); err != nil {
 		return nil, fmt.Errorf("goose up: %w", err)

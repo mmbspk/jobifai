@@ -162,12 +162,43 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 		if err == nil {
 			return result, nil
 		}
+		if errors.Is(err, ErrBillingPersistFailed) {
+			return "", err
+		}
 		var nre *nonRetryableError
 		if errors.As(err, &nre) {
 			return "", nre.Unwrap()
 		}
 	}
+	if err != nil && !errors.Is(err, ErrBillingPersistFailed) {
+		c.recordTerminalFailure(ctx, classifyChatError(err))
+	}
 	return "", err
+}
+
+func classifyChatError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, ErrBillingPersistFailed) {
+		return "billing_persist_failed"
+	}
+	return "provider_error"
+}
+
+func (c *Client) recordTerminalFailure(ctx context.Context, errCode string) {
+	if errCode == "" || c.billing.Ledger == nil {
+		return
+	}
+	call := CallContextFrom(ctx)
+	if call.OperationID == "" {
+		return
+	}
+	bu := billingUsage{
+		TokenUsage:  pricing.TokenUsage{},
+		ActualModel: c.cfg.Model,
+	}
+	_ = c.recordUsage(ctx, bu, 0, false, errCode, true)
 }
 
 // ── Claude (Anthropic Messages API) ───────────────────────────────────────

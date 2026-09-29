@@ -16,7 +16,8 @@ type TaskRow = {
   calls: number
   raw_cost_usd_micro: number
   credits_burned: number
-  error_rate: number
+  error_rate?: number
+  error_rate_available: boolean
 }
 
 export function AdminEconomicsPage() {
@@ -26,7 +27,7 @@ export function AdminEconomicsPage() {
   })
   const tasksQ = useQuery({
     queryKey: ['admin-economics-tasks'],
-    queryFn: () => apiGet<{ tasks: TaskRow[] }>('/admin/economics/tasks?days=30'),
+    queryFn: () => apiGet<{ tasks: TaskRow[]; failure_tracking_enabled: boolean }>('/admin/economics/tasks?days=30'),
   })
 
   const o = overviewQ.data
@@ -52,7 +53,7 @@ export function AdminEconomicsPage() {
               <th className="px-4 py-2 font-medium">Calls</th>
               <th className="px-4 py-2 font-medium">Raw USD</th>
               <th className="px-4 py-2 font-medium">Credits</th>
-              <th className="px-4 py-2 font-medium">Error rate</th>
+              <th className="px-4 py-2 font-medium">Error rate (tracked failures)</th>
             </tr>
           </thead>
           <tbody>
@@ -62,7 +63,11 @@ export function AdminEconomicsPage() {
                 <td className="px-4 py-2 tabular-nums">{row.calls}</td>
                 <td className="px-4 py-2 tabular-nums">{usd(row.raw_cost_usd_micro)}</td>
                 <td className="px-4 py-2 tabular-nums">{row.credits_burned}</td>
-                <td className="px-4 py-2 tabular-nums">{(row.error_rate * 100).toFixed(1)}%</td>
+                <td className="px-4 py-2 tabular-nums">
+                  {row.error_rate_available && row.error_rate != null
+                    ? `${(row.error_rate * 100).toFixed(1)}%`
+                    : '—'}
+                </td>
               </tr>
             ))}
           </tbody>

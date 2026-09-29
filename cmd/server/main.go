@@ -307,16 +307,25 @@ func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.Secrets
 	if ledger != nil {
 		client = client.WithBilling(llm.BillingHooks{Ledger: ledger})
 	}
-	extractC, err := taskApply(client, gs, policyStore, catalog, domain.TaskResumeExtract)
-	if err != nil {
-		log.Warn().Err(err).Str("user_id", userID).Msg("resume extract task client")
-		extractC = client
-	}
-	tailorC, _ := taskApply(client, gs, policyStore, catalog, "tailoring")
-	coverC, _ := taskApply(client, gs, policyStore, catalog, "cover_letter")
-	formC, _ := taskApply(client, gs, policyStore, catalog, "form_filling")
+	extractC := taskApplyOrBase(client, gs, policyStore, catalog, domain.TaskResumeExtract, userID)
+	tailorC := taskApplyOrBase(client, gs, policyStore, catalog, "tailoring", userID)
+	coverC := taskApplyOrBase(client, gs, policyStore, catalog, "cover_letter", userID)
+	formC := taskApplyOrBase(client, gs, policyStore, catalog, "form_filling", userID)
 	tailor := resume.NewTailor(tailorC, coverC, formC)
 	return resume.NewExtractor(extractC), tailor, renderer, client
+}
+
+// taskApplyOrBase resolves a per-task client; on policy/config errors it logs and returns the base client (never nil).
+func taskApplyOrBase(base *llm.Client, gs domain.GeneralSettings, policyStore *llmpolicy.Store, catalog *pricing.Catalog, task, userID string) *llm.Client {
+	c, err := taskApply(base, gs, policyStore, catalog, task)
+	if err != nil {
+		log.Error().Err(err).Str("user_id", userID).Str("task", task).Msg("task model resolution failed; using base LLM client")
+		return base
+	}
+	if c == nil {
+		return base
+	}
+	return c
 }
 
 func taskApply(base *llm.Client, gs domain.GeneralSettings, policyStore *llmpolicy.Store, catalog *pricing.Catalog, task string) (*llm.Client, error) {

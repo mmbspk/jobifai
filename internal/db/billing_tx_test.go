@@ -53,6 +53,15 @@ func TestRecordBillingTx_QuotaFailureRollsBackEvent(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqldb.Close() })
 
+	_, err = sqldb.Exec(`
+		INSERT INTO user_quota (user_id, plan, enforcement_enabled, trial_remaining_micro, updated_at)
+		VALUES ('u1', 'trial', 1, 1000, CURRENT_TIMESTAMP)`)
+	require.NoError(t, err)
+	_, err = sqldb.Exec(`
+		INSERT INTO usage_totals (user_id, model, input_tokens, output_tokens, calls, updated_at)
+		VALUES ('u1', 'm', 10, 5, 1, CURRENT_TIMESTAMP)`)
+	require.NoError(t, err)
+
 	in := appdb.LLMUsageEventInput{
 		UserID:         "u1",
 		Task:           "job_scoring",
@@ -72,7 +81,13 @@ func TestRecordBillingTx_QuotaFailureRollsBackEvent(t *testing.T) {
 	require.Error(t, err)
 	require.NoError(t, tx.Rollback())
 
-	var n int
-	require.NoError(t, sqldb.QueryRow(`SELECT COUNT(*) FROM llm_usage_events`).Scan(&n))
-	assert.Equal(t, 0, n)
+	var events, inTok, calls int64
+	var trial int64
+	require.NoError(t, sqldb.QueryRow(`SELECT COUNT(*) FROM llm_usage_events`).Scan(&events))
+	require.NoError(t, sqldb.QueryRow(`SELECT input_tokens, calls FROM usage_totals WHERE user_id='u1' AND model='m'`).Scan(&inTok, &calls))
+	require.NoError(t, sqldb.QueryRow(`SELECT trial_remaining_micro FROM user_quota WHERE user_id='u1'`).Scan(&trial))
+	assert.Equal(t, int64(0), events)
+	assert.Equal(t, int64(10), inTok)
+	assert.Equal(t, int64(1), calls)
+	assert.Equal(t, int64(1000), trial)
 }

@@ -19,12 +19,13 @@ type economicsOverview struct {
 }
 
 type economicsTaskRow struct {
-	Task            string  `json:"task"`
-	Calls           int64   `json:"calls"`
-	RawCostUSDMicro int64   `json:"raw_cost_usd_micro"`
-	CreditsBurned   int64   `json:"credits_burned"`
-	AvgLatencyMS    float64 `json:"avg_latency_ms"`
-	ErrorRate       float64 `json:"error_rate"`
+	Task                 string   `json:"task"`
+	Calls                int64    `json:"calls"`
+	RawCostUSDMicro      int64    `json:"raw_cost_usd_micro"`
+	CreditsBurned        int64    `json:"credits_burned"`
+	AvgLatencyMS         float64  `json:"avg_latency_ms"`
+	ErrorRate            *float64 `json:"error_rate,omitempty"`
+	ErrorRateAvailable   bool     `json:"error_rate_available"`
 }
 
 // GET /api/admin/economics/overview?days=30
@@ -70,6 +71,8 @@ func (h *AdminHandlers) EconomicsTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = rows.Close() }()
+	var failureTracking bool
+	_ = h.svc.DB.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM llm_usage_events WHERE success=0 LIMIT 1)`).Scan(&failureTracking)
 	var list []economicsTaskRow
 	for rows.Next() {
 		var row economicsTaskRow
@@ -77,12 +80,14 @@ func (h *AdminHandlers) EconomicsTasks(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&row.Task, &row.Calls, &row.RawCostUSDMicro, &row.CreditsBurned, &row.AvgLatencyMS, &fails); err != nil {
 			continue
 		}
-		if row.Calls > 0 {
-			row.ErrorRate = float64(fails) / float64(row.Calls)
+		row.ErrorRateAvailable = failureTracking
+		if failureTracking && row.Calls > 0 {
+			rate := float64(fails) / float64(row.Calls)
+			row.ErrorRate = &rate
 		}
 		list = append(list, row)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": list})
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": list, "failure_tracking_enabled": failureTracking})
 }
 
 // GET /api/admin/economics/application/{job_id}

@@ -55,7 +55,7 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 	if userID == "" {
 		return fmt.Errorf("billing: missing user_id")
 	}
-	if in.LogicalOp && in.Success && in.Call.OperationID == "" {
+	if in.LogicalOp && in.Call.OperationID == "" {
 		return fmt.Errorf("billing: missing operation id for billable call")
 	}
 
@@ -99,8 +99,11 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 	}
 
 	idempotencyKey := ""
-	if in.LogicalOp && in.Success {
+	if in.LogicalOp && in.Call.OperationID != "" {
 		idempotencyKey = in.Call.OperationID
+		if !in.Success {
+			idempotencyKey += ":failed"
+		}
 	}
 
 	event := db.LLMUsageEventInput{

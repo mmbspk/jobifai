@@ -63,12 +63,15 @@ func ResolveTaskModel(task string, global domain.LLMConfig, taskModels map[strin
 		return out, fmt.Errorf("resolved provider %q does not match base %q", out.Provider, baseProvider)
 	}
 
-	if catalog != nil {
-		res, err := catalog.Resolve(out.Model, true)
+	// Approved policies require catalog-known pricing. Global/user overrides keep
+	// legacy prefix compatibility; Ollama/local models skip cloud catalog checks.
+	if catalog != nil && global.Provider != "ollama" {
+		strict := out.Source == "policy_approved"
+		res, err := catalog.Resolve(out.Model, strict)
 		if err != nil {
 			return out, err
 		}
-		if res.UsedFallback {
+		if strict && res.UsedFallback {
 			return out, pricing.ErrUnpricedModel
 		}
 	}

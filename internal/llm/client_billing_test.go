@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,6 +56,30 @@ func TestChat_BillingPersistFailureSurfaces(t *testing.T) {
 	_, err := client.Chat(context.Background(), []llm.Message{{Role: "user", Content: "hi"}})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, llm.ErrBillingPersistFailed)
+}
+
+func TestChat_BillingPersistFailure_NoProviderRetry(t *testing.T) {
+	t.Parallel()
+	var providerCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]any{{"type": "text", "text": "ok"}},
+			"usage":   map[string]any{"input_tokens": 5, "output_tokens": 2},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	ledger := &usage.Ledger{Catalog: pricing.DefaultCatalog()}
+	cfg := domain.LLMConfig{Provider: "claude", Model: "claude-test", UseProxy: true, ProxyURL: srv.URL}
+	client := llm.New(cfg, "key").
+		WithUserID("user-1").
+		WithBilling(llm.BillingHooks{Ledger: ledger})
+
+	_, err := client.Chat(context.Background(), []llm.Message{{Role: "user", Content: "hi"}})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, llm.ErrBillingPersistFailed)
+	assert.EqualValues(t, 1, providerCalls.Load(), "billing persistence failure must not retry provider HTTP")
 }
 
 func TestCheckQuota_UsesUserIDWithoutWithQuotaUserArg(t *testing.T) {

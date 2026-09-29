@@ -40,7 +40,7 @@ func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int
 	if c.billing.Ledger == nil {
 		return nil
 	}
-	if logicalOp && success && call.OperationID == "" {
+	if logicalOp && call.OperationID == "" {
 		return fmt.Errorf("billing: missing operation id")
 	}
 	if call.UserID == "" && logicalOp && success {
@@ -69,5 +69,5 @@ func billingPersistErr(err error) error {
 	if err == nil {
 		return nil
 	}
-	return errors.Join(ErrBillingPersistFailed, err)
+	return &nonRetryableError{err: errors.Join(ErrBillingPersistFailed, err)}
 }
