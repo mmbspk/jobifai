@@ -28,7 +28,6 @@ func (s *stubQuota) RecordLLMBurnTx(_ *sql.Tx, _ string, credits int64) error {
 }
 
 func TestLedger_RecordSuccessfulCall(t *testing.T) {
-	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	sqldb, err := appdb.Open(dbPath)
 	require.NoError(t, err)
@@ -66,7 +65,6 @@ func TestLedger_RecordSuccessfulCall(t *testing.T) {
 }
 
 func TestLedger_PropagatesRunAndJobIDs(t *testing.T) {
-	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	sqldb, err := appdb.Open(dbPath)
 	require.NoError(t, err)
