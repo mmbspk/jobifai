@@ -23,15 +23,33 @@ func (c *Client) WithCostCeiling(catalog *pricing.Catalog, maxUSD float64) *Clie
 	return &nc
 }
 
-func (c *Client) checkCostCeiling(inputChars, maxOutputTokens int) error {
-	if c.costCeiling == nil {
-		return nil
+func (c *Client) checkVisionCostCeiling(imageBytes []byte, promptChars, maxOutputTokens int) error {
+	estIn := conservativeVisionInputTokens(len(imageBytes), promptChars)
+	return c.checkCostCeilingTokens(estIn, int64(maxOutputTokens))
+}
+
+func conservativeVisionInputTokens(imageLen, promptChars int) int64 {
+	// Conservative ceiling: image bytes do not map 1:1 to text tokens.
+	est := int64(imageLen/4 + promptChars/4)
+	if est < 1500 {
+		est = 1500
 	}
+	return est
+}
+
+func (c *Client) checkCostCeiling(inputChars, maxOutputTokens int) error {
 	estIn := int64(inputChars / 4)
 	if estIn < 1 {
 		estIn = 1
 	}
-	estOut := int64(maxOutputTokens)
+	return c.checkCostCeilingTokens(estIn, int64(maxOutputTokens))
+}
+
+func (c *Client) checkCostCeilingTokens(estIn, maxOutputTokens int64) error {
+	if c.costCeiling == nil {
+		return nil
+	}
+	estOut := maxOutputTokens
 	if estOut < 1 {
 		estOut = 512
 	}

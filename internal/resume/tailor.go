@@ -1,7 +1,6 @@
 package resume
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -132,25 +131,13 @@ type promptData struct {
 // TailorProfile rewrites profile JSON targeting the given job description.
 // jobDesc may be prefixed with market instructions via the caller.
 func (t *Tailor) TailorProfile(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (*domain.ResumeProfile, error) {
-	marketInstructions, jobDesc := splitMarketPrefix(jobDesc)
-	trimmed := ForTailoring(profile)
-	profileJSON, err := json.Marshal(trimmed)
+	prompt, err := BuildTailorPrompt(profile, jobDesc)
 	if err != nil {
-		return nil, fmt.Errorf("tailor: marshal profile: %w", err)
-	}
-
-	var prompt bytes.Buffer
-	if err := tailorTempl.Execute(&prompt, promptData{
-		Profile:            string(profileJSON),
-		JobDescription:     jobDesc,
-		MarketInstructions: marketInstructions,
-		PromptInstructions: profile.PromptInstructions,
-	}); err != nil {
 		return nil, fmt.Errorf("tailor: render prompt: %w", err)
 	}
 
 	raw, err := t.tailorClient.Chat(llm.WithTask(ctx, "tailor resume"), []llm.Message{
-		{Role: "user", Content: prompt.String()},
+		{Role: "user", Content: prompt},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("tailor: llm: %w", err)
@@ -166,26 +153,13 @@ func (t *Tailor) TailorProfile(ctx context.Context, profile *domain.ResumeProfil
 
 // WriteCoverLetter generates a cover letter body for the profile + job description.
 func (t *Tailor) WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (string, error) {
-	marketInstructions, jobDesc := splitMarketPrefix(jobDesc)
-	trimmed := ForCoverLetter(profile)
-	profileJSON, err := json.Marshal(trimmed)
+	prompt, err := BuildCoverLetterPrompt(profile, jobDesc)
 	if err != nil {
-		return "", fmt.Errorf("cover letter: marshal profile: %w", err)
-	}
-
-	var prompt bytes.Buffer
-	if err := coverLetterTempl.Execute(&prompt, promptData{
-		Profile:            string(profileJSON),
-		JobDescription:     jobDesc,
-		MarketInstructions: marketInstructions,
-		ExperienceContext:  computeExperienceContext(profile),
-		PromptInstructions: profile.PromptInstructions,
-	}); err != nil {
 		return "", fmt.Errorf("cover letter: render prompt: %w", err)
 	}
 
 	body, err := t.coverClient.Chat(llm.WithTask(ctx, "cover letter"), []llm.Message{
-		{Role: "user", Content: prompt.String()},
+		{Role: "user", Content: prompt},
 	})
 	if err != nil {
 		return "", fmt.Errorf("cover letter: llm: %w", err)

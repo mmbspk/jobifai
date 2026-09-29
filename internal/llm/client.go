@@ -396,7 +396,7 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 	if maxOut <= 0 {
 		maxOut = 8192
 	}
-	if err := c.checkCostCeiling(len(imageBytes)+len(prompt), maxOut); err != nil {
+	if err := c.checkVisionCostCeiling(imageBytes, len(prompt), maxOut); err != nil {
 		return "", err
 	}
 	if err := c.checkQuota(ctx, len(imageBytes)+len(prompt), c.cfg.MaxTokens); err != nil {
@@ -419,10 +419,11 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 		Content []contentBlock `json:"content"`
 	}
 	type visionRequest struct {
-		Model     string          `json:"model"`
-		MaxTokens int             `json:"max_tokens"`
-		System    string          `json:"system,omitempty"`
-		Messages  []visionMessage `json:"messages"`
+		Model        string              `json:"model"`
+		MaxTokens    int                 `json:"max_tokens"`
+		System       string              `json:"system,omitempty"`
+		Messages     []visionMessage     `json:"messages"`
+		OutputConfig *claudeOutputConfig `json:"output_config,omitempty"`
 	}
 
 	maxTokens := c.cfg.MaxTokens
@@ -443,6 +444,9 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 				{Type: "text", Text: prompt},
 			},
 		}},
+	}
+	if c.taskRuntime.Effort != "" {
+		body.OutputConfig = &claudeOutputConfig{Effort: c.taskRuntime.Effort}
 	}
 
 	baseURL := "https://api.anthropic.com"

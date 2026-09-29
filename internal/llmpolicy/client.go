@@ -21,7 +21,7 @@ func ApplyTask(base *llm.Client, global domain.LLMConfig, taskModels map[string]
 	if res.Provider != global.Provider {
 		return nil, fmt.Errorf("task policy provider %q must match base provider %q (cross-provider not supported yet)", res.Provider, global.Provider)
 	}
-	effort, err := llm.NormalizeEffort(res.Effort)
+	effort, err := llm.NormalizeEffort(global.Provider, res.Effort)
 	if err != nil {
 		if res.Source == "policy_approved" {
 			return nil, fmt.Errorf("%w: %w", ErrApprovedPolicy, err)

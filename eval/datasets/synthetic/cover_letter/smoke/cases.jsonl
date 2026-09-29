@@ -1,3 +1,3 @@
-{"classification":"synthetic","expect":{},"id":"cover_letter-0001","input":{"note":"placeholder"},"task":"cover_letter"}
-{"classification":"synthetic","expect":{},"id":"cover_letter-0002","input":{"note":"placeholder"},"task":"cover_letter"}
-{"classification":"synthetic","expect":{},"id":"cover_letter-0003","input":{"note":"placeholder"},"task":"cover_letter"}
+{"classification":"synthetic","expect":{"non_empty":true},"id":"cover_letter-0001","input":{"case_index":0,"task":"cover_letter"},"task":"cover_letter"}
+{"classification":"synthetic","expect":{"non_empty":true},"id":"cover_letter-0002","input":{"case_index":1,"task":"cover_letter"},"task":"cover_letter"}
+{"classification":"synthetic","expect":{"non_empty":true},"id":"cover_letter-0003","input":{"case_index":2,"task":"cover_letter"},"task":"cover_letter"}

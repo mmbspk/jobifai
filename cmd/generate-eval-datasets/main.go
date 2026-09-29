@@ -20,8 +20,8 @@ func main() {
 			"resume_extract": 3, "resume_tailoring": 3, "cover_letter": 3, "application_questions": 4,
 		},
 		"full": {
-			"job_scoring": 100, "employment_ethics": 50, "form_answer": 80, "form_vision": 30,
-			"resume_extract": 25, "resume_tailoring": 25, "cover_letter": 25, "application_questions": 40,
+			"job_scoring": 90, "employment_ethics": 45, "form_answer": 70, "form_vision": 25,
+			"resume_extract": 22, "resume_tailoring": 22, "cover_letter": 22, "application_questions": 35,
 		},
 	}
 	for version, tasks := range targets {
@@ -66,43 +66,83 @@ func writeDataset(root, task, version string, n int) error {
 	return os.WriteFile(filepath.Join(dir, "manifest.json"), mb, 0o644)
 }
 
+var professions = []string{
+	"nurse", "accountant", "chef", "mechanical engineer", "HR specialist", "data analyst",
+	"construction manager", "marketing manager", "cybersecurity analyst", "office administrator",
+	"product manager", "sales executive", "graduate trainee", "project manager", "teacher",
+}
+
 func synthCase(task string, i int) map[string]any {
 	id := fmt.Sprintf("%s-%04d", task, i+1)
 	switch task {
 	case "job_scoring":
-		pass := i%5 != 0
-		exp := map[string]any{"min_score": 0, "max_score": 10, "pass_threshold": 7}
+		prof := professions[i%len(professions)]
+		pass := i%4 != 0
+		exp := map[string]any{"pass_threshold": 7}
 		if pass {
 			exp["expect_pass"] = true
 			exp["min_score"] = 7
+			exp["max_score"] = 10
 		} else {
 			exp["expect_skip"] = true
 			exp["max_score"] = 4
 		}
 		return map[string]any{
 			"id": id, "task": task, "classification": "synthetic", "critical": pass,
-			"tags": []string{"synthetic"},
-			"input": map[string]any{"profile": map[string]any{"skills": []string{"project management"}}, "job_description": "Role requiring coordination"},
+			"input": map[string]any{
+				"profile": map[string]any{
+					"skills": []string{prof, fmt.Sprintf("skill-%d", i)},
+					"experience_details": []map[string]any{{"position": prof, "company": fmt.Sprintf("Co-%d", i)}},
+				},
+				"job_description": fmt.Sprintf("Seeking %s with focus area %d and location region-%d", prof, i, i%5),
+			},
 			"expect": exp,
 		}
 	case "employment_ethics":
-		verdicts := []string{"HALAL", "HARAM", "DOUBTFUL"}
-		v := verdicts[i%3]
+		scenarios := []struct {
+			title, company, desc, verdict string
+			critical                      bool
+		}{
+			{"Software Engineer", "City Hospital", "Maintain patient scheduling systems", "HALAL", true},
+			{"Loan Officer", "Retail Bank", "Set interest rates for consumer loans", "HARAM", true},
+			{"Logistics Coordinator", "Mixed Retail Group", "Warehouse operations for varied consumer goods", "DOUBTFUL", false},
+			{"Content Editor", "Media Studio", "Edit educational videos", "DOUBTFUL", false},
+		}
+		s := scenarios[i%len(scenarios)]
 		return map[string]any{
-			"id": id, "task": task, "classification": "synthetic", "critical": v != "DOUBTFUL",
-			"input": map[string]any{"title": "Analyst", "company": "Example Co", "description": "Permissible services"},
-			"expect": map[string]any{"verdict": v},
+			"id": id, "task": task, "classification": "synthetic", "critical": s.critical,
+			"input": map[string]any{"title": s.title, "company": s.company, "description": s.desc + fmt.Sprintf(" ref-%d", i)},
+			"expect": map[string]any{"verdict": s.verdict},
 		}
 	case "form_answer":
-		return map[string]any{
-			"id": id, "task": task, "classification": "synthetic",
-			"input":  map[string]any{"question": "Are you authorized to work?", "options": []string{"Yes", "No"}},
-			"expect": map[string]any{"exact": "Yes"},
+		questions := []struct {
+			q, exact string
+			opts     []string
+		}{
+			{"Are you authorized to work in this country?", "Yes", []string{"Yes", "No"}},
+			{"Do you require employer sponsorship?", "No", []string{"Yes", "No"}},
+			{"What is your notice period?", "4 weeks", nil},
+			{"How many years of project management experience do you have?", "7", nil},
+			{"Preferred phone number?", "+61400111222", nil},
 		}
+		qq := questions[i%len(questions)]
+		in := map[string]any{
+			"question": qq.q,
+			"profile_json": map[string]any{
+				"application_defaults": map[string]any{"requires_sponsorship": false, "notice_period": "4 weeks"},
+				"personal_information": map[string]any{"phone": "+61400111222"},
+				"experience_details":   []map[string]any{{"position": "Project Manager", "employment_period": "2017 – Present"}},
+			},
+		}
+		if len(qq.opts) > 0 {
+			in["options"] = qq.opts
+		}
+		exp := map[string]any{"exact": qq.exact}
+		return map[string]any{"id": id, "task": task, "classification": "synthetic", "input": in, "expect": exp}
 	default:
 		return map[string]any{
 			"id": id, "task": task, "classification": "synthetic",
-			"input": map[string]any{"note": "placeholder"}, "expect": map[string]any{},
+			"input": map[string]any{"case_index": i, "task": task}, "expect": map[string]any{"non_empty": true},
 		}
 	}
 }

@@ -1,11 +1,11 @@
 {
-  "case_count": 25,
+  "case_count": 22,
   "cases_file": "cases.jsonl",
   "classification": "synthetic",
-  "created_at": "2026-09-29T10:56:35Z",
+  "created_at": "2026-09-29T11:23:43Z",
   "description": "Synthetic cover_letter dataset (full)",
   "schema_version": 1,
-  "sha256": "d1095c38ba341f73989dbf8e688f7505c4417f323213ebc615241f14ae526a6c",
+  "sha256": "34f995773e76c2fd7d7e0906ce0ab0ecb4b15999f0686d22547fb2aaa4b4da51",
   "task": "cover_letter",
   "version": "full"
 }

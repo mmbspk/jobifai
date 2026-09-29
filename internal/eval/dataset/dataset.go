@@ -65,13 +65,7 @@ func ResolveRoot() (string, error) {
 	return "", fmt.Errorf("eval datasets directory not found")
 }
 
-// Load opens manifest.json under synthetic/<task>/<version>/.
-func Load(task, version string) (Bundle, error) {
-	root, err := ResolveRoot()
-	if err != nil {
-		return Bundle{}, err
-	}
-	dir := filepath.Join(root, "synthetic", task, version)
+func loadDir(dir string) (Bundle, error) {
 	mPath := filepath.Join(dir, "manifest.json")
 	raw, err := os.ReadFile(mPath)
 	if err != nil {

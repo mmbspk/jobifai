@@ -1,11 +1,11 @@
 {
-  "case_count": 80,
+  "case_count": 70,
   "cases_file": "cases.jsonl",
   "classification": "synthetic",
-  "created_at": "2026-09-29T10:56:35Z",
+  "created_at": "2026-09-29T11:23:43Z",
   "description": "Synthetic form_answer dataset (full)",
   "schema_version": 1,
-  "sha256": "bbb96081b7874b27ccbb96429018743ec463fb87f0794b2fc8c2930b0d73641a",
+  "sha256": "7a07cd9476b97a7e7183108a109aa2ea392408544a93f1e80fdc50021a0599d2",
   "task": "form_answer",
   "version": "full"
 }

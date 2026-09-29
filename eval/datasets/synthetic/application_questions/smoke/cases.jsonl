@@ -1,4 +1,4 @@
-{"classification":"synthetic","expect":{},"id":"application_questions-0001","input":{"note":"placeholder"},"task":"application_questions"}
-{"classification":"synthetic","expect":{},"id":"application_questions-0002","input":{"note":"placeholder"},"task":"application_questions"}
-{"classification":"synthetic","expect":{},"id":"application_questions-0003","input":{"note":"placeholder"},"task":"application_questions"}
-{"classification":"synthetic","expect":{},"id":"application_questions-0004","input":{"note":"placeholder"},"task":"application_questions"}
+{"classification":"synthetic","expect":{"non_empty":true},"id":"application_questions-0001","input":{"case_index":0,"task":"application_questions"},"task":"application_questions"}
+{"classification":"synthetic","expect":{"non_empty":true},"id":"application_questions-0002","input":{"case_index":1,"task":"application_questions"},"task":"application_questions"}
+{"classification":"synthetic","expect":{"non_empty":true},"id":"application_questions-0003","input":{"case_index":2,"task":"application_questions"},"task":"application_questions"}
+{"classification":"synthetic","expect":{"non_empty":true},"id":"application_questions-0004","input":{"case_index":3,"task":"application_questions"},"task":"application_questions"}

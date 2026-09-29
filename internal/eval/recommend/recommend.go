@@ -15,6 +15,8 @@ type Metrics struct {
 	SuccessRate     float64        `json:"success_rate"`
 	DetPassRate     float64        `json:"deterministic_pass_rate"`
 	CriticalFails   int            `json:"critical_failures"`
+	ScoringFalsePosRate float64    `json:"scoring_false_positive_rate,omitempty"`
+	ScoringFalseNegRate float64    `json:"scoring_false_negative_rate,omitempty"`
 	MeanLatencyMS   float64        `json:"mean_latency_ms"`
 	P90LatencyMS    float64        `json:"p90_latency_ms"`
 	TotalCostMicro  int64          `json:"total_cost_usd_micro"`
@@ -100,7 +102,7 @@ func confidenceLabel(n int, passRate float64) string {
 }
 
 // Aggregate builds metrics from per-case rows.
-func Aggregate(spec candidate.Spec, passes, successes, critical int, latencies []int64, costs []int64) Metrics {
+func Aggregate(spec candidate.Spec, passes, successes, critical int, latencies []int64, costs []int64, scoringFN, scoringFP int) Metrics {
 	m := Metrics{Candidate: spec, CaseCount: len(latencies)}
 	if m.CaseCount == 0 {
 		return m
@@ -118,6 +120,10 @@ func Aggregate(spec candidate.Spec, passes, successes, critical int, latencies [
 	}
 	m.MeanLatencyMS = float64(sumLat) / float64(m.CaseCount)
 	m.P90LatencyMS = p90(latencies)
+	if m.CaseCount > 0 {
+		m.ScoringFalseNegRate = float64(scoringFN) / float64(m.CaseCount)
+		m.ScoringFalsePosRate = float64(scoringFP) / float64(m.CaseCount)
+	}
 	return m
 }
 

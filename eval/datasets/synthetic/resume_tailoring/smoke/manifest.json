@@ -2,10 +2,10 @@
   "case_count": 3,
   "cases_file": "cases.jsonl",
   "classification": "synthetic",
-  "created_at": "2026-09-29T10:56:35Z",
+  "created_at": "2026-09-29T11:23:43Z",
   "description": "Synthetic resume_tailoring dataset (smoke)",
   "schema_version": 1,
-  "sha256": "3edc97782d8e2c7445b956cf6a8441e692e4d8b942634aa221d3794faa052120",
+  "sha256": "9942e26d84b9cf843f70c43a82f2d0a0cb114f42982ecbe62bc61241b2ffec08",
   "task": "resume_tailoring",
   "version": "smoke"
 }

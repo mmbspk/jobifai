@@ -4,22 +4,24 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/eval/candidate"
 	"github.com/user/jobifai/internal/eval/dataset"
 	"github.com/user/jobifai/internal/eval/recommend"
+	"github.com/user/jobifai/internal/eval/runmeta"
 	"github.com/user/jobifai/internal/eval/validators"
 	"github.com/user/jobifai/internal/llm"
 )
 
 type acc struct {
-	spec                           candidate.Spec
-	passes, successes, critical, n int
-	latencies, costs               []int64
+	spec                                    candidate.Spec
+	passes, successes, critical, n          int
+	scoringFN, scoringFP                    int
+	latencies, costs                        []int64
 }
 
 // Runner executes LLM calls for eval (non-billing clients).
@@ -27,11 +29,9 @@ type Runner interface {
 	RunCase(ctx context.Context, task string, spec candidate.Spec, c dataset.Case) (output string, obs llm.UsageObservation, err error)
 }
 
-// Config controls eval execution limits.
+// Config optional operator ceilings (run DB budget is authoritative).
 type Config struct {
-	MaxBudgetMicro int64
 	MaxConcurrency int
-	MinCases       int
 }
 
 // Service executes eval runs against SQLite.
@@ -41,46 +41,62 @@ type Service struct {
 	Config Config
 }
 
-// ExecuteRun loads dataset, runs candidates, persists results, writes recommendation.
+// ExecuteRun loads dataset, runs candidates, persists results, writes recommendations.
 func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 	run, err := s.loadRun(ctx, runID)
 	if err != nil {
 		return err
 	}
-	if run.Status != "pending" && run.Status != "running" {
+	if run.Status != runmeta.StatusPending && run.Status != runmeta.StatusRunning {
 		return nil
 	}
-	_ = s.markStatus(ctx, runID, "running", "")
-	bundle, err := dataset.Load(run.Task, run.DatasetVersion)
+	if err := s.markStatus(ctx, runID, runmeta.StatusRunning, ""); err != nil {
+		return s.failRun(ctx, runID, err)
+	}
+	bundle, err := dataset.Load(dataset.LoadRequest{
+		Task: run.Task, Version: run.DatasetVersion, Source: run.DatasetSource,
+	})
 	if err != nil {
 		return s.failRun(ctx, runID, err)
 	}
-	cands, err := candidate.ParseList(run.CandidateJSON)
+	_, err = s.DB.ExecContext(ctx, `
+		UPDATE model_eval_runs SET dataset_name=?, dataset_hash=?, cases_planned=? WHERE id=?`,
+		run.DatasetVersion, bundle.Manifest.SHA256, len(bundle.Cases)*(1+len(run.Candidates)), runID)
 	if err != nil {
 		return s.failRun(ctx, runID, err)
 	}
+	cands := run.Candidates
 	baseline := candidate.Spec{Provider: run.BaselineProvider, Model: run.BaselineModel, Effort: run.BaselineEffort}
 	all := append([]candidate.Spec{baseline}, cands...)
-	if s.Config.MaxConcurrency <= 0 {
-		s.Config.MaxConcurrency = 3
+	concurrency := s.Config.MaxConcurrency
+	if concurrency <= 0 {
+		concurrency = 3
 	}
-	sem := make(chan struct{}, s.Config.MaxConcurrency)
+	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var spent int64
+	var persistErr error
+	var completed int
+	budget := run.MaxBudgetMicro
 	aggregates := map[string]*acc{}
-
 	for _, spec := range all {
 		aggregates[spec.ID()] = &acc{spec: spec}
 	}
 
+	stopScheduling := false
 	for _, spec := range all {
 		for _, c := range bundle.Cases {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || stopScheduling {
+				break
+			}
+			if s.cancelRequested(ctx, runID) {
+				stopScheduling = true
 				break
 			}
 			mu.Lock()
-			if s.Config.MaxBudgetMicro > 0 && spent >= s.Config.MaxBudgetMicro {
+			if budget > 0 && spent >= budget {
+				stopScheduling = true
 				mu.Unlock()
 				break
 			}
@@ -91,19 +107,24 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 				defer wg.Done()
 				defer func() { <-sem }()
 				out, obs, err := s.Run.RunCase(ctx, run.Task, spec, c)
-				mu.Lock()
-				defer mu.Unlock()
-				spent += obs.RawCostMicro
-				success := err == nil
 				vr := validators.Validate(run.Task, out, c.Expect, c.Critical)
 				if err != nil {
 					vr.Errors = append(vr.Errors, err.Error())
 				}
-				lat := obs.LatencyMS
-				_ = s.insertResult(ctx, runID, spec, c, out, obs, success, vr, lat)
+				mu.Lock()
+				defer mu.Unlock()
+				if persistErr != nil {
+					return
+				}
+				if err := s.insertResult(ctx, runID, spec, c, obs, err == nil, vr); err != nil {
+					persistErr = err
+					return
+				}
+				spent += obs.RawCostMicro
+				completed++
 				a := aggregates[spec.ID()]
 				a.n++
-				if success {
+				if err == nil {
 					a.successes++
 				}
 				if vr.Pass {
@@ -112,59 +133,107 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 				if vr.CriticalFail {
 					a.critical++
 				}
+				if m, ok := vr.Metrics["scoring_false_negative"].(bool); ok && m {
+					a.scoringFN++
+				}
+				if m, ok := vr.Metrics["scoring_false_positive"].(bool); ok && m {
+					a.scoringFP++
+				}
 				a.costs = append(a.costs, obs.RawCostMicro)
-				a.latencies = append(a.latencies, lat)
+				a.latencies = append(a.latencies, obs.LatencyMS)
 			}(spec, c)
 		}
 	}
 	wg.Wait()
-	baseKey := baseline.ID()
-	baseM := metricsFromAcc(aggregates[baseKey])
+	_, _ = s.DB.ExecContext(ctx, `UPDATE model_eval_runs SET cases_completed=? WHERE id=?`, completed, runID)
+	if persistErr != nil {
+		return s.failRun(ctx, runID, persistErr)
+	}
+	finalStatus := runmeta.StatusCompleted
+	if ctx.Err() != nil || s.cancelRequested(ctx, runID) {
+		finalStatus = runmeta.StatusCancelled
+	} else if stopScheduling && budget > 0 && spent >= budget {
+		finalStatus = runmeta.StatusBudgetExhausted
+	}
+	baseM := metricsFromAcc(aggregates[baseline.ID()])
+	var candMetrics []recommend.Metrics
 	for k, a := range aggregates {
-		if k == baseKey {
+		if k == baseline.ID() {
 			continue
 		}
-		fm := metricsFromAcc(a)
-		fm.QualityDelta = fm.DetPassRate - baseM.DetPassRate
-		if baseM.TotalCostMicro > 0 {
-			fm.CostDeltaPct = (float64(fm.TotalCostMicro)/float64(baseM.TotalCostMicro) - 1) * 100
-		}
-		cross := fm.Candidate.Provider != baseline.Provider
-		rec := recommend.Decide(run.Task, baseM, fm, s.Config.MinCases, 0, -0.02, cross)
-		_ = s.insertRecommendation(ctx, runID, rec)
+		candMetrics = append(candMetrics, metricsFromAcc(a))
 	}
-	summary, _ := json.Marshal(map[string]any{"spent_micro": spent, "cases": len(bundle.Cases)})
+	smokeOrFake := run.RunnerType != runmeta.RunnerReal || run.Purpose != runmeta.PurposeBenchmark
+	minCases := runmeta.MinBenchmarkCases(run.Task)
+	if smokeOrFake {
+		minCases = 1_000_000 // force non-deployable
+	}
+	recs := recommend.SelectAll(recommend.SelectInput{
+		Task: run.Task, Baseline: baseM, Candidates: candMetrics,
+		MinCases: minCases, MaxCritical: 0,
+		SmokeOrFake: smokeOrFake, QualityFloor: recommend.DefaultQualityFloor,
+	})
+	for _, rec := range recs {
+		if err := s.insertRecommendation(ctx, runID, rec); err != nil {
+			return s.failRun(ctx, runID, fmt.Errorf("recommendation persist: %w", err))
+		}
+	}
+	summary, _ := json.Marshal(map[string]any{
+		"spent_micro": spent, "cases": len(bundle.Cases), "completed": completed,
+	})
 	_, err = s.DB.ExecContext(ctx, `
-		UPDATE model_eval_runs SET status='completed', completed_at=CURRENT_TIMESTAMP,
-			actual_cost_usd_micro=?, summary_json=? WHERE id=?`, spent, string(summary), runID)
+		UPDATE model_eval_runs SET status=?, completed_at=CURRENT_TIMESTAMP,
+			actual_cost_usd_micro=?, summary_json=? WHERE id=?`,
+		finalStatus, spent, string(summary), runID)
 	return err
+}
+
+func (s *Service) cancelRequested(ctx context.Context, runID string) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	var n int
+	_ = s.DB.QueryRowContext(ctx, `SELECT cancel_requested FROM model_eval_runs WHERE id=?`, runID).Scan(&n)
+	return n == 1
 }
 
 func metricsFromAcc(a *acc) recommend.Metrics {
 	if a == nil || a.n == 0 {
 		return recommend.Metrics{}
 	}
-	return recommend.Aggregate(a.spec, a.passes, a.successes, a.critical, a.latencies, a.costs)
+	return recommend.Aggregate(a.spec, a.passes, a.successes, a.critical, a.latencies, a.costs, a.scoringFN, a.scoringFP)
 }
 
 type runRow struct {
 	Task             string
 	DatasetVersion   string
+	DatasetSource    string
 	BaselineProvider string
 	BaselineModel    string
 	BaselineEffort   string
-	CandidateJSON    string
+	Candidates       []candidate.Spec
 	Status           string
+	RunnerType       string
+	Purpose          string
+	MaxBudgetMicro   int64
 }
 
 func (s *Service) loadRun(ctx context.Context, id string) (runRow, error) {
 	var r runRow
+	var candJSON string
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT task, dataset_version, COALESCE(baseline_provider,''), baseline_model,
-		       COALESCE(baseline_effort,''), COALESCE(candidate_spec_json,'[]'), status
+		SELECT task, dataset_version, COALESCE(dataset_source,'synthetic'),
+		       COALESCE(baseline_provider,''), baseline_model, COALESCE(baseline_effort,''),
+		       COALESCE(candidate_spec_json,'[]'), status, COALESCE(runner_type,'fake'),
+		       COALESCE(run_purpose,'smoke'), COALESCE(max_budget_usd_micro,0)
 		FROM model_eval_runs WHERE id=?`, id).Scan(
-		&r.Task, &r.DatasetVersion, &r.BaselineProvider, &r.BaselineModel,
-		&r.BaselineEffort, &r.CandidateJSON, &r.Status)
+		&r.Task, &r.DatasetVersion, &r.DatasetSource,
+		&r.BaselineProvider, &r.BaselineModel, &r.BaselineEffort,
+		&candJSON, &r.Status, &r.RunnerType, &r.Purpose, &r.MaxBudgetMicro)
+	if err != nil {
+		return r, err
+	}
+	r.Candidates, err = candidate.ParseList(candJSON)
 	return r, err
 }
 
@@ -177,21 +246,22 @@ func (s *Service) markStatus(ctx context.Context, id, status, msg string) error 
 
 func (s *Service) failRun(ctx context.Context, id string, err error) error {
 	_, _ = s.DB.ExecContext(ctx, `
-		UPDATE model_eval_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?`,
-		err.Error(), id)
+		UPDATE model_eval_runs SET status=?, error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?`,
+		runmeta.StatusFailed, err.Error(), id)
 	return err
 }
 
-func (s *Service) insertResult(ctx context.Context, runID string, spec candidate.Spec, c dataset.Case, out string, obs llm.UsageObservation, success bool, vr validators.Result, lat int64) error {
+func (s *Service) insertResult(ctx context.Context, runID string, spec candidate.Spec, c dataset.Case, obs llm.UsageObservation, success bool, vr validators.Result) error {
 	errs, _ := json.Marshal(vr.Errors)
+	metrics, _ := json.Marshal(vr.Metrics)
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO model_eval_results (
 			id, eval_run_id, case_id, model, success, score, metric_json,
 			input_tokens, output_tokens, raw_cost_usd_micro, latency_ms, validation_errors,
 			provider, requested_model, actual_model, effort, deterministic_score, actual_model_verified
 		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		uuid.NewString(), runID, c.ID, spec.Model, boolInt(success), vr.DeterministicScore, "{}",
-		obs.Tokens.InputTokens, obs.Tokens.OutputTokens, obs.RawCostMicro, lat, string(errs),
+		uuid.NewString(), runID, c.ID, spec.Model, boolInt(success), vr.DeterministicScore, string(metrics),
+		obs.Tokens.InputTokens, obs.Tokens.OutputTokens, obs.RawCostMicro, obs.LatencyMS, string(errs),
 		spec.Provider, spec.Model, obs.ActualModel, spec.Effort, vr.DeterministicScore, boolInt(obs.ActualModelVerified),
 	)
 	return err
@@ -215,29 +285,12 @@ func boolInt(b bool) int {
 	return 0
 }
 
-// CreateRun inserts a pending eval run row.
-func (s *Service) CreateRun(ctx context.Context, task, datasetVersion string, baseline candidate.Spec, cands []candidate.Spec, budgetUSD float64, by string) (string, error) {
-	id := uuid.NewString()
-	cj, _ := json.Marshal(cands)
-	budgetMicro := int64(budgetUSD * 1_000_000)
-	_, err := s.DB.ExecContext(ctx, `
-		INSERT INTO model_eval_runs (
-			id, task, baseline_model, candidate_models, dataset_version, status,
-			baseline_provider, baseline_effort, dataset_name, candidate_spec_json, max_budget_usd_micro, initiated_by
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		id, task, baseline.Model, string(cj), datasetVersion, "pending",
-		baseline.Provider, baseline.Effort, datasetVersion, string(cj), budgetMicro, by,
-	)
-	if err != nil {
-		return "", err
-	}
-	go func() {
-		ctx2, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		_ = s.ExecuteRun(ctx2, id)
-	}()
-	return id, nil
+// CancelRun requests cancellation for an active run.
+func (s *Service) CancelRun(ctx context.Context, runID string) error {
+	Runs.Cancel(runID)
+	_, err := s.DB.ExecContext(ctx, `UPDATE model_eval_runs SET cancel_requested=1 WHERE id=?`, runID)
+	return err
 }
 
-// Ensure domain import for task constants in runner implementations.
-var _ = domain.TaskJobScoring
+var _ = time.Second
+var _ = sql.ErrNoRows

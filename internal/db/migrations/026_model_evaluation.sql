@@ -16,6 +16,12 @@ ALTER TABLE model_eval_runs ADD COLUMN actual_cost_usd_micro INTEGER NOT NULL DE
 ALTER TABLE model_eval_runs ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE model_eval_runs ADD COLUMN error_message TEXT NOT NULL DEFAULT '';
 ALTER TABLE model_eval_runs ADD COLUMN initiated_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE model_eval_runs ADD COLUMN runner_type TEXT NOT NULL DEFAULT 'fake';
+ALTER TABLE model_eval_runs ADD COLUMN run_purpose TEXT NOT NULL DEFAULT 'smoke';
+ALTER TABLE model_eval_runs ADD COLUMN dataset_source TEXT NOT NULL DEFAULT 'synthetic';
+ALTER TABLE model_eval_runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model_eval_runs ADD COLUMN cases_planned INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model_eval_runs ADD COLUMN cases_completed INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE model_eval_results ADD COLUMN provider TEXT NOT NULL DEFAULT '';
 ALTER TABLE model_eval_results ADD COLUMN requested_model TEXT NOT NULL DEFAULT '';
@@ -67,6 +73,8 @@ CREATE TABLE IF NOT EXISTS model_eval_recommendations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_model_eval_recommendations_task ON model_eval_recommendations(task, created_at);
+
+ALTER TABLE model_catalog_meta ADD COLUMN discovery_snapshot_json TEXT NOT NULL DEFAULT '';
 
 -- +goose Down
 DROP TABLE IF EXISTS model_eval_recommendations;

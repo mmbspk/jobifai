@@ -9,6 +9,8 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
+// promptbuild reuses unexported templates from tailor.go and questions.go in the same package.
+
 // BuildJobScoringPrompt renders the production job-scoring user prompt.
 func BuildJobScoringPrompt(profile *domain.ResumeProfile, jobDesc string) (string, error) {
 	trimmed := ForScoring(profile)
@@ -75,6 +77,66 @@ Rules:
 }
 
 // FormVisionIdentifyPrompt is the production form-vision user prompt.
+// BuildTailorPrompt renders the production resume tailoring user prompt.
+func BuildTailorPrompt(profile *domain.ResumeProfile, jobDesc string) (string, error) {
+	marketInstructions, jobDesc := splitMarketPrefix(jobDesc)
+	trimmed := ForTailoring(profile)
+	profileJSON, err := json.Marshal(trimmed)
+	if err != nil {
+		return "", err
+	}
+	var prompt bytes.Buffer
+	if err := tailorTempl.Execute(&prompt, promptData{
+		Profile: string(profileJSON), JobDescription: jobDesc,
+		MarketInstructions: marketInstructions, PromptInstructions: profile.PromptInstructions,
+	}); err != nil {
+		return "", err
+	}
+	return prompt.String(), nil
+}
+
+// BuildCoverLetterPrompt renders the production cover letter user prompt.
+func BuildCoverLetterPrompt(profile *domain.ResumeProfile, jobDesc string) (string, error) {
+	marketInstructions, jobDesc := splitMarketPrefix(jobDesc)
+	trimmed := ForCoverLetter(profile)
+	profileJSON, err := json.Marshal(trimmed)
+	if err != nil {
+		return "", err
+	}
+	var prompt bytes.Buffer
+	if err := coverLetterTempl.Execute(&prompt, promptData{
+		Profile: string(profileJSON), JobDescription: jobDesc,
+		MarketInstructions: marketInstructions, ExperienceContext: computeExperienceContext(profile),
+		PromptInstructions: profile.PromptInstructions,
+	}); err != nil {
+		return "", err
+	}
+	return prompt.String(), nil
+}
+
+// BuildApplicationQuestionsPrompt returns system and user messages for application questions.
+func BuildApplicationQuestionsPrompt(profile *domain.ResumeProfile, jobContext string, questions []string) (system, user string, err error) {
+	trimmed := ForScoring(profile)
+	profileJSON, err := json.Marshal(trimmed)
+	if err != nil {
+		return "", "", err
+	}
+	var sb strings.Builder
+	sb.WriteString("## Candidate Profile\n")
+	sb.Write(profileJSON)
+	sb.WriteString("\n\n## Job Details\n")
+	sb.WriteString(jobContext)
+	if profile.PromptInstructions != "" {
+		sb.WriteString("\n\nADDITIONAL INSTRUCTIONS FROM CANDIDATE (follow these):\n")
+		sb.WriteString(profile.PromptInstructions)
+	}
+	sb.WriteString("\n\n## Questions\n")
+	for i, q := range questions {
+		fmt.Fprintf(&sb, "%d. %s\n", i+1, strings.TrimSpace(q))
+	}
+	return questionsSystemPrompt, sb.String(), nil
+}
+
 const FormVisionIdentifyPrompt = `This is a screenshot of a job application form step.
 Return a JSON array of the visible, unanswered form fields. Each element must have:
   "type": one of "radio", "select", or "text"

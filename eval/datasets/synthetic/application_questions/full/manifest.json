@@ -1,11 +1,11 @@
 {
-  "case_count": 40,
+  "case_count": 35,
   "cases_file": "cases.jsonl",
   "classification": "synthetic",
-  "created_at": "2026-09-29T10:56:35Z",
+  "created_at": "2026-09-29T11:23:43Z",
   "description": "Synthetic application_questions dataset (full)",
   "schema_version": 1,
-  "sha256": "6b682bcab28dc0822b2b7abe4b67999414dc6f11da3a2bc6cde560e0b6e47401",
+  "sha256": "d61993777b04844b23d141e06cd32fc39dd7186388ecb05a3b698d0ab8c8e614",
   "task": "application_questions",
   "version": "full"
 }
