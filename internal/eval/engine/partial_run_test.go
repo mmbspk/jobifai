@@ -20,6 +20,7 @@ func TestExecuteRun_BudgetExhaustedRecommendationsNotDeployable(t *testing.T) {
 	t.Cleanup(func() { _ = sqldb.Close() })
 
 	svc := &engine.Service{DB: sqldb, Run: engine.FakeRunner{}, Config: engine.Config{MaxConcurrency: 1}}
+	sync := false
 	id, err := svc.CreateRun(context.Background(), engine.RunParams{
 		Task: domain.TaskJobScoring, DatasetVersion: "smoke", DatasetSource: "synthetic",
 		Purpose: runmeta.PurposeBenchmark, RunnerType: runmeta.RunnerReal,
@@ -27,6 +28,7 @@ func TestExecuteRun_BudgetExhaustedRecommendationsNotDeployable(t *testing.T) {
 		Candidates: []candidate.Spec{{Provider: "claude", Model: "claude-haiku-4-5-20251001"}},
 		BudgetUSD:  0.000001,
 		InitiatedBy: "test",
+		StartAsync: &sync,
 	})
 	require.NoError(t, err)
 	_, _ = sqldb.Exec(`UPDATE model_eval_runs SET max_budget_usd_micro=1 WHERE id=?`, id)

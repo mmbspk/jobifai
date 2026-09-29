@@ -23,6 +23,8 @@ type RunParams struct {
 	Candidates     []candidate.Spec
 	BudgetUSD      float64
 	InitiatedBy    string
+	// StartAsync runs ExecuteRun in a background goroutine (default true).
+	StartAsync     *bool
 }
 
 // CreateRun validates dataset and inserts a pending run.
@@ -61,11 +63,17 @@ func (s *Service) CreateRun(ctx context.Context, p RunParams) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	go func() {
-		ctx2, cancel := context.WithCancel(context.Background())
-		Runs.Register(id, cancel)
-		defer Runs.Unregister(id)
-		_ = s.ExecuteRun(ctx2, id)
-	}()
+	async := true
+	if p.StartAsync != nil {
+		async = *p.StartAsync
+	}
+	if async {
+		go func() {
+			ctx2, cancel := context.WithCancel(context.Background())
+			Runs.Register(id, cancel)
+			defer Runs.Unregister(id)
+			_ = s.ExecuteRun(ctx2, id)
+		}()
+	}
 	return id, nil
 }

@@ -22,10 +22,19 @@ func (FakeRunner) RunCase(_ context.Context, task string, spec candidate.Spec, c
 	switch task {
 	case domain.TaskJobScoring:
 		var exp struct {
-			MinScore int `json:"min_score"`
+			MinScore   int  `json:"min_score"`
+			MaxScore   int  `json:"max_score"`
+			ExpectPass bool `json:"expect_pass"`
+			ExpectSkip bool `json:"expect_skip"`
 		}
 		_ = json.Unmarshal(c.Expect, &exp)
 		score := exp.MinScore
+		if exp.ExpectSkip {
+			score = exp.MaxScore
+			if score == 0 {
+				score = 3
+			}
+		}
 		if score == 0 {
 			score = 8
 		}
