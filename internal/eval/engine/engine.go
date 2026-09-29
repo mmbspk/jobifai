@@ -40,6 +40,8 @@ type Service struct {
 	DB     *sql.DB
 	Run    Runner
 	Config Config
+
+	persistMu sync.Mutex // serializes result inserts under parallel RunCase workers (SQLite)
 }
 
 // ExecuteRun loads dataset, runs candidates, persists results, writes recommendations.
@@ -286,6 +288,8 @@ func (s *Service) failRun(ctx context.Context, id string, err error) error {
 func (s *Service) insertResult(ctx context.Context, runID string, spec candidate.Spec, c dataset.Case, obs llm.UsageObservation, success bool, vr validators.Result) error {
 	errs, _ := json.Marshal(vr.Errors)
 	metrics, _ := json.Marshal(vr.Metrics)
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO model_eval_results (
 			id, eval_run_id, case_id, model, success, score, metric_json,
