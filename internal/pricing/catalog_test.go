@@ -21,7 +21,7 @@ func TestCatalog_UnknownUsesConservativeFallback(t *testing.T) {
 	t.Parallel()
 	c := DefaultCatalog()
 	rec, src, ok := c.Lookup("totally-unknown-model-xyz")
-	require.True(t, ok)
+	require.False(t, ok)
 	assert.Equal(t, "conservative-fallback", src)
 	assert.Greater(t, rec.InputPerM, 0.0)
 	micro := RawCostMicroUSD(rec, TokenUsage{InputTokens: 1000, OutputTokens: 500})

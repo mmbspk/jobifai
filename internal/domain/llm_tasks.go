@@ -60,7 +60,7 @@ func StableToLegacyTaskModelKey(task string) string {
 	case TaskApplicationQuestions:
 		return "questions"
 	case TaskResumeExtract:
-		return "scoring" // no legacy key; resolver uses global
+		return "" // no legacy task_models key
 	default:
 		return task
 	}

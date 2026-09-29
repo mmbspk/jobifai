@@ -8,6 +8,7 @@ type LLMCallContext struct {
 	ApplicationID    string
 	AutomationRunID  string
 	CorrelationID    string
+	OperationID      string // stable idempotency key for one logical LLM operation
 	Attempt          int
 }
 

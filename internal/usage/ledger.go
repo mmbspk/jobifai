@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -18,6 +19,11 @@ type QuotaRecorder interface {
 	RecordLLMBurn(ctx context.Context, userID string, credits int64) error
 }
 
+// TxQuotaBurner supports quota deduction inside the billing transaction.
+type TxQuotaBurner interface {
+	RecordLLMBurnTx(tx *sql.Tx, userID string, credits int64) error
+}
+
 // Ledger persists LLM usage events and keeps legacy aggregates in sync.
 type Ledger struct {
 	DB       *sql.DB
@@ -28,33 +34,48 @@ type Ledger struct {
 
 // RecordInput is everything needed to bill one provider response.
 type RecordInput struct {
-	Call       domain.LLMCallContext
-	Provider   string
-	Requested  string
-	Actual     string
-	Tokens     pricing.TokenUsage
-	LatencyMS  int64
-	Success    bool
-	ErrorCode  string
-	LogicalOp  bool // true = successful logical Jobifai operation (one per Chat success)
+	Call                domain.LLMCallContext
+	Provider            string
+	Requested           string
+	Actual              string
+	ActualModelVerified bool
+	Tokens              pricing.TokenUsage
+	LatencyMS           int64
+	Success             bool
+	ErrorCode           string
+	LogicalOp           bool // true = successful logical Jobifai operation (one per Chat success)
 }
 
-// Record persists billing synchronously. Failures are logged and returned — callers must not ignore.
+// Record persists billing synchronously in one transaction.
 func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 	if l == nil || l.DB == nil {
 		return fmt.Errorf("usage ledger not configured")
 	}
 	userID := in.Call.UserID
 	if userID == "" {
-		userID = in.Call.UserID
+		return fmt.Errorf("billing: missing user_id")
 	}
-	rec, priceSrc, _ := l.Catalog.Lookup(in.Actual)
-	rawMicro := pricing.RawCostMicroUSD(rec, in.Tokens)
+	if in.LogicalOp && in.Success && in.Call.OperationID == "" {
+		return fmt.Errorf("billing: missing operation id for billable call")
+	}
+
+	res, err := l.Catalog.Resolve(in.Actual, false)
+	if err != nil {
+		return err
+	}
+	if res.UsedFallback {
+		log.Warn().
+			Str("event", "llm_unpriced_model").
+			Str("model", in.Actual).
+			Str("task", in.Call.Task).
+			Msg("billing used conservative fallback pricing for unknown model")
+	}
+	rawMicro := pricing.RawCostMicroUSD(res.Record, in.Tokens)
 	def := domain.QuotaDefaults{}
 	if l.Defaults != nil {
 		def = l.Defaults()
 	}
-	loadedUSD := quota.USDFromMicro(rawMicro)*(1+def.ServiceMarkup) + 0.0
+	loadedUSD := quota.USDFromMicro(rawMicro) * (1 + def.ServiceMarkup)
 	if in.LogicalOp && in.Success && def.PerCallFeeUSD > 0 {
 		loadedUSD += def.PerCallFeeUSD
 	}
@@ -76,46 +97,67 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 	if !refreshed.IsZero() {
 		pricingVersion = priceVer + "@" + refreshed.Format(time.RFC3339)
 	}
-	event := db.LLMUsageEventInput{
-		UserID:             userID,
-		Task:               domain.LegacyToStableTask(in.Call.Task),
-		Provider:           in.Provider,
-		RequestedModel:     in.Requested,
-		ActualModel:        in.Actual,
-		InputTokens:        in.Tokens.InputTokens,
-		OutputTokens:       in.Tokens.OutputTokens,
-		CacheWriteTokens:   in.Tokens.CacheWriteTokens,
-		CacheReadTokens:    in.Tokens.CacheReadTokens,
-		RawCostUSDMicro:    rawMicro,
-		LoadedCostUSDMicro: loadedMicro,
-		CreditsBurned:      credits,
-		LatencyMS:          in.LatencyMS,
-		Success:            in.Success,
-		ErrorCode:          in.ErrorCode,
-		CorrelationID:      in.Call.CorrelationID,
-		JobID:              in.Call.JobID,
-		ApplicationID:      in.Call.ApplicationID,
-		AutomationRunID:    in.Call.AutomationRunID,
-		Attempt:            in.Call.Attempt,
-		PricingSource:      priceSrc,
-		PricingVersion:     pricingVersion,
-	}
-	if _, err := db.InsertLLMUsageEvent(l.DB, event); err != nil {
-		log.Error().Err(err).Str("event", "llm_billing_persist_failed").Str("task", event.Task).Msg("failed to persist llm usage event")
-		return err
+
+	idempotencyKey := ""
+	if in.LogicalOp && in.Success {
+		idempotencyKey = in.Call.OperationID
 	}
 
-	if in.Success && in.LogicalOp && (in.Tokens.InputTokens > 0 || in.Tokens.OutputTokens > 0) {
-		if err := db.IncrementUsage(l.DB, userID, in.Actual, in.Tokens.InputTokens, in.Tokens.OutputTokens, 1); err != nil {
-			log.Error().Err(err).Msg("increment usage_totals failed")
-			return err
+	event := db.LLMUsageEventInput{
+		UserID:              userID,
+		Task:                domain.LegacyToStableTask(in.Call.Task),
+		Provider:            in.Provider,
+		RequestedModel:      in.Requested,
+		ActualModel:         in.Actual,
+		ActualModelVerified: in.ActualModelVerified,
+		InputTokens:         in.Tokens.InputTokens,
+		OutputTokens:        in.Tokens.OutputTokens,
+		CacheWrite5mTokens:  in.Tokens.CacheWrite5mTokens,
+		CacheWrite1hTokens:  in.Tokens.CacheWrite1hTokens,
+		CacheReadTokens:     in.Tokens.CacheReadTokens,
+		RawCostUSDMicro:     rawMicro,
+		LoadedCostUSDMicro:  loadedMicro,
+		CreditsBurned:       credits,
+		LatencyMS:           in.LatencyMS,
+		Success:             in.Success,
+		LogicalOp:           in.LogicalOp,
+		ErrorCode:           in.ErrorCode,
+		CorrelationID:       in.Call.CorrelationID,
+		IdempotencyKey:      idempotencyKey,
+		JobID:               in.Call.JobID,
+		ApplicationID:       in.Call.ApplicationID,
+		AutomationRunID:     in.Call.AutomationRunID,
+		Attempt:             in.Call.Attempt,
+		PricingSource:       res.Source,
+		PricingVersion:      pricingVersion,
+	}
+
+	tx, err := l.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var quotaFn func(*sql.Tx, string, int64) error
+	if credits > 0 && l.Quota != nil {
+		if tb, ok := l.Quota.(TxQuotaBurner); ok {
+			quotaFn = func(tx *sql.Tx, uid string, c int64) error {
+				return tb.RecordLLMBurnTx(tx, uid, c)
+			}
+		} else {
+			return fmt.Errorf("quota service does not support transactional burn")
 		}
 	}
-	if in.Success && in.LogicalOp && credits > 0 && l.Quota != nil {
-		if err := l.Quota.RecordLLMBurn(ctx, userID, credits); err != nil {
-			log.Error().Err(err).Int64("credits", credits).Msg("quota burn failed")
-			return err
+
+	_, err = db.RecordBillingTx(tx, event, credits, quotaFn)
+	if errors.Is(err, db.ErrIdempotencyConflict) {
+		if commitErr := tx.Commit(); commitErr != nil {
+			return commitErr
 		}
+		return nil
 	}
-	return nil
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }

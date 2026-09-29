@@ -2,6 +2,7 @@ package usage_test
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -17,6 +18,11 @@ type stubQuota struct {
 }
 
 func (s *stubQuota) RecordLLMBurn(_ context.Context, _ string, credits int64) error {
+	s.credits += credits
+	return nil
+}
+
+func (s *stubQuota) RecordLLMBurnTx(_ *sql.Tx, _ string, credits int64) error {
 	s.credits += credits
 	return nil
 }
@@ -39,9 +45,10 @@ func TestLedger_RecordSuccessfulCall(t *testing.T) {
 	}
 	err = ledger.Record(context.Background(), usage.RecordInput{
 		Call: domain.LLMCallContext{
-			Task:   domain.TaskJobScoring,
-			UserID: "user-1",
-			JobID:  "job-1",
+			Task:        domain.TaskJobScoring,
+			UserID:      "user-1",
+			JobID:       "job-1",
+			OperationID: "op-1",
 		},
 		Provider:  "claude",
 		Requested: "claude-sonnet-4-6",
@@ -56,4 +63,39 @@ func TestLedger_RecordSuccessfulCall(t *testing.T) {
 	var n int
 	require.NoError(t, sqldb.QueryRow(`SELECT COUNT(*) FROM llm_usage_events WHERE user_id='user-1'`).Scan(&n))
 	require.Equal(t, 1, n)
+}
+
+func TestLedger_PropagatesRunAndJobIDs(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqldb, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	ledger := &usage.Ledger{
+		DB:      sqldb,
+		Catalog: pricing.DefaultCatalog(),
+		Quota:   &stubQuota{},
+	}
+	err = ledger.Record(context.Background(), usage.RecordInput{
+		Call: domain.LLMCallContext{
+			Task:            domain.TaskJobScoring,
+			UserID:          "user-1",
+			JobID:           "job-99",
+			AutomationRunID: "run-abc",
+			OperationID:     "op-99",
+		},
+		Provider:  "claude",
+		Requested: "claude-sonnet-4-6",
+		Actual:    "claude-sonnet-4-6",
+		Tokens:    pricing.TokenUsage{InputTokens: 100, OutputTokens: 10},
+		Success:   true,
+		LogicalOp: true,
+	})
+	require.NoError(t, err)
+
+	var jobID, runID string
+	require.NoError(t, sqldb.QueryRow(`SELECT COALESCE(job_id,''), COALESCE(automation_run_id,'') FROM llm_usage_events LIMIT 1`).Scan(&jobID, &runID))
+	require.Equal(t, "job-99", jobID)
+	require.Equal(t, "run-abc", runID)
 }

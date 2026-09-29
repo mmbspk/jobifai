@@ -1,4 +1,5 @@
-// Package eval provides offline Jobifai task model evaluation (admin-only).
+// Package eval is scaffolding for future offline task model evaluation (admin-only).
+// Automated model recommendations and production policy rollout are not implemented yet.
 package eval
 
 import (
@@ -22,7 +23,7 @@ type RunRequest struct {
 	DatasetVersion  string
 }
 
-// Run creates a model_eval_runs row and returns its ID. Execution is async/batch in future work.
+// Run creates a model_eval_runs row and returns its ID. Dataset execution and scoring are future work.
 func (r *Runner) Run(ctx context.Context, req RunRequest) (string, error) {
 	id := uuid.NewString()
 	_, err := r.DB.ExecContext(ctx, `

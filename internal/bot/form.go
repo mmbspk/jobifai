@@ -1214,7 +1214,7 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 	} else {
 		llmCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
-		answer, err := b.cfg.Tailor.AnswerFormQuestion(llmCtx, lazy.formProfileJSON(), question, options)
+		answer, err := b.cfg.Tailor.AnswerFormQuestion(b.llmCtx(llmCtx, "form question", lazy.job.ID), lazy.formProfileJSON(), question, options)
 		if err == nil && answer != "" {
 			log.Info().Str("question", question).Str("answer", answer).Msg("form: answered via LLM")
 			return answer

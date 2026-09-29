@@ -1,22 +1,24 @@
 package llmpolicy
 
 import (
+	"fmt"
+
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/pricing"
 )
 
 // ResolvedTaskModel is the provider/model to use for one task.
 type ResolvedTaskModel struct {
-	Task       string
-	Provider   string
-	Model      string
-	MaxTokens  int
-	Source     string // user_override | global | policy_approved
+	Task      string
+	Provider  string
+	Model     string
+	MaxTokens int
+	Source    string // global | user_override | policy_approved
 }
 
 // ResolveTaskModel picks model/provider for a stable or legacy task key.
-// Approved task_model_policies rows override user settings when state is approved.
-func ResolveTaskModel(task string, global domain.LLMConfig, taskModels map[string]domain.TaskModel, policy *domain.TaskModelPolicyRow, catalog *pricing.Catalog) (ResolvedTaskModel, error) {
+// Precedence: global config → legacy/user task_models override → approved system policy.
+func ResolveTaskModel(task string, global domain.LLMConfig, taskModels map[string]domain.TaskModel, policy *domain.TaskModelPolicyRow, catalog *pricing.Catalog, baseProvider string) (ResolvedTaskModel, error) {
 	stable := domain.LegacyToStableTask(task)
 	legacyKey := domain.StableToLegacyTaskModelKey(stable)
 
@@ -31,30 +33,42 @@ func ResolveTaskModel(task string, global domain.LLMConfig, taskModels map[strin
 		out.MaxTokens = 8192
 	}
 
+	if legacyKey != "" {
+		if tm, ok := taskModels[legacyKey]; ok {
+			if tm.Provider != "" {
+				out.Provider = tm.Provider
+			}
+			if tm.Model != "" {
+				out.Model = tm.Model
+				out.Source = "user_override"
+			}
+			if tm.MaxTokens > 0 {
+				out.MaxTokens = tm.MaxTokens
+			}
+		}
+	}
+
 	if policy != nil && policy.State == domain.PolicyStateApproved && policy.Model != "" {
-		out.Model = policy.Model
 		if policy.Provider != "" {
 			out.Provider = policy.Provider
 		}
+		out.Model = policy.Model
 		if policy.MaxTokens > 0 {
 			out.MaxTokens = policy.MaxTokens
 		}
 		out.Source = "policy_approved"
-	} else if tm, ok := taskModels[legacyKey]; ok {
-		if tm.Provider != "" {
-			out.Provider = tm.Provider
-		}
-		if tm.Model != "" {
-			out.Model = tm.Model
-			out.Source = "user_override"
-		}
-		if tm.MaxTokens > 0 {
-			out.MaxTokens = tm.MaxTokens
-		}
+	}
+
+	if baseProvider != "" && out.Provider != "" && out.Provider != baseProvider {
+		return out, fmt.Errorf("resolved provider %q does not match base %q", out.Provider, baseProvider)
 	}
 
 	if catalog != nil {
-		if _, _, ok := catalog.Lookup(out.Model); !ok {
+		res, err := catalog.Resolve(out.Model, true)
+		if err != nil {
+			return out, err
+		}
+		if res.UsedFallback {
 			return out, pricing.ErrUnpricedModel
 		}
 	}

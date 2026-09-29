@@ -14,8 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
 )
 
@@ -74,10 +76,15 @@ func (c *Client) WithTracker(t *UsageTracker) *Client {
 	return c
 }
 
+// WithUserID sets billing attribution for this client (independent of quota enforcement).
+func (c *Client) WithUserID(userID string) *Client {
+	c.userID = userID
+	return c
+}
+
 // WithQuota attaches quota enforcement for the given user.
 func (c *Client) WithQuota(g quota.LLMGuard, userID string) *Client {
 	c.guard = g
-	c.userID = userID
 	return c
 }
 
@@ -91,6 +98,17 @@ func (c *Client) WithModel(model string, maxTokens int) *Client {
 		cfg.MaxTokens = maxTokens
 	}
 	return &Client{cfg: cfg, apiKey: c.apiKey, httpCli: c.httpCli, tracker: c.tracker, billing: c.billing, guard: c.guard, userID: c.userID}
+}
+
+func (c *Client) prepareCallContext(ctx context.Context) context.Context {
+	call := CallContextFrom(ctx)
+	if call.UserID == "" {
+		call.UserID = c.userID
+	}
+	if call.OperationID == "" {
+		call.OperationID = uuid.NewString()
+	}
+	return WithCallContext(ctx, call)
 }
 
 func (c *Client) checkQuota(ctx context.Context, estInputChars int, estOutputTokens int) error {
@@ -121,6 +139,7 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 	}
 	const maxAttempts = 3
 	var err error
+	ctx = c.prepareCallContext(ctx)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		call := CallContextFrom(ctx)
 		call.Attempt = attempt
@@ -166,11 +185,18 @@ type claudeMessage struct {
 }
 
 type claudeUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreation            *struct {
+		Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation,omitempty"`
 }
 
 type claudeResponse struct {
+	Model   string `json:"model"`
 	Content []struct {
 		Text string `json:"text"`
 	} `json:"content"`
@@ -178,6 +204,33 @@ type claudeResponse struct {
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+func claudeBillingUsage(reqModel string, cr claudeResponse) billingUsage {
+	actual := cr.Model
+	verified := actual != ""
+	if actual == "" {
+		actual = reqModel
+	}
+	cw5, cw1 := 0, 0
+	if cr.Usage.CacheCreation != nil {
+		cw5 = cr.Usage.CacheCreation.Ephemeral5mInputTokens
+		cw1 = cr.Usage.CacheCreation.Ephemeral1hInputTokens
+	}
+	if cw5 == 0 && cw1 == 0 && cr.Usage.CacheCreationInputTokens > 0 {
+		cw5 = cr.Usage.CacheCreationInputTokens
+	}
+	return billingUsage{
+		TokenUsage: pricing.TokenUsage{
+			InputTokens:        int64(cr.Usage.InputTokens),
+			OutputTokens:       int64(cr.Usage.OutputTokens),
+			CacheWrite5mTokens: int64(cw5),
+			CacheWrite1hTokens: int64(cw1),
+			CacheReadTokens:    int64(cr.Usage.CacheReadInputTokens),
+		},
+		ActualModel:         actual,
+		ActualModelVerified: verified,
+	}
 }
 
 type openaiUsage struct {
@@ -233,16 +286,19 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 	if len(cr.Content) == 0 {
 		return "", fmt.Errorf("claude: empty response")
 	}
-	u := &Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens}
-	c.recordUsage(ctx, c.cfg.Model, u, time.Since(start).Milliseconds(), true, "", true)
+	bu := claudeBillingUsage(c.cfg.Model, cr)
+	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
+		return "", billingPersistErr(err)
+	}
 	log.Info().
 		Str("event", "llm_call").
 		Str("task", CallContextFrom(ctx).Task).
 		Str("provider", c.cfg.Provider).
 		Str("requested_model", c.cfg.Model).
-		Str("actual_model", c.cfg.Model).
-		Int("input_tokens", u.InputTokens).
-		Int("output_tokens", u.OutputTokens).
+		Str("actual_model", bu.ActualModel).
+		Bool("actual_model_verified", bu.ActualModelVerified).
+		Int64("input_tokens", bu.InputTokens).
+		Int64("output_tokens", bu.OutputTokens).
 		Int64("duration_ms", time.Since(start).Milliseconds()).
 		Bool("success", true).
 		Str("job_id", CallContextFrom(ctx).JobID).
@@ -262,6 +318,7 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 	if err := c.checkQuota(ctx, len(imageBytes)+len(prompt), c.cfg.MaxTokens); err != nil {
 		return "", err
 	}
+	ctx = c.prepareCallContext(ctx)
 
 	type imageSource struct {
 		Type      string `json:"type"`
@@ -327,8 +384,10 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 	if len(cr.Content) == 0 {
 		return "", fmt.Errorf("claude vision: empty response")
 	}
-	u := &Usage{InputTokens: cr.Usage.InputTokens, OutputTokens: cr.Usage.OutputTokens}
-	c.recordUsage(ctx, c.cfg.Model, u, time.Since(start).Milliseconds(), true, "", true)
+	bu := claudeBillingUsage(c.cfg.Model, cr)
+	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
+		return "", billingPersistErr(err)
+	}
 	return cr.Content[0].Text, nil
 }
 
@@ -346,6 +405,7 @@ type openaiMessage struct {
 }
 
 type openaiResponse struct {
+	Model   string `json:"model"`
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
@@ -390,8 +450,22 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error)
 	if len(or.Choices) == 0 {
 		return "", fmt.Errorf("openai: empty response")
 	}
-	u := &Usage{InputTokens: or.Usage.PromptTokens, OutputTokens: or.Usage.CompletionTokens}
-	c.recordUsage(ctx, c.cfg.Model, u, time.Since(start).Milliseconds(), true, "", true)
+	actual := or.Model
+	verified := actual != ""
+	if actual == "" {
+		actual = c.cfg.Model
+	}
+	bu := billingUsage{
+		TokenUsage: pricing.TokenUsage{
+			InputTokens:  int64(or.Usage.PromptTokens),
+			OutputTokens: int64(or.Usage.CompletionTokens),
+		},
+		ActualModel:         actual,
+		ActualModelVerified: verified,
+	}
+	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
+		return "", billingPersistErr(err)
+	}
 	return or.Choices[0].Message.Content, nil
 }
 

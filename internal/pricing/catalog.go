@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/user/jobifai/internal/quota"
 )
 
 // ModelRecord is a priced model entry snapshotted on each LLM event.
@@ -17,6 +16,8 @@ type ModelRecord struct {
 	InputPerM          float64
 	OutputPerM         float64
 	CacheWritePerM     float64
+	CacheWrite5mPerM   float64
+	CacheWrite1hPerM   float64
 	CacheReadPerM      float64
 	BatchInputPerM     float64
 	BatchOutputPerM    float64
@@ -58,24 +59,28 @@ func DefaultCatalog() *Catalog {
 			Provider: "claude", CanonicalID: "claude-sonnet-4-6",
 			Aliases: []string{"claude-sonnet-4.6"},
 			InputPerM: 3, OutputPerM: 15, CacheWritePerM: 3.75, CacheReadPerM: 0.30,
-			ContextLimit: 1_000_000, SupportsVision: true, Active: true, Source: "anthropic-list",
+			ContextLimit: 1_000_000, SupportsVision: true, SupportsStructured: true, Active: true, Source: "anthropic-list",
+			CacheWrite5mPerM: 3.75, CacheWrite1hPerM: 6.0,
 		},
 		{
 			Provider: "claude", CanonicalID: "claude-sonnet-4-5",
 			InputPerM: 3, OutputPerM: 15, CacheWritePerM: 3.75, CacheReadPerM: 0.30,
-			ContextLimit: 1_000_000, SupportsVision: true, Active: true, Source: "anthropic-list",
+			ContextLimit: 200_000, SupportsVision: true, SupportsStructured: true, Active: true, Source: "anthropic-list",
+			CacheWrite5mPerM: 3.75, CacheWrite1hPerM: 6.0,
 		},
 		{
 			Provider: "claude", CanonicalID: "claude-haiku-4-5",
 			Aliases: []string{"claude-haiku-4.5"},
 			InputPerM: 1, OutputPerM: 5, CacheWritePerM: 1.25, CacheReadPerM: 0.10,
-			ContextLimit: 200_000, SupportsVision: true, Active: true, Source: "anthropic-list",
+			ContextLimit: 200_000, SupportsVision: true, SupportsStructured: true, Active: true, Source: "anthropic-list",
+			CacheWrite5mPerM: 1.25, CacheWrite1hPerM: 2.0,
 		},
 		{
 			Provider: "claude", CanonicalID: "claude-sonnet-5-5",
 			Aliases: []string{"claude-sonnet-5.5"},
 			InputPerM: 2, OutputPerM: 10, CacheWritePerM: 2.5, CacheReadPerM: 0.20,
-			ContextLimit: 1_000_000, SupportsVision: true, Active: true, Source: "anthropic-list",
+			ContextLimit: 1_000_000, SupportsVision: true, SupportsStructured: true, Active: true, Source: "anthropic-list",
+			CacheWrite5mPerM: 2.5, CacheWrite1hPerM: 4.0,
 		},
 		{
 			Provider: "openai", CanonicalID: "gpt-4o",
@@ -99,33 +104,6 @@ func (c *Catalog) Meta() (source, version string, refreshed time.Time) {
 	return c.source, c.version, c.refreshed
 }
 
-// Lookup resolves a runtime model id to a record. ok=false only if catalog empty; uses conservative fallback pricing.
-func (c *Catalog) Lookup(model string) (rec ModelRecord, pricingSource string, ok bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	key := strings.ToLower(strings.TrimSpace(model))
-	if key == "" {
-		return c.fallbackRecord("unknown"), "conservative-fallback", true
-	}
-	if canon, ok := c.alias[key]; ok {
-		if r, found := c.models[strings.ToLower(canon)]; found {
-			return r, r.Source, true
-		}
-	}
-	if r, found := c.models[key]; found {
-		return r, r.Source, true
-	}
-	// Legacy prefix table bridge (never zero).
-	if cost, legacyOK := quota.LookupCost(model); legacyOK {
-		return ModelRecord{
-			CanonicalID: model, Provider: "legacy-prefix",
-			InputPerM: cost.InputPerM, OutputPerM: cost.OutputPerM,
-			Active: true, Source: "legacy-prefix-table", EffectiveAt: c.refreshed,
-		}, "legacy-prefix-table", true
-	}
-	return c.fallbackRecord(model), "conservative-fallback", true
-}
-
 func (c *Catalog) fallbackRecord(model string) ModelRecord {
 	return ModelRecord{
 		CanonicalID: model,
@@ -140,20 +118,29 @@ func (c *Catalog) fallbackRecord(model string) ModelRecord {
 
 // TokenUsage for cost computation.
 type TokenUsage struct {
-	InputTokens      int64
-	OutputTokens     int64
-	CacheWriteTokens int64
-	CacheReadTokens  int64
+	InputTokens       int64
+	OutputTokens      int64
+	CacheWrite5mTokens int64
+	CacheWrite1hTokens int64
+	CacheReadTokens   int64
 }
 
 // RawCostMicroUSD computes provider cost from snapshotted catalog entry.
 func RawCostMicroUSD(rec ModelRecord, u TokenUsage) int64 {
 	inUSD := float64(u.InputTokens) / 1_000_000 * rec.InputPerM
 	outUSD := float64(u.OutputTokens) / 1_000_000 * rec.OutputPerM
-	cwUSD := float64(u.CacheWriteTokens) / 1_000_000 * rec.CacheWritePerM
+	cw5 := rec.CacheWrite5mPerM
+	if cw5 <= 0 {
+		cw5 = rec.CacheWritePerM
+	}
+	cw1 := rec.CacheWrite1hPerM
+	if cw1 <= 0 {
+		cw1 = rec.CacheWritePerM * 1.6
+	}
+	cwUSD := float64(u.CacheWrite5mTokens)/1_000_000*cw5 + float64(u.CacheWrite1hTokens)/1_000_000*cw1
 	crUSD := float64(u.CacheReadTokens) / 1_000_000 * rec.CacheReadPerM
 	total := inUSD + outUSD + cwUSD + crUSD
-	if total <= 0 && u.InputTokens+u.OutputTokens+u.CacheReadTokens+u.CacheWriteTokens == 0 {
+	if total <= 0 && u.InputTokens+u.OutputTokens+u.CacheReadTokens+u.CacheWrite5mTokens+u.CacheWrite1hTokens == 0 {
 		return 0
 	}
 	if total <= 0 {

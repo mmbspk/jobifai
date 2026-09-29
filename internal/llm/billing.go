@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/pricing"
@@ -18,39 +20,54 @@ func (c *Client) WithBilling(h BillingHooks) *Client {
 	return c
 }
 
-func (c *Client) recordUsage(ctx context.Context, actualModel string, u *Usage, latencyMS int64, success bool, errCode string, logicalOp bool) {
-	if u == nil {
-		return
-	}
+type billingUsage struct {
+	pricing.TokenUsage
+	ActualModel         string
+	ActualModelVerified bool
+}
+
+func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int64, success bool, errCode string, logicalOp bool) error {
 	call := CallContextFrom(ctx)
 	if call.UserID == "" {
 		call.UserID = c.userID
 	}
-	if c.tracker != nil {
-		c.tracker.AddSync(u, actualModel)
+	if c.tracker != nil && success {
+		c.tracker.AddSync(&Usage{
+			InputTokens:  int(bu.InputTokens),
+			OutputTokens: int(bu.OutputTokens),
+		}, bu.ActualModel)
 	}
 	if c.billing.Ledger == nil {
-		if c.tracker == nil {
-			log.Error().Str("event", "llm_billing_unconfigured").Msg("llm usage not persisted — no ledger")
-		}
-		return
+		return nil
 	}
-	tokens := pricing.TokenUsage{
-		InputTokens:  int64(u.InputTokens),
-		OutputTokens: int64(u.OutputTokens),
+	if logicalOp && success && call.OperationID == "" {
+		return fmt.Errorf("billing: missing operation id")
+	}
+	if call.UserID == "" && logicalOp && success {
+		return fmt.Errorf("billing: missing user attribution")
 	}
 	err := c.billing.Ledger.Record(ctx, usage.RecordInput{
-		Call:      call,
-		Provider:  c.cfg.Provider,
-		Requested: c.cfg.Model,
-		Actual:    actualModel,
-		Tokens:    tokens,
-		LatencyMS: latencyMS,
-		Success:   success,
-		ErrorCode: errCode,
-		LogicalOp: logicalOp,
+		Call:                call,
+		Provider:            c.cfg.Provider,
+		Requested:           c.cfg.Model,
+		Actual:              bu.ActualModel,
+		ActualModelVerified: bu.ActualModelVerified,
+		Tokens:              bu.TokenUsage,
+		LatencyMS:           latencyMS,
+		Success:             success,
+		ErrorCode:           errCode,
+		LogicalOp:           logicalOp,
 	})
 	if err != nil {
 		log.Error().Err(err).Str("event", "llm_billing_record_failed").Str("task", call.Task).Msg("billing record failed")
+		return err
 	}
+	return nil
+}
+
+func billingPersistErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.Join(ErrBillingPersistFailed, err)
 }

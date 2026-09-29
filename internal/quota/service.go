@@ -8,6 +8,7 @@ import (
 
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/pricing"
 )
 
 // Service enforces credit-based AI quotas (trial + starter/pro subscriptions).
@@ -15,9 +16,15 @@ type Service struct {
 	db    *sql.DB
 	cfg   settingsKV
 	users *auth.UserStore
+	catalog *pricing.Catalog
 
 	mu       sync.Mutex
 	sessions map[string]*graceSession
+}
+
+// SetPricingCatalog wires authoritative model pricing for pre-call estimates.
+func (s *Service) SetPricingCatalog(c *pricing.Catalog) {
+	s.catalog = c
 }
 
 type graceSession struct {
@@ -197,6 +204,9 @@ func (s *Service) BeforeLLM(_ context.Context, userID, model string, estInput, e
 	}
 	def := loadDefaults(s.cfg)
 	est := EstimateBurnCredits(def, model, estInput, estOutput)
+	if s.catalog != nil {
+		est = EstimateBurnCreditsCatalog(def, s.catalog, model, estInput, estOutput)
+	}
 	if est <= 0 {
 		est = 1
 	}
@@ -256,6 +266,36 @@ func (s *Service) RecordLLMBurn(_ context.Context, userID string, credits int64)
 	if err != nil {
 		return err
 	}
+	if err := s.applyBurn(&row, credits); err != nil {
+		return err
+	}
+	return updateRow(s.db, row)
+}
+
+// RecordLLMBurnTx deducts credits inside an existing SQL transaction.
+func (s *Service) RecordLLMBurnTx(tx *sql.Tx, userID string, credits int64) error {
+	if credits <= 0 || s.isAdmin(userID) {
+		return nil
+	}
+	row, err := getRowTx(tx, userID)
+	if err != nil {
+		if !isNotFound(err) {
+			return err
+		}
+		// Row must exist before billing; create outside tx in normal flow.
+		return err
+	}
+	row = s.applyOverrides(userID, row)
+	if !row.EnforcementEnabled {
+		return nil
+	}
+	if err := s.applyBurn(&row, credits); err != nil {
+		return err
+	}
+	return updateRowTx(tx, row)
+}
+
+func (s *Service) applyBurn(row *domain.UserQuotaRow, credits int64) error {
 	if !row.EnforcementEnabled {
 		return nil
 	}
@@ -264,10 +304,10 @@ func (s *Service) RecordLLMBurn(_ context.Context, userID string, credits int64)
 		if row.TrialRemainingCredits < 0 {
 			row.TrialRemainingCredits = 0
 		}
-		return updateRow(s.db, row)
+		return nil
 	}
-	s.deductPaid(&row, credits)
-	return updateRow(s.db, row)
+	s.deductPaid(row, credits)
+	return nil
 }
 
 // RecordLLM deducts credits after a successful LLM call.

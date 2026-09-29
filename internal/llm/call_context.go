@@ -32,6 +32,27 @@ func CallContextFrom(ctx context.Context) domain.LLMCallContext {
 	return domain.LLMCallContext{CorrelationID: uuid.NewString()}
 }
 
+// AttachAttribution merges job/run attribution without changing the task label.
+func AttachAttribution(ctx context.Context, attr domain.LLMCallContext) context.Context {
+	c := CallContextFrom(ctx)
+	if attr.UserID != "" {
+		c.UserID = attr.UserID
+	}
+	if attr.JobID != "" {
+		c.JobID = attr.JobID
+	}
+	if attr.ApplicationID != "" {
+		c.ApplicationID = attr.ApplicationID
+	}
+	if attr.AutomationRunID != "" {
+		c.AutomationRunID = attr.AutomationRunID
+	}
+	if attr.OperationID != "" {
+		c.OperationID = attr.OperationID
+	}
+	return WithCallContext(ctx, c)
+}
+
 // WithTask sets a legacy log label and stable task on the context.
 func WithTask(ctx context.Context, label string) context.Context {
 	c := CallContextFrom(ctx)
