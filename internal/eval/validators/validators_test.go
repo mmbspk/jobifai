@@ -50,9 +50,13 @@ func TestApplicationQuestions_YearsCountAcceptsDurationRejectsStartYear(t *testi
 			{"question": "How many years of nursing experience do you have?", "match": "years_count", "value": "7"},
 		},
 	})
-	passOut := `[{"question":"How many years of nursing experience do you have?","answer":"7 years"}]`
-	res := Validate(domain.TaskApplicationQuestions, passOut, exp, true)
-	require.True(t, res.Pass, res.Errors)
+	for _, passOut := range []string{
+		`[{"question":"How many years of nursing experience do you have?","answer":"7 years"}]`,
+		`[{"question":"How many years of nursing experience do you have?","answer":"7"}]`,
+	} {
+		res := Validate(domain.TaskApplicationQuestions, passOut, exp, true)
+		require.True(t, res.Pass, res.Errors)
+	}
 
 	failOut := `[{"question":"How many years of nursing experience do you have?","answer":"2019"}]`
 	res = Validate(domain.TaskApplicationQuestions, failOut, exp, true)
