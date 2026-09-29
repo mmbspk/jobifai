@@ -44,9 +44,7 @@ func applyOverridesToRow(row domain.UserQuotaRow, o domain.QuotaUserOverrides) d
 	if o.EnforcementEnabled != nil {
 		row.EnforcementEnabled = *o.EnforcementEnabled
 	}
-	if o.TrialCredits != nil && row.Plan == domain.QuotaPlanTrial {
-		row.TrialRemainingCredits = int64(*o.TrialCredits)
-	}
+	// TrialCredits override is an allowance cap, not the persisted remaining balance.
 	if o.PeriodAllowanceCredits != nil && row.Plan != domain.QuotaPlanTrial {
 		row.PeriodAllowanceCredits = *o.PeriodAllowanceCredits
 	}

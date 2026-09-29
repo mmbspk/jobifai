@@ -109,7 +109,7 @@ func (s *Service) totalRemaining(row domain.UserQuotaRow) int64 {
 	return m + row.TopUpCreditsRemaining
 }
 
-func (s *Service) fillStatus(st *domain.QuotaStatus, row domain.UserQuotaRow, def domain.QuotaDefaults) {
+func (s *Service) fillStatus(st *domain.QuotaStatus, row domain.UserQuotaRow, def domain.QuotaDefaults, overrides domain.QuotaUserOverrides) {
 	st.EnforcementEnabled = row.EnforcementEnabled
 	st.Plan = row.Plan
 	st.OverageDebtCredits = row.OverageDebtCredits
@@ -120,8 +120,9 @@ func (s *Service) fillStatus(st *domain.QuotaStatus, row domain.UserQuotaRow, de
 	if row.Plan == domain.QuotaPlanTrial {
 		st.TrialRemainingCredits = &row.TrialRemainingCredits
 		st.TrialEndsAt = rfc3339(row.TrialEndsAt)
-		st.AllowanceCredits = int64(def.TrialCredits)
-		used := int64(def.TrialCredits) - row.TrialRemainingCredits
+		allowance := effectiveTrialAllowance(def, overrides)
+		st.AllowanceCredits = allowance
+		used := allowance - row.TrialRemainingCredits
 		if used < 0 {
 			used = 0
 		}
@@ -171,12 +172,13 @@ func (s *Service) Status(_ context.Context, userID string) (domain.QuotaStatus, 
 		return domain.QuotaStatus{}, err
 	}
 	def := loadDefaults(s.cfg)
+	overrides := loadOverrides(s.cfg, userID)
 	var st domain.QuotaStatus
 	if !row.EnforcementEnabled {
 		st.Unlimited = true
 		return st, nil
 	}
-	s.fillStatus(&st, row, def)
+	s.fillStatus(&st, row, def, overrides)
 	return st, nil
 }
 
@@ -418,6 +420,19 @@ func (s *Service) SaveDefaults(d domain.QuotaDefaults) error {
 }
 
 func (s *Service) SaveUserOverrides(userID string, o domain.QuotaUserOverrides) error {
+	def := loadDefaults(s.cfg)
+	prev := loadOverrides(s.cfg, userID)
+	oldAllow := effectiveTrialAllowance(def, prev)
+	newAllow := effectiveTrialAllowance(def, o)
+	if oldAllow != newAllow {
+		row, err := getRow(s.db, userID)
+		if err == nil && row.Plan == domain.QuotaPlanTrial {
+			row.TrialRemainingCredits = reconcileTrialRemaining(row.TrialRemainingCredits, oldAllow, newAllow)
+			if err := updateRow(s.db, row); err != nil {
+				return err
+			}
+		}
+	}
 	return saveOverrides(s.cfg, userID, o)
 }
 

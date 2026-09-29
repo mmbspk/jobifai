@@ -97,6 +97,70 @@ func TestLedger_RecordWithRealQuota_NoDeadlock(t *testing.T) {
 	assert.Less(t, rowAfter.TrialRemainingCredits, trialBefore)
 }
 
+func TestLedger_RecordWithRealQuota_TrialOverrideNotReplenished(t *testing.T) {
+	sqldb, err := appdb.Open(filepath.Join(t.TempDir(), "ledger-trial.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	cfg := config.NewStore(sqldb)
+	require.NoError(t, cfg.Set(domain.SystemUserID, quota.KeyQuotaDefaults, domain.QuotaDefaults{
+		EnforcementDefault: true,
+		CreditsPerUSD:      1000,
+		ServiceMarkup:      0,
+		PerCallFeeUSD:      0,
+		TrialCredits:       500,
+		TrialDays:          7,
+	}))
+
+	users := auth.NewUserStore(sqldb)
+	u, err := users.Create("trial-ledger@example.com", "hash", "Trial")
+	require.NoError(t, err)
+
+	qSvc := quota.NewService(sqldb, cfg, users)
+	require.NoError(t, qSvc.InitTrial(context.Background(), u.ID))
+	override := 1000
+	require.NoError(t, qSvc.SaveUserOverrides(u.ID, domain.QuotaUserOverrides{TrialCredits: &override}))
+
+	ledger := &usage.Ledger{
+		DB:      sqldb,
+		Catalog: pricing.DefaultCatalog(),
+		Quota:   qSvc,
+		Defaults: func() domain.QuotaDefaults {
+			return loadTestQuotaDefaults(cfg)
+		},
+	}
+
+	record := func(opID string) {
+		t.Helper()
+		require.NoError(t, ledger.Record(context.Background(), usage.RecordInput{
+			Call: domain.LLMCallContext{
+				Task:        domain.TaskJobScoring,
+				UserID:      u.ID,
+				OperationID: opID,
+			},
+			Provider:  "claude",
+			Requested: "claude-sonnet-4-6",
+			Actual:    "claude-sonnet-4-6",
+			Tokens:    pricing.TokenUsage{InputTokens: 5000, OutputTokens: 500},
+			Success:   true,
+			LogicalOp: true,
+		}))
+	}
+
+	row, err := qSvc.RowForUser(u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1000), row.TrialRemainingCredits)
+	record("op-t1")
+	row, err = qSvc.RowForUser(u.ID)
+	require.NoError(t, err)
+	afterFirst := row.TrialRemainingCredits
+	assert.Less(t, afterFirst, int64(1000))
+	record("op-t2")
+	row, err = qSvc.RowForUser(u.ID)
+	require.NoError(t, err)
+	assert.Less(t, row.TrialRemainingCredits, afterFirst)
+}
+
 func TestLedger_RecordWithRealQuota_AdminSkipsBurn(t *testing.T) {
 	sqldb, err := appdb.Open(filepath.Join(t.TempDir(), "ledger-admin.db"))
 	require.NoError(t, err)
