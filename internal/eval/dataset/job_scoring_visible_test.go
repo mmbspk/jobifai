@@ -14,7 +14,7 @@ import (
 // scenarioEvidence lists substrings that must appear in the production scoring prompt
 // for the label to be justified from ForScoring-visible facts.
 var scenarioEvidence = map[string][]string{
-	"strong_exact_fit":           {"acute care", "Registered Nurse"},
+	"strong_exact_fit":           {"acute care", "Registered Nurse", "Bachelor", "Nursing"},
 	"transferable_fit":           {"Enrolled Nurse", "enrolled nurse", "aged care"},
 	"borderline_fit":             {"Healthcare Assistant", "vitals"},
 	"seniority_mismatch":         {"Graduate Nurse", "8 years"},

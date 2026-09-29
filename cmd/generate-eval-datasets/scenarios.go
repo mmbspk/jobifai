@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/user/jobifai/internal/eval/dataset/appquestions"
 	"github.com/user/jobifai/internal/eval/dataset/formanswer"
 )
 
@@ -17,8 +18,8 @@ type jobScenario struct {
 
 func jobScoringScenarios() []jobScenario {
 	return []jobScenario{
-		{Tag: "strong_exact_fit", ExpectPass: true, Critical: true, Profile: nurseProfile("Registered Nurse", "2019", []string{"acute care", "patient monitoring"}),
-			JobDesc: "Registered Nurse for acute care ward. Requires current registration and patient monitoring experience. Melbourne onsite."},
+		{Tag: "strong_exact_fit", ExpectPass: true, Critical: true, Profile: nurseProfileWithEducation("Registered Nurse", "2019", []string{"acute care", "patient monitoring"}, "Bachelor", "Nursing"),
+			JobDesc: "Registered Nurse for acute care ward. Requires Bachelor-level nursing qualification and patient monitoring experience. Melbourne onsite."},
 		{Tag: "transferable_fit", ExpectPass: true, Critical: false, Profile: nurseProfile("Enrolled Nurse", "2018", []string{"aged care", "medication administration"}),
 			JobDesc: "Enrolled Nurse role in aged care with medication administration duties. Candidates with enrolled nurse qualifications and aged-care experience encouraged to apply."},
 		{Tag: "borderline_fit", ExpectPass: true, Critical: false, Profile: nurseProfile("Healthcare Assistant", "2020", []string{"patient transport", "vitals"}),
@@ -157,105 +158,26 @@ func synthEmploymentEthics(i int) map[string]any {
 	}
 }
 
-type appQScenario struct {
-	Tag      string
-	Profile  map[string]any
-	JobCtx   string
-	Questions []map[string]string
-	Expect   []map[string]any
-}
-
-func applicationQuestionScenarios() []appQScenario {
-	return []appQScenario{
-		{Tag: "auth_sponsor_notice", Profile: appQProfile(true, "8 weeks", 95000, true),
-			JobCtx: "Regional logistics company",
-			Questions: []map[string]string{
-				{"id": "auth", "text": "Are you authorized to work in Australia?"},
-				{"id": "sponsor", "text": "Do you require employer sponsorship?"},
-				{"id": "notice", "text": "What is your notice period?"},
-			},
-			Expect: []map[string]any{
-				{"question": "Are you authorized to work in Australia?", "match": "exact", "value": "Yes"},
-				{"question": "Do you require employer sponsorship?", "match": "exact", "value": "Yes"},
-				{"question": "What is your notice period?", "match": "exact", "value": "8 weeks"},
-			}},
-		{Tag: "years_experience", Profile: appQProfile(false, "4 weeks", 88000, false),
-			JobCtx: "Hospital administration",
-			Questions: []map[string]string{
-				{"id": "years", "text": "How many years of nursing experience do you have?"},
-				{"id": "salary", "text": "Expected salary (AUD)?"},
-			},
-			Expect: []map[string]any{
-				{"question": "How many years of nursing experience do you have?", "match": "exact", "value": "7"},
-				{"question": "Expected salary (AUD)?", "match": "exact", "value": "88000"},
-			}},
-		{Tag: "relocation", Profile: appQProfile(false, "4 weeks", 90000, true),
-			JobCtx: "National retail HQ",
-			Questions: []map[string]string{{"id": "reloc", "text": "Are you willing to relocate to Melbourne?"}},
-			Expect: []map[string]any{{"question": "Are you willing to relocate to Melbourne?", "match": "exact", "value": "Yes"}},
-		},
-		{Tag: "authorization_only", Profile: appQProfile(false, "2 weeks", 72000, false),
-			JobCtx: "Community pharmacy",
-			Questions: []map[string]string{{"id": "auth", "text": "Do you have unrestricted work rights in Australia?"}},
-			Expect: []map[string]any{{"question": "Do you have unrestricted work rights in Australia?", "match": "exact", "value": "Yes"}},
-		},
-		{Tag: "sponsorship_required", Profile: appQProfile(true, "12 weeks", 105000, false),
-			JobCtx: "Construction group",
-			Questions: []map[string]string{{"id": "sponsor", "text": "Will you now or in the future require visa sponsorship?"}},
-			Expect: []map[string]any{{"question": "Will you now or in the future require visa sponsorship?", "match": "exact", "value": "Yes"}},
-		},
-		{Tag: "salary_expectation", Profile: appQProfile(false, "4 weeks", 112000, false),
-			JobCtx: "Public sector agency",
-			Questions: []map[string]string{{"id": "salary", "text": "What are your salary expectations (AUD)?"}},
-			Expect: []map[string]any{{"question": "What are your salary expectations (AUD)?", "match": "exact", "value": "112000"}},
-		},
-		{Tag: "notice_and_start", Profile: appQProfile(false, "6 weeks", 80000, false),
-			JobCtx: "Education provider",
-			Questions: []map[string]string{
-				{"id": "notice", "text": "What is your notice period with your current employer?"},
-				{"id": "start", "text": "When can you start?"},
-			},
-			Expect: []map[string]any{
-				{"question": "What is your notice period with your current employer?", "match": "exact", "value": "6 weeks"},
-				{"question": "When can you start?", "match": "contains", "contains": "6 weeks"},
-			}},
-		{Tag: "management_years", Profile: appQProfile(false, "4 weeks", 99000, false),
-			JobCtx: "Operations consultancy",
-			Questions: []map[string]string{{"id": "mgmt", "text": "How many years have you led a team?"}},
-			Expect: []map[string]any{{"question": "How many years have you led a team?", "match": "contains", "contains": "7"}},
-		},
-	}
-}
-
-func appQProfile(sponsor bool, notice string, salary int, relocate bool) map[string]any {
-	return map[string]any{
-		"personal_information": map[string]any{"name": "Casey", "surname": "Nguyen"},
-		"application_defaults": map[string]any{
-			"requires_sponsorship": sponsor, "notice_period": notice,
-			"expected_salary_aud": salary, "willing_to_relocate": relocate,
-			"work_authorization": "authorized",
-		},
-		"experience_details": []map[string]any{{
-			"position": "Registered Nurse", "employment_period": "2019 – Present", "years_experience": 7,
-		}},
-	}
-}
-
 func synthApplicationQuestions(i int) map[string]any {
-	scenarios := applicationQuestionScenarios()
-	// expand with variants by profession for larger datasets
+	scenarios := appquestions.Scenarios()
 	base := scenarios[i%len(scenarios)]
+	profileJSON, _ := appquestions.ProfileJSON(base.Profile)
 	qs := make([]map[string]any, len(base.Questions))
+	answers := make([]map[string]any, len(base.Expect))
 	for j, q := range base.Questions {
-		qs[j] = map[string]any{"id": q["id"], "text": q["text"]}
+		qs[j] = map[string]any{"id": q.ID, "text": q.Text}
 	}
-	profile := base.Profile
+	for j, a := range base.Expect {
+		answers[j] = map[string]any{
+			"question": a.Question, "match": a.Match, "value": a.Value, "contains": a.Contains,
+		}
+	}
 	id := fmt.Sprintf("application_questions-%04d", i+1)
 	return map[string]any{
 		"id": id, "task": "application_questions", "classification": "synthetic", "critical": true,
 		"tags": []string{base.Tag},
-		"input": map[string]any{"profile": profile, "job_context": base.JobCtx, "questions": qs},
-		"expect": map[string]any{"answer_count": len(base.Expect), "answers": base.Expect},
+		"input": map[string]any{"profile": json.RawMessage(profileJSON), "job_context": base.JobCtx, "questions": qs},
+		"expect": map[string]any{"answer_count": len(base.Expect), "answers": answers},
 	}
 }
 

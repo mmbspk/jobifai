@@ -116,7 +116,7 @@ func BuildCoverLetterPrompt(profile *domain.ResumeProfile, jobDesc string) (stri
 
 // BuildApplicationQuestionsPrompt returns system and user messages for application questions.
 func BuildApplicationQuestionsPrompt(profile *domain.ResumeProfile, jobContext string, questions []string) (system, user string, err error) {
-	trimmed := ForScoring(profile)
+	trimmed := ForFormFilling(profile)
 	profileJSON, err := json.Marshal(trimmed)
 	if err != nil {
 		return "", "", err

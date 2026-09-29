@@ -14,7 +14,6 @@ import (
 )
 
 func TestCreateRun_PersistsBaselineSpecJSON(t *testing.T) {
-	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	sqldb, err := appdb.Open(dbPath)
 	require.NoError(t, err)

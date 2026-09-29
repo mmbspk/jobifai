@@ -69,10 +69,14 @@ func (s *Service) CreateRun(ctx context.Context, p RunParams) (string, error) {
 		async = *p.StartAsync
 	}
 	if async {
+		registerRunCompletion(id)
 		go func() {
 			ctx2, cancel := context.WithCancel(context.Background())
 			Runs.Register(id, cancel)
-			defer Runs.Unregister(id)
+			defer func() {
+				Runs.Unregister(id)
+				completeRun(id)
+			}()
 			_ = s.ExecuteRun(ctx2, id)
 		}()
 	}

@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -34,25 +33,39 @@ func TestEvalE2E_FakeRunCannotApprovePolicy(t *testing.T) {
 		BudgetUSD: 1, InitiatedBy: "test",
 	})
 	require.NoError(t, err)
-	waitComplete(t, sqldb, id)
+	require.NoError(t, engine.WaitForRunWithDiagnostics(sqldb, id, 60*time.Second))
+
+	var status string
+	require.NoError(t, sqldb.QueryRow(`SELECT status FROM model_eval_runs WHERE id=?`, id).Scan(&status))
+	require.Equal(t, runmeta.StatusCompleted, status, engine.RunDiagnostics(sqldb, id))
 
 	var recID string
-	require.NoError(t, sqldb.QueryRow(`SELECT id FROM model_eval_recommendations WHERE eval_run_id=? LIMIT 1`, id).Scan(&recID))
+	require.NoError(t, sqldb.QueryRow(`SELECT id FROM model_eval_recommendations WHERE eval_run_id=? LIMIT 1`, id).Scan(&recID),
+		engine.RunDiagnostics(sqldb, id))
 	approver := &policy.Approver{DB: sqldb, Catalog: pricing.DefaultCatalog(), BaseProvider: "claude"}
 	err = approver.ApproveRecommendation(ctx, domain.TaskJobScoring, recID, "admin")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fake")
 }
 
-func waitComplete(t *testing.T, db *sql.DB, id string) {
-	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		var st string
-		_ = db.QueryRow(`SELECT status FROM model_eval_runs WHERE id=?`, id).Scan(&st)
-		if st == runmeta.StatusCompleted || st == runmeta.StatusFailed || st == runmeta.StatusBudgetExhausted {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+func TestEvalE2E_AsyncExecuteRunCompletes(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqldb, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	svc := &engine.Service{DB: sqldb, Run: engine.FakeRunner{}, Config: engine.Config{MaxConcurrency: 2}}
+	id, err := svc.CreateRun(context.Background(), engine.RunParams{
+		Task: domain.TaskFormAnswer, DatasetVersion: "smoke", DatasetSource: "synthetic",
+		Purpose: runmeta.PurposeSmoke, RunnerType: runmeta.RunnerFake,
+		Baseline:   candidate.Spec{Provider: "claude", Model: "claude-sonnet-4-6"},
+		Candidates: []candidate.Spec{{Provider: "claude", Model: "claude-haiku-4-5-20251001"}},
+		BudgetUSD:  1, InitiatedBy: "test",
+	})
+	require.NoError(t, err)
+	require.NoError(t, engine.WaitForRunWithDiagnostics(sqldb, id, 60*time.Second))
+	var completed, planned int
+	require.NoError(t, sqldb.QueryRow(`SELECT cases_completed, cases_planned FROM model_eval_runs WHERE id=?`, id).Scan(&completed, &planned))
+	require.Equal(t, planned, completed)
 }
