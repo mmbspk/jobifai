@@ -13,6 +13,9 @@ import (
 func ApplyTask(base *llm.Client, global domain.LLMConfig, taskModels map[string]domain.TaskModel, policy *domain.TaskModelPolicyRow, catalog *pricing.Catalog, legacyTaskKey string) (*llm.Client, error) {
 	res, err := ResolveTaskModel(legacyTaskKey, global, taskModels, policy, catalog, global.Provider)
 	if err != nil {
+		if policy != nil && policy.State == domain.PolicyStateApproved {
+			return nil, fmt.Errorf("%w: %w", ErrApprovedPolicy, err)
+		}
 		return nil, err
 	}
 	if res.Provider != global.Provider {

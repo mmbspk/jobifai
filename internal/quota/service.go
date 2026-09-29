@@ -69,17 +69,7 @@ func (s *Service) getOrCreateRow(userID string) (domain.UserQuotaRow, error) {
 }
 
 func (s *Service) applyOverrides(userID string, row domain.UserQuotaRow) domain.UserQuotaRow {
-	o := loadOverrides(s.cfg, userID)
-	if o.EnforcementEnabled != nil {
-		row.EnforcementEnabled = *o.EnforcementEnabled
-	}
-	if o.TrialCredits != nil && row.Plan == domain.QuotaPlanTrial {
-		row.TrialRemainingCredits = int64(*o.TrialCredits)
-	}
-	if o.PeriodAllowanceCredits != nil && row.Plan != domain.QuotaPlanTrial {
-		row.PeriodAllowanceCredits = *o.PeriodAllowanceCredits
-	}
-	return row
+	return applyOverridesToRow(row, loadOverrides(s.cfg, userID))
 }
 
 // InitTrial creates a trial quota row if one does not exist.
@@ -270,29 +260,6 @@ func (s *Service) RecordLLMBurn(_ context.Context, userID string, credits int64)
 		return err
 	}
 	return updateRow(s.db, row)
-}
-
-// RecordLLMBurnTx deducts credits inside an existing SQL transaction.
-func (s *Service) RecordLLMBurnTx(tx *sql.Tx, userID string, credits int64) error {
-	if credits <= 0 || s.isAdmin(userID) {
-		return nil
-	}
-	row, err := getRowTx(tx, userID)
-	if err != nil {
-		if !isNotFound(err) {
-			return err
-		}
-		// Row must exist before billing; create outside tx in normal flow.
-		return err
-	}
-	row = s.applyOverrides(userID, row)
-	if !row.EnforcementEnabled {
-		return nil
-	}
-	if err := s.applyBurn(&row, credits); err != nil {
-		return err
-	}
-	return updateRowTx(tx, row)
 }
 
 func (s *Service) applyBurn(row *domain.UserQuotaRow, credits int64) error {

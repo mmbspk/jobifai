@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"net/http"
 	"os"
@@ -307,19 +308,25 @@ func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.Secrets
 	if ledger != nil {
 		client = client.WithBilling(llm.BillingHooks{Ledger: ledger})
 	}
-	extractC := taskApplyOrBase(client, gs, policyStore, catalog, domain.TaskResumeExtract, userID)
-	tailorC := taskApplyOrBase(client, gs, policyStore, catalog, "tailoring", userID)
-	coverC := taskApplyOrBase(client, gs, policyStore, catalog, "cover_letter", userID)
-	formC := taskApplyOrBase(client, gs, policyStore, catalog, "form_filling", userID)
+	extractC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskResumeExtract, userID)
+	tailorC := taskApplyWithFallback(client, gs, policyStore, catalog, "tailoring", userID)
+	coverC := taskApplyWithFallback(client, gs, policyStore, catalog, "cover_letter", userID)
+	formC := taskApplyWithFallback(client, gs, policyStore, catalog, "form_filling", userID)
 	tailor := resume.NewTailor(tailorC, coverC, formC)
 	return resume.NewExtractor(extractC), tailor, renderer, client
 }
 
-// taskApplyOrBase resolves a per-task client; on policy/config errors it logs and returns the base client (never nil).
-func taskApplyOrBase(base *llm.Client, gs domain.GeneralSettings, policyStore *llmpolicy.Store, catalog *pricing.Catalog, task, userID string) *llm.Client {
+// taskApplyWithFallback uses the base client for legacy/user misconfiguration only.
+// Invalid approved system policies fail loudly (HTTP handlers may still fall back to base).
+func taskApplyWithFallback(base *llm.Client, gs domain.GeneralSettings, policyStore *llmpolicy.Store, catalog *pricing.Catalog, task, userID string) *llm.Client {
 	c, err := taskApply(base, gs, policyStore, catalog, task)
 	if err != nil {
-		log.Error().Err(err).Str("user_id", userID).Str("task", task).Msg("task model resolution failed; using base LLM client")
+		if errors.Is(err, llmpolicy.ErrApprovedPolicy) {
+			log.Error().Err(err).Str("event", "approved_task_policy_invalid").Str("user_id", userID).Str("task", task).
+				Msg("approved task policy invalid; refusing task override (using base client for this request)")
+		} else {
+			log.Error().Err(err).Str("user_id", userID).Str("task", task).Msg("task model resolution failed; using base LLM client")
+		}
 		return base
 	}
 	if c == nil {

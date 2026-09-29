@@ -512,10 +512,14 @@ type ollamaResponse struct {
 	Message struct {
 		Content string `json:"content"`
 	} `json:"message"`
-	Error string `json:"error,omitempty"`
+	PromptEvalCount int `json:"prompt_eval_count"`
+	EvalCount       int `json:"eval_count"`
+	Error           string `json:"error,omitempty"`
 }
 
 func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (string, error) {
+	start := time.Now()
+	ctx = c.prepareCallContext(ctx)
 	turns := make([]openaiMessage, len(msgs))
 	for i, m := range msgs {
 		turns[i] = openaiMessage(m)
@@ -541,6 +545,17 @@ func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (string, error)
 	if or.Error != "" {
 		log.Error().Bool("llm_call", true).Msgf("llm: ollama/%s%s error: %s", c.cfg.Model, taskLabel(ctx), or.Error)
 		return "", fmt.Errorf("ollama error: %s", or.Error)
+	}
+	bu := billingUsage{
+		TokenUsage: pricing.TokenUsage{
+			InputTokens:  int64(or.PromptEvalCount),
+			OutputTokens: int64(or.EvalCount),
+		},
+		ActualModel:         c.cfg.Model,
+		ActualModelVerified: true,
+	}
+	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
+		return "", billingPersistErr(err)
 	}
 	log.Debug().Bool("llm_call", true).Msgf("llm: ollama/%s%s ✓", c.cfg.Model, taskLabel(ctx))
 	return or.Message.Content, nil

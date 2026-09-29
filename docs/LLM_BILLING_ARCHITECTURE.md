@@ -15,6 +15,10 @@
 
 Legacy `usage_totals` remains updated for compatibility; historical rows are not backfilled into events.
 
+## Ollama (local)
+
+Ollama calls are recorded in `llm_usage_events` for telemetry (task, user, model, tokens when reported, job/run IDs, latency, success). Provider raw cost is **zero**, credits burned are **zero**, and pricing source is `local/ollama`. Ollama is intended for local/developer use; paid cloud providers carry subscription quota.
+
 ## Operator workflow: evaluate a new model
 
 1. Refresh/discover model in catalog (builtin or optional external source).

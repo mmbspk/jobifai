@@ -18,13 +18,11 @@ func Open(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	// SQLite (WAL or otherwise) only allows one writer at a time. With the
-	// default pool size, writers from different goroutines land on different
-	// connections and race the WAL writer lock — returning SQLITE_BUSY even
-	// while _busy_timeout is set. Pinning the pool to a single connection
-	// turns that race into harmless in-process queuing.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
+	// WAL mode with _busy_timeout allows concurrent readers while writers queue.
+	// Billing prepares quota state before BEGIN so transactions never nest *sql.DB
+	// queries on a second pooled connection during an open tx.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}

@@ -10,6 +10,7 @@ import (
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/pricing"
+	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/usage"
 )
 
@@ -22,7 +23,17 @@ func (s *stubQuota) RecordLLMBurn(_ context.Context, _ string, credits int64) er
 	return nil
 }
 
-func (s *stubQuota) RecordLLMBurnTx(_ *sql.Tx, _ string, credits int64) error {
+func (s *stubQuota) PrepareTransactionalBurn(_ string, credits int64) (quota.BurnPrepare, error) {
+	if credits <= 0 {
+		return quota.BurnPrepare{SkipBurn: true}, nil
+	}
+	return quota.BurnPrepare{}, nil
+}
+
+func (s *stubQuota) CommitTransactionalBurn(_ *sql.Tx, _ string, credits int64, prep quota.BurnPrepare) error {
+	if prep.SkipBurn {
+		return nil
+	}
 	s.credits += credits
 	return nil
 }

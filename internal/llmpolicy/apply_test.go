@@ -20,7 +20,7 @@ func TestApplyTask_InvalidApprovedPolicyReturnsError(t *testing.T) {
 	}
 	_, err := llmpolicy.ApplyTask(base, global, nil, pol, pricing.DefaultCatalog(), "scoring")
 	require.Error(t, err)
-	require.ErrorIs(t, err, pricing.ErrUnpricedModel)
+	require.ErrorIs(t, err, llmpolicy.ErrApprovedPolicy)
 }
 
 func TestApplyTask_CrossProviderPolicyReturnsError(t *testing.T) {

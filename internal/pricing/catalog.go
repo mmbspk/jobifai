@@ -57,7 +57,7 @@ func DefaultCatalog() *Catalog {
 	seed := []ModelRecord{
 		{
 			Provider: "claude", CanonicalID: "claude-sonnet-4-6",
-			Aliases: []string{"claude-sonnet-4.6", "claude-sonnet-4-6-20250514"},
+			Aliases: []string{"claude-sonnet-4.6"},
 			InputPerM: 3, OutputPerM: 15, CacheWritePerM: 3.75, CacheReadPerM: 0.30,
 			ContextLimit: 1_000_000, SupportsVision: true, SupportsStructured: true, Active: true, Source: "anthropic-list",
 			CacheWrite5mPerM: 3.75, CacheWrite1hPerM: 6.0,
@@ -78,7 +78,7 @@ func DefaultCatalog() *Catalog {
 		},
 		{
 			Provider: "claude", CanonicalID: "claude-sonnet-5-5",
-			Aliases: []string{"claude-sonnet-5.5", "claude-sonnet-5-5-20250929"},
+			Aliases: []string{"claude-sonnet-5.5"},
 			InputPerM: 2, OutputPerM: 10, CacheWritePerM: 2.5, CacheReadPerM: 0.20,
 			ContextLimit: 1_000_000, SupportsVision: true, SupportsStructured: true, Active: true, Source: "anthropic-list",
 			CacheWrite5mPerM: 2.5, CacheWrite1hPerM: 4.0,

@@ -21,7 +21,8 @@ type QuotaRecorder interface {
 
 // TxQuotaBurner supports quota deduction inside the billing transaction.
 type TxQuotaBurner interface {
-	RecordLLMBurnTx(tx *sql.Tx, userID string, credits int64) error
+	PrepareTransactionalBurn(userID string, credits int64) (quota.BurnPrepare, error)
+	CommitTransactionalBurn(tx *sql.Tx, userID string, credits int64, prep quota.BurnPrepare) error
 }
 
 // Ledger persists LLM usage events and keeps legacy aggregates in sync.
@@ -59,43 +60,59 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 		return fmt.Errorf("billing: missing operation id for billable call")
 	}
 
-	res, err := l.Catalog.Resolve(in.Actual, false)
-	if err != nil {
-		return err
+	localOllama := in.Provider == "ollama"
+	pricingSource := "local/ollama"
+	pricingVersion := "local"
+	var rawMicro int64
+	if localOllama {
+		rawMicro = 0
+	} else {
+		res, err := l.Catalog.Resolve(in.Actual, false)
+		if err != nil {
+			return err
+		}
+		if res.UsedFallback {
+			log.Warn().
+				Str("event", "llm_unpriced_model").
+				Str("model", in.Actual).
+				Str("task", in.Call.Task).
+				Msg("billing used conservative fallback pricing for unknown model")
+		}
+		rawMicro = pricing.RawCostMicroUSD(res.Record, in.Tokens)
+		pricingSource = res.Source
+		_, ver, refreshed := l.Catalog.Meta()
+		pricingVersion = ver
+		if !refreshed.IsZero() {
+			pricingVersion = ver + "@" + refreshed.Format(time.RFC3339)
+		}
 	}
-	if res.UsedFallback {
-		log.Warn().
-			Str("event", "llm_unpriced_model").
-			Str("model", in.Actual).
-			Str("task", in.Call.Task).
-			Msg("billing used conservative fallback pricing for unknown model")
-	}
-	rawMicro := pricing.RawCostMicroUSD(res.Record, in.Tokens)
 	def := domain.QuotaDefaults{}
 	if l.Defaults != nil {
 		def = l.Defaults()
 	}
-	loadedUSD := quota.USDFromMicro(rawMicro) * (1 + def.ServiceMarkup)
-	if in.LogicalOp && in.Success && def.PerCallFeeUSD > 0 {
-		loadedUSD += def.PerCallFeeUSD
-	}
-	if loadedUSD < 0 {
-		loadedUSD = 0
-	}
-	loadedMicro := int64(loadedUSD * 1_000_000)
-	credits := quota.CreditsFromLoadedUSD(def, loadedMicro)
-	if credits < 1 && in.Success && in.LogicalOp && (rawMicro > 0 || def.PerCallFeeUSD > 0) {
-		credits = 1
+	loadedMicro := int64(0)
+	credits := int64(0)
+	if !localOllama {
+		loadedUSD := quota.USDFromMicro(rawMicro) * (1 + def.ServiceMarkup)
+		if in.LogicalOp && in.Success && def.PerCallFeeUSD > 0 {
+			loadedUSD += def.PerCallFeeUSD
+		}
+		if loadedUSD < 0 {
+			loadedUSD = 0
+		}
+		loadedMicro = int64(loadedUSD * 1_000_000)
+		credits = quota.CreditsFromLoadedUSD(def, loadedMicro)
+		if credits < 1 && in.Success && in.LogicalOp && (rawMicro > 0 || def.PerCallFeeUSD > 0) {
+			credits = 1
+		}
 	}
 	if !in.Success || !in.LogicalOp {
 		credits = 0
-		loadedMicro = 0
-	}
-
-	_, priceVer, refreshed := l.Catalog.Meta()
-	pricingVersion := priceVer
-	if !refreshed.IsZero() {
-		pricingVersion = priceVer + "@" + refreshed.Format(time.RFC3339)
+		if localOllama {
+			loadedMicro = 0
+		} else {
+			loadedMicro = 0
+		}
 	}
 
 	idempotencyKey := ""
@@ -131,8 +148,21 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 		ApplicationID:       in.Call.ApplicationID,
 		AutomationRunID:     in.Call.AutomationRunID,
 		Attempt:             in.Call.Attempt,
-		PricingSource:       res.Source,
+		PricingSource:       pricingSource,
 		PricingVersion:      pricingVersion,
+	}
+
+	var burnPrep quota.BurnPrepare
+	if credits > 0 && l.Quota != nil {
+		tb, ok := l.Quota.(TxQuotaBurner)
+		if !ok {
+			return fmt.Errorf("quota service does not support transactional burn")
+		}
+		var prepErr error
+		burnPrep, prepErr = tb.PrepareTransactionalBurn(userID, credits)
+		if prepErr != nil {
+			return prepErr
+		}
 	}
 
 	tx, err := l.DB.BeginTx(ctx, nil)
@@ -143,12 +173,10 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 
 	var quotaFn func(*sql.Tx, string, int64) error
 	if credits > 0 && l.Quota != nil {
-		if tb, ok := l.Quota.(TxQuotaBurner); ok {
-			quotaFn = func(tx *sql.Tx, uid string, c int64) error {
-				return tb.RecordLLMBurnTx(tx, uid, c)
-			}
-		} else {
-			return fmt.Errorf("quota service does not support transactional burn")
+		tb := l.Quota.(TxQuotaBurner)
+		prep := burnPrep
+		quotaFn = func(tx *sql.Tx, uid string, c int64) error {
+			return tb.CommitTransactionalBurn(tx, uid, c, prep)
 		}
 	}
 

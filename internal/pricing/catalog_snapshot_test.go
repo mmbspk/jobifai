@@ -21,3 +21,26 @@ func TestCatalog_AnthropicHaikuSnapshotID(t *testing.T) {
 	assert.Equal(t, 2.0, res.Record.CacheWrite1hPerM)
 	assert.Equal(t, 0.10, res.Record.CacheReadPerM)
 }
+
+func TestCatalog_SpeculativeSonnet46SnapshotNotAliased(t *testing.T) {
+	t.Parallel()
+	c := DefaultCatalog()
+	res, err := c.Resolve("claude-sonnet-4-6-20250514", false)
+	require.NoError(t, err)
+	assert.NotEqual(t, LookupExact, res.Kind)
+	assert.NotEqual(t, LookupAlias, res.Kind)
+}
+
+func TestCatalog_DocumentedAliasesOnly(t *testing.T) {
+	t.Parallel()
+	c := DefaultCatalog()
+	for _, id := range []string{
+		"claude-haiku-4-5-20251001",
+		"claude-sonnet-4-5-20250929",
+	} {
+		res, err := c.Resolve(id, false)
+		require.NoError(t, err)
+		assert.True(t, res.Known, id)
+		assert.Equal(t, LookupAlias, res.Kind, id)
+	}
+}
