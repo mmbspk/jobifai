@@ -42,6 +42,23 @@ func TestResumeExtract_InventedEmployerCritical(t *testing.T) {
 	require.Greater(t, res.Metrics["invented_facts"].(int), 0)
 }
 
+func TestApplicationQuestions_YearsCountAcceptsDurationRejectsStartYear(t *testing.T) {
+	t.Parallel()
+	exp, _ := json.Marshal(map[string]any{
+		"answer_count": 1,
+		"answers": []map[string]any{
+			{"question": "How many years of nursing experience do you have?", "match": "years_count", "value": "7"},
+		},
+	})
+	passOut := `[{"question":"How many years of nursing experience do you have?","answer":"7 years"}]`
+	res := Validate(domain.TaskApplicationQuestions, passOut, exp, true)
+	require.True(t, res.Pass, res.Errors)
+
+	failOut := `[{"question":"How many years of nursing experience do you have?","answer":"2019"}]`
+	res = Validate(domain.TaskApplicationQuestions, failOut, exp, true)
+	require.False(t, res.Pass)
+}
+
 func TestApplicationQuestions_SwappedOrderFails(t *testing.T) {
 	t.Parallel()
 	exp, _ := json.Marshal(map[string]any{

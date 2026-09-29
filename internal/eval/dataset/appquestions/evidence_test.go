@@ -29,6 +29,10 @@ func TestApplicationQuestionsScenarios_EvidenceInProviderMessages(t *testing.T) 
 				if strings.HasSuffix(exp.Value, " weeks") {
 					require.Contains(t, blob, strings.ToLower(exp.Value), "notice evidence")
 				}
+				if exp.Match == "years_count" {
+					require.Contains(t, blob, "2019", "employment period start evidence")
+					require.Contains(t, blob, "2026", "employment period end evidence")
+				}
 				if exp.Contains == "2019" {
 					require.Contains(t, blob, "2019", "employment period evidence")
 				}
@@ -57,6 +61,10 @@ func TestApplicationQuestionsFullDataset_EvidenceSurvival(t *testing.T) {
 		for _, a := range exp.Answers {
 			if isSalary(a.Value) {
 				require.Contains(t, blob, strings.ToLower(a.Value), "case %s", c.ID)
+			}
+			if a.Match == "years_count" {
+				require.Contains(t, blob, "2019", "case %s", c.ID)
+				require.Contains(t, blob, "2026", "case %s", c.ID)
 			}
 			if a.Contains != "" {
 				require.Contains(t, blob, strings.ToLower(a.Contains), "case %s", c.ID)

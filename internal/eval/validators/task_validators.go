@@ -443,6 +443,10 @@ func validateApplicationQuestions(output string, expect json.RawMessage, critica
 			if rule.Contains != "" && !strings.Contains(strings.ToLower(ans), strings.ToLower(rule.Contains)) {
 				res.Errors = append(res.Errors, "missing grounded fact in answer")
 			}
+		case "years_count":
+			if !answerMatchesYearsCount(ans, rule.Value) {
+				res.Errors = append(res.Errors, "years count mismatch")
+			}
 		}
 		if rule.MaxWords > 0 && wordCount(ans) > rule.MaxWords {
 			res.Errors = append(res.Errors, "answer too long")
@@ -460,6 +464,28 @@ func validateApplicationQuestions(output string, expect json.RawMessage, critica
 
 func fieldPresent(lowText, want string) bool {
 	return strings.Contains(lowText, strings.ToLower(strings.TrimSpace(want)))
+}
+
+var yearsCountWord = regexp.MustCompile(`(?i)\b(\d+)\s*(?:years?|yrs?\.?)\b`)
+
+func answerMatchesYearsCount(answer, wantYears string) bool {
+	want := strings.TrimSpace(wantYears)
+	if want == "" {
+		return false
+	}
+	ans := strings.TrimSpace(answer)
+	if ans == want {
+		return true
+	}
+	lower := strings.ToLower(ans)
+	if m := yearsCountWord.FindStringSubmatch(lower); len(m) >= 2 && m[1] == want {
+		return true
+	}
+	// Reject start-year answers (e.g. "2019") when the question asks for duration.
+	if regexp.MustCompile(`^\d{4}$`).MatchString(ans) {
+		return false
+	}
+	return false
 }
 
 func titleMatches(prof domain.ResumeProfile, wantTitle string) bool {

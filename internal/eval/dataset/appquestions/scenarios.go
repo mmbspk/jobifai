@@ -43,13 +43,13 @@ func Scenarios() []Scenario {
 		},
 		{
 			Tag: "years_and_salary", JobCtx: "Hospital administration",
-			Profile: profile(false, "4 weeks", "88000"),
+			Profile: profileWithEmploymentPeriod(false, "4 weeks", "88000", "2019 – 2026"),
 			Questions: []Question{
 				{ID: "years", Text: "How many years of nursing experience do you have?"},
 				{ID: "salary", Text: "Expected salary (AUD)?"},
 			},
 			Expect: []AnswerExpect{
-				{Question: "How many years of nursing experience do you have?", Match: "contains", Contains: "2019"},
+				{Question: "How many years of nursing experience do you have?", Match: "years_count", Value: "7"},
 				{Question: "Expected salary (AUD)?", Match: "exact", Value: "88000"},
 			},
 		},
@@ -119,6 +119,10 @@ func Scenarios() []Scenario {
 }
 
 func profile(sponsor bool, notice, salary string) domain.ResumeProfile {
+	return profileWithEmploymentPeriod(sponsor, notice, salary, "2019 – Present")
+}
+
+func profileWithEmploymentPeriod(sponsor bool, notice, salary, period string) domain.ResumeProfile {
 	return domain.ResumeProfile{
 		PersonalInformation: domain.PersonalInformation{Name: "Casey", Surname: "Nguyen"},
 		ApplicationDefaults: domain.ApplicationDefaults{
@@ -127,7 +131,7 @@ func profile(sponsor bool, notice, salary string) domain.ResumeProfile {
 			SalaryExpectation:   salary,
 		},
 		ExperienceDetails: []domain.ExperienceDetail{{
-			Position: "Registered Nurse", Company: "Regional Health", EmploymentPeriod: "2019 – Present",
+			Position: "Registered Nurse", Company: "Regional Health", EmploymentPeriod: period,
 		}},
 	}
 }
