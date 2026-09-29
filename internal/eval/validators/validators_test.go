@@ -59,8 +59,8 @@ func TestApplicationQuestions_YearsCountAcceptsDurationRejectsStartYear(t *testi
 	}
 
 	failOut := `[{"question":"How many years of nursing experience do you have?","answer":"2019"}]`
-	res = Validate(domain.TaskApplicationQuestions, failOut, exp, true)
-	require.False(t, res.Pass)
+	resFail := Validate(domain.TaskApplicationQuestions, failOut, exp, true)
+	require.False(t, resFail.Pass)
 }
 
 func TestApplicationQuestions_SwappedOrderFails(t *testing.T) {
