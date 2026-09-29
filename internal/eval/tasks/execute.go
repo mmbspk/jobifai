@@ -144,9 +144,9 @@ func runCover(ctx context.Context, client *llm.Client, c dataset.Case) (string, 
 
 func runQuestions(ctx context.Context, client *llm.Client, c dataset.Case) (string, error) {
 	var in struct {
-		Profile    json.RawMessage `json:"profile"`
-		JobContext string          `json:"job_context"`
-		Questions  []string        `json:"questions"`
+		Profile    json.RawMessage   `json:"profile"`
+		JobContext string            `json:"job_context"`
+		Questions  []json.RawMessage `json:"questions"`
 	}
 	if err := json.Unmarshal(c.Input, &in); err != nil {
 		return "", err
@@ -155,7 +155,18 @@ func runQuestions(ctx context.Context, client *llm.Client, c dataset.Case) (stri
 	if err := json.Unmarshal(in.Profile, &profile); err != nil {
 		return "", err
 	}
-	sys, user, err := resume.BuildApplicationQuestionsPrompt(&profile, in.JobContext, in.Questions)
+	qs := make([]string, 0, len(in.Questions))
+	for _, q := range in.Questions {
+		var obj struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(q, &obj) == nil && obj.Text != "" {
+			qs = append(qs, obj.Text)
+			continue
+		}
+		qs = append(qs, string(q))
+	}
+	sys, user, err := resume.BuildApplicationQuestionsPrompt(&profile, in.JobContext, qs)
 	if err != nil {
 		return "", err
 	}

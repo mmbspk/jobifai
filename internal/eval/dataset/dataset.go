@@ -35,6 +35,7 @@ type Case struct {
 	Expect         json.RawMessage `json:"expect"`
 	Critical       bool            `json:"critical"`
 	Tags           []string        `json:"tags,omitempty"`
+	BundleDir      string          `json:"-"`
 }
 
 // Bundle is manifest + loaded cases.
@@ -89,6 +90,9 @@ func loadDir(dir string) (Bundle, error) {
 	sum := sha256.Sum256(mustRead(casesPath))
 	if m.SHA256 != "" && !strings.EqualFold(m.SHA256, hex.EncodeToString(sum[:])) {
 		return Bundle{}, fmt.Errorf("dataset hash mismatch")
+	}
+	for i := range cases {
+		cases[i].BundleDir = dir
 	}
 	return Bundle{Manifest: m, Cases: cases, RootDir: dir}, nil
 }

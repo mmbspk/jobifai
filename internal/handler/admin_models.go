@@ -11,6 +11,7 @@ import (
 	"github.com/user/jobifai/internal/eval/candidate"
 	"github.com/user/jobifai/internal/eval/engine"
 	"github.com/user/jobifai/internal/eval/policy"
+	"github.com/user/jobifai/internal/eval/recommend"
 	"github.com/user/jobifai/internal/eval/providers"
 	"github.com/user/jobifai/internal/eval/runmeta"
 	"github.com/user/jobifai/internal/llmpolicy"
@@ -28,6 +29,7 @@ func (h *AdminHandlers) evalService(real bool) *engine.Service {
 		gs := config.ResolveOperationalSettings(h.svc.Config, "__default__")
 		svc.Run = engine.ProviderRunner{Factory: &providers.Factory{
 			Catalog: pricing.DefaultCatalog(),
+			EvalPricing: &pricing.EvalCatalog{Approved: pricing.DefaultCatalog(), DB: h.svc.DB},
 			BaseLLM: gs.LLM,
 			KeyResolver: func(provider string) (string, bool) {
 				if provider == gs.LLM.Provider {
@@ -211,7 +213,7 @@ func (h *AdminHandlers) ModelsPolicyRollback(w http.ResponseWriter, r *http.Requ
 func (h *AdminHandlers) ModelsRecommendations(w http.ResponseWriter, r *http.Request) {
 	task := r.URL.Query().Get("task")
 	q := `SELECT r.id, r.eval_run_id, r.task, r.outcome, r.reason, r.deployable, r.created_at,
-	       COALESCE(e.runner_type,'fake'), COALESCE(e.run_purpose,'smoke')
+	       COALESCE(e.runner_type,'fake'), COALESCE(e.run_purpose,'smoke'), COALESCE(e.status,'')
 	       FROM model_eval_recommendations r
 	       JOIN model_eval_runs e ON e.id = r.eval_run_id`
 	args := []any{}
@@ -228,14 +230,17 @@ func (h *AdminHandlers) ModelsRecommendations(w http.ResponseWriter, r *http.Req
 	defer func() { _ = rows.Close() }()
 	var out []map[string]any
 	for rows.Next() {
-		var id, runID, t, outcome, reason, created, runnerType, purpose string
+		var id, runID, t, outcome, reason, created, runnerType, purpose, runStatus string
 		var deploy int
-		_ = rows.Scan(&id, &runID, &t, &outcome, &reason, &deploy, &created, &runnerType, &purpose)
+		_ = rows.Scan(&id, &runID, &t, &outcome, &reason, &deploy, &created, &runnerType, &purpose, &runStatus)
+		approvable := deploy == 1 && outcome == recommend.OutcomeRecommend &&
+			runnerType == runmeta.RunnerReal && purpose == runmeta.PurposeBenchmark &&
+			runStatus == runmeta.StatusCompleted
 		out = append(out, map[string]any{
 			"id": id, "eval_run_id": runID, "task": t, "outcome": outcome,
 			"reason": reason, "deployable": deploy == 1, "created_at": created,
-			"runner_type": runnerType, "run_purpose": purpose,
-			"approvable": deploy == 1 && outcome == "recommend" && runnerType == runmeta.RunnerReal && purpose == runmeta.PurposeBenchmark,
+			"runner_type": runnerType, "run_purpose": purpose, "run_status": runStatus,
+			"approvable": approvable,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

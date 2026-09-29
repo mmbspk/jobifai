@@ -15,8 +15,15 @@ type Metrics struct {
 	SuccessRate     float64        `json:"success_rate"`
 	DetPassRate     float64        `json:"deterministic_pass_rate"`
 	CriticalFails   int            `json:"critical_failures"`
+	ScoringTP           int        `json:"scoring_tp,omitempty"`
+	ScoringTN           int        `json:"scoring_tn,omitempty"`
+	ScoringFP           int        `json:"scoring_fp,omitempty"`
+	ScoringFN           int        `json:"scoring_fn,omitempty"`
 	ScoringFalsePosRate float64    `json:"scoring_false_positive_rate,omitempty"`
 	ScoringFalseNegRate float64    `json:"scoring_false_negative_rate,omitempty"`
+	ScoringAccuracy     float64    `json:"scoring_accuracy,omitempty"`
+	ScoringPrecision    float64    `json:"scoring_precision,omitempty"`
+	ScoringRecall       float64    `json:"scoring_recall,omitempty"`
 	MeanLatencyMS   float64        `json:"mean_latency_ms"`
 	P90LatencyMS    float64        `json:"p90_latency_ms"`
 	TotalCostMicro  int64          `json:"total_cost_usd_micro"`
@@ -102,7 +109,7 @@ func confidenceLabel(n int, passRate float64) string {
 }
 
 // Aggregate builds metrics from per-case rows.
-func Aggregate(spec candidate.Spec, passes, successes, critical int, latencies []int64, costs []int64, scoringFN, scoringFP int) Metrics {
+func Aggregate(spec candidate.Spec, passes, successes, critical int, latencies []int64, costs []int64, scoringTP, scoringTN, scoringFP, scoringFN int) Metrics {
 	m := Metrics{Candidate: spec, CaseCount: len(latencies)}
 	if m.CaseCount == 0 {
 		return m
@@ -114,15 +121,27 @@ func Aggregate(spec candidate.Spec, passes, successes, critical int, latencies [
 	m.SuccessRate = float64(successes) / float64(m.CaseCount)
 	m.DetPassRate = float64(passes) / float64(m.CaseCount)
 	m.CriticalFails = critical
+	m.ScoringTP, m.ScoringTN, m.ScoringFP, m.ScoringFN = scoringTP, scoringTN, scoringFP, scoringFN
 	var sumLat int64
 	for _, l := range latencies {
 		sumLat += l
 	}
 	m.MeanLatencyMS = float64(sumLat) / float64(m.CaseCount)
 	m.P90LatencyMS = p90(latencies)
+	posDenom := scoringTP + scoringFN
+	if posDenom > 0 {
+		m.ScoringFalseNegRate = float64(scoringFN) / float64(posDenom)
+		m.ScoringRecall = float64(scoringTP) / float64(posDenom)
+	}
+	negDenom := scoringTN + scoringFP
+	if negDenom > 0 {
+		m.ScoringFalsePosRate = float64(scoringFP) / float64(negDenom)
+	}
 	if m.CaseCount > 0 {
-		m.ScoringFalseNegRate = float64(scoringFN) / float64(m.CaseCount)
-		m.ScoringFalsePosRate = float64(scoringFP) / float64(m.CaseCount)
+		m.ScoringAccuracy = float64(scoringTP+scoringTN) / float64(scoringTP+scoringTN+scoringFP+scoringFN)
+	}
+	if scoringTP+scoringFP > 0 {
+		m.ScoringPrecision = float64(scoringTP) / float64(scoringTP+scoringFP)
 	}
 	return m
 }

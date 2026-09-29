@@ -1,3 +1,3 @@
-{"classification":"synthetic","expect":{"non_empty":true},"id":"form_vision-0001","input":{"case_index":0,"task":"form_vision"},"task":"form_vision"}
-{"classification":"synthetic","expect":{"non_empty":true},"id":"form_vision-0002","input":{"case_index":1,"task":"form_vision"},"task":"form_vision"}
-{"classification":"synthetic","expect":{"non_empty":true},"id":"form_vision-0003","input":{"case_index":2,"task":"form_vision"},"task":"form_vision"}
+{"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Full name","type":"text"}]},"id":"form_vision-0001","input":{"fixture_png":"text_input.png"},"task":"form_vision"}
+{"classification":"synthetic","critical":true,"expect":{"fields":[{"options":[],"question":"Cover note","type":"textarea"}]},"id":"form_vision-0002","input":{"fixture_png":"textarea.png"},"task":"form_vision"}
+{"classification":"synthetic","critical":true,"expect":{"fields":[{"options":["Australia","New Zealand"],"question":"Country","type":"select"}]},"id":"form_vision-0003","input":{"fixture_png":"select.png"},"task":"form_vision"}

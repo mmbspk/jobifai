@@ -18,6 +18,7 @@ type KeyResolver func(provider string) (string, bool)
 // Factory builds non-billing LLM clients for eval candidates.
 type Factory struct {
 	Catalog     *pricing.Catalog
+	EvalPricing *pricing.EvalCatalog
 	BaseLLM     domain.LLMConfig
 	KeyResolver KeyResolver
 }
@@ -55,8 +56,12 @@ func (f *Factory) Client(_ context.Context, spec candidate.Spec) (*llm.Client, *
 	}
 	base := llm.New(cfg, key)
 	acc := &ObserverAccum{}
+	catalog := f.Catalog
+	if catalog == nil {
+		catalog = pricing.DefaultCatalog()
+	}
 	client := base.WithBilling(llm.BillingHooks{
-		Catalog: f.Catalog,
+		Catalog: catalog,
 		EvalObserver: func(u llm.UsageObservation) {
 			acc.record(u)
 		},

@@ -1,0 +1,38 @@
+package dataset
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"github.com/user/jobifai/internal/domain"
+)
+
+func TestSyntheticFullDatasets_NoPlaceholders(t *testing.T) {
+	t.Parallel()
+	tasks := []string{
+		domain.TaskJobScoring, domain.TaskEmploymentEthics, domain.TaskFormAnswer, domain.TaskFormVision,
+		domain.TaskResumeExtract, domain.TaskResumeTailoring, domain.TaskCoverLetter, domain.TaskApplicationQuestions,
+	}
+	for _, task := range tasks {
+		t.Run(task, func(t *testing.T) {
+			t.Parallel()
+			b, err := Load(LoadRequest{Task: task, Version: "full", Source: SourceSynthetic})
+			require.NoError(t, err)
+			require.NotEmpty(t, b.Cases)
+			for _, c := range b.Cases {
+				require.NoError(t, ValidateCaseContent(c))
+			}
+			if task == domain.TaskFormVision {
+				for _, c := range b.Cases {
+					var in struct {
+						Fixture string `json:"fixture_png"`
+					}
+					require.NoError(t, json.Unmarshal(c.Input, &in))
+					_, err := ReadFixtureBytes(c, in.Fixture)
+					require.NoError(t, err, "fixture %s", in.Fixture)
+				}
+			}
+		})
+	}
+}

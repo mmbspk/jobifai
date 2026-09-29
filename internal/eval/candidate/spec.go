@@ -20,7 +20,15 @@ func (s Spec) ID() string {
 	if e == "" {
 		e = "default"
 	}
-	return fmt.Sprintf("%s/%s/effort=%s", s.Provider, s.Model, e)
+	tok := s.MaxTokens
+	if tok <= 0 {
+		tok = 0
+	}
+	timeout := s.TimeoutSec
+	if timeout <= 0 {
+		timeout = 0
+	}
+	return fmt.Sprintf("%s/%s/effort=%s/tok=%d/timeout=%d", s.Provider, s.Model, e, tok, timeout)
 }
 
 // ParseList parses JSON array of candidate specs.

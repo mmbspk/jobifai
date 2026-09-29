@@ -38,7 +38,7 @@ func (a *Approver) ApproveRecommendation(ctx context.Context, task, recommendati
 		return fmt.Errorf("only benchmark eval runs can approve production policy")
 	}
 	if run.Status != runmeta.StatusCompleted {
-		return fmt.Errorf("eval run not completed")
+		return fmt.Errorf("eval run not completed (status=%s)", run.Status)
 	}
 	if rec.Deployable != 1 || rec.Outcome != recommend.OutcomeRecommend {
 		return fmt.Errorf("recommendation not deployable: %s", rec.Outcome)
@@ -64,8 +64,9 @@ func (a *Approver) ApproveRecommendation(ctx context.Context, task, recommendati
 	var resultCount int
 	if err := a.DB.QueryRowContext(ctx, `
 		SELECT COUNT(*) FROM model_eval_results
-		WHERE eval_run_id=? AND provider=? AND requested_model=? AND COALESCE(effort,'')=COALESCE(?,'')`,
-		run.ID, cand.Provider, cand.Model, cand.Effort).Scan(&resultCount); err != nil {
+		WHERE eval_run_id=? AND provider=? AND requested_model=? AND COALESCE(effort,'')=COALESCE(?,'')
+		  AND candidate_max_tokens=? AND candidate_timeout_sec=?`,
+		run.ID, cand.Provider, cand.Model, cand.Effort, cand.MaxTokens, cand.TimeoutSec).Scan(&resultCount); err != nil {
 		return err
 	}
 	if resultCount == 0 {
@@ -128,18 +129,18 @@ func (a *Approver) applyPolicyTx(ctx context.Context, task, evalRunID, adminID s
 	newPol := domain.TaskModelPolicyRow{
 		Task: task, State: domain.PolicyStateApproved,
 		Provider: cand.Provider, Model: cand.Model, Effort: cand.Effort,
-		MaxTokens: cand.MaxTokens, Mode: "pinned", EvalRunID: evalRunID,
+		MaxTokens: cand.MaxTokens, TimeoutSec: cand.TimeoutSec, Mode: "pinned", EvalRunID: evalRunID,
 	}
 	newJSON, _ := json.Marshal(newPol)
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO task_model_policies (task, state, provider, model, fallback_models, mode, max_tokens, effort, approved_by, eval_run_id, previous_json, updated_at)
-		VALUES (?, 'approved', ?, ?, '[]', 'pinned', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO task_model_policies (task, state, provider, model, fallback_models, mode, max_tokens, effort, timeout_sec, approved_by, eval_run_id, previous_json, updated_at)
+		VALUES (?, 'approved', ?, ?, '[]', 'pinned', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(task) DO UPDATE SET
 			state='approved', provider=excluded.provider, model=excluded.model,
-			max_tokens=excluded.max_tokens, effort=excluded.effort,
+			max_tokens=excluded.max_tokens, effort=excluded.effort, timeout_sec=excluded.timeout_sec,
 			approved_by=excluded.approved_by, eval_run_id=excluded.eval_run_id,
 			previous_json=excluded.previous_json, updated_at=CURRENT_TIMESTAMP`,
-		task, cand.Provider, cand.Model, cand.MaxTokens, cand.Effort, adminID, evalRunID, prev,
+		task, cand.Provider, cand.Model, cand.MaxTokens, cand.Effort, cand.TimeoutSec, adminID, evalRunID, prev,
 	)
 	if err != nil {
 		return err

@@ -33,7 +33,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "Usage:\n  go run ./cmd/eval datasets\n  go run ./cmd/eval run --task job_scoring --dataset smoke --max-cost-usd 1\n  go run ./cmd/eval run --fake ...\n  go run ./cmd/eval show <run-id>\n")
+	fmt.Fprintf(os.Stderr, "Usage:\n  go run ./cmd/eval datasets\n  go run ./cmd/eval run --fake --task job_scoring --dataset smoke\n  go run ./cmd/eval show <run-id>\n\nReal provider evals: use Admin API (CLI run is fake/CI only).\n")
 }
 
 func cmdDatasets() {
@@ -50,8 +50,12 @@ func cmdRun(args []string) {
 	task := fs.String("task", domain.TaskJobScoring, "stable task id")
 	ds := fs.String("dataset", "smoke", "dataset version")
 	maxCost := fs.Float64("max-cost-usd", 1, "max eval budget USD")
-	fake := fs.Bool("fake", false, "use fake runner (CI/dev only)")
+	fake := fs.Bool("fake", false, "required: fake runner for local/CI deterministic runs")
 	_ = fs.Parse(args)
+	if !*fake {
+		fmt.Fprintln(os.Stderr, "CLI run requires --fake. Use Admin API for real provider evaluation.")
+		os.Exit(1)
+	}
 
 	dbPath := os.Getenv("JOBIFAI_DB")
 	if dbPath == "" {
@@ -64,16 +68,8 @@ func cmdRun(args []string) {
 	}
 	defer func() { _ = sqldb.Close() }()
 
-	runnerType := runmeta.RunnerReal
-	if *fake {
-		runnerType = runmeta.RunnerFake
-	}
+	runnerType := runmeta.RunnerFake
 	svc := &engine.Service{DB: sqldb, Run: engine.FakeRunner{}, Config: engine.Config{MaxConcurrency: 2}}
-	if runnerType == runmeta.RunnerReal {
-		// Real runner wiring requires server config; use fake with --fake for local smoke without DB secrets.
-		fmt.Fprintln(os.Stderr, "real runner requires admin API or server wiring; use --fake for local deterministic runs")
-		os.Exit(1)
-	}
 	purpose := runmeta.PurposeSmoke
 	if *ds == "full" {
 		purpose = runmeta.PurposeBenchmark

@@ -18,10 +18,10 @@ import (
 )
 
 type acc struct {
-	spec                                    candidate.Spec
-	passes, successes, critical, n          int
-	scoringFN, scoringFP                    int
-	latencies, costs                        []int64
+	spec                           candidate.Spec
+	passes, successes, critical, n int
+	scoringTP, scoringTN, scoringFP, scoringFN int
+	latencies, costs               []int64
 }
 
 // Runner executes LLM calls for eval (non-billing clients).
@@ -133,11 +133,15 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 				if vr.CriticalFail {
 					a.critical++
 				}
-				if m, ok := vr.Metrics["scoring_false_negative"].(bool); ok && m {
-					a.scoringFN++
-				}
-				if m, ok := vr.Metrics["scoring_false_positive"].(bool); ok && m {
+				switch vr.Metrics["scoring_cell"] {
+				case "tp":
+					a.scoringTP++
+				case "tn":
+					a.scoringTN++
+				case "fp":
 					a.scoringFP++
+				case "fn":
+					a.scoringFN++
 				}
 				a.costs = append(a.costs, obs.RawCostMicro)
 				a.latencies = append(a.latencies, obs.LatencyMS)
@@ -145,7 +149,9 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 		}
 	}
 	wg.Wait()
-	_, _ = s.DB.ExecContext(ctx, `UPDATE model_eval_runs SET cases_completed=? WHERE id=?`, completed, runID)
+	if _, err := s.DB.ExecContext(ctx, `UPDATE model_eval_runs SET cases_completed=? WHERE id=?`, completed, runID); err != nil {
+		return s.failRun(ctx, runID, fmt.Errorf("cases_completed: %w", err))
+	}
 	if persistErr != nil {
 		return s.failRun(ctx, runID, persistErr)
 	}
@@ -173,6 +179,15 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 		MinCases: minCases, MaxCritical: 0,
 		SmokeOrFake: smokeOrFake, QualityFloor: recommend.DefaultQualityFloor,
 	})
+	if finalStatus != runmeta.StatusCompleted {
+		for i := range recs {
+			recs[i].Deployable = false
+			if recs[i].Outcome == recommend.OutcomeRecommend {
+				recs[i].Outcome = recommend.OutcomeManualReview
+				recs[i].Reason = fmt.Sprintf("run ended with status %s; not deployable", finalStatus)
+			}
+		}
+	}
 	for _, rec := range recs {
 		if err := s.insertRecommendation(ctx, runID, rec); err != nil {
 			return s.failRun(ctx, runID, fmt.Errorf("recommendation persist: %w", err))
@@ -181,11 +196,13 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 	summary, _ := json.Marshal(map[string]any{
 		"spent_micro": spent, "cases": len(bundle.Cases), "completed": completed,
 	})
-	_, err = s.DB.ExecContext(ctx, `
+	if _, err = s.DB.ExecContext(ctx, `
 		UPDATE model_eval_runs SET status=?, completed_at=CURRENT_TIMESTAMP,
 			actual_cost_usd_micro=?, summary_json=? WHERE id=?`,
-		finalStatus, spent, string(summary), runID)
-	return err
+		finalStatus, spent, string(summary), runID); err != nil {
+		return s.failRun(ctx, runID, fmt.Errorf("completion update: %w", err))
+	}
+	return nil
 }
 
 func (s *Service) cancelRequested(ctx context.Context, runID string) bool {
@@ -201,7 +218,7 @@ func metricsFromAcc(a *acc) recommend.Metrics {
 	if a == nil || a.n == 0 {
 		return recommend.Metrics{}
 	}
-	return recommend.Aggregate(a.spec, a.passes, a.successes, a.critical, a.latencies, a.costs, a.scoringFN, a.scoringFP)
+	return recommend.Aggregate(a.spec, a.passes, a.successes, a.critical, a.latencies, a.costs, a.scoringTP, a.scoringTN, a.scoringFP, a.scoringFN)
 }
 
 type runRow struct {
@@ -258,11 +275,13 @@ func (s *Service) insertResult(ctx context.Context, runID string, spec candidate
 		INSERT INTO model_eval_results (
 			id, eval_run_id, case_id, model, success, score, metric_json,
 			input_tokens, output_tokens, raw_cost_usd_micro, latency_ms, validation_errors,
-			provider, requested_model, actual_model, effort, deterministic_score, actual_model_verified
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			provider, requested_model, actual_model, effort, deterministic_score, actual_model_verified,
+			candidate_max_tokens, candidate_timeout_sec
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		uuid.NewString(), runID, c.ID, spec.Model, boolInt(success), vr.DeterministicScore, string(metrics),
 		obs.Tokens.InputTokens, obs.Tokens.OutputTokens, obs.RawCostMicro, obs.LatencyMS, string(errs),
 		spec.Provider, spec.Model, obs.ActualModel, spec.Effort, vr.DeterministicScore, boolInt(obs.ActualModelVerified),
+		spec.MaxTokens, spec.TimeoutSec,
 	)
 	return err
 }

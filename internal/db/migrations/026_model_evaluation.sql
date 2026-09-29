@@ -31,6 +31,8 @@ ALTER TABLE model_eval_results ADD COLUMN repetition INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE model_eval_results ADD COLUMN deterministic_score REAL;
 ALTER TABLE model_eval_results ADD COLUMN judge_score REAL;
 ALTER TABLE model_eval_results ADD COLUMN actual_model_verified INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model_eval_results ADD COLUMN candidate_max_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model_eval_results ADD COLUMN candidate_timeout_sec INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS model_catalog_candidates (
   id                    TEXT PRIMARY KEY,
@@ -54,6 +56,7 @@ CREATE TABLE IF NOT EXISTS model_catalog_candidates (
   raw_metadata_json     TEXT NOT NULL DEFAULT '{}',
   discovery_state       TEXT NOT NULL DEFAULT 'new',
   catalog_diff_json     TEXT NOT NULL DEFAULT '{}',
+  eval_pricing_allowed  INTEGER NOT NULL DEFAULT 0,
   UNIQUE(provider, model, source)
 );
 

@@ -13,14 +13,14 @@ import (
 
 // DiscoveryRefreshResult is returned to admin after staging LiteLLM metadata.
 type DiscoveryRefreshResult struct {
-	Source         string    `json:"source"`
-	RefreshedAt    time.Time `json:"refreshed_at"`
-	ModelsSeen     int       `json:"models_seen"`
-	NewModels      []string  `json:"new_models"`
-	ChangedPrices  []string  `json:"changed_prices"`
-	Deprecated     []string  `json:"deprecated"`
-	Errors         []string  `json:"errors,omitempty"`
-	UsedLastGood   bool      `json:"used_last_good"`
+	Source        string    `json:"source"`
+	RefreshedAt   time.Time `json:"refreshed_at"`
+	ModelsSeen    int       `json:"models_seen"`
+	NewModels     []string  `json:"new_models"`
+	ChangedPrices []string  `json:"changed_prices"`
+	Deprecated    []string  `json:"deprecated"`
+	Errors        []string  `json:"errors,omitempty"`
+	UsedLastGood  bool      `json:"used_last_good"`
 }
 
 type litellmEntry struct {
@@ -31,8 +31,31 @@ type litellmEntry struct {
 	SupportsVision     bool    `json:"supports_vision"`
 }
 
+type discoveryDiff struct {
+	NewModel           bool             `json:"new_model,omitempty"`
+	InputPrice         *priceChange     `json:"input_price,omitempty"`
+	OutputPrice        *priceChange     `json:"output_price,omitempty"`
+	ContextWindow      *intChange       `json:"context_window,omitempty"`
+	VisionSupport      *boolChange      `json:"vision_support,omitempty"`
+	Deprecated         bool             `json:"deprecated,omitempty"`
+}
+
+type priceChange struct {
+	Approved  float64 `json:"approved_per_m"`
+	Discovered float64 `json:"discovered_per_m"`
+}
+
+type intChange struct {
+	Approved   int `json:"approved"`
+	Discovered int `json:"discovered"`
+}
+
+type boolChange struct {
+	Approved   bool `json:"approved"`
+	Discovered bool `json:"discovered"`
+}
+
 // StageLiteLLMDiscovery fetches LiteLLM public metadata and upserts model_catalog_candidates.
-// It never modifies the approved billing catalog.
 func StageLiteLLMDiscovery(ctx context.Context, db *sql.DB, src *LiteLLMSource, approved *Catalog) (DiscoveryRefreshResult, error) {
 	res := DiscoveryRefreshResult{Source: src.Name(), RefreshedAt: time.Now().UTC()}
 	if src == nil {
@@ -45,13 +68,15 @@ func StageLiteLLMDiscovery(ctx context.Context, db *sql.DB, src *LiteLLMSource, 
 		res.UsedLastGood = src.LastGood != nil
 	}
 	rawMap := src.LastGood
-	if rawMap == nil {
-		var snap string
-		_ = db.QueryRowContext(ctx, `SELECT COALESCE(discovery_snapshot_json,'') FROM model_catalog_meta WHERE id=1`).Scan(&snap)
-		if snap != "" {
-			_ = json.Unmarshal([]byte(snap), &rawMap)
-			res.UsedLastGood = true
-		}
+	var prevSnap map[string]json.RawMessage
+	var prevSnapStr string
+	_ = db.QueryRowContext(ctx, `SELECT COALESCE(discovery_snapshot_json,'') FROM model_catalog_meta WHERE id=1`).Scan(&prevSnapStr)
+	if prevSnapStr != "" {
+		_ = json.Unmarshal([]byte(prevSnapStr), &prevSnap)
+	}
+	if rawMap == nil && prevSnapStr != "" {
+		rawMap = prevSnap
+		res.UsedLastGood = true
 	}
 	if len(rawMap) == 0 {
 		_ = persistDiscoveryMeta(ctx, db, res, err)
@@ -60,6 +85,7 @@ func StageLiteLLMDiscovery(ctx context.Context, db *sql.DB, src *LiteLLMSource, 
 		}
 		return res, fmt.Errorf("no discovery data available")
 	}
+	seenNow := map[string]bool{}
 	snapBytes, _ := json.Marshal(rawMap)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -74,12 +100,17 @@ func StageLiteLLMDiscovery(ctx context.Context, db *sql.DB, src *LiteLLMSource, 
 		}
 		var ent litellmEntry
 		_ = json.Unmarshal(raw, &ent)
-		id := uuid.NewString()
-		diff := catalogDiffJSON(approved, prov, modelKey, ent)
-		state := "unchanged"
-		if diff != "{}" {
-			state = "changed"
+		key := prov + "/" + modelKey
+		seenNow[key] = true
+		diff, state, kind := classifyDiscovery(approved, prov, modelKey, ent, prevSnap, rawMap)
+		diffJSON, _ := json.Marshal(diff)
+		switch kind {
+		case "new":
+			res.NewModels = append(res.NewModels, key)
+		case "price", "capability":
+			res.ChangedPrices = append(res.ChangedPrices, key)
 		}
+		id := uuid.NewString()
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO model_catalog_candidates (
 				id, provider, model, canonical_model, source, input_price, output_price,
@@ -94,22 +125,20 @@ func StageLiteLLMDiscovery(ctx context.Context, db *sql.DB, src *LiteLLMSource, 
 			id, prov, modelKey, modelKey, src.Name(),
 			nullFloat(ent.InputCostPerToken), nullFloat(ent.OutputCostPerToken),
 			nullInt(ent.MaxInputTokens), nullInt(ent.MaxOutputTokens),
-			boolInt(ent.SupportsVision), string(raw), state, diff,
+			boolInt(ent.SupportsVision), string(raw), state, string(diffJSON),
 		)
 		if err != nil {
 			return res, err
 		}
-		key := prov + "/" + modelKey
-		if state == "changed" {
-			if approved != nil {
-				if _, e := approved.Resolve(modelKey, false); e != nil {
-					res.NewModels = append(res.NewModels, key)
-				} else {
-					res.ChangedPrices = append(res.ChangedPrices, key)
-				}
-			} else {
-				res.NewModels = append(res.NewModels, key)
-			}
+	}
+	for k := range prevSnap {
+		prov := ProviderGuess(k)
+		if prov == "" {
+			continue
+		}
+		key := prov + "/" + k
+		if !seenNow[key] {
+			res.Deprecated = append(res.Deprecated, key)
 		}
 	}
 	_, err = tx.ExecContext(ctx, `
@@ -125,6 +154,58 @@ func StageLiteLLMDiscovery(ctx context.Context, db *sql.DB, src *LiteLLMSource, 
 	return res, nil
 }
 
+func classifyDiscovery(approved *Catalog, provider, model string, ent litellmEntry, prevSnap, curSnap map[string]json.RawMessage) (discoveryDiff, string, string) {
+	var d discoveryDiff
+	kind := "unchanged"
+	state := "unchanged"
+	if approved != nil {
+		res, err := approved.Resolve(model, false)
+		if err != nil || !res.Known || res.UsedFallback {
+			d.NewModel = true
+			state = "new"
+			kind = "new"
+			return d, state, kind
+		}
+		if ent.InputCostPerToken > 0 {
+			lit := ent.InputCostPerToken * 1_000_000
+			if abs(lit-res.Record.InputPerM) > 0.001 {
+				d.InputPrice = &priceChange{Approved: res.Record.InputPerM, Discovered: lit}
+				state = "changed"
+				kind = "price"
+			}
+		}
+		if ent.OutputCostPerToken > 0 {
+			lit := ent.OutputCostPerToken * 1_000_000
+			if abs(lit-res.Record.OutputPerM) > 0.001 {
+				d.OutputPrice = &priceChange{Approved: res.Record.OutputPerM, Discovered: lit}
+				state = "changed"
+				kind = "price"
+			}
+		}
+		if ent.MaxInputTokens > 0 && res.Record.ContextLimit > 0 && ent.MaxInputTokens != res.Record.ContextLimit {
+			d.ContextWindow = &intChange{Approved: res.Record.ContextLimit, Discovered: ent.MaxInputTokens}
+			state = "changed"
+			kind = "capability"
+		}
+		if ent.SupportsVision != res.Record.SupportsVision {
+			d.VisionSupport = &boolChange{Approved: res.Record.SupportsVision, Discovered: ent.SupportsVision}
+			state = "changed"
+			kind = "capability"
+		}
+	}
+	if prevSnap != nil {
+		if _, was := prevSnap[model]; !was && !d.NewModel {
+			d.NewModel = true
+			state = "new"
+			kind = "new"
+		}
+	}
+	if d.NewModel || d.InputPrice != nil || d.OutputPrice != nil || d.ContextWindow != nil || d.VisionSupport != nil {
+		return d, state, kind
+	}
+	return discoveryDiff{}, "unchanged", kind
+}
+
 func persistDiscoveryMeta(ctx context.Context, db *sql.DB, res DiscoveryRefreshResult, fetchErr error) error {
 	msg := strings.Join(res.Errors, "; ")
 	if fetchErr != nil && msg == "" {
@@ -134,25 +215,6 @@ func persistDiscoveryMeta(ctx context.Context, db *sql.DB, res DiscoveryRefreshR
 		UPDATE model_catalog_meta SET last_refresh_at=?, last_error=? WHERE id=1`,
 		res.RefreshedAt, msg)
 	return err
-}
-
-func catalogDiffJSON(approved *Catalog, provider, model string, ent litellmEntry) string {
-	diff := map[string]any{}
-	if approved != nil {
-		if rec, err := approved.Resolve(model, false); err == nil {
-			if rec.Record.InputPerM > 0 && ent.InputCostPerToken > 0 {
-				lit := ent.InputCostPerToken * 1_000_000
-				if abs(lit-rec.Record.InputPerM) > 0.001 {
-					diff["input_price"] = map[string]float64{"approved": rec.Record.InputPerM, "discovered": lit}
-				}
-			}
-		} else {
-			diff["approved_catalog"] = "absent"
-		}
-	}
-	diff["provider"] = provider
-	b, _ := json.Marshal(diff)
-	return string(b)
 }
 
 func nullFloat(v float64) any {

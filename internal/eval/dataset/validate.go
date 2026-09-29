@@ -43,6 +43,9 @@ func ValidateBundle(b Bundle) error {
 			return fmt.Errorf("conflicting expectations for same input (cases %s and %s)", prev.id, c.ID)
 		}
 		byInput[inHash] = fp{hash: inHash, exp: expNorm, id: c.ID}
+		if err := ValidateCaseContent(c); err != nil {
+			return err
+		}
 	}
 	return nil
 }

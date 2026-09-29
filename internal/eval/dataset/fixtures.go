@@ -15,19 +15,22 @@ func ReadFixtureBytes(c Case, rel string) ([]byte, error) {
 	if strings.Contains(rel, "..") {
 		return nil, fmt.Errorf("invalid fixture path")
 	}
-	// Bundle root is set on load; cases carry no root — resolve via env not ideal.
-	// Caller passes relative fixture under task directory fixtures/.
- roots, err := ResolveRoot()
-	if err != nil {
-		return nil, err
+	var base string
+	if c.BundleDir != "" {
+		base = filepath.Join(c.BundleDir, "fixtures")
+	} else {
+		roots, err := ResolveRoot()
+		if err != nil {
+			return nil, err
+		}
+		base = filepath.Join(roots, "synthetic", c.Task, "fixtures")
 	}
-	task := c.Task
-	p := filepath.Join(roots, "synthetic", task, "fixtures", rel)
+	p := filepath.Join(base, rel)
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return nil, err
 	}
-	rootAbs, _ := filepath.Abs(filepath.Join(roots, "synthetic", task, "fixtures"))
+	rootAbs, _ := filepath.Abs(base)
 	if !strings.HasPrefix(abs, rootAbs+string(os.PathSeparator)) {
 		return nil, fmt.Errorf("fixture escapes directory")
 	}
