@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -66,7 +67,10 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 		return s.failRun(ctx, runID, err)
 	}
 	cands := run.Candidates
-	baseline := candidate.Spec{Provider: run.BaselineProvider, Model: run.BaselineModel, Effort: run.BaselineEffort}
+	baseline := run.Baseline
+	if baseline.Model == "" {
+		baseline = candidate.Spec{Provider: run.BaselineProvider, Model: run.BaselineModel, Effort: run.BaselineEffort}
+	}
 	all := append([]candidate.Spec{baseline}, cands...)
 	concurrency := s.Config.MaxConcurrency
 	if concurrency <= 0 {
@@ -228,6 +232,7 @@ type runRow struct {
 	BaselineProvider string
 	BaselineModel    string
 	BaselineEffort   string
+	Baseline         candidate.Spec
 	Candidates       []candidate.Spec
 	Status           string
 	RunnerType       string
@@ -237,20 +242,26 @@ type runRow struct {
 
 func (s *Service) loadRun(ctx context.Context, id string) (runRow, error) {
 	var r runRow
-	var candJSON string
+	var candJSON, baselineJSON string
 	err := s.DB.QueryRowContext(ctx, `
 		SELECT task, dataset_version, COALESCE(dataset_source,'synthetic'),
 		       COALESCE(baseline_provider,''), baseline_model, COALESCE(baseline_effort,''),
-		       COALESCE(candidate_spec_json,'[]'), status, COALESCE(runner_type,'fake'),
+		       COALESCE(candidate_spec_json,'[]'), COALESCE(baseline_spec_json,'{}'), status, COALESCE(runner_type,'fake'),
 		       COALESCE(run_purpose,'smoke'), COALESCE(max_budget_usd_micro,0)
 		FROM model_eval_runs WHERE id=?`, id).Scan(
 		&r.Task, &r.DatasetVersion, &r.DatasetSource,
 		&r.BaselineProvider, &r.BaselineModel, &r.BaselineEffort,
-		&candJSON, &r.Status, &r.RunnerType, &r.Purpose, &r.MaxBudgetMicro)
+		&candJSON, &baselineJSON, &r.Status, &r.RunnerType, &r.Purpose, &r.MaxBudgetMicro)
 	if err != nil {
 		return r, err
 	}
 	r.Candidates, err = candidate.ParseList(candJSON)
+	if err != nil {
+		return r, err
+	}
+	if strings.TrimSpace(baselineJSON) != "" && baselineJSON != "{}" {
+		_ = json.Unmarshal([]byte(baselineJSON), &r.Baseline)
+	}
 	return r, err
 }
 

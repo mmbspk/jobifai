@@ -1,6 +1,11 @@
 package main
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/user/jobifai/internal/eval/dataset/formanswer"
+)
 
 type jobScenario struct {
 	Tag      string
@@ -15,17 +20,18 @@ func jobScoringScenarios() []jobScenario {
 		{Tag: "strong_exact_fit", ExpectPass: true, Critical: true, Profile: nurseProfile("Registered Nurse", "2019", []string{"acute care", "patient monitoring"}),
 			JobDesc: "Registered Nurse for acute care ward. Requires current registration and patient monitoring experience. Melbourne onsite."},
 		{Tag: "transferable_fit", ExpectPass: true, Critical: false, Profile: nurseProfile("Enrolled Nurse", "2018", []string{"aged care", "medication administration"}),
-			JobDesc: "Registered Nurse role in aged care with medication administration duties. Will consider strong aged-care background."},
+			JobDesc: "Enrolled Nurse role in aged care with medication administration duties. Candidates with enrolled nurse qualifications and aged-care experience encouraged to apply."},
 		{Tag: "borderline_fit", ExpectPass: true, Critical: false, Profile: nurseProfile("Healthcare Assistant", "2020", []string{"patient transport", "vitals"}),
 			JobDesc: "Junior nurse position supporting ward teams. Healthcare assistant experience with vitals preferred."},
 		{Tag: "seniority_mismatch", ExpectPass: false, Critical: true, Profile: nurseProfile("Graduate Nurse", "2024", []string{"clinical placement"}),
 			JobDesc: "Senior Nurse Unit Manager leading 40-bed ward. Minimum 8 years leadership required."},
 		{Tag: "mandatory_skill_mismatch", ExpectPass: false, Critical: true, Profile: nurseProfile("General Nurse", "2017", []string{"med-surg"}),
 			JobDesc: "ICU Nurse mandatory critical-care ventilation and arterial line management experience."},
-		{Tag: "qualification_mismatch", ExpectPass: false, Critical: true, Profile: nurseProfile("Enrolled Nurse", "2016", []string{"personal care"}),
-			JobDesc: "Registered Nurse must hold AHPRA registration before start date."},
-		{Tag: "location_mismatch", ExpectPass: false, Critical: false, Profile: nurseProfile("Registered Nurse", "2015", []string{"community nursing"}),
-			JobDesc: "Onsite Perth hospital role. Must live within 50km; relocation not offered."},
+		{Tag: "qualification_mismatch", ExpectPass: false, Critical: true, Profile: nurseProfileWithEducation("Enrolled Nurse", "2016", []string{"personal care"},
+			"Diploma", "Enrolled Nursing"),
+			JobDesc: "Registered Nurse role requiring a Bachelor degree in Nursing and recent acute-care experience."},
+		{Tag: "location_mismatch", ExpectPass: false, Critical: false, Profile: nurseProfileWithLocation("Registered Nurse", "2015", []string{"community nursing"}, "Melbourne"),
+			JobDesc: "Onsite Perth hospital role. Must live within 50km of Perth; relocation not offered."},
 		{Tag: "insufficient_experience", ExpectPass: false, Critical: true, Profile: nurseProfile("Student Nurse", "2025", []string{"placement"}),
 			JobDesc: "Experienced nurse with minimum 5 years post-registration experience required."},
 		{Tag: "overqualified", ExpectPass: false, Critical: false, Profile: nurseProfile("Director of Nursing", "2005", []string{"executive leadership", "budgeting"}),
@@ -38,10 +44,9 @@ func jobScoringScenarios() []jobScenario {
 			JobDesc: "SAP S/4HANA implementation lead with ABAP and Fiori customization experience required."},
 		{Tag: "strong_exact_fit_pm", ExpectPass: true, Critical: true, Profile: pmProfile("Project Manager", "2013", []string{"construction delivery", "budget control"}),
 			JobDesc: "Construction Project Manager for commercial builds with budget control and subcontractor management."},
-		{Tag: "work_rights_mismatch", ExpectPass: false, Critical: false, Profile: map[string]any{
-			"skills": []string{"accounting", "payroll"}, "experience_details": []map[string]any{{"position": "Accountant", "company": "Ledger Co", "employment_period": "2018 – Present"}},
-			"application_defaults": map[string]any{"requires_sponsorship": true, "work_authorization": "requires sponsorship"},
-		}, JobDesc: "Accountant role requiring existing unrestricted work rights; sponsorship unavailable."},
+		{Tag: "education_level_mismatch", ExpectPass: false, Critical: true, Profile: nurseProfileWithEducation("Care Assistant", "2019", []string{"personal care"},
+			"Certificate IV", "Individual Support"),
+			JobDesc: "Clinical educator role requiring a Master degree in Nursing and teaching experience."},
 		{Tag: "licence_mismatch", ExpectPass: false, Critical: true, Profile: map[string]any{
 			"skills": []string{"electrical maintenance"}, "experience_details": []map[string]any{{"position": "Maintenance Technician", "company": "Plant Co", "employment_period": "2017 – Present"}},
 		}, JobDesc: "Licensed electrician mandatory; unrestricted electrical licence required."},
@@ -55,6 +60,20 @@ func nurseProfile(title, since string, skills []string) map[string]any {
 			"position": title, "company": "Regional Health", "employment_period": since + " – Present",
 		}},
 	}
+}
+
+func nurseProfileWithLocation(title, since string, skills []string, location string) map[string]any {
+	p := nurseProfile(title, since, skills)
+	p["experience_details"] = []map[string]any{{
+		"position": title, "company": "Regional Health", "employment_period": since + " – Present", "location": location,
+	}}
+	return p
+}
+
+func nurseProfileWithEducation(title, since string, skills []string, level, field string) map[string]any {
+	p := nurseProfile(title, since, skills)
+	p["education_details"] = []map[string]any{{"education_level": level, "field_of_study": field}}
+	return p
 }
 
 func pmProfile(title, since string, skills []string) map[string]any {
@@ -136,87 +155,6 @@ func synthEmploymentEthics(i int) map[string]any {
 		"input": map[string]any{"title": s.Title, "company": s.Company, "description": s.Description},
 		"expect": map[string]any{"verdict": s.Verdict},
 	}
-}
-
-type formAnswerScenario struct {
-	Tag, Question, Exact string
-	Options              []string
-	Profile              map[string]any
-}
-
-func formAnswerScenarios() []formAnswerScenario {
-	return []formAnswerScenario{
-		{"work_auth_yes", "Are you authorized to work in Australia?", "Yes", []string{"Yes", "No"}, profileDefaults(false, "4 weeks", "+61400111001", "Sydney")},
-		{"sponsorship_no", "Do you require employer sponsorship?", "No", []string{"Yes", "No"}, profileDefaults(false, "4 weeks", "+61400111002", "Melbourne")},
-		{"sponsorship_yes", "Do you require employer sponsorship?", "Yes", []string{"Yes", "No"}, profileDefaults(true, "8 weeks", "+61400111003", "Brisbane")},
-		{"notice_period", "What is your notice period?", "3 weeks", nil, profileDefaults(false, "3 weeks", "+61400111004", "Perth")},
-		{"salary", "Expected annual salary (AUD)?", "95000", nil, mapWithSalary(95000)},
-		{"phone", "Best contact phone number?", "+61400111005", nil, profileDefaults(false, "2 weeks", "+61400111005", "Adelaide")},
-		{"email", "Email address?", "sam.reed@example.com", nil, mapWithEmail("sam.reed@example.com")},
-		{"current_city", "Current city of residence?", "Canberra", nil, profileDefaults(false, "4 weeks", "+61400111006", "Canberra")},
-		{"relocation_yes", "Are you willing to relocate?", "Yes", []string{"Yes", "No"}, profileDefaults(false, "4 weeks", "+61400111007", "Hobart")},
-		{"years_java", "How many years of Java experience do you have?", "6", nil, mapWithSkillYears("Java", 6)},
-		{"years_management", "Years of people management experience?", "4", nil, mapWithMgmtYears(4)},
-		{"years_profession", "Years of nursing experience?", "9", nil, mapWithProfessionYears("Registered Nurse", 9)},
-		{"licence", "Do you hold a current driver's licence?", "Yes", []string{"Yes", "No"}, profileDefaults(false, "4 weeks", "+61400111008", "Darwin")},
-		{"degree", "Highest completed degree?", "Bachelor of Nursing", nil, mapWithDegree("Bachelor of Nursing")},
-		{"certification", "Do you hold CPA certification?", "Yes", []string{"Yes", "No"}, mapWithCert("CPA")},
-		{"start_date", "Earliest start date?", "2026-05-01", nil, profileDefaults(false, "4 weeks", "+61400111009", "Sydney")},
-		{"remote_pref", "Preferred work arrangement?", "Hybrid", []string{"Remote", "Hybrid", "Onsite"}, profileDefaults(false, "4 weeks", "+61400111010", "Sydney")},
-		{"missing_phone", "Preferred phone number?", "Not provided in profile", nil, profileDefaults(false, "4 weeks", "", "Sydney")},
-		{"hybrid_no", "Are you open to hybrid work?", "No", []string{"Yes", "No"}, profileDefaults(false, "1 month", "+61400111011", "Gold Coast")},
-		{"experience_start", "When did you start your current role?", "2019", nil, profileDefaults(false, "4 weeks", "+61400111012", "Newcastle")},
-	}
-}
-
-func profileDefaults(sponsor bool, notice, phone, city string) map[string]any {
-	return map[string]any{
-		"application_defaults": map[string]any{"requires_sponsorship": sponsor, "notice_period": notice, "preferred_city": city},
-		"personal_information": map[string]any{"phone": phone, "city": city},
-		"experience_details":   []map[string]any{{"position": "Coordinator", "employment_period": "2019 – Present"}},
-	}
-}
-
-func mapWithSalary(aud int) map[string]any {
-	p := profileDefaults(false, "4 weeks", "+61400111020", "Sydney")
-	p["application_defaults"].(map[string]any)["expected_salary_aud"] = aud
-	return p
-}
-
-func mapWithEmail(email string) map[string]any {
-	p := profileDefaults(false, "4 weeks", "+61400111021", "Sydney")
-	p["personal_information"].(map[string]any)["email"] = email
-	return p
-}
-
-func mapWithSkillYears(skill string, years int) map[string]any {
-	p := profileDefaults(false, "4 weeks", "+61400111022", "Sydney")
-	p["skills"] = []string{fmt.Sprintf("%s (%d years)", skill, years)}
-	return p
-}
-
-func mapWithMgmtYears(years int) map[string]any {
-	p := profileDefaults(false, "4 weeks", "+61400111023", "Sydney")
-	p["experience_details"] = []map[string]any{{"position": "Team Lead", "employment_period": "2018 – Present", "management_years": years}}
-	return p
-}
-
-func mapWithProfessionYears(title string, years int) map[string]any {
-	p := profileDefaults(false, "4 weeks", "+61400111024", "Sydney")
-	p["experience_details"] = []map[string]any{{"position": title, "employment_period": fmt.Sprintf("%d – Present", 2026-years)}}
-	return p
-}
-
-func mapWithDegree(degree string) map[string]any {
-	p := profileDefaults(false, "4 weeks", "+61400111025", "Sydney")
-	p["education"] = []map[string]any{{"degree": degree}}
-	return p
-}
-
-func mapWithCert(cert string) map[string]any {
-	p := profileDefaults(false, "4 weeks", "+61400111026", "Sydney")
-	p["certifications"] = []string{cert}
-	return p
 }
 
 type appQScenario struct {
@@ -322,14 +260,20 @@ func synthApplicationQuestions(i int) map[string]any {
 }
 
 func synthFormAnswer(i int) map[string]any {
-	s := formAnswerScenarios()[i%len(formAnswerScenarios())]
+	scenarios := formanswer.LLMScenarios()
+	s := scenarios[i%len(scenarios)]
 	id := fmt.Sprintf("form_answer-%04d", i+1)
-	in := map[string]any{"question": s.Question, "profile_json": s.Profile}
+	profileJSON, _ := formanswer.FormFillingJSON(s.Profile)
+	in := map[string]any{"question": s.Question, "profile_json": json.RawMessage(profileJSON)}
 	if len(s.Options) > 0 {
 		in["options"] = s.Options
 	}
+	exp := map[string]any{"exact": s.Expect}
+	if s.Tag == "motivation_snippet" {
+		exp = map[string]any{"contains": s.Expect}
+	}
 	return map[string]any{
 		"id": id, "task": "form_answer", "classification": "synthetic", "tags": []string{s.Tag},
-		"input": in, "expect": map[string]any{"exact": s.Exact},
+		"input": in, "expect": exp,
 	}
 }

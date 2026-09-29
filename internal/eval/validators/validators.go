@@ -148,7 +148,8 @@ func validateEmploymentEthics(output string, expect json.RawMessage, critical bo
 }
 
 type formExpect struct {
-	Exact string `json:"exact"`
+	Exact    string `json:"exact"`
+	Contains string `json:"contains"`
 }
 
 func validateFormAnswer(output string, expect json.RawMessage, critical bool) Result {
@@ -159,6 +160,12 @@ func validateFormAnswer(output string, expect json.RawMessage, critical bool) Re
 	res := Result{}
 	if want != "" && got != want {
 		res.Errors = append(res.Errors, fmt.Sprintf("expected %q got %q", want, got))
+		if critical {
+			res.CriticalFail = true
+		}
+	}
+	if exp.Contains != "" && !strings.Contains(strings.ToLower(got), strings.ToLower(exp.Contains)) {
+		res.Errors = append(res.Errors, fmt.Sprintf("expected answer to contain %q", exp.Contains))
 		if critical {
 			res.CriticalFail = true
 		}

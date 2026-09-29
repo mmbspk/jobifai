@@ -25,7 +25,7 @@ func TestJobScoringFullDataset_PassSkipSemantics(t *testing.T) {
 			require.Contains(t, []string{
 				"seniority_mismatch", "mandatory_skill_mismatch", "qualification_mismatch",
 				"location_mismatch", "insufficient_experience", "overqualified", "domain_mismatch",
-				"tech_mismatch", "work_rights_mismatch", "licence_mismatch",
+				"tech_mismatch", "education_level_mismatch", "licence_mismatch",
 			}, exp.Scenario, "skip case %s needs mismatch scenario", c.ID)
 		}
 	}

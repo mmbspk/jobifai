@@ -56,7 +56,7 @@ func (c *Client) checkCostCeilingTokens(estIn, maxOutputTokens int64) error {
 	res, err := c.costCeiling.catalog.Resolve(c.cfg.Model, true)
 	if err != nil || res.UsedFallback || !res.Known {
 		if c.billing.EvalPrice != nil {
-			if er, e2 := c.billing.EvalPrice(c.cfg.Model); e2 == nil {
+			if er, e2 := c.billing.EvalPrice(c.cfg.Provider, c.cfg.Model); e2 == nil {
 				res = er
 				err = nil
 			}

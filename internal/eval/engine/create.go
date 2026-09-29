@@ -50,14 +50,15 @@ func (s *Service) CreateRun(ctx context.Context, p RunParams) (string, error) {
 	}
 	id := uuid.NewString()
 	cj, _ := json.Marshal(p.Candidates)
+	bj, _ := json.Marshal(p.Baseline)
 	_, err = s.DB.ExecContext(ctx, `
 		INSERT INTO model_eval_runs (
 			id, task, baseline_model, candidate_models, dataset_version, status,
 			baseline_provider, baseline_effort, dataset_name, dataset_hash, candidate_spec_json,
-			max_budget_usd_micro, initiated_by, runner_type, run_purpose, dataset_source, cases_planned
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			baseline_spec_json, max_budget_usd_micro, initiated_by, runner_type, run_purpose, dataset_source, cases_planned
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, p.Task, p.Baseline.Model, string(cj), p.DatasetVersion, runmeta.StatusPending,
-		p.Baseline.Provider, p.Baseline.Effort, p.DatasetVersion, bundle.Manifest.SHA256, string(cj),
+		p.Baseline.Provider, p.Baseline.Effort, p.DatasetVersion, bundle.Manifest.SHA256, string(cj), string(bj),
 		budgetMicro, p.InitiatedBy, p.RunnerType, p.Purpose, p.DatasetSource, len(bundle.Cases)* (1+len(p.Candidates)),
 	)
 	if err != nil {

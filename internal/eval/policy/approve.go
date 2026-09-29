@@ -128,21 +128,27 @@ func (a *Approver) applyPolicyTx(ctx context.Context, task, evalRunID, adminID s
 		})
 		prev = string(b)
 	}
+	maxCost := curMaxCost
+	if curModel == "" {
+		maxCost = 0
+	}
 	newPol := domain.TaskModelPolicyRow{
 		Task: task, State: domain.PolicyStateApproved,
 		Provider: cand.Provider, Model: cand.Model, Effort: cand.Effort,
-		MaxTokens: cand.MaxTokens, TimeoutSec: cand.TimeoutSec, Mode: "pinned", EvalRunID: evalRunID,
+		MaxTokens: cand.MaxTokens, TimeoutSec: cand.TimeoutSec, MaxCostUSD: maxCost,
+		Mode: "pinned", EvalRunID: evalRunID,
 	}
 	newJSON, _ := json.Marshal(newPol)
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO task_model_policies (task, state, provider, model, fallback_models, mode, max_tokens, effort, timeout_sec, approved_by, eval_run_id, previous_json, updated_at)
-		VALUES (?, 'approved', ?, ?, '[]', 'pinned', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO task_model_policies (task, state, provider, model, fallback_models, mode, max_tokens, effort, timeout_sec, max_cost_usd, approved_by, eval_run_id, previous_json, updated_at)
+		VALUES (?, 'approved', ?, ?, '[]', 'pinned', ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(task) DO UPDATE SET
 			state='approved', provider=excluded.provider, model=excluded.model,
 			max_tokens=excluded.max_tokens, effort=excluded.effort, timeout_sec=excluded.timeout_sec,
+			max_cost_usd=excluded.max_cost_usd,
 			approved_by=excluded.approved_by, eval_run_id=excluded.eval_run_id,
 			previous_json=excluded.previous_json, updated_at=CURRENT_TIMESTAMP`,
-		task, cand.Provider, cand.Model, cand.MaxTokens, cand.Effort, cand.TimeoutSec, adminID, evalRunID, prev,
+		task, cand.Provider, cand.Model, cand.MaxTokens, cand.Effort, cand.TimeoutSec, maxCost, adminID, evalRunID, prev,
 	)
 	if err != nil {
 		return err

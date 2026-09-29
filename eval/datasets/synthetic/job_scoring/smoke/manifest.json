@@ -2,10 +2,10 @@
   "case_count": 5,
   "cases_file": "cases.jsonl",
   "classification": "synthetic",
-  "created_at": "2026-09-29T13:10:27Z",
+  "created_at": "2026-09-29T13:46:05Z",
   "description": "Synthetic job_scoring dataset (smoke)",
   "schema_version": 1,
-  "sha256": "d1c55eed81fb911d1c8f3cee8793470a9333d592cb8395307194637ececaf032",
+  "sha256": "69def3e24e8ae03906838155131d995e679ea541cec0d2a17075da13b5939cda",
   "task": "job_scoring",
   "version": "smoke"
 }

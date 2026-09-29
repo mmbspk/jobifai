@@ -51,10 +51,14 @@ func (FakeRunner) RunCase(_ context.Context, task string, spec candidate.Spec, c
 		out = fmt.Sprintf(`{"verdict":%q,"confidence":"HIGH","summary":"ok","reasons":["r"],"caveats":null,"scholar_note":null}`, strings.ToUpper(v))
 	case domain.TaskFormAnswer:
 		var exp struct {
-			Exact string `json:"exact"`
+			Exact    string `json:"exact"`
+			Contains string `json:"contains"`
 		}
 		_ = json.Unmarshal(c.Expect, &exp)
 		out = exp.Exact
+		if out == "" && exp.Contains != "" {
+			out = exp.Contains
+		}
 	default:
 		out = `{}`
 	}

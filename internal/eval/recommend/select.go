@@ -1,6 +1,10 @@
 package recommend
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/user/jobifai/internal/domain"
+)
 
 const OutcomeQualityUpgrade = "quality_upgrade_candidate"
 
@@ -108,6 +112,11 @@ func evaluateOne(in SelectInput, cand Metrics) Recommendation {
 	rec.Deployable = true
 	rec.Confidence = confidenceLabel(cand.CaseCount, cand.DetPassRate)
 	rec.Reason = "lowest-cost candidate clearing quality floor among evaluated alternatives"
+	if in.Task == domain.TaskResumeTailoring || in.Task == domain.TaskCoverLetter {
+		rec.Outcome = OutcomeManualReview
+		rec.Deployable = false
+		rec.Reason = "subjective writing task requires manual review before any production deployment"
+	}
 	return rec
 }
 
