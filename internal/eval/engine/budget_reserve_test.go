@@ -57,7 +57,7 @@ func TestRunBudget_LargePromptReserveBlocksConcurrentOverspend(t *testing.T) {
 	capMicro := reserve + reserve/10
 	b := newRunBudget(capMicro)
 	require.True(t, b.tryReserve(reserve))
-	require.False(t, b.tryReserve(reserve), "second concurrent reservation must not exceed hard cap")
+	require.False(t, b.tryReserve(reserve), "second concurrent reservation must not exceed budget cap")
 	_, committed, _ := b.totals()
 	require.LessOrEqual(t, committed, capMicro)
 }

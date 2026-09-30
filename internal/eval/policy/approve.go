@@ -112,15 +112,16 @@ func (a *Approver) applyPolicyTx(ctx context.Context, task, evalRunID, adminID s
 	var curProvider, curModel, curMode, curEffort string
 	var curMax, curTimeout int
 	var curMaxCost float64
-	var prevJSON sql.NullString
-	_ = tx.QueryRowContext(ctx, `
+	prev := PreviousPolicyInheritJSON(task)
+	err = tx.QueryRowContext(ctx, `
 		SELECT COALESCE(provider,''), COALESCE(model,''), COALESCE(mode,''), COALESCE(max_tokens,0),
-		       COALESCE(effort,''), COALESCE(timeout_sec,0), COALESCE(max_cost_usd,0), COALESCE(previous_json,'')
+		       COALESCE(effort,''), COALESCE(timeout_sec,0), COALESCE(max_cost_usd,0)
 		FROM task_model_policies WHERE task=?`, task).Scan(
-		&curProvider, &curModel, &curMode, &curMax, &curEffort, &curTimeout, &curMaxCost, &prevJSON)
-
-	prev := prevJSON.String
-	if curModel != "" {
+		&curProvider, &curModel, &curMode, &curMax, &curEffort, &curTimeout, &curMaxCost)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil && curModel != "" {
 		b, _ := json.Marshal(domain.TaskModelPolicyRow{
 			Task: task, State: domain.PolicyStateApproved,
 			Provider: curProvider, Model: curModel, Mode: curMode, MaxTokens: curMax, Effort: curEffort,
@@ -181,7 +182,10 @@ func (a *Approver) Rollback(ctx context.Context, task, adminID string) error {
 		       COALESCE(effort,''), COALESCE(timeout_sec,0), COALESCE(max_cost_usd,0), previous_json
 		FROM task_model_policies WHERE task=?`, task).Scan(
 		&curProvider, &curModel, &curMode, &curMax, &curEffort, &curTimeout, &curMaxCost, &prevJSON)
-	if err != nil || !prevJSON.Valid || prevJSON.String == "" {
+	if err != nil {
+		return fmt.Errorf("no previous policy to restore")
+	}
+	if !prevJSON.Valid || prevJSON.String == "" {
 		return fmt.Errorf("no previous policy to restore")
 	}
 	currentJSON, _ := json.Marshal(domain.TaskModelPolicyRow{
@@ -189,23 +193,31 @@ func (a *Approver) Rollback(ctx context.Context, task, adminID string) error {
 		Provider: curProvider, Model: curModel, Mode: curMode, MaxTokens: curMax, Effort: curEffort,
 		TimeoutSec: curTimeout, MaxCostUSD: curMaxCost,
 	})
-	var restore domain.TaskModelPolicyRow
-	if err := json.Unmarshal([]byte(prevJSON.String), &restore); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `
-		UPDATE task_model_policies SET state='approved', provider=?, model=?, mode=?, max_tokens=?, effort=?,
-			timeout_sec=?, max_cost_usd=?, previous_json=NULL, updated_at=CURRENT_TIMESTAMP WHERE task=?`,
-		restore.Provider, restore.Model, restore.Mode, restore.MaxTokens, restore.Effort,
-		restore.TimeoutSec, restore.MaxCostUSD, task,
-	)
-	if err != nil {
-		return err
+	restoredJSON := prevJSON.String
+	if IsPreviousPolicyInherit(prevJSON.String) {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM task_model_policies WHERE task=?`, task); err != nil {
+			return err
+		}
+		restoredJSON = PreviousPolicyInheritJSON(task)
+	} else {
+		var restore domain.TaskModelPolicyRow
+		if err := json.Unmarshal([]byte(prevJSON.String), &restore); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+			UPDATE task_model_policies SET state='approved', provider=?, model=?, mode=?, max_tokens=?, effort=?,
+				timeout_sec=?, max_cost_usd=?, previous_json=NULL, updated_at=CURRENT_TIMESTAMP WHERE task=?`,
+			restore.Provider, restore.Model, restore.Mode, restore.MaxTokens, restore.Effort,
+			restore.TimeoutSec, restore.MaxCostUSD, task,
+		)
+		if err != nil {
+			return err
+		}
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO model_policy_audit (id, task, changed_by, previous_json, new_json, reason)
 		VALUES (?,?,?,?,?,?)`,
-		uuid.NewString(), task, adminID, string(currentJSON), prevJSON.String, "rollback",
+		uuid.NewString(), task, adminID, string(currentJSON), restoredJSON, "rollback",
 	)
 	if err != nil {
 		return err
