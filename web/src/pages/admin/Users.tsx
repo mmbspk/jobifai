@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { usdFromMicro } from '../../lib/adminFormat'
 import { Check } from 'lucide-react'
 import { adminApi } from '../../api/admin'
 import { Button } from '../../components/Button'
@@ -143,6 +145,32 @@ export function AdminUsersPage() {
                   checked={detail.is_admin}
                   onCheckedChange={v => toggleAdmin.mutate(v)}
                 />
+                {'usage_summary' in detail && detail.usage_summary && (
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2 text-sm">
+                    <p>
+                      <span className="text-[var(--color-text-muted)]">LLM calls:</span>{' '}
+                      {detail.usage_summary.llm_calls}
+                    </p>
+                    <p>
+                      <span className="text-[var(--color-text-muted)]">Credits burned:</span>{' '}
+                      {detail.usage_summary.credits_burned}
+                    </p>
+                    <p>
+                      <span className="text-[var(--color-text-muted)]">Raw AI cost:</span>{' '}
+                      {usdFromMicro(detail.usage_summary.raw_cost_usd_micro)} USD
+                    </p>
+                    <p>
+                      <span className="text-[var(--color-text-muted)]">Loaded cost:</span>{' '}
+                      {usdFromMicro(detail.usage_summary.loaded_cost_usd_micro)} USD
+                    </p>
+                    <Link
+                      to={`/admin/llm-usage?user_id=${encodeURIComponent(detail.id)}`}
+                      className="text-xs text-[var(--color-admin)] hover:underline sm:col-span-2"
+                    >
+                      View AI usage for this user →
+                    </Link>
+                  </div>
+                )}
               </SettingsSection>
 
               <SettingsSection title="Credits & enforcement" description="Per-account quota overrides. Admins are always unlimited.">

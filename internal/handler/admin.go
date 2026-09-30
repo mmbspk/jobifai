@@ -160,7 +160,13 @@ func (h *AdminHandlers) UserGet(w http.ResponseWriter, r *http.Request) {
 	if h.svc.Quota != nil {
 		quotaOverrides = h.svc.Quota.UserOverrides(userID)
 	}
-	writeJSON(w, http.StatusOK, domain.AdminUserDetail{
+	var llmCalls, credits, rawMicro, loadedMicro int64
+	_ = h.svc.DB.QueryRowContext(r.Context(), `
+		SELECT COUNT(*), COALESCE(SUM(credits_burned),0),
+			COALESCE(SUM(raw_cost_usd_micro),0), COALESCE(SUM(loaded_cost_usd_micro),0)
+		FROM llm_usage_events WHERE user_id=?`, userID).Scan(&llmCalls, &credits, &rawMicro, &loadedMicro)
+
+	detail := domain.AdminUserDetail{
 		AdminUserRow: domain.AdminUserRow{
 			ID:          u.ID,
 			Email:       u.Email,
@@ -169,8 +175,15 @@ func (h *AdminHandlers) UserGet(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:   u.CreatedAt.Format(time.RFC3339),
 			HasAPIKey:   config.HasUserLLMAPIKey(h.svc.Secrets, u.ID),
 		},
-		LLMOverrides:    overrides,
-		QuotaOverrides:  quotaOverrides,
+		LLMOverrides:   overrides,
+		QuotaOverrides: quotaOverrides,
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user": detail,
+		"usage_summary": map[string]any{
+			"llm_calls": llmCalls, "credits_burned": credits,
+			"raw_cost_usd_micro": rawMicro, "loaded_cost_usd_micro": loadedMicro,
+		},
 	})
 }
 

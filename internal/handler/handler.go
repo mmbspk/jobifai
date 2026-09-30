@@ -63,6 +63,8 @@ type Services struct {
 	UsageStore UsageStore
 	// Quota enforces cost-based trial and subscription AI limits (nil disables enforcement wiring).
 	Quota QuotaService
+	// StartedAt is set when the HTTP server boots (admin overview uptime).
+	StartedAt time.Time
 	// HTTPClient is used for outbound HTTP requests (e.g. location suggestions).
 	// Falls back to http.DefaultClient if nil.
 	HTTPClient *http.Client

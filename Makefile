@@ -12,8 +12,12 @@ GO_PACKAGES := $(shell go list ./... | grep -v node_modules)
 all: build
 
 ## build: compile the server binary
+VERSION_PKG := github.com/user/jobifai/internal/version
+GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+LDFLAGS := -s -w -X $(VERSION_PKG).GitSHA=$(GIT_SHA) -X $(VERSION_PKG).Version=$(GIT_SHA)
+
 build:
-	go build -trimpath -ldflags="-s -w" -o $(BINARY) $(MAIN)
+	go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) $(MAIN)
 
 ## web-dev: start Vite dev server (proxies /api → Go on :8081)
 web-dev:

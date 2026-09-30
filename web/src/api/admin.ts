@@ -21,7 +21,18 @@ export const adminApi = {
   },
   users: {
     list: () => apiGet<AdminUserRow[]>('/admin/users'),
-    get: (userId: string) => apiGet<AdminUserDetail>(`/admin/users/${userId}`),
+    get: async (userId: string) => {
+      const res = await apiGet<{
+        user: AdminUserDetail
+        usage_summary?: {
+          llm_calls: number
+          credits_burned: number
+          raw_cost_usd_micro: number
+          loaded_cost_usd_micro: number
+        }
+      }>(`/admin/users/${userId}`)
+      return { ...res.user, usage_summary: res.usage_summary }
+    },
     update: (
       userId: string,
       body: { is_admin?: boolean; llm_overrides?: LLMOverrides; quota_overrides?: QuotaUserOverrides },

@@ -161,6 +161,7 @@ func main() {
 
 	// ── Router ──────────────────────────────────────────────────────────
 	svc := &handler.Services{
+		StartedAt:    time.Now(),
 		DB:           database,
 		Config:       cfgStore,
 		Secrets:      secretsStore,
