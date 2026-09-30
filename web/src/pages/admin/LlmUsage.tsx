@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
+import { DialogRoot, DialogContent } from '../../components/ui/dialog'
 import { useSearchParams } from 'react-router-dom'
 import { apiGet } from '../../api/client'
 import { PageHeader } from '../../components/shell/PageHeader'
@@ -27,12 +28,15 @@ type EventRow = {
   created_at: string
   user_id: string
   task: string
+  provider: string
   requested_model: string
   actual_model: string
   actual_model_verified: boolean
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_write_5m_tokens?: number
+  cache_write_1h_tokens?: number
   raw_cost_usd_micro: number
   loaded_cost_usd_micro: number
   credits_burned: number
@@ -53,6 +57,7 @@ function buildQuery(base: Record<string, string>, period: AdminPeriod, offset: n
 }
 
 export function AdminLlmUsagePage() {
+  const [detailEvent, setDetailEvent] = useState<EventRow | null>(null)
   const [searchParams, setSearchParams] = useSearchParams()
   const period = (searchParams.get('period') as AdminPeriod) || '30d'
   const offset = Number(searchParams.get('offset') || '0')
@@ -272,7 +277,11 @@ export function AdminLlmUsagePage() {
           </thead>
           <tbody>
             {(eventsQ.data?.events ?? []).map(ev => (
-              <tr key={ev.id} className="border-t border-[var(--color-border-subtle)]">
+              <tr
+                key={ev.id}
+                className="border-t border-[var(--color-border-subtle)] cursor-pointer hover:bg-[var(--color-surface-2)]/60"
+                onClick={() => setDetailEvent(ev)}
+              >
                 <td className="px-2 py-1.5 whitespace-nowrap text-xs">{ev.created_at.slice(0, 19)}</td>
                 <td className="px-2 py-1.5 font-mono text-xs max-w-[80px] truncate" title={ev.user_id}>
                   {ev.user_id.slice(0, 8)}
@@ -302,6 +311,33 @@ export function AdminLlmUsagePage() {
           <p className="p-4 text-sm text-[var(--color-text-dim)]">No events for this filter.</p>
         )}
       </section>
+
+      <DialogRoot open={!!detailEvent} onOpenChange={open => !open && setDetailEvent(null)}>
+        <DialogContent title="LLM call details" className="max-w-md">
+          {detailEvent && (
+            <dl className="text-xs space-y-2">
+              <div>
+                <dt className="text-[var(--color-text-muted)]">Provider</dt>
+                <dd className="font-mono">{detailEvent.provider}</dd>
+              </div>
+              <div>
+                <dt className="text-[var(--color-text-muted)]">Cache write (5m / 1h)</dt>
+                <dd className="tabular-nums">
+                  {detailEvent.cache_write_5m_tokens ?? 0} / {detailEvent.cache_write_1h_tokens ?? 0}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[var(--color-text-muted)]">Automation run</dt>
+                <dd className="font-mono break-all">{detailEvent.automation_run_id || '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-[var(--color-text-muted)]">Event ID</dt>
+                <dd className="font-mono break-all">{detailEvent.id}</dd>
+              </div>
+            </dl>
+          )}
+        </DialogContent>
+      </DialogRoot>
 
       <div className="flex items-center gap-3">
         <Button

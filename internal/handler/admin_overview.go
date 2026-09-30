@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llmpolicy"
@@ -45,15 +46,15 @@ func (h *AdminHandlers) Overview(w http.ResponseWriter, r *http.Request) {
 		&aiCalls, &aiSuccess, &aiRaw, &aiLoaded, &aiCredits, &aiAvgLat)
 
 	auto := map[string]any{
-		"applications_today":      adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_applied WHERE created_at >= ?`, todayStart),
-		"skipped_today":           adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_skipped WHERE created_at >= ?`, todayStart),
+		"applications_today": adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_applied WHERE applied_at >= ?`, todayStart),
+		"skipped_today": adminCountWhere(ctx, h.svc.DB, `
+			SELECT COUNT(*) FROM jobs_skipped WHERE viewed_at >= ? AND `+sqlSkippedNormalOnly, todayStart),
 		"cannot_apply_today": adminCountWhere(ctx, h.svc.DB, `
-			SELECT COUNT(*) FROM jobs_skipped WHERE created_at >= ? AND (
-				skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%'
-			)`, todayStart),
-		"pending_review_count":    adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_pending_review`, nil),
-		"top_matches_count":       adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_pending_review WHERE easy_apply = 1`, nil),
-		"recent_llm_users_15min":  adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(DISTINCT user_id) FROM llm_usage_events WHERE created_at >= datetime('now','-15 minutes')`, nil),
+			SELECT COUNT(*) FROM jobs_skipped WHERE viewed_at >= ? AND `+sqlCannotApplyFilter, todayStart),
+		"pending_review_count": adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_pending_review WHERE easy_apply = 1`, nil),
+		"top_matches_count":    adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_pending_review WHERE easy_apply = 0`, nil),
+		"recent_llm_users_15min": adminCountWhere(ctx, h.svc.DB,
+			`SELECT COUNT(DISTINCT user_id) FROM llm_usage_events WHERE created_at >= datetime('now','-15 minutes')`, nil),
 	}
 
 	gs := config.ResolveOperationalSettings(h.svc.Config, domain.SystemUserID)
@@ -125,6 +126,7 @@ func adminCountWhere(ctx context.Context, db *sql.DB, q string, arg any) int64 {
 		err = db.QueryRowContext(ctx, q, arg).Scan(&n)
 	}
 	if err != nil {
+		log.Error().Err(err).Str("query", q).Msg("admin metric count failed")
 		return 0
 	}
 	return n

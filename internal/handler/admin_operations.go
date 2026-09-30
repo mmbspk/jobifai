@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
@@ -15,12 +16,12 @@ import (
 func (h *AdminHandlers) OperationsJobsSummary(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"applied":          adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_applied`, nil),
-		"skipped":          adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_skipped`, nil),
-		"cannot_apply":     adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_skipped WHERE `+sqlCannotApplyFilter, nil),
-		"pending_review":   adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_pending_review`, nil),
-		"top_matches":      adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_pending_review WHERE easy_apply = 1`, nil),
-		"approved_queue":   adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_approved_queue`, nil),
+		"applied":        adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_applied`, nil),
+		"skipped":        adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_skipped WHERE `+sqlSkippedNormalOnly, nil),
+		"cannot_apply":   adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_skipped WHERE `+sqlCannotApplyFilter, nil),
+		"pending_review": adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_pending_review WHERE easy_apply = 1`, nil),
+		"top_matches":    adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_pending_review WHERE easy_apply = 0`, nil),
+		"approved_queue": adminCountWhere(ctx, h.svc.DB, `SELECT COUNT(*) FROM jobs_approved_queue`, nil),
 	})
 }
 
@@ -29,15 +30,17 @@ func (h *AdminHandlers) OperationsJobsRecent(w http.ResponseWriter, r *http.Requ
 	ctx := r.Context()
 	limit, _ := adminLimitOffset(r, 50, 100)
 	rows, err := h.svc.DB.QueryContext(ctx, `
-		SELECT user_id, platform, company, role, suitability_score, 'applied' AS state, created_at, job_id
+		SELECT user_id, platform, company, role, COALESCE(suitability_score,0), 'applied' AS state, applied_at AS event_at, id AS job_id
 		FROM jobs_applied
 		UNION ALL
-		SELECT user_id, platform, company, role, COALESCE(suitability_score,0), 'skipped', created_at, job_id
+		SELECT user_id, platform, company, role, COALESCE(suitability_score,0), 'skipped', viewed_at AS event_at, id AS job_id
 		FROM jobs_skipped
 		UNION ALL
-		SELECT user_id, platform, company, role, suitability_score, 'pending_review', created_at, job_id
+		SELECT user_id, platform, company, role, suitability_score,
+			CASE WHEN easy_apply = 1 THEN 'pending_review' ELSE 'top_match' END,
+			created_at AS event_at, job_id
 		FROM jobs_pending_review
-		ORDER BY created_at DESC LIMIT ?`, limit)
+		ORDER BY event_at DESC LIMIT ?`, limit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
 		return
@@ -68,18 +71,21 @@ func (h *AdminHandlers) OperationsScoringRecent(w http.ResponseWriter, r *http.R
 	modelFilter := r.URL.Query().Get("model")
 
 	rows, err := h.svc.DB.QueryContext(ctx, `
-		SELECT s.user_id, s.platform, s.company, s.role, s.suitability_score,
-			COALESCE(s.suitability_reasoning,''), s.created_at, s.job_id, 'skipped' AS bucket
-		FROM jobs_skipped s WHERE s.suitability_score > 0
+		SELECT s.user_id, s.platform, s.company, s.role, COALESCE(s.suitability_score,0),
+			COALESCE(s.suitability_reasoning,''), s.viewed_at AS event_at, s.id AS job_id, 'skipped' AS bucket
+		FROM jobs_skipped s
+		WHERE COALESCE(s.suitability_score,0) > 0 AND `+sqlSkippedNormalOnly+`
 		UNION ALL
 		SELECT p.user_id, p.platform, p.company, p.role, p.suitability_score,
-			COALESCE(p.suitability_reasoning,''), p.created_at, p.job_id, 'pending_review'
+			COALESCE(p.suitability_reasoning,''), p.created_at AS event_at, p.job_id,
+			CASE WHEN p.easy_apply = 1 THEN 'pending_review' ELSE 'top_match' END AS bucket
 		FROM jobs_pending_review p
 		UNION ALL
 		SELECT a.user_id, a.platform, a.company, a.role, COALESCE(a.suitability_score,0),
-			'', a.created_at, a.job_id, 'applied'
-		FROM jobs_applied a WHERE COALESCE(a.suitability_score,0) > 0
-		ORDER BY created_at DESC LIMIT ?`, limit*3)
+			'', a.applied_at AS event_at, a.id AS job_id, 'applied' AS bucket
+		FROM jobs_applied a
+		WHERE COALESCE(a.suitability_score,0) > 0
+		ORDER BY event_at DESC LIMIT ?`, limit*3)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
 		return
@@ -162,17 +168,21 @@ func (h *AdminHandlers) OperationalErrors(w http.ResponseWriter, r *http.Request
 	where += " AND success = 0"
 	limit, _ := adminLimitOffset(r, 100, 200)
 
+	type errRow struct {
+		ts  time.Time
+		out map[string]any
+	}
+	var combined []errRow
+
 	rows, err := h.svc.DB.QueryContext(ctx, `
 		SELECT created_at, 'llm' AS subsystem, task, COALESCE(error_code,''), user_id,
 			COALESCE(job_id,''), COALESCE(automation_run_id,'')
-		FROM llm_usage_events WHERE `+where+`
-		ORDER BY created_at DESC LIMIT ?`, append(args, limit)...)
+		FROM llm_usage_events WHERE `+where, args...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
 		return
 	}
 	defer func() { _ = rows.Close() }()
-	var out []map[string]any
 	for rows.Next() {
 		var sub, task, code, uid, jobID, runID string
 		var created time.Time
@@ -183,28 +193,53 @@ func (h *AdminHandlers) OperationalErrors(w http.ResponseWriter, r *http.Request
 		if msg == "" {
 			msg = "llm_call_failed"
 		}
-		out = append(out, map[string]any{
-			"timestamp": created.UTC().Format(time.RFC3339), "subsystem": sub, "task": task,
-			"error_code": code, "message": msg, "user_id": uid, "job_id": jobID, "automation_run_id": runID,
+		combined = append(combined, errRow{
+			ts: created,
+			out: map[string]any{
+				"timestamp": created.UTC().Format(time.RFC3339), "subsystem": sub, "task": task,
+				"error_code": code, "message": msg, "user_id": uid, "job_id": jobID, "automation_run_id": runID,
+			},
 		})
 	}
 
-	failEval, _ := h.svc.DB.QueryContext(ctx, `
-		SELECT created_at, task, COALESCE(error_message,''), id FROM model_eval_runs
-		WHERE status IN ('failed','budget_exhausted') ORDER BY created_at DESC LIMIT ?`, limit/2)
-	if failEval != nil {
-		defer func() { _ = failEval.Close() }()
-		for failEval.Next() {
-			var task, msg, id string
-			var created time.Time
-			if failEval.Scan(&created, &task, &msg, &id) == nil {
-				out = append(out, map[string]any{
-					"timestamp": created.UTC().Format(time.RFC3339), "subsystem": "eval",
-					"task": task, "error_code": "eval_run_failed", "message": truncateSafe(msg, 200),
-					"eval_run_id": id,
-				})
-			}
+	evalQ := `SELECT created_at, task, COALESCE(error_message,''), id FROM model_eval_runs
+		WHERE status IN ('failed','budget_exhausted')`
+	evalArgs := []any{}
+	if !allTime {
+		evalQ += ` AND created_at >= ?`
+		evalArgs = append(evalArgs, since)
+	}
+	failEval, err := h.svc.DB.QueryContext(ctx, evalQ, evalArgs...)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
+		return
+	}
+	defer func() { _ = failEval.Close() }()
+	for failEval.Next() {
+		var task, msg, id string
+		var created time.Time
+		if failEval.Scan(&created, &task, &msg, &id) != nil {
+			continue
 		}
+		combined = append(combined, errRow{
+			ts: created,
+			out: map[string]any{
+				"timestamp": created.UTC().Format(time.RFC3339), "subsystem": "eval",
+				"task": task, "error_code": "eval_run_failed", "message": truncateSafe(msg, 200),
+				"eval_run_id": id,
+			},
+		})
+	}
+
+	sort.Slice(combined, func(i, j int) bool {
+		return combined[i].ts.After(combined[j].ts)
+	})
+	if len(combined) > limit {
+		combined = combined[:limit]
+	}
+	out := make([]map[string]any, 0, len(combined))
+	for _, row := range combined {
+		out = append(out, row.out)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"errors": out})
 }

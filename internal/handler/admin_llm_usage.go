@@ -90,9 +90,13 @@ func (h *AdminHandlers) LLMUsageSummary(w http.ResponseWriter, r *http.Request) 
 	groupBy := r.URL.Query().Get("group_by")
 	breakdown := adminLLMBreakdown(ctx, h.svc.DB, where, args, groupBy)
 
+	errorRate := 0.0
+	if calls > 0 {
+		errorRate = 1 - pct(success, calls)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"period": period, "calls": calls, "success_calls": success,
-		"error_rate": 1 - pct(success, calls), "input_tokens": inTok, "output_tokens": outTok,
+		"error_rate": errorRate, "input_tokens": inTok, "output_tokens": outTok,
 		"raw_cost_usd_micro": raw, "loaded_cost_usd_micro": loaded, "credits_burned": credits,
 		"avg_latency_ms": avgLat, "p90_latency_ms": p90, "breakdown": breakdown,
 	})
