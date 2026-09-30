@@ -26,6 +26,8 @@ func main() {
 		cmdRun(os.Args[2:])
 	case "show":
 		cmdShow(os.Args[2:])
+	case "smoke-claude":
+		cmdSmokeClaude(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -33,7 +35,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "Usage:\n  go run ./cmd/eval datasets\n  go run ./cmd/eval run --fake --task job_scoring --dataset smoke\n  go run ./cmd/eval show <run-id>\n\nReal provider evals: use Admin API (CLI run is fake/CI only).\n")
+	fmt.Fprintf(os.Stderr, "Usage:\n  go run ./cmd/eval datasets\n  go run ./cmd/eval run --fake --task job_scoring --dataset smoke\n  go run ./cmd/eval show <run-id>\n  go run ./cmd/eval smoke-claude [--max-total-usd 5]\n\nReal provider evals: Admin API or smoke-claude (does not approve policies).\n")
 }
 
 func cmdDatasets() {
