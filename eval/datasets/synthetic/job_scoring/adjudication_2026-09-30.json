@@ -1,0 +1,496 @@
+{
+  "review_version": "2026-09-30",
+  "philosophy": "eval/datasets/synthetic/job_scoring/SCORING_GROUND_TRUTH.md",
+  "method": "blind human adjudication from visible ForScoring inputs only; no model scores or identities",
+  "cases": [
+    {
+      "case_id": "job_scoring-0001",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "RN profile matches acute monitoring and qualification requirement.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0002",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Enrolled nurse skills and aged-care experience match posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0003",
+      "original_label": "pass",
+      "adjudicated_label": "borderline",
+      "critical": false,
+      "rationale": "HCA with vitals is adjacent to junior ward support; EN/RN credential not visible\u2014reasonable to show with caution.",
+      "changed": true
+    },
+    {
+      "case_id": "job_scoring-0004",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Graduate profile cannot meet senior NUM leadership requirement.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0005",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "General med-surg background lacks stated ICU ventilation/line skills.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0006",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "EN personal-care profile does not meet RN bachelor requirement.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0007",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Community nurse location mismatch for onsite Perth constraint.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0008",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Student nurse cannot satisfy five-year post-registration requirement.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0009",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Executive nursing leader overqualified/mismatched to entry assistant role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0010",
+      "original_label": "pass",
+      "adjudicated_label": "borderline",
+      "critical": false,
+      "rationale": "Coordination/rostering aligns but RN licence and formal nurse-manager authority are not visible in profile.",
+      "changed": true
+    },
+    {
+      "case_id": "job_scoring-0011",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Clinical nursing profile unrelated to commercial litigation paralegal work.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0012",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Generic PM skills do not match SAP ABAP/Fiori implementation mandate.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0013",
+      "original_label": "pass",
+      "adjudicated_label": "borderline",
+      "critical": true,
+      "rationale": "Construction PM with budget/delivery fits partially; commercial builds and subcontractor management are posting requirements without explicit profile evidence\u2014defensible borderline.",
+      "changed": true
+    },
+    {
+      "case_id": "job_scoring-0014",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Care assistant lacks masters-level nursing educator credentials.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0015",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Maintenance technician profile lacks mandatory electrical licence.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0016",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Go/PostgreSQL/API stack matches backend posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0017",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "React/TS/accessibility align with frontend role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0018",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Kubernetes/Terraform/CI-CD fit DevOps posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0019",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Spark/dbt/SQL align with data engineer pipeline work.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0020",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "SIEM/IR skills match security analyst role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0021",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Test automation/Selenium fit QA automation posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0022",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Java stack mismatch where daily Go development is mandatory.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0023",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Enrolled nurse aged-care experience fits medication rounds role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0024",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "HCA vitals/transport skills fit ward support posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0025",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Clinical coordinator rostering experience fits surgical coordinator role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0026",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Accountant reporting/audit skills match statutory reporting role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0027",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Construction PM commercial delivery skills align with posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0028",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Product manager SaaS roadmap skills fit B2B PM role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0029",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "HR specialist employee-relations experience transferable to HR generalist posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0030",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Marketing manager paid social/analytics fit digital marketing role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0031",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Enterprise sales/pipeline skills fit B2B sales executive role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0032",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Mechanical CAD/HVAC skills match design posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0033",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Electrician maintenance/switchboard skills fit licensed electrician role (licence implied by trade title).",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0034",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Construction manager safety/trade coordination fits site manager role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0035",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Office admin scheduling/invoicing matches administrator posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0036",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Graduate analyst research/Excel skills fit graduate program.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0037",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Chef kitchen leadership/menu planning fits head chef role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0038",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Remote-capable support engineer mismatched to onsite-only Brisbane rule.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0039",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "General ward nurse lacks ACLS/critical-care requirements.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0040",
+      "original_label": "pass",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Posting requires Kubernetes orchestration; visible skills are Docker/Linux/monitoring only\u2014a mandatory gap.",
+      "changed": true
+    },
+    {
+      "case_id": "job_scoring-0041",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Client success renewals/account skills transferable to enterprise account manager role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0042",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Management accountant FP&A mismatch with tax-only accountant mandate.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0043",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Pastry chef profile mismatch with fast-food grill cook role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0044",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Power BI/SQL analyst skills fit BI dashboard posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0045",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "IT helpdesk skills lack SIEM/threat-hunting requirements.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0046",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Telehealth triage skills fit remote NSW nurse role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0047",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Apprentice cannot meet unrestricted licence requirement.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0048",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Scheduler coordinator lacks PMP/Scrum certifications required.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0049",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Retail sales experience mismatch with enterprise SaaS director scope.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0050",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Operations director overqualified for entry graduate trainee role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0051",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Recruiter sourcing skills insufficient for complex ER investigations HRBP role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0052",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Mechanical HVAC engineer mismatch with civil bridge design role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0053",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Manual QA mismatch with senior backend architecture mandate.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0054",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Graduate nurse cannot meet five-year acute experience requirement.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0055",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": true,
+      "rationale": "Site foreman civil crew leadership fits foreman posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0056",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Brand strategy manager mismatch with performance paid-search specialist role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0057",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": true,
+      "rationale": "Office administrator skills mismatch with litigation paralegal duties.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0058",
+      "original_label": "skip",
+      "adjudicated_label": "skip",
+      "critical": false,
+      "rationale": "Data engineer pipeline skills mismatch with junior marketing spreadsheet role.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0059",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Sous chef HACCP/kitchen ops fit hotel sous chef posting.",
+      "changed": false
+    },
+    {
+      "case_id": "job_scoring-0060",
+      "original_label": "pass",
+      "adjudicated_label": "pass",
+      "critical": false,
+      "rationale": "Melbourne community nurse fits metro community care posting.",
+      "changed": false
+    }
+  ],
+  "revisions": [
+    {
+      "date": "2026-09-30",
+      "case_id": "job_scoring-0013",
+      "from": "pass",
+      "to": "borderline",
+      "reason": "Second blind review: construction PM and budget/delivery align, but commercial-build scope and subcontractor management are required in the posting and not visible in profile skills."
+    }
+  ]
+}

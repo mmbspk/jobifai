@@ -803,9 +803,13 @@ func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings) (Res
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("cover_letter task: %w", err)
 	}
-	formC, err := m.taskClient(client, gs, "form_filling")
+	formAnswerC, err := m.taskClient(client, gs, "form_filling")
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("form_filling task: %w", err)
+	}
+	formVisionC, err := m.taskClient(client, gs, domain.TaskFormVision)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("form_vision task: %w", err)
 	}
 	scoreC, err := m.taskClient(client, gs, "scoring")
 	if err != nil {
@@ -819,7 +823,7 @@ func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings) (Res
 		}
 		halal = resume.NewHalalChecker(halalC)
 	}
-	return resume.NewTailor(tailorC, coverC, formC), resume.NewScorer(scoreC), halal, tracker, nil
+	return resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC), resume.NewScorer(scoreC), halal, tracker, nil
 }
 
 // userLLMClient resolves the API key for userID and returns a ready client, or

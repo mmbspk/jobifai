@@ -18,13 +18,18 @@ func (s *Store) ApprovedPolicy(task string) (*domain.TaskModelPolicyRow, error) 
 		return nil, nil
 	}
 	stable := domain.LegacyToStableTask(task)
-	var state, provider, model, fallback, mode string
+	var state, provider, model, fallback, mode, effort string
 	var maxTok int
+	var maxCost float64
+	var timeoutSec int
 	var approvedBy, evalID sql.NullString
 	err := s.DB.QueryRow(`
-		SELECT state, provider, model, fallback_models, mode, max_tokens, approved_by, eval_run_id
+		SELECT state, provider, model, fallback_models, mode, max_tokens,
+		       COALESCE(effort,''), COALESCE(max_cost_usd,0), COALESCE(timeout_sec,0),
+		       approved_by, eval_run_id
 		FROM task_model_policies WHERE task = ?`, stable).Scan(
-		&state, &provider, &model, &fallback, &mode, &maxTok, &approvedBy, &evalID,
+		&state, &provider, &model, &fallback, &mode, &maxTok,
+		&effort, &maxCost, &timeoutSec, &approvedBy, &evalID,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -36,12 +41,15 @@ func (s *Store) ApprovedPolicy(task string) (*domain.TaskModelPolicyRow, error) 
 		return nil, nil
 	}
 	row := &domain.TaskModelPolicyRow{
-		Task:     stable,
-		State:    domain.PolicyStateApproved,
-		Provider: provider,
-		Model:    model,
-		Mode:     mode,
-		MaxTokens: maxTok,
+		Task:       stable,
+		State:      domain.PolicyStateApproved,
+		Provider:   provider,
+		Model:      model,
+		Mode:       mode,
+		MaxTokens:  maxTok,
+		Effort:     effort,
+		MaxCostUSD: maxCost,
+		TimeoutSec: timeoutSec,
 	}
 	if approvedBy.Valid {
 		row.ApprovedBy = approvedBy.String

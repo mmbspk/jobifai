@@ -18,7 +18,7 @@ func TestTailor_TailorProfile_Valid(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := newTestClient(t, srv)
-	tailor := resume.NewTailor(client, client, client)
+	tailor := resume.NewTailor(client, client, client, client)
 
 	profile := &domain.ResumeProfile{
 		PersonalInformation: domain.PersonalInformation{Name: "Sam"},
@@ -36,7 +36,7 @@ func TestTailor_TailorProfile_LLMError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := newTestClient(t, srv)
-	tailor := resume.NewTailor(client, client, client)
+	tailor := resume.NewTailor(client, client, client, client)
 	_, err := tailor.TailorProfile(context.Background(), &domain.ResumeProfile{}, "job desc")
 	require.Error(t, err)
 }
@@ -47,7 +47,7 @@ func TestTailor_WriteCoverLetter_Valid(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := newTestClient(t, srv)
-	tailor := resume.NewTailor(client, client, client)
+	tailor := resume.NewTailor(client, client, client, client)
 
 	profile := &domain.ResumeProfile{Summary: "Experienced professional"}
 	out, err := tailor.WriteCoverLetter(context.Background(), profile, "Senior role at Acme")
@@ -62,7 +62,7 @@ func TestTailor_WriteCoverLetter_LLMError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := newTestClient(t, srv)
-	tailor := resume.NewTailor(client, client, client)
+	tailor := resume.NewTailor(client, client, client, client)
 	_, err := tailor.WriteCoverLetter(context.Background(), &domain.ResumeProfile{}, "job desc")
 	require.Error(t, err)
 }
@@ -72,7 +72,7 @@ func TestTailor_AnswerFormQuestion_Valid(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := newTestClient(t, srv)
-	tailor := resume.NewTailor(client, client, client)
+	tailor := resume.NewTailor(client, client, client, client)
 
 	profileJSON := []byte(`{"skills":["Python"]}`)
 	answer, err := tailor.AnswerFormQuestion(context.Background(), profileJSON, "Do you know Python?", []string{"Yes", "No"})
@@ -87,7 +87,7 @@ func TestTailor_AnswerFormQuestion_LLMError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	client := newTestClient(t, srv)
-	tailor := resume.NewTailor(client, client, client)
+	tailor := resume.NewTailor(client, client, client, client)
 	_, err := tailor.AnswerFormQuestion(context.Background(), []byte(`{}`), "question?", nil)
 	require.Error(t, err)
 }

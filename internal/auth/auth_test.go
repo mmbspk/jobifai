@@ -1,6 +1,8 @@
 package auth_test
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,13 +86,15 @@ func TestTokenManager_TamperedToken(t *testing.T) {
 	token, err := tm.IssueAccess("user-1", "")
 	require.NoError(t, err)
 
-	// Flip the last character ensuring it actually changes.
-	last := token[len(token)-1]
-	replacement := byte('X')
-	if last == 'X' {
-		replacement = 'Y'
-	}
-	tampered := token[:len(token)-1] + string(replacement)
+	parts := strings.Split(token, ".")
+	require.Len(t, parts, 3)
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	require.NoError(t, err)
+	require.NotEmpty(t, sig)
+	sig[0] ^= 0x01
+	parts[2] = base64.RawURLEncoding.EncodeToString(sig)
+	tampered := strings.Join(parts, ".")
+	require.NotEqual(t, token, tampered)
 	_, err = tm.Verify(tampered)
 	assert.Error(t, err)
 }

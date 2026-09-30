@@ -1,7 +1,6 @@
 package resume
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -72,19 +71,12 @@ func NewHalalChecker(client *llm.Client) *HalalChecker {
 
 // CheckHalal evaluates whether the given job is halal, haram, or doubtful.
 func (h *HalalChecker) CheckHalal(ctx context.Context, title, company, description string) (domain.HalalVerdict, error) {
-	if len(description) > 2000 {
-		description = description[:2000]
-	}
-	var prompt bytes.Buffer
-	if err := halalTempl.Execute(&prompt, halalData{
-		Title:       title,
-		Company:     company,
-		Description: description,
-	}); err != nil {
+	in, _ := json.Marshal(map[string]string{"title": title, "company": company, "description": description})
+	msgs, err := ProviderMessages(domain.TaskEmploymentEthics, in)
+	if err != nil {
 		return domain.HalalVerdict{}, fmt.Errorf("halal: render prompt: %w", err)
 	}
-
-	raw, err := h.client.Chat(llm.WithTask(ctx, "halal check"), []llm.Message{{Role: "user", Content: prompt.String()}})
+	raw, err := h.client.Chat(llm.WithTask(ctx, "halal check"), msgs)
 	if err != nil {
 		return domain.HalalVerdict{}, fmt.Errorf("halal: llm: %w", err)
 	}

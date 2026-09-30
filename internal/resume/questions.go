@@ -52,29 +52,17 @@ func NewQuestionAnswerer(client *llm.Client) *QuestionAnswerer {
 
 // AnswerQuestions sends all questions in a single LLM call and returns individual answers.
 func (qa *QuestionAnswerer) AnswerQuestions(ctx context.Context, profile *domain.ResumeProfile, jobContext string, questions []string) ([]domain.QuestionAnswer, error) {
-	trimmed := ForScoring(profile)
-	profileJSON, err := json.Marshal(trimmed)
-	if err != nil {
-		return nil, fmt.Errorf("questions: marshal profile: %w", err)
-	}
-
-	var sb strings.Builder
-	sb.WriteString("## Candidate Profile\n")
-	sb.Write(profileJSON)
-	sb.WriteString("\n\n## Job Details\n")
-	sb.WriteString(jobContext)
-	if profile.PromptInstructions != "" {
-		sb.WriteString("\n\nADDITIONAL INSTRUCTIONS FROM CANDIDATE (follow these):\n")
-		sb.WriteString(profile.PromptInstructions)
-	}
-	sb.WriteString("\n\n## Questions\n")
+	qRaw := make([]json.RawMessage, len(questions))
 	for i, q := range questions {
-		fmt.Fprintf(&sb, "%d. %s\n", i+1, strings.TrimSpace(q))
+		qRaw[i], _ = json.Marshal(map[string]string{"text": q})
 	}
-
-	msgs := []llm.Message{
-		{Role: "system", Content: questionsSystemPrompt},
-		{Role: "user", Content: sb.String()},
+	in, err := json.Marshal(map[string]any{"profile": profile, "job_context": jobContext, "questions": qRaw})
+	if err != nil {
+		return nil, fmt.Errorf("questions: marshal input: %w", err)
+	}
+	msgs, err := ProviderMessages(domain.TaskApplicationQuestions, in)
+	if err != nil {
+		return nil, fmt.Errorf("questions: build prompt: %w", err)
 	}
 	raw, err := qa.client.Chat(llm.WithTask(ctx, "answer questions"), msgs)
 	if err != nil {

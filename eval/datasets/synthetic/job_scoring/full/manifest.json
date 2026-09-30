@@ -1,0 +1,11 @@
+{
+  "case_count": 60,
+  "cases_file": "cases.jsonl",
+  "classification": "synthetic",
+  "created_at": "2026-09-30T05:09:17Z",
+  "description": "Synthetic job_scoring dataset (full)",
+  "schema_version": 1,
+  "sha256": "74bf056490deaddc82feccbd80d012b8db62e7cd71b0ca79e256d51610b2a88f",
+  "task": "job_scoring",
+  "version": "full"
+}

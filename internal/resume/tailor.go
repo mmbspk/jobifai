@@ -1,7 +1,6 @@
 package resume
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -100,13 +99,25 @@ No job description provided. Write a strong general cover letter suitable for an
 // Tailor uses an LLM to rewrite a ResumeProfile for a specific job description.
 // Three separate clients allow per-task model overrides.
 type Tailor struct {
-	tailorClient *llm.Client // TailorProfile
-	coverClient  *llm.Client // WriteCoverLetter
-	formClient   *llm.Client // AnswerFormQuestion + IdentifyFormFields
+	tailorClient     *llm.Client // TailorProfile
+	coverClient      *llm.Client // WriteCoverLetter
+	formAnswerClient *llm.Client // AnswerFormQuestion
+	formVisionClient *llm.Client // IdentifyFormFields
 }
 
-func NewTailor(tailorClient, coverClient, formClient *llm.Client) *Tailor {
-	return &Tailor{tailorClient: tailorClient, coverClient: coverClient, formClient: formClient}
+// FormAnswerClient returns the client used for AnswerFormQuestion (tests/admin diagnostics).
+func (t *Tailor) FormAnswerClient() *llm.Client { return t.formAnswerClient }
+
+// FormVisionClient returns the client used for IdentifyFormFields.
+func (t *Tailor) FormVisionClient() *llm.Client { return t.formVisionClient }
+
+func NewTailor(tailorClient, coverClient, formAnswerClient, formVisionClient *llm.Client) *Tailor {
+	return &Tailor{
+		tailorClient:     tailorClient,
+		coverClient:      coverClient,
+		formAnswerClient: formAnswerClient,
+		formVisionClient: formVisionClient,
+	}
 }
 
 type promptData struct {
@@ -120,26 +131,15 @@ type promptData struct {
 // TailorProfile rewrites profile JSON targeting the given job description.
 // jobDesc may be prefixed with market instructions via the caller.
 func (t *Tailor) TailorProfile(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (*domain.ResumeProfile, error) {
-	marketInstructions, jobDesc := splitMarketPrefix(jobDesc)
-	trimmed := ForTailoring(profile)
-	profileJSON, err := json.Marshal(trimmed)
+	in, err := json.Marshal(map[string]any{"profile": profile, "job_description": jobDesc})
 	if err != nil {
-		return nil, fmt.Errorf("tailor: marshal profile: %w", err)
+		return nil, fmt.Errorf("tailor: marshal input: %w", err)
 	}
-
-	var prompt bytes.Buffer
-	if err := tailorTempl.Execute(&prompt, promptData{
-		Profile:            string(profileJSON),
-		JobDescription:     jobDesc,
-		MarketInstructions: marketInstructions,
-		PromptInstructions: profile.PromptInstructions,
-	}); err != nil {
+	msgs, err := ProviderMessages(domain.TaskResumeTailoring, in)
+	if err != nil {
 		return nil, fmt.Errorf("tailor: render prompt: %w", err)
 	}
-
-	raw, err := t.tailorClient.Chat(llm.WithTask(ctx, "tailor resume"), []llm.Message{
-		{Role: "user", Content: prompt.String()},
-	})
+	raw, err := t.tailorClient.Chat(llm.WithTask(ctx, "tailor resume"), msgs)
 	if err != nil {
 		return nil, fmt.Errorf("tailor: llm: %w", err)
 	}
@@ -154,27 +154,15 @@ func (t *Tailor) TailorProfile(ctx context.Context, profile *domain.ResumeProfil
 
 // WriteCoverLetter generates a cover letter body for the profile + job description.
 func (t *Tailor) WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (string, error) {
-	marketInstructions, jobDesc := splitMarketPrefix(jobDesc)
-	trimmed := ForCoverLetter(profile)
-	profileJSON, err := json.Marshal(trimmed)
+	in, err := json.Marshal(map[string]any{"profile": profile, "job_description": jobDesc})
 	if err != nil {
-		return "", fmt.Errorf("cover letter: marshal profile: %w", err)
+		return "", fmt.Errorf("cover letter: marshal input: %w", err)
 	}
-
-	var prompt bytes.Buffer
-	if err := coverLetterTempl.Execute(&prompt, promptData{
-		Profile:            string(profileJSON),
-		JobDescription:     jobDesc,
-		MarketInstructions: marketInstructions,
-		ExperienceContext:  computeExperienceContext(profile),
-		PromptInstructions: profile.PromptInstructions,
-	}); err != nil {
+	msgs, err := ProviderMessages(domain.TaskCoverLetter, in)
+	if err != nil {
 		return "", fmt.Errorf("cover letter: render prompt: %w", err)
 	}
-
-	body, err := t.coverClient.Chat(llm.WithTask(ctx, "cover letter"), []llm.Message{
-		{Role: "user", Content: prompt.String()},
-	})
+	body, err := t.coverClient.Chat(llm.WithTask(ctx, "cover letter"), msgs)
 	if err != nil {
 		return "", fmt.Errorf("cover letter: llm: %w", err)
 	}
@@ -185,33 +173,12 @@ func (t *Tailor) WriteCoverLetter(ctx context.Context, profile *domain.ResumePro
 // profileJSON is a pre-serialized trimmed profile (caller caches this once per job session).
 // options is non-nil for radio/select questions; nil for free-text fields.
 func (t *Tailor) AnswerFormQuestion(ctx context.Context, profileJSON []byte, question string, options []string) (string, error) {
-	optionsPart := "Provide a concise answer (1–2 sentences, plain text, no punctuation at the end)."
-	if len(options) > 0 {
-		optionsPart = "Available options, return EXACTLY one of these labels, nothing else: " + strings.Join(options, " | ")
+	in, _ := json.Marshal(map[string]any{"profile_json": profileJSON, "question": question, "options": options})
+	msgs, err := ProviderMessages(domain.TaskFormAnswer, in)
+	if err != nil {
+		return "", fmt.Errorf("form answer: %w", err)
 	}
-
-	prompt := fmt.Sprintf(`You are filling in a job application form. You ARE the applicant — write every answer in first person (I, me, my) as if you are providing the information directly. Never say "the candidate" or use third person.
-
-Your profile (JSON):
-%s
-
-Form question: %s
-
-%s
-
-Rules:
-- Return only the answer, no explanation, no punctuation wrapper
-- Always use first person: "I have...", "I am...", "My experience..." — never "The candidate..."
-- For yes/no questions about skills listed in your profile, answer "Yes"
-- For "how many years of experience/exposure/knowledge with [X]" questions, return a COUNT (integer, e.g. "9"), NEVER a calendar year (e.g. "2017"). Calculate: current year minus the start year from experience_details.
-- Calculate years of experience from experience_details when asked
-- Use application_defaults fields (requires_sponsorship, notice_period, salary_expectation) when relevant
-- For phone number fields, return ONLY digits (and a leading + for international numbers) — no words or sentences
-- For email fields, return ONLY the email address — no words or sentences
-- If asked about working in a city or location other than your current one, respond politely that you are currently based in [your city/country] but are enthusiastic about the role and happy to relocate for the right opportunity. Never say you cannot or are unable to work there.`,
-		string(profileJSON), question, optionsPart)
-
-	answer, err := t.formClient.Chat(llm.WithTask(ctx, "form question"), []llm.Message{{Role: "user", Content: prompt}})
+	answer, err := t.formAnswerClient.Chat(llm.WithTask(ctx, "form question"), msgs)
 	if err != nil {
 		return "", fmt.Errorf("form answer: llm: %w", err)
 	}
@@ -222,15 +189,7 @@ Rules:
 // visible form fields, returning them as a slice of IdentifiedField.
 // Only works when the underlying LLM client supports vision (Claude).
 func (t *Tailor) IdentifyFormFields(ctx context.Context, imageBytes []byte) ([]domain.IdentifiedField, error) {
-	const prompt = `This is a screenshot of a job application form step.
-Return a JSON array of the visible, unanswered form fields. Each element must have:
-  "type": one of "radio", "select", or "text"
-  "question": the visible label text for the field
-  "options": array of option label strings for radio/select; empty array for text fields
-
-Return ONLY the JSON array, no markdown fencing, no explanation.`
-
-	raw, err := t.formClient.ChatWithImage(llm.WithTask(ctx, "identify form fields"), imageBytes, prompt)
+	raw, err := t.formVisionClient.ChatWithImage(llm.WithTask(ctx, "identify form fields"), imageBytes, FormVisionIdentifyPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("identify fields: %w", err)
 	}

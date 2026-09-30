@@ -63,16 +63,13 @@ func TestManager_Start_TestAutomationRunner_RecordsSkippedJob(t *testing.T) {
 
 	require.NoError(t, mgr.Start(context.Background(), userID, bot.PlatformTestAutomation))
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	require.Eventually(t, func() bool {
 		var n int
-		err := db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id = ? AND id = ?`, userID, "test-automation-job-1").Scan(&n)
-		require.NoError(t, err)
-		if n == 1 {
-			break
+		if err := db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id = ? AND id = ?`, userID, "test-automation-job-1").Scan(&n); err != nil {
+			return false
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return n == 1
+	}, 5*time.Second, 50*time.Millisecond)
 
 	var company, reason, platform string
 	var score int

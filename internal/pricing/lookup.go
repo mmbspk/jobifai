@@ -52,6 +52,11 @@ func (c *Catalog) lookupInternal(model string) (ModelRecord, string, LookupKind,
 	if r, found := c.models[key]; found {
 		return r, r.Source, LookupExact, true
 	}
+	if canon, ok := GatewayCanonicalModel(model); ok {
+		if r, found := c.models[stringsLower(canon)]; found {
+			return r, r.Source, LookupAlias, true
+		}
+	}
 	if inPerM, outPerM, legacyOK := legacyPrefixCost(model); legacyOK {
 		return ModelRecord{
 			CanonicalID: model, Provider: "legacy-prefix",

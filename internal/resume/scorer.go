@@ -1,7 +1,6 @@
 package resume
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -46,20 +45,12 @@ func NewScorer(client *llm.Client) *Scorer { return &Scorer{client: client} }
 
 // EvaluateJob scores how well the candidate's profile matches the given job description.
 func (s *Scorer) EvaluateJob(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (domain.JobScore, error) {
-	trimmed := ForScoring(profile)
-	profileJSON, err := json.Marshal(trimmed)
+	in, _ := json.Marshal(map[string]any{"profile": profile, "job_description": jobDesc})
+	msgs, err := ProviderMessages(domain.TaskJobScoring, in)
 	if err != nil {
-		return domain.JobScore{}, fmt.Errorf("scorer: marshal: %w", err)
-	}
-	var prompt bytes.Buffer
-	if err := scoreTempl.Execute(&prompt, promptData{
-		Profile:            string(profileJSON),
-		JobDescription:     jobDesc,
-		PromptInstructions: profile.PromptInstructions,
-	}); err != nil {
 		return domain.JobScore{}, fmt.Errorf("scorer: template: %w", err)
 	}
-	raw, err := s.client.Chat(llm.WithTask(ctx, "evaluate job"), []llm.Message{{Role: "user", Content: prompt.String()}})
+	raw, err := s.client.Chat(llm.WithTask(ctx, "evaluate job"), msgs)
 	if err != nil {
 		return domain.JobScore{}, fmt.Errorf("scorer: llm: %w", err)
 	}
