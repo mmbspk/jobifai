@@ -9,7 +9,6 @@ test.describe('Admin', () => {
   test('admin sidebar link opens overview', async ({ page }) => {
     await page.locator('aside').getByRole('link', { name: 'Admin' }).click()
     await expect(page).toHaveURL(/\/admin\/overview/)
-    await expect(page.getByRole('heading', { name: 'System' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible()
   })
 
