@@ -116,7 +116,7 @@ func ethicsScenarios() []ethicsScenario {
 	return []ethicsScenario{
 		{"Hospital IT Analyst", "Metro Health IT", "Maintain electronic health record systems for patient care units.", "HALAL", true, "hospital_it"},
 		{"Primary School Teacher", "Greenfield Education", "Classroom teaching for primary students.", "HALAL", true, "education"},
-		{"Warehouse Coordinator", "Pacific Logistics", "Coordinate inbound freight for retail clients.", "DOUBTFUL", false, "mixed_logistics"},
+		{"Warehouse Coordinator", "Pacific Logistics", "Coordinate inbound freight for retail clients.", "HALAL", false, "mixed_logistics"},
 		{"Charity Program Officer", "Relief Foundation", "Manage food distribution programs for underserved communities.", "HALAL", true, "charity"},
 		{"Consumer Loan Officer", "City Finance", "Originate personal loans with interest-based repayment schedules.", "HARAM", true, "direct_lending"},
 		{"Core Banking Developer", "National Retail Bank", "Build internet banking features including interest-bearing account modules.", "HARAM", true, "bank_software"},
@@ -190,9 +190,20 @@ func synthFormAnswer(i int) map[string]any {
 	if len(s.Options) > 0 {
 		in["options"] = s.Options
 	}
-	exp := map[string]any{"exact": s.Expect}
-	if s.Tag == "motivation_snippet" {
-		exp = map[string]any{"contains": s.Expect}
+	var exp map[string]any
+	switch {
+	case len(s.Options) > 0:
+		exp = map[string]any{"match": "exact_option", "exact": s.Expect}
+	case s.Tag == "education_field":
+		exp = map[string]any{"match": "qualification", "level": "Bachelor", "field": "Nursing", "exact": s.Expect}
+	case s.Tag == "motivation_snippet":
+		exp = map[string]any{"match": "contains_fact", "contains": s.Expect}
+	case s.Tag == "salary_expectation_llm":
+		exp = map[string]any{"match": "numeric", "exact": s.Expect}
+	case s.Tag == "notice_period_llm":
+		exp = map[string]any{"match": "contains_fact", "contains": s.Expect}
+	default:
+		exp = map[string]any{"match": "contains_fact", "contains": s.Expect}
 	}
 	return map[string]any{
 		"id": id, "task": "form_answer", "classification": "synthetic", "tags": []string{s.Tag},

@@ -37,8 +37,8 @@ func Scenarios() []Scenario {
 				{ID: "notice", Text: "What is your notice period?"},
 			},
 			Expect: []AnswerExpect{
-				{Question: "Do you require employer sponsorship?", Match: "exact", Value: "Yes"},
-				{Question: "What is your notice period?", Match: "exact", Value: "8 weeks"},
+				{Question: "Do you require employer sponsorship?", Match: "boolean_yes", Value: "Yes"},
+				{Question: "What is your notice period?", Match: "duration", Value: "8 weeks"},
 			},
 		},
 		{
@@ -50,7 +50,7 @@ func Scenarios() []Scenario {
 			},
 			Expect: []AnswerExpect{
 				{Question: "How many years of nursing experience do you have?", Match: "years_count", Value: "7"},
-				{Question: "Expected salary (AUD)?", Match: "exact", Value: "88000"},
+				{Question: "Expected salary (AUD)?", Match: "currency_amount", Value: "88000"},
 			},
 		},
 		{
@@ -60,7 +60,7 @@ func Scenarios() []Scenario {
 				{ID: "notice", Text: "What is your notice period with your current employer?"},
 			},
 			Expect: []AnswerExpect{
-				{Question: "What is your notice period with your current employer?", Match: "exact", Value: "6 weeks"},
+				{Question: "What is your notice period with your current employer?", Match: "duration", Value: "6 weeks"},
 			},
 		},
 		{
@@ -70,7 +70,7 @@ func Scenarios() []Scenario {
 				{ID: "sponsor", Text: "Will you now or in the future require visa sponsorship?"},
 			},
 			Expect: []AnswerExpect{
-				{Question: "Will you now or in the future require visa sponsorship?", Match: "exact", Value: "Yes"},
+				{Question: "Will you now or in the future require visa sponsorship?", Match: "boolean_yes", Value: "Yes"},
 			},
 		},
 		{
@@ -80,7 +80,7 @@ func Scenarios() []Scenario {
 				{ID: "salary", Text: "What are your salary expectations (AUD)?"},
 			},
 			Expect: []AnswerExpect{
-				{Question: "What are your salary expectations (AUD)?", Match: "exact", Value: "112000"},
+				{Question: "What are your salary expectations (AUD)?", Match: "currency_amount", Value: "112000"},
 			},
 		},
 		{
@@ -100,7 +100,7 @@ func Scenarios() []Scenario {
 				{ID: "sponsor", Text: "Do you require employer sponsorship?"},
 			},
 			Expect: []AnswerExpect{
-				{Question: "Do you require employer sponsorship?", Match: "exact", Value: "No"},
+				{Question: "Do you require employer sponsorship?", Match: "boolean_no", Value: "No"},
 			},
 		},
 		{
@@ -111,8 +111,8 @@ func Scenarios() []Scenario {
 				{ID: "salary", Text: "Expected salary (AUD)?"},
 			},
 			Expect: []AnswerExpect{
-				{Question: "What is your notice period?", Match: "exact", Value: "4 weeks"},
-				{Question: "Expected salary (AUD)?", Match: "exact", Value: "99000"},
+				{Question: "What is your notice period?", Match: "duration", Value: "4 weeks"},
+				{Question: "Expected salary (AUD)?", Match: "currency_amount", Value: "99000"},
 			},
 		},
 	}

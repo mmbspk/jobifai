@@ -33,10 +33,10 @@ func TestAggregate_NonScoringTaskNoNaN(t *testing.T) {
 func TestResumeExtract_InventedEmployerCritical(t *testing.T) {
 	t.Parallel()
 	exp, _ := json.Marshal(map[string]any{
-		"personal":  map[string]any{"full_name": "Alex Nurse"},
-		"employers": []map[string]any{{"company": "Regional Health", "title": "Nurse"}},
+		"personal_information": map[string]any{"name": "Alex", "surname": "Reed"},
+		"experience_details":   []map[string]any{{"company": "Regional Health", "position": "Nurse"}},
 	})
-	out := `{"personal_information":{"name":"Alex"},"experience_details":[{"company":"Invented Co","position":"Nurse"}]}`
+	out := `{"personal_information":{"name":"Alex","surname":"Reed"},"experience_details":[{"company":"Invented Co","position":"Nurse"}]}`
 	res := Validate(domain.TaskResumeExtract, out, exp, true)
 	require.True(t, res.CriticalFail)
 	require.Greater(t, res.Metrics["invented_facts"].(int), 0)
@@ -87,7 +87,7 @@ func TestMarshalJSON_NoNaNInMetrics(t *testing.T) {
 func TestResumeExtract_EmployerCorrectTitleWrong(t *testing.T) {
 	t.Parallel()
 	exp, _ := json.Marshal(map[string]any{
-		"employers": []map[string]any{{"company": "Regional Health", "title": "Registered Nurse"}},
+		"experience_details": []map[string]any{{"company": "Regional Health", "position": "Registered Nurse"}},
 	})
 	out := `{"experience_details":[{"company":"Regional Health","position":"Director"}]}`
 	res := Validate(domain.TaskResumeExtract, out, exp, false)

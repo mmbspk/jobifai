@@ -68,8 +68,8 @@ func (f *Factory) Client(ctx context.Context, spec candidate.Spec) (*llm.Client,
 	}
 	client := base.WithBilling(llm.BillingHooks{
 		Catalog: catalog,
-		EvalPrice: func(provider, model string) (pricing.LookupResult, error) {
-			return evalCat.Resolve(ctx, provider, model)
+		EvalPrice: func(callCtx context.Context, provider, requested, actual string) (pricing.LookupResult, pricing.EvalPricingMeta, error) {
+			return evalCat.ResolveEvalPricing(callCtx, provider, requested, actual)
 		},
 		EvalObserver: func(u llm.UsageObservation) {
 			acc.record(u)

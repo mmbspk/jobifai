@@ -124,6 +124,8 @@ func BuildApplicationQuestionsPrompt(profile *domain.ResumeProfile, jobContext s
 	var sb strings.Builder
 	sb.WriteString("## Candidate Profile\n")
 	sb.Write(profileJSON)
+	sb.WriteString("\n\n## Application defaults (factual)\n")
+	sb.WriteString(formatApplicationDefaults(trimmed.ApplicationDefaults))
 	sb.WriteString("\n\n## Job Details\n")
 	sb.WriteString(jobContext)
 	if profile.PromptInstructions != "" {
@@ -135,6 +137,22 @@ func BuildApplicationQuestionsPrompt(profile *domain.ResumeProfile, jobContext s
 		fmt.Fprintf(&sb, "%d. %s\n", i+1, strings.TrimSpace(q))
 	}
 	return questionsSystemPrompt, sb.String(), nil
+}
+
+func formatApplicationDefaults(ad domain.ApplicationDefaults) string {
+	sponsorship := "No"
+	if ad.RequiresSponsorship {
+		sponsorship = "Yes"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "- Requires employer sponsorship: %s\n", sponsorship)
+	if ad.NoticePeriod != "" {
+		fmt.Fprintf(&sb, "- Notice period: %s\n", ad.NoticePeriod)
+	}
+	if ad.SalaryExpectation != "" {
+		fmt.Fprintf(&sb, "- Salary expectation: %s\n", ad.SalaryExpectation)
+	}
+	return sb.String()
 }
 
 const FormVisionIdentifyPrompt = `This is a screenshot of a job application form step.

@@ -2,10 +2,10 @@
   "case_count": 45,
   "cases_file": "cases.jsonl",
   "classification": "synthetic",
-  "created_at": "2026-09-29T14:15:57Z",
+  "created_at": "2026-09-30T02:02:28Z",
   "description": "Synthetic employment_ethics dataset (full)",
   "schema_version": 1,
-  "sha256": "ba7a21f828bd0d97d6cfab2f18df473901951fd2f87b3bda7fd7aab63b890826",
+  "sha256": "c25795d86a6925b3deb4cbea2c2d83ee6fc789776546fd24c6f04481824c81bd",
   "task": "employment_ethics",
   "version": "full"
 }

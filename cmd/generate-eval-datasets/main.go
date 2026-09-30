@@ -99,23 +99,27 @@ func synthCase(task string, i int) map[string]any {
 		}
 	case "resume_extract":
 		prof := professions[i%len(professions)]
-		name := fmt.Sprintf("Alex %s", prof)
+		surnames := []string{"Reed", "Nguyen", "Patel", "Walsh"}
+		surname := surnames[i%len(surnames)]
 		company := fmt.Sprintf("Northline %s", prof)
-		text := fmt.Sprintf("%s\nEmail: alex.%d@example.com\n\nExperience\n%s at %s (2019 – Present)\nSkills: %s, reporting, stakeholder communication",
-			name, i, prof, company, prof)
+		email := fmt.Sprintf("alex.%d@example.com", i)
+		text := fmt.Sprintf("Alex %s\nEmail: %s\n\nExperience\n%s at %s (2019 – Present)\nSkills: %s, reporting, stakeholder communication",
+			surname, email, prof, company, prof)
 		return map[string]any{
 			"id": id, "task": task, "classification": "synthetic", "critical": true,
 			"input": map[string]any{"resume_text": text},
 			"expect": map[string]any{
-				"personal": map[string]any{"full_name": name, "email": fmt.Sprintf("alex.%d@example.com", i)},
-				"employers": []map[string]any{{"company": company, "title": prof, "start": "2019", "end": "Present"}},
+				"personal_information": map[string]any{"name": "Alex", "surname": surname, "email": email},
+				"experience_details": []map[string]any{{
+					"company": company, "position": prof, "employment_period": "2019 – Present",
+				}},
 				"skills": []string{prof},
 			},
 		}
 	case "resume_tailoring":
 		prof := professions[i%len(professions)]
 		profile := map[string]any{
-			"personal_information": map[string]any{"full_name": fmt.Sprintf("Sam %s", prof)},
+			"personal_information": map[string]any{"name": "Sam", "surname": prof},
 			"experience_details":   []map[string]any{{"company": "Harbor Logistics", "position": prof, "employment_period": "2018 – Present"}},
 			"skills":               []string{"Java", "AWS", "PostgreSQL"},
 			"publications":         []map[string]any{{"title": "Efficient routing for regional deliveries"}},
@@ -127,16 +131,17 @@ func synthCase(task string, i int) map[string]any {
 				"job_description": fmt.Sprintf("Role requires Go, Kubernetes, and GCP leadership for %s programs.", prof),
 			},
 			"expect": map[string]any{
-				"preserve_name":          fmt.Sprintf("Sam %s", prof),
-				"forbidden_terms":        []string{"kubernetes", " golang", " gcp"},
-				"required_publications":  []string{"Efficient routing for regional deliveries"},
-				"required_employers":     []string{"Harbor Logistics"},
+				"preserve_name":         "Sam",
+				"preserve_surname":      prof,
+				"forbidden_terms":       []string{"kubernetes", " golang", " gcp"},
+				"required_publications": []string{"Efficient routing for regional deliveries"},
+				"required_employers":    []string{"Harbor Logistics"},
 			},
 		}
 	case "cover_letter":
 		prof := professions[i%len(professions)]
 		profile := map[string]any{
-			"personal_information": map[string]any{"full_name": fmt.Sprintf("Jordan %s", prof)},
+			"personal_information": map[string]any{"name": "Jordan", "surname": prof},
 			"experience_details":   []map[string]any{{"company": "Brightfield Co", "position": prof}},
 			"skills":               []string{prof, "client communication"},
 		}
@@ -147,9 +152,10 @@ func synthCase(task string, i int) map[string]any {
 				"job_description": fmt.Sprintf("Hiring a %s to support enterprise accounts in healthcare logistics.", prof),
 			},
 			"expect": map[string]any{
-				"grounded_facts":  []string{"Brightfield Co", prof},
+				"required_facts":  []string{"Brightfield Co"},
+				"allowed_facts":   []string{prof, "client communication"},
 				"forbidden_terms": []string{"kubernetes"},
-				"min_paragraphs":  3, "max_paragraphs": 4, "max_words": 450,
+				"min_paragraphs":  3, "max_paragraphs": 6, "max_words": 450,
 			},
 		}
 	case "application_questions":

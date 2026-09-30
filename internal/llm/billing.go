@@ -18,6 +18,12 @@ type UsageObservation struct {
 	RequestedModel      string
 	ActualModel         string
 	ActualModelVerified bool
+	ActualModelRaw      string
+	CanonicalPricingModel string
+	PricingSource       string
+	PricingKind         pricing.LookupKind
+	PricingResolved     bool
+	PricingError        string
 	Tokens              pricing.TokenUsage
 	LatencyMS           int64
 	Success             bool
@@ -29,7 +35,7 @@ type UsageObservation struct {
 type BillingHooks struct {
 	Ledger       *usage.Ledger
 	Catalog      *pricing.Catalog         // optional; used for eval cost when Ledger is nil
-	EvalPrice    func(provider, model string) (pricing.LookupResult, error)
+	EvalPrice    func(ctx context.Context, provider, requested, actual string) (pricing.LookupResult, pricing.EvalPricingMeta, error)
 	EvalObserver func(UsageObservation) // optional; never writes llm_usage_events
 }
 
@@ -57,27 +63,47 @@ func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int
 	}
 	if c.billing.EvalObserver != nil {
 		rawMicro := int64(0)
-		cat := c.billing.Catalog
-		if cat == nil && c.billing.Ledger != nil {
-			cat = c.billing.Ledger.Catalog
+		meta := pricing.EvalPricingMeta{
+			RequestedModel: c.cfg.Model,
+			ActualModelRaw: bu.ActualModel,
 		}
-		if cat != nil {
-			res, err := cat.Resolve(bu.ActualModel, true)
-			if err == nil && res.Known && !res.UsedFallback {
+		if c.billing.EvalPrice != nil {
+			res, pm, pErr := c.billing.EvalPrice(ctx, c.cfg.Provider, c.cfg.Model, bu.ActualModel)
+			meta = pm
+			if pErr == nil && pm.Resolved {
 				rawMicro = pricing.RawCostMicroUSD(res.Record, bu.TokenUsage)
-			} else if c.billing.EvalPrice != nil {
-				if er, e2 := c.billing.EvalPrice(c.cfg.Provider, bu.ActualModel); e2 == nil {
-					rawMicro = pricing.RawCostMicroUSD(er.Record, bu.TokenUsage)
+			} else if pErr != nil && meta.ResolveError == "" {
+				meta.ResolveError = pErr.Error()
+			}
+		} else {
+			cat := c.billing.Catalog
+			if cat == nil && c.billing.Ledger != nil {
+				cat = c.billing.Ledger.Catalog
+			}
+			if cat != nil {
+				key := pricing.CatalogLookupKey(c.cfg.Model, bu.ActualModel)
+				meta.CanonicalPricingModel = key
+				res, err := cat.Resolve(key, true)
+				if err == nil && res.Known && !res.UsedFallback {
+					rawMicro = pricing.RawCostMicroUSD(res.Record, bu.TokenUsage)
+					meta.Source = res.Source
+					meta.Kind = res.Kind
+					meta.Resolved = true
+				} else if err != nil {
+					meta.ResolveError = err.Error()
 				}
 			}
-		} else if c.billing.EvalPrice != nil {
-			if er, e2 := c.billing.EvalPrice(c.cfg.Provider, bu.ActualModel); e2 == nil {
-				rawMicro = pricing.RawCostMicroUSD(er.Record, bu.TokenUsage)
-			}
+		}
+		if success && bu.InputTokens+bu.OutputTokens > 0 && !meta.Resolved {
+			log.Warn().Str("requested_model", c.cfg.Model).Str("actual_model", bu.ActualModel).
+				Str("task", call.Task).Msg("eval pricing unresolved for successful llm call")
 		}
 		c.billing.EvalObserver(UsageObservation{
 			Call: call, Provider: c.cfg.Provider, RequestedModel: c.cfg.Model,
 			ActualModel: bu.ActualModel, ActualModelVerified: bu.ActualModelVerified,
+			ActualModelRaw: bu.ActualModel, CanonicalPricingModel: meta.CanonicalPricingModel,
+			PricingSource: meta.Source, PricingKind: meta.Kind, PricingResolved: meta.Resolved,
+			PricingError: meta.ResolveError,
 			Tokens: bu.TokenUsage, LatencyMS: latencyMS, Success: success, ErrorCode: errCode,
 			RawCostMicro: rawMicro,
 		})

@@ -27,7 +27,8 @@ func cmdSmokeClaude(args []string) {
 	maxTotalUSD := fs.Float64("max-total-usd", 5, "hard cap on summed eval run spend")
 	perRunCap := fs.Float64("max-run-usd", 0.85, "per-task eval engine budget ceiling")
 	onlyTask := fs.String("task", "", "run a single task (default: full smoke sequence)")
-	skipSonnet55 := fs.Bool("skip-sonnet-5-5", false, "omit claude-sonnet-5-5 candidates (e.g. unsupported on proxy)")
+	skipSonnet55 := fs.Bool("skip-sonnet-5-5", true, "omit claude-sonnet-5-5 candidates (e.g. unsupported on proxy)")
+	targeted := fs.Bool("targeted", false, "run corrected-case remediation sequence (<= ~$1 total)")
 	_ = fs.Parse(args)
 
 	sqldb, err := db.Open(*dbPath)
@@ -59,10 +60,12 @@ func cmdSmokeClaude(args []string) {
 			return k, err == nil && k != ""
 		},
 	}
+	evalCat := factory.EvalPricing
 	svc := &engine.Service{
-		DB:     sqldb,
-		Run:    engine.ProviderRunner{Factory: factory},
-		Config: engine.Config{MaxConcurrency: 2},
+		DB:          sqldb,
+		Run:         engine.ProviderRunner{Factory: factory},
+		Config:      engine.Config{MaxConcurrency: 2},
+		EvalPricing: evalCat,
 	}
 
 	baseline := candidate.Spec{
@@ -70,18 +73,24 @@ func cmdSmokeClaude(args []string) {
 		MaxTokens: 8192, TimeoutSec: 120,
 	}
 
-	tasks := []struct {
-		task       string
-		candidates []candidate.Spec
-	}{
-		{domain.TaskJobScoring, structuredCandidates()},
-		{domain.TaskEmploymentEthics, structuredCandidates()},
-		{domain.TaskFormAnswer, structuredCandidates()},
-		{domain.TaskFormVision, visionCandidates()},
-		{domain.TaskResumeExtract, structuredCandidates()},
-		{domain.TaskApplicationQuestions, structuredCandidates()},
-		{domain.TaskResumeTailoring, subjectiveCandidates()},
-		{domain.TaskCoverLetter, subjectiveCandidates()},
+	var tasks []smokeTaskPlan
+	if *targeted {
+		tasks = targetedRemediationTasks()
+		*maxTotalUSD = 1.0
+		if *perRunCap > 0.35 {
+			*perRunCap = 0.35
+		}
+	} else {
+		tasks = []smokeTaskPlan{
+			{domain.TaskJobScoring, structuredCandidates()},
+			{domain.TaskEmploymentEthics, structuredCandidates()},
+			{domain.TaskFormAnswer, structuredCandidates()},
+			{domain.TaskFormVision, visionCandidates()},
+			{domain.TaskResumeExtract, structuredCandidates()},
+			{domain.TaskApplicationQuestions, structuredCandidates()},
+			{domain.TaskResumeTailoring, subjectiveCandidates()},
+			{domain.TaskCoverLetter, subjectiveCandidates()},
+		}
 	}
 
 	var sessionSpendMicro int64
@@ -126,10 +135,10 @@ func cmdSmokeClaude(args []string) {
 		}
 		if err := svc.ExecuteRun(ctx, id); err != nil {
 			fmt.Printf("[ABORT] ExecuteRun: %v\n", err)
-			printRunReport(sqldb, id, baseline)
+			printRunReport(sqldb, id, baseline, *targeted)
 			break
 		}
-		printRunReport(sqldb, id, baseline)
+		printRunReport(sqldb, id, baseline, *targeted)
 
 		var runCost int64
 		var status string
@@ -168,7 +177,29 @@ func subjectiveCandidates() []candidate.Spec {
 	}
 }
 
-func printRunReport(sqldb *sql.DB, runID string, baseline candidate.Spec) {
+type smokeTaskPlan struct {
+	task       string
+	candidates []candidate.Spec
+}
+
+func targetedRemediationTasks() []smokeTaskPlan {
+	haiku := []candidate.Spec{
+		{Provider: "claude", Model: "claude-haiku-4-5-20251001", MaxTokens: 4096, TimeoutSec: 120},
+	}
+	sonnet46 := []candidate.Spec{
+		{Provider: "claude", Model: "claude-sonnet-4-6", Effort: "medium", MaxTokens: 8192, TimeoutSec: 120},
+	}
+	return []smokeTaskPlan{
+		{domain.TaskEmploymentEthics, haiku},
+		{domain.TaskFormAnswer, haiku},
+		{domain.TaskResumeExtract, haiku},
+		{domain.TaskApplicationQuestions, sonnet46},
+		{domain.TaskResumeTailoring, sonnet46},
+		{domain.TaskCoverLetter, sonnet46},
+	}
+}
+
+func printRunReport(sqldb *sql.DB, runID string, baseline candidate.Spec, verboseCases bool) {
 	var status string
 	var planned, completed int
 	var spent int64
@@ -222,8 +253,12 @@ func printRunReport(sqldb *sql.DB, runID string, baseline candidate.Spec) {
 		if g.n > 0 {
 			meanCost = float64(g.cost) / float64(g.n) / 1_000_000
 		}
-		line := fmt.Sprintf("  model=%s effort=%q actual=%s cases=%d api_ok=%d validator_pass=%d in=%d out=%d cost_usd=%.4f mean_cost/case=%.5f mean_lat_ms=%.0f",
-			g.req, g.effort, g.actual, g.n, g.ok, g.pass, g.inTok, g.outTok, float64(g.cost)/1_000_000, meanCost, g.meanLat)
+		costLabel := fmt.Sprintf("cost_usd=%.4f", float64(g.cost)/1_000_000)
+		if g.cost == 0 && g.ok > 0 && (g.inTok+g.outTok) > 0 {
+			costLabel = "cost=UNRESOLVED pricing_unresolved=true"
+		}
+		line := fmt.Sprintf("  model=%s effort=%q actual=%s cases=%d api_ok=%d validator_pass=%d in=%d out=%d %s mean_cost/case=%.5f mean_lat_ms=%.0f",
+			g.req, g.effort, g.actual, g.n, g.ok, g.pass, g.inTok, g.outTok, costLabel, meanCost, g.meanLat)
 		if baseAgg != nil && baseAgg.cost > 0 && g.req != baseline.Model {
 			line += fmt.Sprintf(" cost_delta_vs_baseline=%+.1f%%", (float64(g.cost)/float64(baseAgg.cost)-1)*100)
 		}
@@ -233,6 +268,42 @@ func printRunReport(sqldb *sql.DB, runID string, baseline candidate.Spec) {
 	scoringConfusion(sqldb, runID)
 	printRecommendations(sqldb, runID)
 	printCriticalFailures(sqldb, runID)
+	if verboseCases {
+		printCaseDetails(sqldb, runID)
+	}
+}
+
+func printCaseDetails(sqldb *sql.DB, runID string) {
+	rows, err := sqldb.Query(`
+		SELECT case_id, COALESCE(requested_model,''), COALESCE(actual_model,''),
+		       COALESCE(input_tokens,0), COALESCE(output_tokens,0), COALESCE(raw_cost_usd_micro,0),
+		       COALESCE(latency_ms,0), COALESCE(validation_errors,'[]'), COALESCE(metric_json,'{}')
+		FROM model_eval_results WHERE eval_run_id=? ORDER BY case_id, requested_model`, runID)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var caseID, req, actual, valErrs, metricJSON string
+		var inTok, outTok, cost, lat int64
+		_ = rows.Scan(&caseID, &req, &actual, &inTok, &outTok, &cost, &lat, &valErrs, &metricJSON)
+		var m map[string]any
+		_ = json.Unmarshal([]byte(metricJSON), &m)
+		resolved, _ := m["pricing_resolved"].(bool)
+		canon, _ := m["canonical_pricing_model"].(string)
+		src, _ := m["pricing_source"].(string)
+		rawActual, _ := m["actual_model_raw"].(string)
+		if rawActual == "" {
+			rawActual = actual
+		}
+		costOut := fmt.Sprintf("%.6f", float64(cost)/1_000_000)
+		if !resolved && inTok+outTok > 0 {
+			costOut = "UNRESOLVED"
+		}
+		pass := valErrs == "[]" || valErrs == "" || valErrs == "null"
+		fmt.Printf("  case=%s requested=%s actual_raw=%s canonical_pricing=%s pricing_source=%s pricing_resolved=%v tokens=%d/%d cost_usd=%s latency_ms=%d validator_pass=%v errors=%s\n",
+			caseID, req, rawActual, canon, src, resolved, inTok, outTok, costOut, lat, pass, valErrs)
+	}
 }
 
 func scoringConfusion(sqldb *sql.DB, runID string) {

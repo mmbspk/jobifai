@@ -23,5 +23,15 @@ func TestBuildApplicationQuestionsPrompt_IncludesApplicationDefaults(t *testing.
 	low := strings.ToLower(user)
 	require.Contains(t, low, "8 weeks")
 	require.Contains(t, low, "88000")
-	require.Contains(t, low, "requires_sponsorship")
+	require.Contains(t, low, "requires employer sponsorship: yes")
+}
+
+func TestBuildApplicationQuestionsPrompt_SponsorshipFalseExplicit(t *testing.T) {
+	t.Parallel()
+	prof := domain.ResumeProfile{
+		ApplicationDefaults: domain.ApplicationDefaults{RequiresSponsorship: false},
+	}
+	_, user, err := BuildApplicationQuestionsPrompt(&prof, "Hospital", []string{"Sponsorship?"})
+	require.NoError(t, err)
+	require.Contains(t, strings.ToLower(user), "requires employer sponsorship: no")
 }

@@ -64,10 +64,9 @@ func (FakeRunner) RunCase(_ context.Context, task string, spec candidate.Spec, c
 	}
 	obs := llm.UsageObservation{
 		Provider: spec.Provider, RequestedModel: spec.Model, ActualModel: spec.Model,
-		ActualModelVerified: true,
-		LatencyMS:           time.Since(start).Milliseconds(),
-		Success:             true,
-		RawCostMicro:        1000,
+		ActualModelRaw: spec.Model, ActualModelVerified: true,
+		CanonicalPricingModel: spec.Model, PricingSource: "fake", PricingResolved: true,
+		LatencyMS: time.Since(start).Milliseconds(), Success: true, RawCostMicro: 1000,
 	}
 	return out, obs, nil
 }

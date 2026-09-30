@@ -148,24 +148,46 @@ func validateEmploymentEthics(output string, expect json.RawMessage, critical bo
 }
 
 type formExpect struct {
+	Match    string `json:"match"`
 	Exact    string `json:"exact"`
 	Contains string `json:"contains"`
+	Level    string `json:"level"`
+	Field    string `json:"field"`
 }
 
 func validateFormAnswer(output string, expect json.RawMessage, critical bool) Result {
 	var exp formExpect
 	_ = json.Unmarshal(expect, &exp)
 	got := strings.TrimSpace(output)
-	want := strings.TrimSpace(exp.Exact)
 	res := Result{}
-	if want != "" && got != want {
-		res.Errors = append(res.Errors, fmt.Sprintf("expected %q got %q", want, got))
-		if critical {
-			res.CriticalFail = true
+	match := exp.Match
+	if match == "" {
+		if exp.Exact != "" {
+			match = "exact_option"
+		} else if exp.Contains != "" {
+			match = "contains_fact"
 		}
 	}
-	if exp.Contains != "" && !strings.Contains(strings.ToLower(got), strings.ToLower(exp.Contains)) {
-		res.Errors = append(res.Errors, fmt.Sprintf("expected answer to contain %q", exp.Contains))
+	ok := false
+	switch match {
+	case "exact_option", "exact":
+		ok = matchExactOption(got, exp.Exact)
+	case "qualification":
+		ok = matchQualification(got, exp.Level, exp.Field)
+		if !ok && exp.Exact != "" {
+			ok = matchQualification(got, exp.Exact, exp.Field)
+		}
+	case "contains_fact", "contains":
+		ok = matchContainsFact(got, exp.Contains)
+	case "numeric":
+		ok = matchCurrencyAmount(got, exp.Exact)
+	default:
+		if exp.Exact != "" {
+			ok = matchExactOption(got, exp.Exact)
+		}
+	}
+	if !ok {
+		res.Errors = append(res.Errors, fmt.Sprintf("answer mismatch for match=%s", match))
 		if critical {
 			res.CriticalFail = true
 		}

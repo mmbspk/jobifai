@@ -27,9 +27,11 @@ func (h *AdminHandlers) evalService(real bool) *engine.Service {
 	svc := &engine.Service{DB: h.svc.DB, Config: engine.Config{MaxConcurrency: 3}}
 	if real {
 		gs := config.ResolveOperationalSettings(h.svc.Config, "__default__")
+		evalCat := &pricing.EvalCatalog{Approved: pricing.DefaultCatalog(), DB: h.svc.DB}
+		svc.EvalPricing = evalCat
 		svc.Run = engine.ProviderRunner{Factory: &providers.Factory{
-			Catalog: pricing.DefaultCatalog(),
-			EvalPricing: &pricing.EvalCatalog{Approved: pricing.DefaultCatalog(), DB: h.svc.DB},
+			Catalog:     pricing.DefaultCatalog(),
+			EvalPricing: evalCat,
 			BaseLLM: gs.LLM,
 			KeyResolver: func(provider string) (string, bool) {
 				if provider == gs.LLM.Provider {

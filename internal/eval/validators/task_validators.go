@@ -150,16 +150,16 @@ func precisionRecall(tp, fp, fn int) (float64, float64) {
 }
 
 type extractExpect struct {
-	Personal struct {
-		FullName string `json:"full_name"`
-		Email    string `json:"email"`
-	} `json:"personal"`
-	Employers []struct {
-		Company string `json:"company"`
-		Title   string `json:"title"`
-		Start   string `json:"start"`
-		End     string `json:"end"`
-	} `json:"employers"`
+	PersonalInformation struct {
+		Name    string `json:"name"`
+		Surname string `json:"surname"`
+		Email   string `json:"email"`
+	} `json:"personal_information"`
+	ExperienceDetails []struct {
+		Company          string `json:"company"`
+		Position         string `json:"position"`
+		EmploymentPeriod string `json:"employment_period"`
+	} `json:"experience_details"`
 	Skills []string `json:"skills"`
 }
 
@@ -177,50 +177,48 @@ func validateResumeExtract(output string, expect json.RawMessage, critical bool)
 		return res
 	}
 	missing, wrong, invented := 0, 0, 0
-	outText := strings.ToLower(raw)
-	if exp.Personal.FullName != "" && !fieldPresent(outText, exp.Personal.FullName) {
+	if exp.PersonalInformation.Name != "" && !strings.EqualFold(strings.TrimSpace(prof.PersonalInformation.Name), exp.PersonalInformation.Name) {
 		missing++
-		res.Errors = append(res.Errors, "missing name")
+		res.Errors = append(res.Errors, "missing or incorrect name")
 	}
-	if exp.Personal.Email != "" && !fieldPresent(outText, exp.Personal.Email) {
+	if exp.PersonalInformation.Surname != "" && !strings.EqualFold(strings.TrimSpace(prof.PersonalInformation.Surname), exp.PersonalInformation.Surname) {
+		missing++
+		res.Errors = append(res.Errors, "missing or incorrect surname")
+	}
+	if exp.PersonalInformation.Email != "" && !strings.EqualFold(strings.TrimSpace(prof.PersonalInformation.Email), exp.PersonalInformation.Email) {
 		missing++
 		res.Errors = append(res.Errors, "missing email")
 	}
-	for _, e := range exp.Employers {
-		if e.Company != "" && !fieldPresent(outText, e.Company) {
+	for _, e := range exp.ExperienceDetails {
+		pos := positionAtCompany(prof, e.Company)
+		if e.Company != "" && pos == "" {
 			missing++
 			res.Errors = append(res.Errors, "missing employer")
 		}
-		if e.Title != "" {
-			pos := positionAtCompany(prof, e.Company)
-			if pos == "" && !fieldPresent(outText, e.Title) {
-				missing++
-				res.Errors = append(res.Errors, "missing title")
-			} else if pos != "" && !titlesAlign(pos, e.Title) {
+		if e.Position != "" && pos != "" && !titlesAlign(pos, e.Position) {
+			wrong++
+			res.Errors = append(res.Errors, "incorrect title")
+		}
+		if e.EmploymentPeriod != "" {
+			period := employmentPeriodAtCompany(prof, e.Company)
+			if period == "" || !strings.Contains(strings.ToLower(period), strings.ToLower(e.EmploymentPeriod)) {
 				wrong++
-				res.Errors = append(res.Errors, "incorrect title")
-			} else if pos == "" && fieldPresent(outText, e.Title) && !titleMatches(prof, e.Title) {
-				wrong++
-				res.Errors = append(res.Errors, "incorrect title")
+				res.Errors = append(res.Errors, "incorrect employment period")
 			}
 		}
-		if e.Start != "" && !fieldPresent(outText, e.Start) {
-			wrong++
-			res.Errors = append(res.Errors, "incorrect start date")
-		}
-		if e.End != "" && !fieldPresent(outText, e.End) {
-			wrong++
-			res.Errors = append(res.Errors, "incorrect end date")
-		}
 	}
+	skillLow := strings.ToLower(raw)
 	for _, sk := range exp.Skills {
-		if sk != "" && !fieldPresent(outText, sk) {
+		if sk == "" {
+			continue
+		}
+		if !skillPresent(prof, sk) && !strings.Contains(skillLow, strings.ToLower(sk)) {
 			missing++
 			res.Errors = append(res.Errors, "missing skill")
 		}
 	}
 	for _, ex := range prof.ExperienceDetails {
-		if ex.Company != "" && !employerExpected(ex.Company, exp.Employers) {
+		if ex.Company != "" && !employerExpectedExtract(ex.Company, exp.ExperienceDetails) {
 			invented++
 			res.Errors = append(res.Errors, "invented employer: "+ex.Company)
 		}
@@ -238,11 +236,19 @@ func validateResumeExtract(output string, expect json.RawMessage, critical bool)
 	return res
 }
 
-func employerExpected(company string, exp []struct {
-	Company string `json:"company"`
-	Title   string `json:"title"`
-	Start   string `json:"start"`
-	End     string `json:"end"`
+func employmentPeriodAtCompany(prof domain.ResumeProfile, company string) string {
+	for _, ex := range prof.ExperienceDetails {
+		if strings.EqualFold(strings.TrimSpace(ex.Company), strings.TrimSpace(company)) {
+			return ex.EmploymentPeriod
+		}
+	}
+	return ""
+}
+
+func employerExpectedExtract(company string, exp []struct {
+	Company          string `json:"company"`
+	Position         string `json:"position"`
+	EmploymentPeriod string `json:"employment_period"`
 }) bool {
 	c := strings.ToLower(company)
 	for _, e := range exp {
@@ -254,10 +260,11 @@ func employerExpected(company string, exp []struct {
 }
 
 type tailorExpect struct {
-	ForbiddenTerms        []string `json:"forbidden_terms"`
-	RequiredEmployers     []string `json:"required_employers"`
-	RequiredPublications  []string `json:"required_publications"`
-	PreserveName          string   `json:"preserve_name"`
+	ForbiddenTerms       []string `json:"forbidden_terms"`
+	RequiredEmployers    []string `json:"required_employers"`
+	RequiredPublications []string `json:"required_publications"`
+	PreserveName         string   `json:"preserve_name"`
+	PreserveSurname      string   `json:"preserve_surname"`
 }
 
 func validateResumeTailoring(output string, expect json.RawMessage, critical bool) Result {
@@ -282,8 +289,11 @@ func validateResumeTailoring(output string, expect json.RawMessage, critical boo
 			}
 		}
 	}
-	if exp.PreserveName != "" && !strings.Contains(low, strings.ToLower(exp.PreserveName)) {
+	if exp.PreserveName != "" && !strings.EqualFold(strings.TrimSpace(prof.PersonalInformation.Name), exp.PreserveName) {
 		res.Errors = append(res.Errors, "name not preserved")
+	}
+	if exp.PreserveSurname != "" && !strings.EqualFold(strings.TrimSpace(prof.PersonalInformation.Surname), exp.PreserveSurname) {
+		res.Errors = append(res.Errors, "surname not preserved")
 	}
 	for _, pub := range exp.RequiredPublications {
 		if pub != "" && !strings.Contains(low, strings.ToLower(pub)) {
@@ -305,6 +315,8 @@ func validateResumeTailoring(output string, expect json.RawMessage, critical boo
 type coverExpect struct {
 	ForbiddenTerms []string `json:"forbidden_terms"`
 	GroundedFacts  []string `json:"grounded_facts"`
+	RequiredFacts  []string `json:"required_facts"`
+	AllowedFacts   []string `json:"allowed_facts"`
 	MinParagraphs  int      `json:"min_paragraphs"`
 	MaxParagraphs  int      `json:"max_paragraphs"`
 	MaxWords       int      `json:"max_words"`
@@ -333,9 +345,13 @@ func validateCoverLetter(output string, expect json.RawMessage, critical bool) R
 			res.Errors = append(res.Errors, "forbidden term: "+b)
 		}
 	}
-	for _, f := range exp.GroundedFacts {
+	required := exp.RequiredFacts
+	if len(required) == 0 {
+		required = exp.GroundedFacts
+	}
+	for _, f := range required {
 		if f != "" && !strings.Contains(low, strings.ToLower(f)) {
-			res.Errors = append(res.Errors, "missing grounded fact")
+			res.Errors = append(res.Errors, "missing required fact")
 		}
 	}
 	paras := len(splitParagraphs(text))
@@ -447,6 +463,22 @@ func validateApplicationQuestions(output string, expect json.RawMessage, critica
 			if !answerMatchesYearsCount(ans, rule.Value) {
 				res.Errors = append(res.Errors, "years count mismatch")
 			}
+		case "boolean_yes":
+			if !matchBooleanYes(ans) {
+				res.Errors = append(res.Errors, "expected affirmative sponsorship answer")
+			}
+		case "boolean_no":
+			if !matchBooleanNo(ans) {
+				res.Errors = append(res.Errors, "expected negative sponsorship answer")
+			}
+		case "duration":
+			if !matchDuration(ans, rule.Value) {
+				res.Errors = append(res.Errors, "duration mismatch")
+			}
+		case "currency_amount":
+			if !matchCurrencyAmount(ans, rule.Value) {
+				res.Errors = append(res.Errors, "currency amount mismatch")
+			}
 		}
 		if rule.MaxWords > 0 && wordCount(ans) > rule.MaxWords {
 			res.Errors = append(res.Errors, "answer too long")
@@ -462,36 +494,10 @@ func validateApplicationQuestions(output string, expect json.RawMessage, critica
 	return res
 }
 
-func fieldPresent(lowText, want string) bool {
-	return strings.Contains(lowText, strings.ToLower(strings.TrimSpace(want)))
-}
-
-var yearsCountWord = regexp.MustCompile(`(?i)\b(\d+)\s*(?:years?|yrs?\.?)\b`)
-
-func answerMatchesYearsCount(answer, wantYears string) bool {
-	want := strings.TrimSpace(wantYears)
-	if want == "" {
-		return false
-	}
-	ans := strings.TrimSpace(answer)
-	if ans == want {
-		return true
-	}
-	lower := strings.ToLower(ans)
-	if m := yearsCountWord.FindStringSubmatch(lower); len(m) >= 2 && m[1] == want {
-		return true
-	}
-	// Reject start-year answers (e.g. "2019") when the question asks for duration.
-	if regexp.MustCompile(`^\d{4}$`).MatchString(ans) {
-		return false
-	}
-	return false
-}
-
-func titleMatches(prof domain.ResumeProfile, wantTitle string) bool {
-	want := strings.ToLower(strings.TrimSpace(wantTitle))
-	for _, ex := range prof.ExperienceDetails {
-		if strings.Contains(strings.ToLower(ex.Position), want) || strings.Contains(want, strings.ToLower(ex.Position)) {
+func skillPresent(prof domain.ResumeProfile, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for _, s := range prof.Skills {
+		if strings.EqualFold(strings.TrimSpace(s), want) {
 			return true
 		}
 	}

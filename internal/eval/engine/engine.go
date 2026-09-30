@@ -12,10 +12,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/user/jobifai/internal/eval/candidate"
 	"github.com/user/jobifai/internal/eval/dataset"
+	"github.com/user/jobifai/internal/eval/preflight"
 	"github.com/user/jobifai/internal/eval/recommend"
 	"github.com/user/jobifai/internal/eval/runmeta"
 	"github.com/user/jobifai/internal/eval/validators"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/pricing"
 )
 
 type acc struct {
@@ -37,9 +39,10 @@ type Config struct {
 
 // Service executes eval runs against SQLite.
 type Service struct {
-	DB     *sql.DB
-	Run    Runner
-	Config Config
+	DB          *sql.DB
+	Run         Runner
+	Config      Config
+	EvalPricing *pricing.EvalCatalog // optional; requested-model preflight for real runs
 
 	persistMu sync.Mutex // serializes result inserts under parallel RunCase workers (SQLite)
 }
@@ -93,41 +96,84 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 
 	stopScheduling := false
 	for _, spec := range all {
-		for _, c := range bundle.Cases {
-			if ctx.Err() != nil || stopScheduling {
-				break
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(spec candidate.Spec) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if run.RunnerType == runmeta.RunnerReal && s.EvalPricing != nil {
+				_, meta, pErr := s.EvalPricing.ResolveEvalPricing(ctx, spec.Provider, spec.Model, spec.Model)
+				if pErr != nil || !meta.Resolved {
+					return
+				}
 			}
-			if s.cancelRequested(ctx, runID) {
-				stopScheduling = true
-				break
-			}
-			mu.Lock()
-			if budget > 0 && spent >= budget {
-				stopScheduling = true
+			for _, c := range bundle.Cases {
+				if ctx.Err() != nil || stopScheduling {
+					return
+				}
+				if s.cancelRequested(ctx, runID) {
+					mu.Lock()
+					stopScheduling = true
+					mu.Unlock()
+					return
+				}
+				mu.Lock()
+				if budget > 0 && spent >= budget {
+					stopScheduling = true
+					mu.Unlock()
+					return
+				}
 				mu.Unlock()
-				break
-			}
-			mu.Unlock()
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(spec candidate.Spec, c dataset.Case) {
-				defer wg.Done()
-				defer func() { <-sem }()
+
 				out, obs, err := s.Run.RunCase(ctx, run.Task, spec, c)
+				if err != nil {
+					st := preflight.ClassifyProviderError(err)
+					if st.State == preflight.StateUnavailableModel {
+						mu.Lock()
+						abort := persistErr != nil
+						mu.Unlock()
+						if !abort {
+							vr := validators.Result{Errors: []string{st.Reason}, Metrics: map[string]any{
+								"candidate_status": st.State, "provider_error_code": st.ProviderErrorCode,
+							}}
+							_ = s.insertResult(context.WithoutCancel(ctx), runID, spec, c, obs, false, vr)
+						}
+						return
+					}
+				}
 				vr := validators.Validate(run.Task, out, c.Expect, c.Critical)
 				if err != nil {
 					vr.Errors = append(vr.Errors, err.Error())
 				}
+				pricingStop := run.RunnerType == runmeta.RunnerReal && obs.Success && !obs.PricingResolved &&
+					obs.Tokens.InputTokens+obs.Tokens.OutputTokens > 0
+				if pricingStop {
+					if vr.Metrics == nil {
+						vr.Metrics = map[string]any{}
+					}
+					vr.Metrics["candidate_status"] = preflight.StatePricingUnresolved
+				}
 				mu.Lock()
-				defer mu.Unlock()
 				if persistErr != nil {
+					mu.Unlock()
 					return
 				}
-				if err := s.insertResult(context.WithoutCancel(ctx), runID, spec, c, obs, err == nil, vr); err != nil {
-					persistErr = err
+				mu.Unlock()
+				insErr := s.insertResult(context.WithoutCancel(ctx), runID, spec, c, obs, err == nil, vr)
+				mu.Lock()
+				if insErr != nil {
+					persistErr = insErr
+					mu.Unlock()
 					return
 				}
-				spent += obs.RawCostMicro
+				if pricingStop {
+					completed++
+					mu.Unlock()
+					return
+				}
+				if obs.PricingResolved {
+					spent += obs.RawCostMicro
+				}
 				completed++
 				a := aggregates[spec.ID()]
 				a.n++
@@ -152,8 +198,9 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 				}
 				a.costs = append(a.costs, obs.RawCostMicro)
 				a.latencies = append(a.latencies, obs.LatencyMS)
-			}(spec, c)
-		}
+				mu.Unlock()
+			}
+		}(spec)
 	}
 	wg.Wait()
 	if _, err := s.DB.ExecContext(ctx, `UPDATE model_eval_runs SET cases_completed=? WHERE id=?`, completed, runID); err != nil {
@@ -168,8 +215,8 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 	} else if stopScheduling && budget > 0 && spent >= budget {
 		finalStatus = runmeta.StatusBudgetExhausted
 	}
-	if finalStatus == runmeta.StatusCompleted && completed != workTotal {
-		return s.failRun(ctx, runID, fmt.Errorf("completed %d of %d planned case executions", completed, workTotal))
+	if finalStatus == runmeta.StatusCompleted && completed > workTotal {
+		return s.failRun(ctx, runID, fmt.Errorf("completed %d exceeds planned %d case executions", completed, workTotal))
 	}
 	baseM := metricsFromAcc(aggregates[baseline.ID()])
 	var candMetrics []recommend.Metrics
@@ -287,21 +334,40 @@ func (s *Service) failRun(ctx context.Context, id string, err error) error {
 
 func (s *Service) insertResult(ctx context.Context, runID string, spec candidate.Spec, c dataset.Case, obs llm.UsageObservation, success bool, vr validators.Result) error {
 	errs, _ := json.Marshal(vr.Errors)
+	if vr.Metrics == nil {
+		vr.Metrics = map[string]any{}
+	}
+	vr.Metrics["pricing_resolved"] = obs.PricingResolved
+	vr.Metrics["pricing_source"] = obs.PricingSource
+	vr.Metrics["canonical_pricing_model"] = obs.CanonicalPricingModel
+	vr.Metrics["actual_model_raw"] = obs.ActualModelRaw
+	if obs.PricingError != "" {
+		vr.Metrics["pricing_error"] = obs.PricingError
+	}
 	metrics, _ := json.Marshal(vr.Metrics)
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
-	_, err := s.DB.ExecContext(ctx, `
+	args := []any{
+		uuid.NewString(), runID, c.ID, spec.Model, boolInt(success), vr.DeterministicScore, string(metrics),
+		obs.Tokens.InputTokens, obs.Tokens.OutputTokens, obs.RawCostMicro, obs.LatencyMS, string(errs),
+		spec.Provider, spec.Model, obs.ActualModel, spec.Effort, vr.DeterministicScore, boolInt(obs.ActualModelVerified),
+		spec.MaxTokens, spec.TimeoutSec,
+	}
+	const q = `
 		INSERT INTO model_eval_results (
 			id, eval_run_id, case_id, model, success, score, metric_json,
 			input_tokens, output_tokens, raw_cost_usd_micro, latency_ms, validation_errors,
 			provider, requested_model, actual_model, effort, deterministic_score, actual_model_verified,
 			candidate_max_tokens, candidate_timeout_sec
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		uuid.NewString(), runID, c.ID, spec.Model, boolInt(success), vr.DeterministicScore, string(metrics),
-		obs.Tokens.InputTokens, obs.Tokens.OutputTokens, obs.RawCostMicro, obs.LatencyMS, string(errs),
-		spec.Provider, spec.Model, obs.ActualModel, spec.Effort, vr.DeterministicScore, boolInt(obs.ActualModelVerified),
-		spec.MaxTokens, spec.TimeoutSec,
-	)
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	var err error
+	for attempt := 0; attempt < 8; attempt++ {
+		_, err = s.DB.ExecContext(ctx, q, args...)
+		if err == nil || !strings.Contains(err.Error(), "locked") {
+			return err
+		}
+		time.Sleep(time.Duration(attempt+1) * 5 * time.Millisecond)
+	}
 	return err
 }
 
