@@ -20,7 +20,7 @@ func main() {
 			"resume_extract": 3, "resume_tailoring": 3, "cover_letter": 3, "application_questions": 4,
 		},
 		"full": {
-			"job_scoring": 90, "employment_ethics": 45, "form_answer": 70, "form_vision": 25,
+			"job_scoring": 0, "employment_ethics": 45, "form_answer": 70, "form_vision": 25,
 			"resume_extract": 22, "resume_tailoring": 22, "cover_letter": 22, "application_questions": 35,
 		},
 	}
@@ -53,6 +53,28 @@ func writeDataset(root, task, version string, n int) error {
 	f, err := os.Create(casesPath)
 	if err != nil {
 		return err
+	}
+	if task == "job_scoring" && version == "full" {
+		cases := jobScoringFullBenchmarkCases()
+		n = len(cases)
+		for _, c := range cases {
+			b, _ := json.Marshal(c)
+			if _, err := f.Write(append(b, '\n')); err != nil {
+				_ = f.Close()
+				return err
+			}
+		}
+		_ = f.Close()
+		sum := sha256File(casesPath)
+		m := map[string]any{
+			"task": task, "version": version,
+			"description": fmt.Sprintf("Synthetic %s dataset (%s)", task, version),
+			"case_count": n, "classification": "synthetic",
+			"created_at": time.Now().UTC().Format(time.RFC3339),
+			"schema_version": 1, "sha256": sum, "cases_file": "cases.jsonl",
+		}
+		mb, _ := json.MarshalIndent(m, "", "  ")
+		return os.WriteFile(filepath.Join(dir, "manifest.json"), mb, 0o644)
 	}
 	for i := 0; i < n; i++ {
 		c := synthCase(task, i)

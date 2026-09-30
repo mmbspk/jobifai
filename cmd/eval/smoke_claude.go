@@ -408,4 +408,89 @@ func envOr(k, def string) string {
 	return def
 }
 
+func cmdMatcherRetest(args []string) {
+	fs := flag.NewFlagSet("matcher-retest", flag.ExitOnError)
+	dbPath := fs.String("db", envOr("JOBIFAI_DB", "data/jobifai.db"), "SQLite path")
+	_ = fs.Parse(args)
+	svc, sqldb := evalService(*dbPath)
+	defer func() { _ = sqldb.Close() }()
+	baseline := candidate.Spec{Provider: "claude", Model: "claude-sonnet-4-6", Effort: "medium", MaxTokens: 8192, TimeoutSec: 120}
+	sync := false
+	for _, tp := range []struct {
+		task    string
+		budget  float64
+		cands   []candidate.Spec
+	}{
+		{domain.TaskApplicationQuestions, 0.15, []candidate.Spec{baseline}},
+		{domain.TaskFormAnswer, 0.10, []candidate.Spec{{Provider: "claude", Model: "claude-haiku-4-5-20251001", MaxTokens: 4096, TimeoutSec: 120}}},
+	} {
+		id, err := svc.CreateRun(context.Background(), engine.RunParams{
+			Task: tp.task, DatasetVersion: "smoke", DatasetSource: dataset.SourceSynthetic,
+			Purpose: runmeta.PurposeSmoke, RunnerType: runmeta.RunnerReal,
+			Baseline: baseline, Candidates: tp.cands, BudgetUSD: tp.budget,
+			InitiatedBy: "matcher-retest-cli", StartAsync: &sync,
+		})
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+		_ = svc.ExecuteRun(context.Background(), id)
+		printRunReport(sqldb, id, baseline, true)
+		printSyntheticFailures(sqldb, id)
+	}
+}
+
+func cmdSmokeFormVisionHaiku(args []string) {
+	fs := flag.NewFlagSet("smoke-form-vision-haiku", flag.ExitOnError)
+	dbPath := fs.String("db", envOr("JOBIFAI_DB", "data/jobifai.db"), "SQLite path")
+	maxUSD := fs.Float64("max-usd", 0.35, "budget cap")
+	_ = fs.Parse(args)
+	svc, sqldb := evalService(*dbPath)
+	defer func() { _ = sqldb.Close() }()
+	baseline := candidate.Spec{Provider: "claude", Model: "claude-sonnet-4-6", Effort: "medium", MaxTokens: 8192, TimeoutSec: 120}
+	cands := []candidate.Spec{{Provider: "claude", Model: "claude-haiku-4-5-20251001", MaxTokens: 8192, TimeoutSec: 120}}
+	sync := false
+	id, err := svc.CreateRun(context.Background(), engine.RunParams{
+		Task: domain.TaskFormVision, DatasetVersion: "smoke", DatasetSource: dataset.SourceSynthetic,
+		Purpose: runmeta.PurposeSmoke, RunnerType: runmeta.RunnerReal,
+		Baseline: baseline, Candidates: cands, BudgetUSD: *maxUSD,
+		InitiatedBy: "smoke-form-vision-haiku", StartAsync: &sync,
+	})
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	_ = svc.ExecuteRun(context.Background(), id)
+	printRunReport(sqldb, id, baseline, true)
+	printSyntheticFailures(sqldb, id)
+}
+
+func printSyntheticFailures(sqldb *sql.DB, runID string) {
+	rows, err := sqldb.Query(`
+		SELECT case_id, requested_model, COALESCE(effort,''), validation_errors, COALESCE(output_text,''), metric_json
+		FROM model_eval_results
+		WHERE eval_run_id=? AND validation_errors NOT IN ('[]','','null')
+		ORDER BY case_id`, runID)
+	if err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var caseID, model, effort, valErrs, out, mj string
+		_ = rows.Scan(&caseID, &model, &effort, &valErrs, &out, &mj)
+		if len(out) > 600 {
+			out = out[:600] + "…"
+		}
+		fmt.Printf("  [synthetic-failure] case=%s model=%s effort=%s errors=%s output=%q\n", caseID, model, effort, valErrs, out)
+	}
+}
+
+func printJobScoringBenchmarkSummary(sqldb *sql.DB, runID string) {
+	var summary string
+	_ = sqldb.QueryRow(`SELECT COALESCE(summary_json,'{}') FROM model_eval_runs WHERE id=?`, runID).Scan(&summary)
+	fmt.Printf("summary=%s\n", summary)
+	scoringConfusion(sqldb, runID)
+	printRecommendations(sqldb, runID)
+}
+
 var _ = time.Second

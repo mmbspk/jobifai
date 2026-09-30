@@ -10,8 +10,10 @@ import (
 
 func TestSelectAll_SubjectiveWritingTasksRequireManualReview(t *testing.T) {
 	t.Parallel()
-	bl := Metrics{Candidate: candidate.Spec{Provider: "claude", Model: "m1"}, CaseCount: 50, TotalCostMicro: 1000, DetPassRate: 0.95}
-	cheap := Metrics{Candidate: candidate.Spec{Provider: "claude", Model: "m2"}, CaseCount: 50, TotalCostMicro: 400, DetPassRate: 0.96}
+	bl := Metrics{Candidate: candidate.Spec{Provider: "claude", Model: "m1"}, CaseCount: 50, TotalCostMicro: 1000, DetPassRate: 0.95,
+		CoverageComplete: true, EffectiveSampleSize: 50}
+	cheap := Metrics{Candidate: candidate.Spec{Provider: "claude", Model: "m2"}, CaseCount: 50, TotalCostMicro: 400, DetPassRate: 0.96,
+		CoverageComplete: true, EffectiveSampleSize: 50}
 	for _, task := range []string{domain.TaskResumeTailoring, domain.TaskCoverLetter} {
 		out := SelectAll(SelectInput{
 			Task: task, Baseline: bl, Candidates: []Metrics{cheap},

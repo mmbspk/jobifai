@@ -28,6 +28,12 @@ func main() {
 		cmdShow(os.Args[2:])
 	case "smoke-claude":
 		cmdSmokeClaude(os.Args[2:])
+	case "benchmark-job-scoring":
+		cmdBenchmarkJobScoring(os.Args[2:])
+	case "matcher-retest":
+		cmdMatcherRetest(os.Args[2:])
+	case "smoke-form-vision-haiku":
+		cmdSmokeFormVisionHaiku(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)

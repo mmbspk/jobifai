@@ -9,16 +9,17 @@ import (
 )
 
 type jobScenario struct {
-	Tag      string
+	Tag        string
+	Profession string
 	ExpectPass bool
-	Profile  map[string]any
-	JobDesc  string
-	Critical bool
+	Profile    map[string]any
+	JobDesc    string
+	Critical   bool
 }
 
 func jobScoringScenarios() []jobScenario {
 	return []jobScenario{
-		{Tag: "strong_exact_fit", ExpectPass: true, Critical: true, Profile: nurseProfileWithEducation("Registered Nurse", "2019", []string{"acute care", "patient monitoring"}, "Bachelor", "Nursing"),
+		{Tag: "strong_exact_fit", Profession: "healthcare", ExpectPass: true, Critical: true, Profile: nurseProfileWithEducation("Registered Nurse", "2019", []string{"acute care", "patient monitoring"}, "Bachelor", "Nursing"),
 			JobDesc: "Registered Nurse for acute care ward. Requires Bachelor-level nursing qualification and patient monitoring experience. Melbourne onsite."},
 		{Tag: "transferable_fit", ExpectPass: true, Critical: false, Profile: nurseProfile("Enrolled Nurse", "2018", []string{"aged care", "medication administration"}),
 			JobDesc: "Enrolled Nurse role in aged care with medication administration duties. Candidates with enrolled nurse qualifications and aged-care experience encouraged to apply."},
@@ -98,9 +99,13 @@ func synthJobScoring(i int) map[string]any {
 		exp["expect_skip"] = true
 		exp["max_score"] = 4
 	}
+	tags := []string{s.Tag}
+	if s.Profession != "" {
+		tags = append(tags, s.Profession)
+	}
 	return map[string]any{
 		"id": id, "task": "job_scoring", "classification": "synthetic", "critical": s.Critical,
-		"tags": []string{s.Tag},
+		"tags": tags,
 		"input": map[string]any{"profile": s.Profile, "job_description": s.JobDesc},
 		"expect": exp,
 	}

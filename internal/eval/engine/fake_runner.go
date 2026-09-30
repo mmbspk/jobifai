@@ -66,7 +66,8 @@ func (FakeRunner) RunCase(_ context.Context, task string, spec candidate.Spec, c
 		Provider: spec.Provider, RequestedModel: spec.Model, ActualModel: spec.Model,
 		ActualModelRaw: spec.Model, ActualModelVerified: true,
 		CanonicalPricingModel: spec.Model, PricingSource: "fake", PricingResolved: true,
-		LatencyMS: time.Since(start).Milliseconds(), Success: true, RawCostMicro: 1000,
+		LatencyMS: time.Since(start).Milliseconds(), Success: true,
+		RawCostMicro: 1000, BudgetChargeMicro: 1000,
 	}
 	return out, obs, nil
 }

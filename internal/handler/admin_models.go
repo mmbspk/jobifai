@@ -114,10 +114,23 @@ func (h *AdminHandlers) ModelsEvalGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"id": id, "status": status, "summary": summary,
 		"runner_type": runnerType, "run_purpose": purpose, "dataset_hash": datasetHash,
-	})
+	}
+	var parsed map[string]any
+	if json.Unmarshal([]byte(summary), &parsed) == nil {
+		if v, ok := parsed["candidates"]; ok {
+			resp["candidates"] = v
+		}
+		if v, ok := parsed["sample_stats"]; ok {
+			resp["sample_stats"] = v
+		}
+		if v, ok := parsed["budget_spent_micro"]; ok {
+			resp["budget_spent_micro"] = v
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type evalStartBody struct {

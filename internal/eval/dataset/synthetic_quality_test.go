@@ -27,10 +27,11 @@ func TestSyntheticFullDatasets_NoPlaceholders(t *testing.T) {
 			require.Greater(t, r.UniqueInputs, 0)
 			switch task {
 			case domain.TaskJobScoring:
-				require.NoError(t, AssertMinimumDiversity(b, 10))
+				require.NoError(t, AssertMinimumDiversity(b, 40))
 				require.Greater(t, r.ExpectPassCount, 0)
 				require.Greater(t, r.ExpectSkipCount, 0)
-				require.Less(t, len(r.ScenarioTags), r.TotalCases, "full sets repeat templates; see eval/datasets/BENCHMARK.md")
+				require.GreaterOrEqual(t, r.UniqueInputs, 40)
+				require.Equal(t, 0.0, r.DuplicateRatio)
 			case domain.TaskEmploymentEthics:
 				require.NoError(t, AssertMinimumDiversity(b, 15))
 			case domain.TaskFormAnswer:

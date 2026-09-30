@@ -10,14 +10,15 @@ const OutcomeQualityUpgrade = "quality_upgrade_candidate"
 
 // SelectInput controls joint recommendation across all candidates.
 type SelectInput struct {
-	Task           string
-	Baseline       Metrics
-	Candidates     []Metrics
-	MinCases       int
-	MaxCritical    int
-	CrossProvider  bool
-	SmokeOrFake    bool
-	QualityFloor   func(task string, baseline, cand Metrics) (ok bool, reason string)
+	Task                string
+	Baseline            Metrics
+	Candidates          []Metrics
+	MinCases            int
+	MaxCritical         int
+	CrossProvider       bool
+	SmokeOrFake         bool
+	QualityFloor        func(task string, baseline, cand Metrics) (ok bool, reason string)
+	EffectiveSampleSize int
 }
 
 // SelectAll returns one recommendation per non-baseline candidate plus marks the best cost saver.
@@ -78,9 +79,21 @@ func evaluateOne(in SelectInput, cand Metrics) Recommendation {
 		rec.Reason = "cross-provider production routing not implemented"
 		return rec
 	}
-	if cand.CaseCount < in.MinCases {
+	if !cand.CoverageComplete {
 		rec.Outcome = OutcomeNeedsMoreData
-		rec.Reason = fmt.Sprintf("sample size %d below minimum %d", cand.CaseCount, in.MinCases)
+		rec.Reason = "candidate did not complete required case coverage"
+		return rec
+	}
+	effectiveN := in.EffectiveSampleSize
+	if effectiveN <= 0 {
+		effectiveN = cand.EffectiveSampleSize
+	}
+	if effectiveN <= 0 {
+		effectiveN = cand.UniqueInputCount
+	}
+	if effectiveN < in.MinCases {
+		rec.Outcome = OutcomeNeedsMoreData
+		rec.Reason = fmt.Sprintf("effective sample size %d below minimum %d (raw cases %d)", effectiveN, in.MinCases, cand.CaseCount)
 		return rec
 	}
 	if cand.CriticalFails > in.MaxCritical {

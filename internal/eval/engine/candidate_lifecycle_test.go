@@ -1,0 +1,34 @@
+package engine
+
+import (
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestRunBudget_ConcurrentChargeAndStop(t *testing.T) {
+	t.Parallel()
+	b := newRunBudget(5000)
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if b.shouldStop() {
+					return
+				}
+				b.charge(100, 200)
+				if b.overBudget() {
+					b.requestStop()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	raw, budget, stop := b.totals()
+	require.True(t, stop || budget >= 5000)
+	require.GreaterOrEqual(t, budget, int64(0))
+	require.GreaterOrEqual(t, raw, int64(0))
+}

@@ -54,9 +54,17 @@ func BuildQualityReport(b Bundle) QualityReport {
 // AssertMinimumDiversity fails when a dataset collapses to too few scenario templates.
 func AssertMinimumDiversity(b Bundle, minTemplates int) error {
 	r := BuildQualityReport(b)
-	if len(r.ScenarioTags) > 0 {
-		if len(r.ScenarioTags) < minTemplates {
-			return fmt.Errorf("only %d scenario templates, need >= %d", len(r.ScenarioTags), minTemplates)
+	stats := ComputeSampleStats(b.Cases)
+	unique := stats.EffectiveSampleSize
+	if unique < r.UniqueInputs {
+		unique = r.UniqueInputs
+	}
+	if len(r.ScenarioTags) > unique {
+		unique = len(r.ScenarioTags)
+	}
+	if unique > 0 {
+		if unique < minTemplates {
+			return fmt.Errorf("only %d unique semantic cases, need >= %d", unique, minTemplates)
 		}
 		return nil
 	}

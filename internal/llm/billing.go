@@ -29,6 +29,7 @@ type UsageObservation struct {
 	Success             bool
 	ErrorCode           string
 	RawCostMicro        int64
+	BudgetChargeMicro   int64
 }
 
 // BillingHooks configures synchronous billing persistence for a client.
@@ -94,9 +95,13 @@ func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int
 				}
 			}
 		}
-		if success && bu.InputTokens+bu.OutputTokens > 0 && !meta.Resolved {
-			log.Warn().Str("requested_model", c.cfg.Model).Str("actual_model", bu.ActualModel).
-				Str("task", call.Task).Msg("eval pricing unresolved for successful llm call")
+		budgetMicro := rawMicro
+		if success && bu.InputTokens+bu.OutputTokens > 0 {
+			if !meta.Resolved {
+				log.Warn().Str("requested_model", c.cfg.Model).Str("actual_model", bu.ActualModel).
+					Str("task", call.Task).Msg("eval pricing unresolved for successful llm call")
+				budgetMicro = evalBudgetChargeFallback(c, ctx, bu.TokenUsage, meta)
+			}
 		}
 		c.billing.EvalObserver(UsageObservation{
 			Call: call, Provider: c.cfg.Provider, RequestedModel: c.cfg.Model,
@@ -105,7 +110,7 @@ func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int
 			PricingSource: meta.Source, PricingKind: meta.Kind, PricingResolved: meta.Resolved,
 			PricingError: meta.ResolveError,
 			Tokens: bu.TokenUsage, LatencyMS: latencyMS, Success: success, ErrorCode: errCode,
-			RawCostMicro: rawMicro,
+			RawCostMicro: rawMicro, BudgetChargeMicro: budgetMicro,
 		})
 	}
 	if c.billing.Ledger == nil {
@@ -141,4 +146,32 @@ func billingPersistErr(err error) error {
 		return nil
 	}
 	return &nonRetryableError{err: errors.Join(ErrBillingPersistFailed, err)}
+}
+
+func evalBudgetChargeFallback(c *Client, ctx context.Context, tok pricing.TokenUsage, meta pricing.EvalPricingMeta) int64 {
+	if c.billing.EvalPrice != nil {
+		res, pm, err := c.billing.EvalPrice(ctx, c.cfg.Provider, c.cfg.Model, c.cfg.Model)
+		if err == nil && pm.Resolved {
+			return pricing.RawCostMicroUSD(res.Record, tok)
+		}
+	}
+	cat := c.billing.Catalog
+	if cat == nil && c.billing.Ledger != nil {
+		cat = c.billing.Ledger.Catalog
+	}
+	if cat != nil {
+		res, err := cat.Resolve(c.cfg.Model, false)
+		if err == nil {
+			est := pricing.RawCostMicroUSD(res.Record, tok)
+			if est > 0 {
+				return est
+			}
+		}
+	}
+	if cat != nil {
+		res, _ := cat.Resolve(c.cfg.Model, false)
+		return pricing.RawCostMicroUSD(res.Record, tok)
+	}
+	_ = meta
+	return 0
 }
