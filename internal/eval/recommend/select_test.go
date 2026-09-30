@@ -11,7 +11,7 @@ func baseMetrics(c candidate.Spec, cases int, cost int64, det float64, crit int,
 	return Metrics{
 		Candidate: c, CaseCount: cases, TotalCostMicro: cost, DetPassRate: det,
 		CriticalFails: crit, ScoringFalseNegRate: fnRate,
-		CoverageComplete: true, EffectiveSampleSize: cases, UniqueInputCount: cases,
+		CoverageComplete: true, EffectiveSampleSize: cases, HardEffectiveSampleSize: cases, UniqueInputCount: cases,
 	}
 }
 

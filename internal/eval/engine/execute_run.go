@@ -79,7 +79,7 @@ func (s *Service) runCases(ctx context.Context, runID string, run runRow, bundle
 
 				var reserve int64
 				if run.RunnerType == runmeta.RunnerReal && s.EvalPricing != nil {
-					reserve = s.perCallBudgetReserve(ctx, spec)
+					reserve = s.perCallBudgetReserve(ctx, run.Task, spec, c)
 					if reserve > 0 && !budget.tryReserve(reserve) {
 						return
 					}
@@ -215,7 +215,10 @@ func (s *Service) writeRecommendations(ctx context.Context, runID string, run ru
 	baseM.CoverageComplete = candidateCoverageComplete(candReg, baseline.ID())
 	baseM.RawCaseCount = sampleStats.RawCaseCount
 	baseM.UniqueInputCount = sampleStats.UniqueInputCount
+	baseM.TotalUniqueInputCount = sampleStats.TotalUniqueInputCount
 	baseM.EffectiveSampleSize = sampleStats.EffectiveSampleSize
+	baseM.HardEffectiveSampleSize = sampleStats.HardEffectiveSampleSize
+	baseM.BorderlineEffectiveSampleSize = sampleStats.BorderlineEffectiveSampleSize
 	baseM.RepetitionCount = sampleStats.RepetitionCount
 
 	var candMetrics []recommend.Metrics
@@ -224,7 +227,10 @@ func (s *Service) writeRecommendations(ctx context.Context, runID string, run ru
 		m.CoverageComplete = candidateCoverageComplete(candReg, spec.ID())
 		m.RawCaseCount = sampleStats.RawCaseCount
 		m.UniqueInputCount = sampleStats.UniqueInputCount
+		m.TotalUniqueInputCount = sampleStats.TotalUniqueInputCount
 		m.EffectiveSampleSize = sampleStats.EffectiveSampleSize
+		m.HardEffectiveSampleSize = sampleStats.HardEffectiveSampleSize
+		m.BorderlineEffectiveSampleSize = sampleStats.BorderlineEffectiveSampleSize
 		m.RepetitionCount = sampleStats.RepetitionCount
 		candMetrics = append(candMetrics, m)
 	}
@@ -238,7 +244,9 @@ func (s *Service) writeRecommendations(ctx context.Context, runID string, run ru
 		Task: run.Task, Baseline: baseM, Candidates: candMetrics,
 		MinCases: minCases, MaxCritical: 0,
 		SmokeOrFake: smokeOrFake, QualityFloor: recommend.DefaultQualityFloor,
-		EffectiveSampleSize: sampleStats.EffectiveSampleSize,
+		EffectiveSampleSize:           sampleStats.EffectiveSampleSize,
+		HardEffectiveSampleSize:         sampleStats.HardEffectiveSampleSize,
+		BorderlineEffectiveSampleSize: sampleStats.BorderlineEffectiveSampleSize,
 	})
 	if finalStatus != runmeta.StatusCompleted {
 		for i := range recs {

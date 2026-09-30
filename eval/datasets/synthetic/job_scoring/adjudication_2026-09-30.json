@@ -102,10 +102,10 @@
     {
       "case_id": "job_scoring-0013",
       "original_label": "pass",
-      "adjudicated_label": "pass",
+      "adjudicated_label": "borderline",
       "critical": true,
-      "rationale": "Construction PM experience and budget/subcontractor skills fit commercial build role.",
-      "changed": false
+      "rationale": "Construction PM with budget/delivery fits partially; commercial builds and subcontractor management are posting requirements without explicit profile evidence\u2014defensible borderline.",
+      "changed": true
     },
     {
       "case_id": "job_scoring-0014",
@@ -482,6 +482,15 @@
       "critical": false,
       "rationale": "Melbourne community nurse fits metro community care posting.",
       "changed": false
+    }
+  ],
+  "revisions": [
+    {
+      "date": "2026-09-30",
+      "case_id": "job_scoring-0013",
+      "from": "pass",
+      "to": "borderline",
+      "reason": "Second blind review: construction PM and budget/delivery align, but commercial-build scope and subcontractor management are required in the posting and not visible in profile skills."
     }
   ]
 }

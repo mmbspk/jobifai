@@ -132,7 +132,13 @@ func printJobScoringProductionGate(sqldb *sql.DB, runID string) {
 		fmt.Println("candidate_ready_for_human_production_approval=false (missing model metrics)")
 		return
 	}
-	hardN := sonnet.tp + sonnet.tn + sonnet.fp + sonnet.fn
+	classifiedRows := sonnet.tp + sonnet.tn + sonnet.fp + sonnet.fn
+	hardEffectiveN := classifiedRows
+	if ss, ok := sum["sample_stats"].(map[string]any); ok {
+		if v, ok := ss["hard_effective_sample_size"].(float64); ok {
+			hardEffectiveN = int(v)
+		}
+	}
 	var sFNR, hFNR, sFPR, hFPR float64
 	if sonnet.tp+sonnet.fn > 0 {
 		sFNR = float64(sonnet.fn) / float64(sonnet.tp+sonnet.fn)
@@ -150,10 +156,11 @@ func printJobScoringProductionGate(sqldb *sql.DB, runID string) {
 	if sonnet.costMicro > 0 {
 		costSave = (1 - float64(haiku.costMicro)/float64(sonnet.costMicro)) * 100
 	}
-	ready := hardN >= 40 && haiku.apiOK == haiku.apiTotal &&
+	ready := hardEffectiveN >= 40 && haiku.apiOK == haiku.apiTotal &&
 		hFNR <= sFNR+0.01 && haiku.critFN <= sonnet.critFN &&
 		hFPR <= sFPR+0.01 && costSave >= 30
-	fmt.Printf("hard_effective_n=%d borderline_tracked=%d\n", hardN, sonnet.borderline)
+	fmt.Printf("hard_effective_n=%d classified_result_rows=%d borderline_tracked=%d\n",
+		hardEffectiveN, classifiedRows, sonnet.borderline)
 	fmt.Printf("FNR delta (Haiku-Sonnet): %.3f  FPR delta: %.3f  cost_save: %.1f%%\n", hFNR-sFNR, hFPR-sFPR, costSave)
 	fmt.Printf("critical_FN Sonnet=%d Haiku=%d  critical_FP Sonnet=%d Haiku=%d\n",
 		sonnet.critFN, haiku.critFN, sonnet.critFP, haiku.critFP)

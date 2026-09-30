@@ -18,7 +18,9 @@ type SelectInput struct {
 	CrossProvider       bool
 	SmokeOrFake         bool
 	QualityFloor        func(task string, baseline, cand Metrics) (ok bool, reason string)
-	EffectiveSampleSize int
+	EffectiveSampleSize             int
+	HardEffectiveSampleSize         int
+	BorderlineEffectiveSampleSize   int
 }
 
 // SelectAll returns one recommendation per non-baseline candidate plus marks the best cost saver.
@@ -84,16 +86,17 @@ func evaluateOne(in SelectInput, cand Metrics) Recommendation {
 		rec.Reason = "candidate did not complete required case coverage"
 		return rec
 	}
-	effectiveN := in.EffectiveSampleSize
-	if effectiveN <= 0 {
-		effectiveN = cand.EffectiveSampleSize
+	hardN := in.HardEffectiveSampleSize
+	if hardN <= 0 {
+		hardN = cand.HardEffectiveSampleSize
 	}
-	if effectiveN <= 0 {
-		effectiveN = cand.UniqueInputCount
+	if hardN <= 0 {
+		hardN = effectiveSampleSize(cand)
 	}
-	if effectiveN < in.MinCases {
+	if hardN < in.MinCases {
 		rec.Outcome = OutcomeNeedsMoreData
-		rec.Reason = fmt.Sprintf("effective sample size %d below minimum %d (raw cases %d)", effectiveN, in.MinCases, cand.CaseCount)
+		rec.Reason = fmt.Sprintf("hard effective sample size %d below minimum %d (total unique %d, raw cases %d)",
+			hardN, in.MinCases, cand.TotalUniqueInputCount, cand.CaseCount)
 		return rec
 	}
 	if cand.CriticalFails > in.MaxCritical {

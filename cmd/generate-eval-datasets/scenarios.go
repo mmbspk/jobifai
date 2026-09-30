@@ -45,7 +45,7 @@ func jobScoringScenarios() []jobScenario {
 			JobDesc: "Commercial litigation paralegal supporting case discovery and document review."},
 		{Tag: "tech_mismatch", ExpectPass: false, Critical: false, Profile: pmProfile("Project Manager", "2016", []string{"Agile", "stakeholders"}),
 			JobDesc: "SAP S/4HANA implementation lead with ABAP and Fiori customization experience required."},
-		{Tag: "strong_exact_fit_pm", ExpectPass: true, Critical: true, Profile: pmProfile("Project Manager", "2013", []string{"construction delivery", "budget control"}),
+		{Tag: "strong_exact_fit_pm", ExpectBorderline: true, Critical: true, Profile: pmProfile("Project Manager", "2013", []string{"construction delivery", "budget control"}),
 			JobDesc: "Construction Project Manager for commercial builds with budget control and subcontractor management."},
 		{Tag: "education_level_mismatch", ExpectPass: false, Critical: true, Profile: nurseProfileWithEducation("Care Assistant", "2019", []string{"personal care"},
 			"Certificate IV", "Individual Support"),

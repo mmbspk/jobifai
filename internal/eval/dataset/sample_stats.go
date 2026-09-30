@@ -10,13 +10,16 @@ import (
 
 // SampleStats describes semantic uniqueness of a loaded dataset.
 type SampleStats struct {
-	RawCaseCount        int            `json:"raw_case_count"`
-	UniqueInputCount    int            `json:"unique_input_count"`
-	RepetitionCount     int            `json:"repetition_count"`
-	EffectiveSampleSize int            `json:"effective_sample_size"`
-	HardLabeledCount    int            `json:"hard_labeled_count,omitempty"`
-	BorderlineCount     int            `json:"borderline_count,omitempty"`
-	FingerprintCounts   map[string]int `json:"fingerprint_counts,omitempty"`
+	RawCaseCount                  int            `json:"raw_case_count"`
+	UniqueInputCount              int            `json:"unique_input_count"`
+	TotalUniqueInputCount         int            `json:"total_unique_input_count"`
+	RepetitionCount               int            `json:"repetition_count"`
+	EffectiveSampleSize           int            `json:"effective_sample_size"`
+	HardEffectiveSampleSize       int            `json:"hard_effective_sample_size"`
+	BorderlineEffectiveSampleSize int            `json:"borderline_effective_sample_size"`
+	HardLabeledCount              int            `json:"hard_labeled_count,omitempty"`
+	BorderlineCount               int            `json:"borderline_count,omitempty"`
+	FingerprintCounts             map[string]int `json:"fingerprint_counts,omitempty"`
 }
 
 type scoringExpectLite struct {
@@ -75,24 +78,31 @@ func ComputeSampleStats(cases []Case) SampleStats {
 			reps += n - 1
 		}
 	}
-	hard, borderline := 0, 0
+	hardRows, borderRows := 0, 0
+	hardFP, borderFP := map[string]struct{}{}, map[string]struct{}{}
 	for _, c := range cases {
+		fp := InputFingerprint(c)
 		var exp scoringExpectLite
 		_ = json.Unmarshal(c.Expect, &exp)
 		if exp.ExpectBorderline {
-			borderline++
+			borderRows++
+			borderFP[fp] = struct{}{}
 		} else {
-			hard++
+			hardRows++
+			hardFP[fp] = struct{}{}
 		}
 	}
 	return SampleStats{
-		RawCaseCount:        len(cases),
-		UniqueInputCount:    unique,
-		RepetitionCount:     reps,
-		EffectiveSampleSize: unique,
-		HardLabeledCount:    hard,
-		BorderlineCount:     borderline,
-		FingerprintCounts:   counts,
+		RawCaseCount:                  len(cases),
+		UniqueInputCount:              unique,
+		TotalUniqueInputCount:         unique,
+		RepetitionCount:               reps,
+		EffectiveSampleSize:           unique,
+		HardEffectiveSampleSize:       len(hardFP),
+		BorderlineEffectiveSampleSize: len(borderFP),
+		HardLabeledCount:              hardRows,
+		BorderlineCount:               borderRows,
+		FingerprintCounts:             counts,
 	}
 }
 

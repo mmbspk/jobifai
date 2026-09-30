@@ -12,10 +12,13 @@ import (
 type Metrics struct {
 	Candidate       candidate.Spec `json:"candidate"`
 	CaseCount       int            `json:"case_count"`
-	RawCaseCount           int  `json:"raw_case_count,omitempty"`
-	UniqueInputCount       int  `json:"unique_input_count,omitempty"`
-	RepetitionCount        int  `json:"repetition_count,omitempty"`
-	EffectiveSampleSize    int  `json:"effective_sample_size,omitempty"`
+	RawCaseCount                    int `json:"raw_case_count,omitempty"`
+	UniqueInputCount                int `json:"unique_input_count,omitempty"`
+	TotalUniqueInputCount           int `json:"total_unique_input_count,omitempty"`
+	RepetitionCount                 int `json:"repetition_count,omitempty"`
+	EffectiveSampleSize             int `json:"effective_sample_size,omitempty"`
+	HardEffectiveSampleSize         int `json:"hard_effective_sample_size,omitempty"`
+	BorderlineEffectiveSampleSize   int `json:"borderline_effective_sample_size,omitempty"`
 	CoverageComplete       bool `json:"coverage_complete"`
 	SuccessRate     float64        `json:"success_rate"`
 	DetPassRate     float64        `json:"deterministic_pass_rate"`
@@ -106,6 +109,9 @@ func Decide(task string, baseline, cand Metrics, minCases int, maxCritical int, 
 }
 
 func effectiveSampleSize(cand Metrics) int {
+	if cand.HardEffectiveSampleSize > 0 {
+		return cand.HardEffectiveSampleSize
+	}
 	if cand.EffectiveSampleSize > 0 {
 		return cand.EffectiveSampleSize
 	}
