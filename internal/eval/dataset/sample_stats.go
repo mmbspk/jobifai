@@ -14,7 +14,15 @@ type SampleStats struct {
 	UniqueInputCount    int            `json:"unique_input_count"`
 	RepetitionCount     int            `json:"repetition_count"`
 	EffectiveSampleSize int            `json:"effective_sample_size"`
+	HardLabeledCount    int            `json:"hard_labeled_count,omitempty"`
+	BorderlineCount     int            `json:"borderline_count,omitempty"`
 	FingerprintCounts   map[string]int `json:"fingerprint_counts,omitempty"`
+}
+
+type scoringExpectLite struct {
+	ExpectPass       bool `json:"expect_pass"`
+	ExpectSkip       bool `json:"expect_skip"`
+	ExpectBorderline bool `json:"expect_borderline"`
 }
 
 // InputFingerprint returns a stable hash of decision-relevant case input.
@@ -67,11 +75,23 @@ func ComputeSampleStats(cases []Case) SampleStats {
 			reps += n - 1
 		}
 	}
+	hard, borderline := 0, 0
+	for _, c := range cases {
+		var exp scoringExpectLite
+		_ = json.Unmarshal(c.Expect, &exp)
+		if exp.ExpectBorderline {
+			borderline++
+		} else {
+			hard++
+		}
+	}
 	return SampleStats{
 		RawCaseCount:        len(cases),
 		UniqueInputCount:    unique,
 		RepetitionCount:     reps,
 		EffectiveSampleSize: unique,
+		HardLabeledCount:    hard,
+		BorderlineCount:     borderline,
 		FingerprintCounts:   counts,
 	}
 }

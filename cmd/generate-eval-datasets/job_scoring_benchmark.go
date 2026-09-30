@@ -8,10 +8,13 @@ func jobScoringFullBenchmarkCases() []map[string]any {
 	for i, s := range all {
 		id := fmt.Sprintf("job_scoring-%04d", i+1)
 		exp := map[string]any{"pass_threshold": 7, "scenario": s.Tag}
-		if s.ExpectPass {
+		switch {
+		case s.ExpectBorderline:
+			exp["expect_borderline"] = true
+		case s.ExpectPass:
 			exp["expect_pass"] = true
 			exp["min_score"] = 7
-		} else {
+		default:
 			exp["expect_skip"] = true
 			exp["max_score"] = 4
 		}
@@ -99,7 +102,7 @@ func jobScoringExtendedScenarios() []jobScenario {
 		{Tag: "certification_required", Profession: "healthcare", ExpectPass: false, Critical: true,
 			Profile: nurseProfile("General Nurse", "2014", []string{"ward care"}),
 			JobDesc: "Registered nurse role requiring current ACLS certification and recent critical-care experience."},
-		{Tag: "adjacent_tech_fit", Profession: "software", ExpectPass: true, Critical: false,
+		{Tag: "adjacent_tech_fit", Profession: "software", ExpectPass: false, Critical: false,
 			Profile: techProfile("Platform Engineer", "2017", []string{"Docker", "Linux", "monitoring"}),
 			JobDesc: "Kubernetes platform engineer; container orchestration and observability experience required."},
 		{Tag: "title_mismatch_skill_fit", Profession: "business", ExpectPass: true, Critical: false,

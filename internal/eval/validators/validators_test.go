@@ -11,6 +11,16 @@ import (
 	"github.com/user/jobifai/internal/eval/recommend"
 )
 
+func TestJobScoring_BorderlineNotHardFalseNegative(t *testing.T) {
+	t.Parallel()
+	exp, _ := json.Marshal(map[string]any{"expect_borderline": true, "pass_threshold": 7})
+	out := `{"score":4}`
+	res := Validate(domain.TaskJobScoring, out, exp, true)
+	require.Equal(t, "borderline", res.Metrics["scoring_cell"])
+	require.True(t, res.Pass)
+	require.Empty(t, res.Errors)
+}
+
 func TestJobScoring_ScoringCellIgnoresScoreRangeOnlyFailure(t *testing.T) {
 	t.Parallel()
 	exp, _ := json.Marshal(map[string]any{"expect_pass": true, "pass_threshold": 7, "min_score": 8})

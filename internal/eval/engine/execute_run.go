@@ -77,6 +77,14 @@ func (s *Service) runCases(ctx context.Context, runID string, run runRow, bundle
 					return
 				}
 
+				var reserve int64
+				if run.RunnerType == runmeta.RunnerReal && s.EvalPricing != nil {
+					reserve = s.perCallBudgetReserve(ctx, spec)
+					if reserve > 0 && !budget.tryReserve(reserve) {
+						return
+					}
+				}
+
 				out, obs, runErr := s.Run.RunCase(ctx, run.Task, spec, c)
 				if runErr != nil {
 					st := preflight.ClassifyProviderError(runErr)
@@ -118,17 +126,19 @@ func (s *Service) runCases(ctx context.Context, runID string, run runRow, bundle
 					mu.Unlock()
 					return
 				}
-				if pricingStop {
-					completed++
-					mu.Unlock()
-					return
-				}
 				charge := obs.BudgetChargeMicro
 				if charge <= 0 && obs.PricingResolved {
 					charge = obs.RawCostMicro
 				}
-				if charge > 0 || obs.PricingResolved {
+				if run.RunnerType == runmeta.RunnerReal && reserve > 0 {
+					budget.reconcile(reserve, obs.RawCostMicro, charge)
+				} else if charge > 0 || obs.PricingResolved {
 					budget.charge(obs.RawCostMicro, charge)
+				}
+				if pricingStop {
+					completed++
+					mu.Unlock()
+					return
 				}
 				completed++
 				candReg.addCompleted(specID)
@@ -152,6 +162,11 @@ func (s *Service) runCases(ctx context.Context, runID string, run runRow, bundle
 					a.scoringFP++
 				case "fn":
 					a.scoringFN++
+				case "borderline":
+					a.scoringBorderline++
+					if vr.Metrics["predicted_pass"] == true {
+						a.scoringBorderlineSurfaced++
+					}
 				}
 				a.costs = append(a.costs, obs.RawCostMicro)
 				a.latencies = append(a.latencies, obs.LatencyMS)

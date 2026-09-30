@@ -29,6 +29,8 @@ type Metrics struct {
 	ScoringAccuracy     float64    `json:"scoring_accuracy,omitempty"`
 	ScoringPrecision    float64    `json:"scoring_precision,omitempty"`
 	ScoringRecall       float64    `json:"scoring_recall,omitempty"`
+	ScoringBorderline           int `json:"scoring_borderline,omitempty"`
+	ScoringBorderlineSurfaced   int `json:"scoring_borderline_surfaced,omitempty"`
 	MeanLatencyMS   float64        `json:"mean_latency_ms"`
 	P90LatencyMS    float64        `json:"p90_latency_ms"`
 	TotalCostMicro  int64          `json:"total_cost_usd_micro"`
@@ -98,9 +100,19 @@ func Decide(task string, baseline, cand Metrics, minCases int, maxCritical int, 
 	}
 	rec.Outcome = OutcomeRecommend
 	rec.Deployable = true
-	rec.Confidence = confidenceLabel(cand.CaseCount, cand.DetPassRate)
+	rec.Confidence = confidenceLabel(effectiveSampleSize(cand), cand.DetPassRate)
 	rec.Reason = "lowest-cost candidate clearing quality floor"
 	return rec
+}
+
+func effectiveSampleSize(cand Metrics) int {
+	if cand.EffectiveSampleSize > 0 {
+		return cand.EffectiveSampleSize
+	}
+	if cand.UniqueInputCount > 0 {
+		return cand.UniqueInputCount
+	}
+	return cand.CaseCount
 }
 
 func confidenceLabel(n int, passRate float64) string {

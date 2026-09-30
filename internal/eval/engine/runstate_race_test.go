@@ -51,10 +51,20 @@ func TestExecuteRun_BudgetAndCancelRaceSafe(t *testing.T) {
 	}()
 	wg.Wait()
 
-	var status string
-	require.NoError(t, sqldb.QueryRow(`SELECT status FROM model_eval_runs WHERE id=?`, id).Scan(&status))
-	require.Contains(t, []string{
+	terminal := []string{
 		runmeta.StatusBudgetExhausted, runmeta.StatusCancelled,
 		runmeta.StatusCompleted, runmeta.StatusFailed,
-	}, status)
+	}
+	var status string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		require.NoError(t, sqldb.QueryRow(`SELECT status FROM model_eval_runs WHERE id=?`, id).Scan(&status))
+		for _, ok := range terminal {
+			if status == ok {
+				return
+			}
+		}
+		require.False(t, time.Now().After(deadline), "run stuck in status %q", status)
+		time.Sleep(10 * time.Millisecond)
+	}
 }

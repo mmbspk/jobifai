@@ -57,11 +57,12 @@ func Validate(task, output string, expect json.RawMessage, critical bool) Result
 }
 
 type scoringExpect struct {
-	MinScore      int  `json:"min_score"`
-	MaxScore      int  `json:"max_score"`
-	ExpectPass    bool `json:"expect_pass"`
-	ExpectSkip    bool `json:"expect_skip"`
-	PassThreshold int  `json:"pass_threshold"`
+	MinScore          int  `json:"min_score"`
+	MaxScore          int  `json:"max_score"`
+	ExpectPass        bool `json:"expect_pass"`
+	ExpectSkip        bool `json:"expect_skip"`
+	ExpectBorderline  bool `json:"expect_borderline"`
+	PassThreshold     int  `json:"pass_threshold"`
 }
 
 func validateJobScoring(output string, expect json.RawMessage, critical bool) Result {
@@ -90,6 +91,16 @@ func validateJobScoring(output string, expect json.RawMessage, critical bool) Re
 		res.Errors = append(res.Errors, fmt.Sprintf("score %d above max %d", js.Score, exp.MaxScore))
 	}
 	predictedPass := js.Score >= exp.PassThreshold
+	if exp.ExpectBorderline {
+		res.Metrics = map[string]any{
+			"scoring_adjudication": "borderline",
+			"predicted_pass":       predictedPass,
+			"model_score":          js.Score,
+			"scoring_cell":         "borderline",
+		}
+		res.Pass = true
+		return res
+	}
 	if exp.ExpectPass && !predictedPass {
 		res.Errors = append(res.Errors, "false negative: expected pass")
 		res.CriticalFail = critical

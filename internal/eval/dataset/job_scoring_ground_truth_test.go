@@ -15,14 +15,23 @@ func TestJobScoringFullDataset_PassSkipSemantics(t *testing.T) {
 	require.NoError(t, AssertMinimumDiversity(b, 40))
 	for _, c := range b.Cases {
 		var exp struct {
-			ExpectPass bool   `json:"expect_pass"`
-			ExpectSkip bool   `json:"expect_skip"`
-			Scenario   string `json:"scenario"`
+			ExpectPass       bool   `json:"expect_pass"`
+			ExpectSkip       bool   `json:"expect_skip"`
+			ExpectBorderline bool   `json:"expect_borderline"`
+			Scenario         string `json:"scenario"`
 		}
 		require.NoError(t, json.Unmarshal(c.Expect, &exp))
-		require.True(t, exp.ExpectPass != exp.ExpectSkip, "case %s must label pass or skip", c.ID)
-		if exp.ExpectSkip {
-			require.True(t, exp.Scenario != "" && !exp.ExpectPass, "skip case %s must name a mismatch scenario", c.ID)
+		labels := 0
+		if exp.ExpectPass {
+			labels++
 		}
+		if exp.ExpectSkip {
+			labels++
+		}
+		if exp.ExpectBorderline {
+			labels++
+		}
+		require.Equal(t, 1, labels, "case %s must have exactly one of pass/skip/borderline", c.ID)
+		require.NotEmpty(t, exp.Scenario)
 	}
 }

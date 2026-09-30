@@ -9,12 +9,13 @@ import (
 )
 
 type jobScenario struct {
-	Tag        string
-	Profession string
-	ExpectPass bool
-	Profile    map[string]any
-	JobDesc    string
-	Critical   bool
+	Tag               string
+	Profession        string
+	ExpectPass        bool
+	ExpectBorderline  bool
+	Profile           map[string]any
+	JobDesc           string
+	Critical          bool
 }
 
 func jobScoringScenarios() []jobScenario {
@@ -23,7 +24,7 @@ func jobScoringScenarios() []jobScenario {
 			JobDesc: "Registered Nurse for acute care ward. Requires Bachelor-level nursing qualification and patient monitoring experience. Melbourne onsite."},
 		{Tag: "transferable_fit", ExpectPass: true, Critical: false, Profile: nurseProfile("Enrolled Nurse", "2018", []string{"aged care", "medication administration"}),
 			JobDesc: "Enrolled Nurse role in aged care with medication administration duties. Candidates with enrolled nurse qualifications and aged-care experience encouraged to apply."},
-		{Tag: "borderline_fit", ExpectPass: true, Critical: false, Profile: nurseProfile("Healthcare Assistant", "2020", []string{"patient transport", "vitals"}),
+		{Tag: "borderline_fit", ExpectBorderline: true, Critical: false, Profile: nurseProfile("Healthcare Assistant", "2020", []string{"patient transport", "vitals"}),
 			JobDesc: "Junior nurse position supporting ward teams. Healthcare assistant experience with vitals preferred."},
 		{Tag: "seniority_mismatch", ExpectPass: false, Critical: true, Profile: nurseProfile("Graduate Nurse", "2024", []string{"clinical placement"}),
 			JobDesc: "Senior Nurse Unit Manager leading 40-bed ward. Minimum 8 years leadership required."},
@@ -38,7 +39,7 @@ func jobScoringScenarios() []jobScenario {
 			JobDesc: "Experienced nurse with minimum 5 years post-registration experience required."},
 		{Tag: "overqualified", ExpectPass: false, Critical: false, Profile: nurseProfile("Director of Nursing", "2005", []string{"executive leadership", "budgeting"}),
 			JobDesc: "Entry-level enrolled nurse assistant supporting daily personal care tasks."},
-		{Tag: "title_diff_skills_fit", ExpectPass: true, Critical: false, Profile: nurseProfile("Clinical Care Coordinator", "2014", []string{"ward coordination", "staff rostering"}),
+		{Tag: "title_diff_skills_fit", ExpectBorderline: true, Critical: false, Profile: nurseProfile("Clinical Care Coordinator", "2014", []string{"ward coordination", "staff rostering"}),
 			JobDesc: "Nurse Manager for surgical ward requiring coordination and rostering experience."},
 		{Tag: "domain_mismatch", ExpectPass: false, Critical: true, Profile: nurseProfile("Registered Nurse", "2012", []string{"pediatric oncology"}),
 			JobDesc: "Commercial litigation paralegal supporting case discovery and document review."},

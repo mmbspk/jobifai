@@ -128,6 +128,7 @@ type runBudget struct {
 	mu           sync.Mutex
 	spentRaw     int64
 	spentBudget  int64
+	reserved     int64
 	stop         bool
 	maxMicro     int64
 }
@@ -151,7 +152,45 @@ func (b *runBudget) requestStop() {
 func (b *runBudget) overBudget() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.maxMicro > 0 && b.spentBudget >= b.maxMicro
+	return b.maxMicro > 0 && b.spentBudget+b.reserved >= b.maxMicro
+}
+
+func (b *runBudget) tryReserve(micro int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.stop {
+		return false
+	}
+	if micro <= 0 {
+		micro = defaultPerCallReserveMicro
+	}
+	if b.maxMicro > 0 && b.spentBudget+b.reserved+micro > b.maxMicro {
+		b.stop = true
+		return false
+	}
+	b.reserved += micro
+	return true
+}
+
+func (b *runBudget) reconcile(reserved, rawMicro, budgetMicro int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if reserved > b.reserved {
+		reserved = b.reserved
+	}
+	b.reserved -= reserved
+	if rawMicro > 0 {
+		b.spentRaw += rawMicro
+	}
+	if budgetMicro > 0 {
+		b.spentBudget += budgetMicro
+	} else if reserved > 0 && budgetMicro == 0 {
+		// Failed call: still count reservation as spend so budget stays fail-closed.
+		b.spentBudget += reserved
+	}
+	if b.maxMicro > 0 && b.spentBudget >= b.maxMicro {
+		b.stop = true
+	}
 }
 
 func (b *runBudget) charge(rawMicro, budgetMicro int64) (spentRaw, spentBudget int64) {
@@ -172,5 +211,5 @@ func (b *runBudget) charge(rawMicro, budgetMicro int64) (spentRaw, spentBudget i
 func (b *runBudget) totals() (raw, budget int64, stop bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.spentRaw, b.spentBudget, b.stop
+	return b.spentRaw, b.spentBudget + b.reserved, b.stop
 }

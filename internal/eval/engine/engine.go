@@ -23,6 +23,7 @@ type acc struct {
 	spec                           candidate.Spec
 	passes, successes, critical, n int
 	scoringTP, scoringTN, scoringFP, scoringFN int
+	scoringBorderline, scoringBorderlineSurfaced int
 	latencies, costs               []int64
 }
 
@@ -163,7 +164,10 @@ func metricsFromAcc(a *acc) recommend.Metrics {
 	if a == nil || a.n == 0 {
 		return recommend.Metrics{}
 	}
-	return recommend.Aggregate(a.spec, a.passes, a.successes, a.critical, a.latencies, a.costs, a.scoringTP, a.scoringTN, a.scoringFP, a.scoringFN)
+	m := recommend.Aggregate(a.spec, a.passes, a.successes, a.critical, a.latencies, a.costs, a.scoringTP, a.scoringTN, a.scoringFP, a.scoringFN)
+	m.ScoringBorderline = a.scoringBorderline
+	m.ScoringBorderlineSurfaced = a.scoringBorderlineSurfaced
+	return m
 }
 
 type runRow struct {

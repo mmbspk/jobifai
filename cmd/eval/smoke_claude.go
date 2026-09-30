@@ -308,17 +308,17 @@ func printCaseDetails(sqldb *sql.DB, runID string) {
 
 func scoringConfusion(sqldb *sql.DB, runID string) {
 	rows, err := sqldb.Query(`
-		SELECT requested_model, COALESCE(effort,''), metric_json
+		SELECT requested_model, COALESCE(effort,''), metric_json, case_id, validation_errors
 		FROM model_eval_results WHERE eval_run_id=?`, runID)
 	if err != nil {
 		return
 	}
 	defer func() { _ = rows.Close() }()
-	type cell struct{ tp, tn, fp, fn int }
+	type cell struct{ tp, tn, fp, fn, borderline, borderlineSurfaced int }
 	byModel := map[string]*cell{}
 	for rows.Next() {
-		var model, effort, mj string
-		_ = rows.Scan(&model, &effort, &mj)
+		var model, effort, mj, caseID, valErrs string
+		_ = rows.Scan(&model, &effort, &mj, &caseID, &valErrs)
 		var m map[string]any
 		_ = json.Unmarshal([]byte(mj), &m)
 		if m["scoring_cell"] == nil {
@@ -337,23 +337,31 @@ func scoringConfusion(sqldb *sql.DB, runID string) {
 			byModel[key].fp++
 		case "fn":
 			byModel[key].fn++
+		case "borderline":
+			byModel[key].borderline++
+			if m["predicted_pass"] == true {
+				byModel[key].borderlineSurfaced++
+			}
 		}
 	}
 	for k, c := range byModel {
 		total := c.tp + c.tn + c.fp + c.fn
-		if total == 0 {
-			continue
+		if total > 0 {
+			acc := float64(c.tp+c.tn) / float64(total)
+			var fnr, fpr float64
+			if c.tp+c.fn > 0 {
+				fnr = float64(c.fn) / float64(c.tp+c.fn)
+			}
+			if c.tn+c.fp > 0 {
+				fpr = float64(c.fp) / float64(c.tn+c.fp)
+			}
+			fmt.Printf("  scoring_hard %s: TP=%d TN=%d FP=%d FN=%d accuracy=%.2f fn_rate=%.2f fp_rate=%.2f (hard_n=%d)\n",
+				k, c.tp, c.tn, c.fp, c.fn, acc, fnr, fpr, total)
 		}
-		acc := float64(c.tp+c.tn) / float64(total)
-		var fnr, fpr float64
-		if c.tp+c.fn > 0 {
-			fnr = float64(c.fn) / float64(c.tp+c.fn)
+		if c.borderline > 0 {
+			fmt.Printf("  scoring_borderline %s: count=%d surfaced_at_threshold=%d\n",
+				k, c.borderline, c.borderlineSurfaced)
 		}
-		if c.tn+c.fp > 0 {
-			fpr = float64(c.fp) / float64(c.tn+c.fp)
-		}
-		fmt.Printf("  scoring %s: TP=%d TN=%d FP=%d FN=%d accuracy=%.2f fn_rate=%.2f fp_rate=%.2f\n",
-			k, c.tp, c.tn, c.fp, c.fn, acc, fnr, fpr)
 	}
 }
 

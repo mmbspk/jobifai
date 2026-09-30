@@ -123,7 +123,7 @@ func evaluateOne(in SelectInput, cand Metrics) Recommendation {
 	}
 	rec.Outcome = OutcomeRecommend
 	rec.Deployable = true
-	rec.Confidence = confidenceLabel(cand.CaseCount, cand.DetPassRate)
+	rec.Confidence = confidenceLabel(effectiveSampleSize(cand), cand.DetPassRate)
 	rec.Reason = "lowest-cost candidate clearing quality floor among evaluated alternatives"
 	if in.Task == domain.TaskResumeTailoring || in.Task == domain.TaskCoverLetter {
 		rec.Outcome = OutcomeManualReview
