@@ -93,10 +93,13 @@ func synthJobScoring(i int) map[string]any {
 	s := scenarios[i%len(scenarios)]
 	id := fmt.Sprintf("job_scoring-%04d", i+1)
 	exp := map[string]any{"pass_threshold": 7, "scenario": s.Tag}
-	if s.ExpectPass {
+	switch {
+	case s.ExpectBorderline:
+		exp["expect_borderline"] = true
+	case s.ExpectPass:
 		exp["expect_pass"] = true
 		exp["min_score"] = 7
-	} else {
+	default:
 		exp["expect_skip"] = true
 		exp["max_score"] = 4
 	}
