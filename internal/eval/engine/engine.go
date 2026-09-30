@@ -45,6 +45,7 @@ type Service struct {
 	EvalPricing *pricing.EvalCatalog // optional; requested-model preflight for real runs
 
 	persistMu sync.Mutex // serializes result inserts under parallel RunCase workers (SQLite)
+	execMu    sync.Mutex // serializes ExecuteRun (SQLite lifecycle + terminal status)
 }
 
 func (s *Service) insertResultExtended(ctx context.Context, runID string, spec candidate.Spec, c dataset.Case, obs llm.UsageObservation, success bool, vr validators.Result, outputText string) error {
@@ -93,26 +94,54 @@ func (s *Service) insertResultExtended(ctx context.Context, runID string, spec c
 
 // ExecuteRun loads dataset, runs candidates, persists results, writes recommendations.
 func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
-	run, err := s.loadRun(ctx, runID)
+	s.execMu.Lock()
+	defer s.execMu.Unlock()
+	persist := context.WithoutCancel(ctx)
+	run, err := s.loadRun(persist, runID)
 	if err != nil {
 		return err
 	}
 	if run.Status != runmeta.StatusPending && run.Status != runmeta.StatusRunning {
 		return nil
 	}
-	if err := s.markStatus(ctx, runID, runmeta.StatusRunning, ""); err != nil {
+	finalized := false
+	defer func() {
+		if finalized {
+			return
+		}
+		persist := context.WithoutCancel(ctx)
+		var st string
+		if err := s.DB.QueryRowContext(persist, `SELECT status FROM model_eval_runs WHERE id=?`, runID).Scan(&st); err != nil {
+			return
+		}
+		if st != runmeta.StatusPending && st != runmeta.StatusRunning {
+			return
+		}
+		msg := "eval run exited before persisting terminal status"
+		status := runmeta.StatusFailed
+		if ctx.Err() != nil || s.cancelRequested(persist, runID) {
+			status = runmeta.StatusCancelled
+		}
+		_, _ = s.DB.ExecContext(persist, `
+			UPDATE model_eval_runs SET status=?, error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?`,
+			status, msg, runID)
+	}()
+	if err := s.markStatus(persist, runID, runmeta.StatusRunning, ""); err != nil {
+		finalized = true
 		return s.failRun(ctx, runID, err)
 	}
 	bundle, err := dataset.Load(dataset.LoadRequest{
 		Task: run.Task, Version: run.DatasetVersion, Source: run.DatasetSource,
 	})
 	if err != nil {
+		finalized = true
 		return s.failRun(ctx, runID, err)
 	}
-	_, err = s.DB.ExecContext(ctx, `
+	_, err = s.DB.ExecContext(persist, `
 		UPDATE model_eval_runs SET dataset_name=?, dataset_hash=?, cases_planned=? WHERE id=?`,
 		run.DatasetVersion, bundle.Manifest.SHA256, len(bundle.Cases)*(1+len(run.Candidates)), runID) // baseline + candidates
 	if err != nil {
+		finalized = true
 		return s.failRun(ctx, runID, err)
 	}
 	baseline := run.Baseline
@@ -123,6 +152,13 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 	workTotal := len(bundle.Cases) * (1 + len(run.Candidates))
 
 	finalStatus, summaryMap, persistErr := s.runCases(ctx, runID, run, bundle)
+	if persistErr == nil && finalStatus != "" {
+		persistStatus := context.WithoutCancel(ctx)
+		_, _ = s.DB.ExecContext(persistStatus, `
+			UPDATE model_eval_runs SET status=?, completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP)
+			WHERE id=? AND status IN (?, ?)`,
+			finalStatus, runID, runmeta.StatusPending, runmeta.StatusRunning)
+	}
 	completed := 0
 	if summaryMap != nil {
 		switch v := summaryMap["completed"].(type) {
@@ -132,13 +168,16 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 			completed = int(v)
 		}
 	}
-	if _, err := s.DB.ExecContext(ctx, `UPDATE model_eval_runs SET cases_completed=? WHERE id=?`, completed, runID); err != nil {
+	if _, err := s.DB.ExecContext(persist, `UPDATE model_eval_runs SET cases_completed=? WHERE id=?`, completed, runID); err != nil {
+		finalized = true
 		return s.failRun(ctx, runID, fmt.Errorf("cases_completed: %w", err))
 	}
 	if persistErr != nil {
+		finalized = true
 		return s.failRun(ctx, runID, persistErr)
 	}
 	if finalStatus == runmeta.StatusCompleted && completed > workTotal {
+		finalized = true
 		return s.failRun(ctx, runID, fmt.Errorf("completed %d exceeds planned %d case executions", completed, workTotal))
 	}
 	if finalStatus == runmeta.StatusFailed {
@@ -146,6 +185,7 @@ func (s *Service) ExecuteRun(ctx context.Context, runID string) error {
 		if msg == "" {
 			msg = "benchmark incomplete"
 		}
+		finalized = true
 		return s.failRun(ctx, runID, fmt.Errorf("%s", msg))
 	}
 	return nil

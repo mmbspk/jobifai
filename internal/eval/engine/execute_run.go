@@ -257,13 +257,13 @@ func (s *Service) writeRecommendations(ctx context.Context, runID string, run ru
 			}
 		}
 	}
+	persist := context.WithoutCancel(ctx)
 	for _, rec := range recs {
-		if err := s.insertRecommendation(ctx, runID, rec); err != nil {
+		if err := s.insertRecommendation(persist, runID, rec); err != nil {
 			return fmt.Errorf("recommendation persist: %w", err)
 		}
 	}
 	sumJSON, _ := json.Marshal(summary)
-	persist := context.WithoutCancel(ctx)
 	_, err := s.DB.ExecContext(persist, `
 		UPDATE model_eval_runs SET status=?, completed_at=CURRENT_TIMESTAMP,
 			actual_cost_usd_micro=?, summary_json=? WHERE id=?`,
