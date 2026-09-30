@@ -380,5 +380,7 @@ export interface QuotaStatus {
   block_code?: string
   grace_session_active?: boolean
   stripe_configured?: boolean
+  stripe_subscription_status?: string
+  cancel_at_period_end?: boolean
   top_up_packs?: TopUpPack[]
 }

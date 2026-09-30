@@ -2,9 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
@@ -13,10 +13,9 @@ import (
 	billingportalsession "github.com/stripe/stripe-go/v82/billingportal/session"
 	checkoutsession "github.com/stripe/stripe-go/v82/checkout/session"
 	"github.com/stripe/stripe-go/v82/customer"
-	"github.com/stripe/stripe-go/v82/webhook"
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/billing"
 	"github.com/user/jobifai/internal/domain"
-	"github.com/user/jobifai/internal/quota"
 )
 
 // BillingHandlers Stripe checkout + webhooks.
@@ -25,11 +24,11 @@ type BillingHandlers struct{ svc *Services }
 func NewBillingHandlers(svc *Services) *BillingHandlers { return &BillingHandlers{svc: svc} }
 
 func stripeEnabled() bool {
-	return os.Getenv("STRIPE_SECRET_KEY") != ""
+	return billing.StripeConfigured()
 }
 
 func initStripeKey() {
-	if k := os.Getenv("STRIPE_SECRET_KEY"); k != "" {
+	if k := billing.StripeSecretKey(); k != "" {
 		stripe.Key = k
 	}
 }
@@ -65,7 +64,7 @@ func (h *BillingHandlers) Checkout(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	baseURL := appBaseURL()
+	baseURL := billing.AppBaseURL()
 	sess, err := checkoutsession.New(&stripe.CheckoutSessionParams{
 		Customer: stripe.String(customerID),
 		Mode:     stripe.String(string(stripe.CheckoutSessionModeSubscription)),
@@ -124,7 +123,7 @@ func (h *BillingHandlers) TopUp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	baseURL := appBaseURL()
+	baseURL := billing.AppBaseURL()
 	sess, err := checkoutsession.New(&stripe.CheckoutSessionParams{
 		Customer: stripe.String(customerID),
 		Mode:     stripe.String(string(stripe.CheckoutSessionModePayment)),
@@ -177,14 +176,6 @@ func (h *BillingHandlers) ensureStripeCustomer(userID, email string) (string, er
 	return cust.ID, nil
 }
 
-func appBaseURL() string {
-	baseURL := strings.TrimRight(os.Getenv("APP_BASE_URL"), "/")
-	if baseURL == "" {
-		baseURL = "http://localhost:8081"
-	}
-	return baseURL
-}
-
 // POST /api/billing/portal
 func (h *BillingHandlers) Portal(w http.ResponseWriter, r *http.Request) {
 	if h.svc.Quota == nil || !stripeEnabled() {
@@ -200,7 +191,7 @@ func (h *BillingHandlers) Portal(w http.ResponseWriter, r *http.Request) {
 	}
 	ps, err := billingportalsession.New(&stripe.BillingPortalSessionParams{
 		Customer:  stripe.String(row.StripeCustomerID),
-		ReturnURL: stripe.String(appBaseURL() + "/settings/plan"),
+		ReturnURL: stripe.String(billing.AppBaseURL() + "/settings/plan"),
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "portal failed"})
@@ -222,24 +213,20 @@ func (h *BillingHandlers) Webhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "read body"})
 		return
 	}
-	secret := os.Getenv("STRIPE_WEBHOOK_SECRET")
-	var event stripe.Event
-	if secret != "" {
-		event, err = webhook.ConstructEvent(payload, r.Header.Get("Stripe-Signature"), secret)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid signature"})
-			return
-		}
-	} else if err := json.Unmarshal(payload, &event); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid event"})
+	event, err := billing.ParseWebhookEvent(payload, r.Header.Get("Stripe-Signature"))
+	if errors.Is(err, billing.ErrWebhookNotConfigured) {
+		code, msg := billing.WebhookMissingSecretResponse()
+		writeJSON(w, code, map[string]string{"message": msg})
 		return
 	}
-
-	switch event.Type {
-	case "checkout.session.completed":
-		h.handleCheckoutCompleted(event)
-	case "customer.subscription.updated", "customer.subscription.created":
-		h.handleSubscription(event)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid signature"})
+		return
+	}
+	proc := &billing.Processor{DB: h.svc.DB, Quota: h.svc.Quota}
+	if err := proc.ProcessEvent(r.Context(), event); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "processing failed"})
+		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -255,73 +242,3 @@ func priceForPlan(def domain.QuotaDefaults, plan string) (priceID, normalized st
 	}
 }
 
-func (h *BillingHandlers) handleCheckoutCompleted(event stripe.Event) {
-	var sess stripe.CheckoutSession
-	if err := json.Unmarshal(event.Data.Raw, &sess); err != nil {
-		return
-	}
-	userID := sess.Metadata["jobifai_user_id"]
-	if userID == "" && sess.Customer != nil {
-		if row, err := h.svc.Quota.RowByStripeCustomer(sess.Customer.ID); err == nil {
-			userID = row.UserID
-		}
-	}
-	if userID == "" {
-		return
-	}
-	if sess.Customer != nil && sess.Customer.ID != "" {
-		_ = h.svc.Quota.SetStripeCustomer(userID, sess.Customer.ID)
-	}
-	if sess.Metadata["jobifai_topup"] == "1" {
-		credits, _ := strconv.ParseInt(sess.Metadata["jobifai_credits"], 10, 64)
-		if credits > 0 {
-			_ = h.svc.Quota.AddTopUpCredits(userID, credits)
-		}
-	}
-}
-
-func (h *BillingHandlers) handleSubscription(event stripe.Event) {
-	var sub stripe.Subscription
-	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
-		return
-	}
-	h.applySubscription(sub)
-}
-
-func (h *BillingHandlers) applySubscription(sub stripe.Subscription) {
-	userID := ""
-	if sub.Metadata != nil {
-		userID = sub.Metadata["jobifai_user_id"]
-	}
-	custID := ""
-	if sub.Customer != nil {
-		custID = sub.Customer.ID
-	}
-	if userID == "" && custID != "" {
-		if row, err := h.svc.Quota.RowByStripeCustomer(custID); err == nil {
-			userID = row.UserID
-		}
-	}
-	if userID == "" {
-		return
-	}
-	plan := domain.QuotaPlanStarter
-	priceID := ""
-	if len(sub.Items.Data) > 0 && sub.Items.Data[0].Price != nil {
-		priceID = sub.Items.Data[0].Price.ID
-	}
-	def := h.svc.Quota.LoadDefaults()
-	switch priceID {
-	case def.StripePricePro:
-		plan = domain.QuotaPlanPro
-	case def.StripePriceStarter:
-		plan = domain.QuotaPlanStarter
-	}
-	allowance := quota.AllowanceCreditsForPlan(def, plan)
-	var start, end int64
-	if len(sub.Items.Data) > 0 {
-		start = sub.Items.Data[0].CurrentPeriodStart
-		end = sub.Items.Data[0].CurrentPeriodEnd
-	}
-	_ = h.svc.Quota.ApplySubscriptionPeriod(userID, plan, custID, sub.ID, start, end, allowance)
-}

@@ -41,6 +41,8 @@ function planBadgeLabel(plan: string): string {
       return 'Starter'
     case 'trial':
       return 'Trial'
+    case 'expired':
+      return 'Subscription ended'
     default:
       return plan
   }
@@ -118,6 +120,10 @@ export function PlanPage() {
   }
 
   const isTrial = data.plan === 'trial'
+  const isExpired = data.plan === 'expired'
+  const isPaid = data.plan === 'starter' || data.plan === 'pro'
+  const pastDue = data.stripe_subscription_status === 'past_due'
+  const cancelScheduled = Boolean(data.cancel_at_period_end && data.period_end)
   const allowance = isTrial
     ? data.allowance_credits || (data.trial_remaining_credits ?? 0)
     : data.allowance_credits
@@ -151,8 +157,19 @@ export function PlanPage() {
         </div>
       )}
 
+      {pastDue && (
+        <QuotaAlert message={quotaBlockMessage('past_due', data.plan)} />
+      )}
+
       {data.blocked && (
         <QuotaAlert message={quotaBlockMessage(data.block_code, data.plan)} />
+      )}
+
+      {cancelScheduled && (
+        <p className="text-sm text-[var(--color-text-muted)]">
+          Your subscription remains active until{' '}
+          <strong>{new Date(data.period_end!).toLocaleDateString()}</strong>.
+        </p>
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -200,7 +217,7 @@ export function PlanPage() {
         </div>
       </SettingsSection>
 
-      {data.stripe_configured && isTrial && (
+      {data.stripe_configured && (isTrial || isExpired) && (
         <SettingsSection
           title="Choose a plan"
           description="Keep the full Jobifai workflow and choose the monthly credit allowance that fits your search."
@@ -252,7 +269,7 @@ export function PlanPage() {
         </SettingsSection>
       )}
 
-      {data.stripe_configured && !isTrial && (
+      {data.stripe_configured && isPaid && (
         <SettingsSection
           title="Subscription"
           description="Payment methods, invoices, cancellation, and plan changes are managed securely in Stripe."
@@ -263,6 +280,11 @@ export function PlanPage() {
               <p className="mt-1 text-sm text-[var(--color-text-muted)]">
                 {fmtCredits(data.allowance_credits)} AI credits each billing period
               </p>
+              {data.stripe_subscription_status && data.stripe_subscription_status !== 'active' && (
+                <p className="mt-1 text-xs text-[var(--color-text-dim)]">
+                  Billing status: {data.stripe_subscription_status.replaceAll('_', ' ')}
+                </p>
+              )}
             </div>
             <Button variant="secondary" disabled={portal.isPending} onClick={() => portal.mutate()}>
               Manage billing
@@ -271,7 +293,7 @@ export function PlanPage() {
         </SettingsSection>
       )}
 
-      {!isTrial && (data.top_up_packs?.length ?? 0) > 0 && (
+      {isPaid && (data.top_up_packs?.length ?? 0) > 0 && (
         <SettingsSection title="Buy extra credits" description="One-time packs for the current billing period only.">
           <div className="flex flex-wrap gap-2">
             {(data.top_up_packs ?? []).map(p => (

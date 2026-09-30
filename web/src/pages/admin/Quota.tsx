@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { Check } from 'lucide-react'
+import { adminApi } from '../../api/admin'
 import { apiGet } from '../../api/client'
 import { quotaApi } from '../../api/quota'
 import { StatCard } from '../../components/StatCard'
@@ -70,6 +71,33 @@ export function AdminQuotaPage() {
 
   const packs = def.top_up_packs?.length ? def.top_up_packs : DEFAULT_PACKS
 
+  const [eventStatus, setEventStatus] = useState('')
+  const [eventUser, setEventUser] = useState('')
+  const { data: billingSummary } = useQuery({
+    queryKey: ['admin-billing-summary'],
+    queryFn: adminApi.billing.summary,
+  })
+  const { data: billingUsers = [] } = useQuery({
+    queryKey: ['admin-billing-users'],
+    queryFn: adminApi.billing.users,
+  })
+  const { data: webhookEvents = [], refetch: refetchEvents } = useQuery({
+    queryKey: ['admin-billing-events', eventStatus, eventUser],
+    queryFn: () =>
+      adminApi.billing.webhookEvents({
+        status: eventStatus || undefined,
+        user_id: eventUser || undefined,
+        limit: 50,
+      }),
+  })
+  const reconcile = useMutation({
+    mutationFn: (userId: string) => adminApi.billing.reconcileUser(userId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-billing-users'] })
+      void refetchEvents()
+    },
+  })
+
   return (
     <div className="space-y-6">
       <div className="space-y-3">
@@ -88,6 +116,117 @@ export function AdminQuotaPage() {
           <StatCard label="Total credits burned (all time)" value={summary.total_credits_burned.toLocaleString()} />
         </div>
       )}
+
+      <SettingsSection
+        title="Billing operations"
+        description="Stripe configuration as seen by the server (env vars). Reconcile repairs missed webhooks."
+      >
+        <div className="flex flex-wrap gap-2">
+          <Badge variant={billingSummary?.config.stripe_configured ? 'accent' : 'warn'}>
+            Stripe API {billingSummary?.config.stripe_configured ? 'configured' : 'missing key'}
+          </Badge>
+          <Badge variant={billingSummary?.config.webhook_configured ? 'accent' : 'warn'}>
+            Webhook secret {billingSummary?.config.webhook_configured ? 'set' : 'missing'}
+          </Badge>
+          {billingSummary?.config.insecure_webhook_allowed && (
+            <Badge variant="warn">Insecure webhook bypass enabled</Badge>
+          )}
+        </div>
+        {billingSummary?.plan_counts?.length ? (
+          <p className="text-sm text-[var(--color-text-muted)]">
+            Plans:{' '}
+            {billingSummary.plan_counts.map(p => `${p.plan} (${p.count})`).join(' · ')}
+          </p>
+        ) : null}
+        <div className="overflow-x-auto rounded-[var(--radius-md)] border border-[var(--color-border)]">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-[var(--color-surface-elevated)] text-[var(--color-text-dim)]">
+              <tr>
+                <th className="px-3 py-2 font-medium">User</th>
+                <th className="px-3 py-2 font-medium">Plan</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Credits</th>
+                <th className="px-3 py-2 font-medium">Customer</th>
+                <th className="px-3 py-2 font-medium" />
+              </tr>
+            </thead>
+            <tbody>
+              {billingUsers.map(u => (
+                <tr key={u.user_id} className="border-t border-[var(--color-border)]">
+                  <td className="px-3 py-2">{u.email}</td>
+                  <td className="px-3 py-2">{u.plan}</td>
+                  <td className="px-3 py-2">{u.stripe_subscription_status || '—'}</td>
+                  <td className="px-3 py-2 tabular-nums">
+                    {u.period_used_credits}/{u.allowance_credits}
+                    {u.topup_credits_remaining > 0 ? ` +${u.topup_credits_remaining} top-up` : ''}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-[10px]">{u.stripe_customer_id || '—'}</td>
+                  <td className="px-3 py-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={!u.stripe_customer_id || reconcile.isPending}
+                      onClick={() => {
+                        if (window.confirm(`Reconcile Stripe state for ${u.email}?`)) {
+                          reconcile.mutate(u.user_id)
+                        }
+                      }}
+                    >
+                      Reconcile
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex flex-wrap gap-2 pt-2">
+          <select
+            className={inputClassName}
+            value={eventStatus}
+            onChange={e => setEventStatus(e.target.value)}
+            aria-label="Webhook event status filter"
+          >
+            <option value="">All statuses</option>
+            <option value="processed">processed</option>
+            <option value="failed">failed</option>
+            <option value="ignored">ignored</option>
+            <option value="received">received</option>
+          </select>
+          <input
+            className={inputClassName}
+            placeholder="Filter by user id"
+            value={eventUser}
+            onChange={e => setEventUser(e.target.value)}
+          />
+        </div>
+        <div className="max-h-64 overflow-auto rounded-[var(--radius-md)] border border-[var(--color-border)]">
+          <table className="w-full text-left text-xs">
+            <thead className="sticky top-0 bg-[var(--color-surface-elevated)] text-[var(--color-text-dim)]">
+              <tr>
+                <th className="px-3 py-2 font-medium">Received</th>
+                <th className="px-3 py-2 font-medium">Type</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Attempts</th>
+                <th className="px-3 py-2 font-medium">User</th>
+                <th className="px-3 py-2 font-medium">Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {webhookEvents.map(ev => (
+                <tr key={ev.event_id} className="border-t border-[var(--color-border)]">
+                  <td className="px-3 py-2 whitespace-nowrap">{new Date(ev.received_at).toLocaleString()}</td>
+                  <td className="px-3 py-2">{ev.event_type}</td>
+                  <td className="px-3 py-2">{ev.status}</td>
+                  <td className="px-3 py-2">{ev.attempt_count}</td>
+                  <td className="px-3 py-2 font-mono text-[10px]">{ev.user_id || ev.stripe_customer_id || '—'}</td>
+                  <td className="px-3 py-2 text-[var(--color-text-dim)]">{ev.error_code || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </SettingsSection>
 
       <SettingsSection title="Credit formula" description="Applied after each LLM call when converting token cost to credits.">
         <SettingsField label="Credits per USD" sub="1000 = 1000 credits per $1 of loaded burn">

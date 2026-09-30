@@ -7,6 +7,8 @@ const (
 	QuotaPlanTrial   = "trial"
 	QuotaPlanStarter = "starter"
 	QuotaPlanPro     = "pro"
+	// QuotaPlanExpired: paid subscription ended; user must resubscribe (top-up balance may remain).
+	QuotaPlanExpired = "expired"
 )
 
 // TopUpPack defines a one-time credit pack (Stripe Price + grant size).
@@ -73,6 +75,9 @@ type QuotaStatus struct {
 	GraceSessionActive bool   `json:"grace_session_active"`
 	StripeConfigured   bool   `json:"stripe_configured"`
 
+	StripeSubscriptionStatus string `json:"stripe_subscription_status,omitempty"`
+	CancelAtPeriodEnd        bool   `json:"cancel_at_period_end,omitempty"`
+
 	TopUpPacks []TopUpPack `json:"top_up_packs,omitempty"`
 }
 
@@ -89,6 +94,11 @@ type UserQuotaRow struct {
 	PeriodStart          *time.Time
 	PeriodEnd            *time.Time
 	OverageDebtCredits   int64
-	StripeCustomerID     string
-	StripeSubscriptionID string
+	StripeCustomerID          string
+	StripeSubscriptionID      string
+	StripeSubscriptionStatus  string
+	CancelAtPeriodEnd         bool
+	StripePriceID             string
+	LastStripeEventID         string
+	SubscriptionUpdatedAt     *time.Time
 }
