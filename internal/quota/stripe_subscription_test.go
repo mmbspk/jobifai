@@ -101,6 +101,23 @@ func TestApplyStripeSubscription_TerminateSetsExpired(t *testing.T) {
 	assert.Equal(t, int64(0), row.TopUpCreditsRemaining)
 }
 
+func TestApplyStripeSubscription_EqualTimestampDoesNotReviveExpired(t *testing.T) {
+	t.Parallel()
+	sut, _, uid := stripeTestService(t)
+	ts := int64(5000)
+	start := time.Now().Unix()
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "del", EventCreatedUnix: ts, Terminate: true, Status: "canceled",
+	}))
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "upd", EventCreatedUnix: ts,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: start, PeriodEndUnix: start + 86400*30, AllowanceCredits: 3000,
+	}))
+	row, _ := sut.RowForUser(uid)
+	assert.Equal(t, domain.QuotaPlanExpired, row.Plan)
+}
+
 func TestApplyStripeSubscription_StaleEventDoesNotRevive(t *testing.T) {
 	t.Parallel()
 	sut, _, uid := stripeTestService(t)
@@ -178,8 +195,20 @@ func TestApplyStripeSubscription_DowngradeSamePeriod(t *testing.T) {
 	}))
 	row, _ := sut.RowForUser(uid)
 	assert.Equal(t, domain.QuotaPlanStarter, row.Plan)
-	assert.Equal(t, int64(3000), row.PeriodAllowanceCredits)
+	assert.Equal(t, int64(8000), row.PeriodAllowanceCredits)
 	assert.Equal(t, int64(5000), row.PeriodUsedCredits)
+	assert.Equal(t, int64(0), row.OverageDebtCredits)
+
+	newStart := start + 86400*31
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e3", EventCreatedUnix: 300,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: newStart, PeriodEndUnix: newStart + 86400*30, AllowanceCredits: 3000,
+	}))
+	row3, _ := sut.RowForUser(uid)
+	assert.Equal(t, int64(3000), row3.PeriodAllowanceCredits)
+	assert.Equal(t, int64(0), row3.PeriodUsedCredits)
+	assert.Equal(t, int64(0), row3.OverageDebtCredits)
 }
 
 func TestGrantTopUpOnce_Idempotent(t *testing.T) {

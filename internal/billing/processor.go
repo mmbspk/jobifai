@@ -30,7 +30,7 @@ type Processor struct {
 }
 
 func (p *Processor) ProcessEvent(ctx context.Context, event stripe.Event) error {
-	meta := WebhookEventMeta{}
+	meta := ExtractWebhookEventMeta(event, p.Quota)
 	_, err := ClaimWebhookEvent(ctx, p.DB, event.ID, string(event.Type), event.Created, meta)
 	if errors.Is(err, ErrAlreadyProcessed) {
 		return nil
@@ -45,35 +45,40 @@ func (p *Processor) ProcessEvent(ctx context.Context, event stripe.Event) error 
 	var procErr error
 	switch event.Type {
 	case stripe.EventTypeCheckoutSessionCompleted:
-		procErr = p.handleCheckoutCompleted(ctx, event)
+		procErr = p.handleCheckoutCompleted(event)
 	case stripe.EventTypeCustomerSubscriptionCreated, stripe.EventTypeCustomerSubscriptionUpdated:
-		procErr = p.handleSubscription(ctx, event)
+		procErr = p.handleSubscription(event)
 	case stripe.EventTypeCustomerSubscriptionDeleted:
 		procErr = p.handleSubscriptionDeleted(ctx, event)
 	case stripe.EventTypeInvoicePaid:
-		procErr = p.handleInvoicePaid(ctx, event)
+		procErr = p.handleInvoicePaid(event)
 	case stripe.EventTypeInvoicePaymentFailed:
-		procErr = p.handleInvoicePaymentFailed(ctx, event)
+		procErr = p.handleInvoicePaymentFailed(event)
 	default:
-		_ = FinishWebhookEvent(ctx, p.DB, event.ID, EventStatusIgnored, "", "")
-		return nil
+		_ = UpdateWebhookEventMeta(ctx, p.DB, event.ID, meta)
+		return FinishWebhookEvent(ctx, p.DB, event.ID, EventStatusIgnored, "", "")
 	}
 
 	if procErr != nil {
-		code := "processing_error"
-		if errors.Is(procErr, errUnknownPrice) {
-			code = "unknown_price"
+		if code, msg, ok := asIgnoredEvent(procErr); ok {
+			_ = UpdateWebhookEventMeta(ctx, p.DB, event.ID, meta)
+			return FinishWebhookEvent(ctx, p.DB, event.ID, EventStatusIgnored, code, msg)
 		}
-		_ = FinishWebhookEvent(ctx, p.DB, event.ID, EventStatusFailed, code, procErr.Error())
+		errCode := "processing_error"
+		if errors.Is(procErr, errUnknownPrice) {
+			errCode = "unknown_price"
+		}
+		_ = FinishWebhookEvent(ctx, p.DB, event.ID, EventStatusFailed, errCode, procErr.Error())
 		log.Error().Err(procErr).Str("event_id", event.ID).Str("type", string(event.Type)).Msg("stripe webhook failed")
 		return procErr
 	}
+	_ = UpdateWebhookEventMeta(ctx, p.DB, event.ID, ExtractWebhookEventMeta(event, p.Quota))
 	return FinishWebhookEvent(ctx, p.DB, event.ID, EventStatusProcessed, "", "")
 }
 
 var errUnknownPrice = errors.New("unknown stripe price id")
 
-func (p *Processor) handleCheckoutCompleted(ctx context.Context, event stripe.Event) error {
+func (p *Processor) handleCheckoutCompleted(event stripe.Event) error {
 	var sess stripe.CheckoutSession
 	if err := json.Unmarshal(event.Data.Raw, &sess); err != nil {
 		return err
@@ -82,8 +87,7 @@ func (p *Processor) handleCheckoutCompleted(ctx context.Context, event stripe.Ev
 		return nil
 	}
 	if sess.PaymentStatus != stripe.CheckoutSessionPaymentStatusPaid {
-		_ = FinishWebhookEvent(ctx, p.DB, event.ID, EventStatusIgnored, "not_paid", "checkout session not paid")
-		return nil
+		return errEventIgnored("not_paid", "checkout session not paid")
 	}
 	userID := resolveUserID(p.Quota, sess.Metadata, customerID(&sess))
 	if userID == "" {
@@ -102,7 +106,7 @@ func (p *Processor) handleCheckoutCompleted(ctx context.Context, event stripe.Ev
 	return p.Quota.GrantTopUpOnce(userID, event.ID, sess.ID, credits)
 }
 
-func (p *Processor) handleSubscription(_ context.Context, event stripe.Event) error {
+func (p *Processor) handleSubscription(event stripe.Event) error {
 	var sub stripe.Subscription
 	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
 		return err
@@ -128,7 +132,7 @@ func (p *Processor) handleSubscriptionDeleted(_ context.Context, event stripe.Ev
 	return p.Quota.ApplyStripeSubscription(up)
 }
 
-func (p *Processor) handleInvoicePaid(_ context.Context, event stripe.Event) error {
+func (p *Processor) handleInvoicePaid(event stripe.Event) error {
 	subID, err := p.invoiceSubscriptionID(event)
 	if err != nil {
 		return err
@@ -139,7 +143,7 @@ func (p *Processor) handleInvoicePaid(_ context.Context, event stripe.Event) err
 	return p.reconcileSubscriptionFromStripe(event, subID)
 }
 
-func (p *Processor) handleInvoicePaymentFailed(_ context.Context, event stripe.Event) error {
+func (p *Processor) handleInvoicePaymentFailed(event stripe.Event) error {
 	subID, err := p.invoiceSubscriptionID(event)
 	if err != nil {
 		return err

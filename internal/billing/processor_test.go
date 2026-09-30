@@ -207,6 +207,47 @@ func TestProcessor_FailedWebhookCanRetry(t *testing.T) {
 	assert.Equal(t, domain.QuotaPlanStarter, row.Plan)
 }
 
+func TestProcessor_UnpaidCheckoutStaysIgnored(t *testing.T) {
+	db, svc, _ := testQuota(t)
+	proc := &billing.Processor{DB: db, Quota: svc}
+	raw := `{"id":"cs_unpaid","object":"checkout.session","mode":"payment","payment_status":"unpaid","metadata":{"jobifai_user_id":"u1","jobifai_topup":"1","jobifai_credits":"500"}}`
+	ev := stripe.Event{ID: "evt_unpaid", Created: 100, Type: stripe.EventTypeCheckoutSessionCompleted, Data: &stripe.EventData{Raw: json.RawMessage(raw)}}
+	require.NoError(t, proc.ProcessEvent(context.Background(), ev))
+	var status string
+	require.NoError(t, db.QueryRow(`SELECT status FROM stripe_webhook_events WHERE event_id = ?`, ev.ID).Scan(&status))
+	assert.Equal(t, billing.EventStatusIgnored, status)
+}
+
+func TestProcessor_WebhookEventAttribution(t *testing.T) {
+	db, svc, uid := testQuota(t)
+	proc := &billing.Processor{DB: db, Quota: svc}
+	raw := `{"id":"cs_attr","object":"checkout.session","mode":"payment","payment_status":"paid","customer":{"id":"cus_x"},"metadata":{"jobifai_user_id":"u1","jobifai_topup":"1","jobifai_credits":"100"}}`
+	ev := stripe.Event{ID: "evt_attr", Created: 100, Type: stripe.EventTypeCheckoutSessionCompleted, Data: &stripe.EventData{Raw: json.RawMessage(raw)}}
+	require.NoError(t, proc.ProcessEvent(context.Background(), ev))
+	var userID, cust, sess string
+	require.NoError(t, db.QueryRow(`SELECT COALESCE(user_id,''), COALESCE(stripe_customer_id,''), COALESCE(checkout_session_id,'') FROM stripe_webhook_events WHERE event_id = ?`, ev.ID).
+		Scan(&userID, &cust, &sess))
+	assert.Equal(t, uid, userID)
+	assert.Equal(t, "cus_x", cust)
+	assert.Equal(t, "cs_attr", sess)
+}
+
+func TestProcessor_ReclaimStaleProcessingClaim(t *testing.T) {
+	db, svc, uid := testQuota(t)
+	proc := &billing.Processor{DB: db, Quota: svc}
+	_, err := db.Exec(`INSERT INTO stripe_webhook_events (event_id, event_type, status, attempt_count, processing_started_at)
+		VALUES ('evt_stale', 'checkout.session.completed', 'processing', 1, datetime('now', '-10 minutes'))`)
+	require.NoError(t, err)
+	raw := `{"id":"cs_stale","object":"checkout.session","mode":"payment","payment_status":"paid","metadata":{"jobifai_user_id":"u1","jobifai_topup":"1","jobifai_credits":"200"}}`
+	ev := stripe.Event{ID: "evt_stale", Created: 100, Type: stripe.EventTypeCheckoutSessionCompleted, Data: &stripe.EventData{Raw: json.RawMessage(raw)}}
+	require.NoError(t, proc.ProcessEvent(context.Background(), ev))
+	row, _ := svc.RowForUser(uid)
+	assert.Equal(t, int64(200), row.TopUpCreditsRemaining)
+	var status string
+	require.NoError(t, db.QueryRow(`SELECT status FROM stripe_webhook_events WHERE event_id = ?`, ev.ID).Scan(&status))
+	assert.Equal(t, billing.EventStatusProcessed, status)
+}
+
 func TestWebhook_RequiresSecretUnlessInsecure(t *testing.T) {
 	t.Setenv("STRIPE_WEBHOOK_SECRET", "")
 	t.Setenv("JOBIFAI_STRIPE_WEBHOOK_INSECURE", "")

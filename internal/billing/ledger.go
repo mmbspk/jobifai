@@ -9,11 +9,14 @@ import (
 )
 
 const (
-	EventStatusReceived  = "received"
+	EventStatusReceived   = "received"
 	EventStatusProcessing = "processing"
-	EventStatusProcessed = "processed"
-	EventStatusIgnored   = "ignored"
-	EventStatusFailed    = "failed"
+	EventStatusProcessed  = "processed"
+	EventStatusIgnored    = "ignored"
+	EventStatusFailed     = "failed"
+
+	// ProcessingLease is how long a processing claim may block other workers.
+	ProcessingLease = 5 * time.Minute
 )
 
 var (
@@ -57,8 +60,9 @@ func ClaimWebhookEvent(ctx context.Context, db *sql.DB, eventID, eventType strin
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO stripe_webhook_events (
 				event_id, event_type, stripe_created_at, status, attempt_count,
-				stripe_customer_id, stripe_subscription_id, checkout_session_id, user_id, metadata_json
-			) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, '{}')`,
+				stripe_customer_id, stripe_subscription_id, checkout_session_id, user_id,
+				metadata_json, processing_started_at
+			) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, '{}', CURRENT_TIMESTAMP)`,
 			eventID, eventType, createdAt, EventStatusProcessing,
 			nullStr(meta.CustomerID), nullStr(meta.SubscriptionID), nullStr(meta.CheckoutSessionID), nullStr(meta.UserID),
 		)
@@ -87,12 +91,30 @@ func ClaimWebhookEvent(ctx context.Context, db *sql.DB, eventID, eventType strin
 	case EventStatusProcessed, EventStatusIgnored:
 		return row, ErrAlreadyProcessed
 	case EventStatusProcessing:
+		staleBefore := time.Now().UTC().Add(-ProcessingLease)
+		res, err := tx.ExecContext(ctx, `
+			UPDATE stripe_webhook_events
+			SET attempt_count = attempt_count + 1, processing_started_at = CURRENT_TIMESTAMP
+			WHERE event_id = ? AND status = ? AND processing_started_at IS NOT NULL AND processing_started_at < ?`,
+			eventID, EventStatusProcessing, staleBefore,
+		)
+		if err != nil {
+			return WebhookEventRow{}, err
+		}
+		n, _ := res.RowsAffected()
+		if n > 0 {
+			if err := tx.Commit(); err != nil {
+				return WebhookEventRow{}, err
+			}
+			row.AttemptCount++
+			return row, nil
+		}
 		return row, ErrEventClaimLost
 	}
 
 	res, err := tx.ExecContext(ctx, `
 		UPDATE stripe_webhook_events
-		SET status = ?, attempt_count = attempt_count + 1
+		SET status = ?, attempt_count = attempt_count + 1, processing_started_at = CURRENT_TIMESTAMP
 		WHERE event_id = ? AND status IN (?, ?)`,
 		EventStatusProcessing, eventID, EventStatusReceived, EventStatusFailed,
 	)
@@ -138,6 +160,7 @@ func loadWebhookEvent(ctx context.Context, q sqlQuerier, eventID string) (Webhoo
 
 type sqlQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 func FinishWebhookEvent(ctx context.Context, db *sql.DB, eventID, status, errCode, errMsg string) error {

@@ -39,6 +39,11 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 	if in.EventCreatedUnix > 0 && row.LastStripeStateEventCreatedAt > in.EventCreatedUnix {
 		return nil
 	}
+	if in.EventCreatedUnix > 0 && row.LastStripeStateEventCreatedAt == in.EventCreatedUnix {
+		if row.Plan == domain.QuotaPlanExpired && !in.Terminate {
+			return nil
+		}
+	}
 	if in.CustomerID != "" {
 		row.StripeCustomerID = in.CustomerID
 	}
@@ -73,7 +78,8 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 		prevStart = row.PeriodStart.Unix()
 	}
 	newPeriod := in.PeriodStartUnix > 0 && in.PeriodStartUnix > prevStart
-	planChanged := row.Plan != in.Plan && row.Plan != domain.QuotaPlanTrial
+	oldPlan := row.Plan
+	planChanged := oldPlan != in.Plan && oldPlan != domain.QuotaPlanTrial
 
 	if in.SubscriptionID != "" {
 		row.StripeSubscriptionID = in.SubscriptionID
@@ -107,7 +113,9 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 		row.TopUpCreditsRemaining = 0
 		row.PeriodAllowanceCredits = in.AllowanceCredits
 	} else if planChanged {
-		row.PeriodAllowanceCredits = in.AllowanceCredits
+		if !isPlanDowngrade(oldPlan, in.Plan) {
+			row.PeriodAllowanceCredits = in.AllowanceCredits
+		}
 	}
 
 	if in.PeriodStartUnix > 0 {
@@ -120,6 +128,10 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 		row.LastStripeStateEventCreatedAt = in.EventCreatedUnix
 	}
 	return updateRow(s.db, row)
+}
+
+func isPlanDowngrade(from, to string) bool {
+	return from == domain.QuotaPlanPro && to == domain.QuotaPlanStarter
 }
 
 func subscriptionActiveStatus(status string) bool {

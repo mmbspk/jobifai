@@ -16,6 +16,7 @@ import (
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/billing"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/quota"
 )
 
 // BillingHandlers Stripe checkout + webhooks.
@@ -57,6 +58,17 @@ func (h *BillingHandlers) Checkout(w http.ResponseWriter, r *http.Request) {
 	priceID, plan := priceForPlan(def, req.Plan)
 	if priceID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "unknown plan or Stripe price not configured"})
+		return
+	}
+	qrow, err := h.svc.Quota.RowForUser(userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	if quota.BlocksNewSubscriptionCheckout(qrow) {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"message": "you already have a subscription — use Manage billing in the customer portal to change plans",
+		})
 		return
 	}
 	customerID, err := h.ensureStripeCustomer(userID, u.Email)
@@ -116,6 +128,17 @@ func (h *BillingHandlers) TopUp(w http.ResponseWriter, r *http.Request) {
 	priceID := topUpPriceID(def, req.Credits)
 	if priceID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "top-up pack not configured"})
+		return
+	}
+	qrow, err := h.svc.Quota.RowForUser(userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	if !quota.TopUpEligible(qrow) {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"message": "top-ups require an active paid subscription",
+		})
 		return
 	}
 	customerID, err := h.ensureStripeCustomer(userID, u.Email)
