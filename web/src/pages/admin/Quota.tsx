@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { Check } from 'lucide-react'
+import { apiGet } from '../../api/client'
 import { quotaApi } from '../../api/quota'
+import { StatCard } from '../../components/StatCard'
 import { Button } from '../../components/Button'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { SettingsField, SettingsNumberInput, SettingsSection } from '../../components/settings/settings-ui'
@@ -32,6 +34,11 @@ const INITIAL: QuotaDefaults = {
 export function AdminQuotaPage() {
   const qc = useQueryClient()
   const { data: loaded } = useQuery({ queryKey: ['admin-quota-defaults'], queryFn: quotaApi.adminDefaults.get })
+  const { data: summary } = useQuery({
+    queryKey: ['admin-quota-summary'],
+    queryFn: () =>
+      apiGet<{ users_by_plan: Record<string, number>; total_credits_burned: number }>('/admin/quota/summary'),
+  })
   const [def, setDef] = useState<QuotaDefaults>(INITIAL)
   const [saved, setSaved] = useState(false)
 
@@ -72,6 +79,15 @@ export function AdminQuotaPage() {
           description="Deployment-wide credit formula, trial limits, Starter/Pro grants, and Stripe price IDs."
         />
       </div>
+
+      {summary && (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {Object.entries(summary.users_by_plan ?? {}).map(([plan, n]) => (
+            <StatCard key={plan} label={`Users (${plan || 'unknown'})`} value={String(n)} />
+          ))}
+          <StatCard label="Total credits burned (all time)" value={summary.total_credits_burned.toLocaleString()} />
+        </div>
+      )}
 
       <SettingsSection title="Credit formula" description="Applied after each LLM call when converting token cost to credits.">
         <SettingsField label="Credits per USD" sub="1000 = 1000 credits per $1 of loaded burn">

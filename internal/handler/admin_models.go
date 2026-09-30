@@ -328,9 +328,14 @@ func (h *AdminHandlers) ModelsEffective(w http.ResponseWriter, r *http.Request) 
 		domain.TaskFormVision, domain.TaskApplicationQuestions,
 	}
 	type row struct {
-		Task, Provider, Model, Effort, Source string
-		MaxTokens, TimeoutSec                 int
-		MaxCostUSD                            float64
+		Task       string  `json:"task"`
+		Provider   string  `json:"provider"`
+		Model      string  `json:"model"`
+		Effort     string  `json:"effort"`
+		Source     string  `json:"source"`
+		MaxTokens  int     `json:"max_tokens"`
+		TimeoutSec int     `json:"timeout_sec"`
+		MaxCostUSD float64 `json:"max_cost_usd"`
 	}
 	var out []row
 	for _, t := range tasks {

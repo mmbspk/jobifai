@@ -8,16 +8,18 @@ import { TopMatches } from './pages/TopMatches'
 import { Review } from './pages/Review'
 import { Generate } from './pages/Generate'
 import { ApplicationSettingsPage } from './pages/settings/Application'
+import { AdminOverviewPage } from './pages/admin/Overview'
 import { AdminDefaultsPage } from './pages/admin/Defaults'
 import { AdminAutomationPage } from './pages/admin/Automation'
 import { AdminUsersPage } from './pages/admin/Users'
 import { AdminQuotaPage } from './pages/admin/Quota'
 import { AdminEconomicsPage } from './pages/admin/Economics'
 import { AdminModelsPage } from './pages/admin/Models'
+import { AdminLlmUsagePage } from './pages/admin/LlmUsage'
+import { AdminAuditErrorsPage } from './pages/admin/AuditErrors'
 import { Preferences } from './pages/settings/Preferences'
 import { Resume } from './pages/settings/Resume'
 import { PlatformsSettingsPage } from './pages/settings/Platforms'
-import { UsagePage } from './pages/settings/Usage'
 import { PlanPage } from './pages/settings/Plan'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
@@ -38,13 +40,15 @@ const SETTINGS_TABS = [
 ]
 
 const ADMIN_TABS = [
-  { to: '/admin/defaults',   label: 'Defaults' },
-  { to: '/admin/automation', label: 'Automation' },
-  { to: '/admin/users',      label: 'Users' },
-  { to: '/admin/quota',      label: 'Credits' },
-  { to: '/admin/economics',  label: 'AI economics' },
-  { to: '/admin/models',     label: 'Models' },
-  { to: '/admin/usage',      label: 'Usage' },
+  { to: '/admin/overview',    label: 'Overview' },
+  { to: '/admin/users',       label: 'Users' },
+  { to: '/admin/automation',  label: 'Automation' },
+  { to: '/admin/models',      label: 'Models' },
+  { to: '/admin/llm-usage',   label: 'AI usage' },
+  { to: '/admin/economics',   label: 'Economics' },
+  { to: '/admin/quota',       label: 'Credits & billing' },
+  { to: '/admin/defaults',    label: 'Defaults' },
+  { to: '/admin/audit',       label: 'Audit / errors' },
 ]
 
 function SettingsLayout() {
@@ -82,16 +86,19 @@ function AdminLayout() {
       </div>
       <AdminTabNav tabs={ADMIN_TABS} />
       <Routes>
+        <Route path="overview"   element={<AdminOverviewPage />} />
         <Route path="defaults"   element={<AdminDefaultsPage />} />
         <Route path="automation" element={<AdminAutomationPage />} />
         <Route path="users"      element={<AdminUsersPage />} />
         <Route path="quota"      element={<AdminQuotaPage />} />
         <Route path="economics"  element={<AdminEconomicsPage />} />
         <Route path="models"     element={<AdminModelsPage />} />
-        <Route path="usage"      element={<UsagePage />} />
+        <Route path="llm-usage"  element={<AdminLlmUsagePage />} />
+        <Route path="audit"      element={<AdminAuditErrorsPage />} />
+        <Route path="usage"      element={<Navigate to="/admin/llm-usage" replace />} />
         <Route path="system"     element={<Navigate to="/admin/defaults" replace />} />
         <Route path="secrets"    element={<Navigate to="/admin/defaults" replace />} />
-        <Route index element={<Navigate to="defaults" replace />} />
+        <Route index element={<Navigate to="overview" replace />} />
       </Routes>
     </div>
   )
