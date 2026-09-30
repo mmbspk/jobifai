@@ -21,6 +21,9 @@ func stripeTestService(t *testing.T) (*Service, *sql.DB, string) {
 	t.Cleanup(func() { _ = sqldb.Close() })
 	cfg := config.NewStore(sqldb)
 	require.NoError(t, cfg.Set(domain.SystemUserID, keyQuotaDefaults, domain.QuotaDefaults{
+		EnforcementDefault:    true,
+		TrialCredits:          500,
+		TrialDays:             7,
 		StarterCreditsMonthly: 3000,
 		ProCreditsMonthly:     8000,
 		StripePriceStarter:    "price_starter",
@@ -39,7 +42,7 @@ func TestApplyStripeSubscription_NewPeriodResetsUsageOnce(t *testing.T) {
 	start := time.Now().Unix()
 	end := start + 86400 * 30
 	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
-		UserID: uid, EventID: "e1", Plan: domain.QuotaPlanStarter, PriceID: "price_starter",
+		UserID: uid, EventID: "e1", EventCreatedUnix: 100, Plan: domain.QuotaPlanStarter, PriceID: "price_starter",
 		Status: "active", PeriodStartUnix: start, PeriodEndUnix: end, AllowanceCredits: 3000,
 	}))
 	row, err := sut.RowForUser(uid)
@@ -50,7 +53,7 @@ func TestApplyStripeSubscription_NewPeriodResetsUsageOnce(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
-		UserID: uid, EventID: "e2", Plan: domain.QuotaPlanStarter, PriceID: "price_starter",
+		UserID: uid, EventID: "e2", EventCreatedUnix: 101, Plan: domain.QuotaPlanStarter, PriceID: "price_starter",
 		Status: "active", PeriodStartUnix: start, PeriodEndUnix: end, AllowanceCredits: 3000,
 	}))
 	row2, _ := sut.RowForUser(uid)
@@ -59,7 +62,7 @@ func TestApplyStripeSubscription_NewPeriodResetsUsageOnce(t *testing.T) {
 
 	newStart := start + 86400 * 31
 	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
-		UserID: uid, EventID: "e3", Plan: domain.QuotaPlanStarter, PriceID: "price_starter",
+		UserID: uid, EventID: "e3", EventCreatedUnix: 300, Plan: domain.QuotaPlanStarter, PriceID: "price_starter",
 		Status: "active", PeriodStartUnix: newStart, PeriodEndUnix: end + 86400*31, AllowanceCredits: 3000,
 	}))
 	row3, _ := sut.RowForUser(uid)
@@ -81,18 +84,102 @@ func TestApplyStripeSubscription_UnknownPriceBlockedAtProcessor(t *testing.T) {
 
 func TestApplyStripeSubscription_TerminateSetsExpired(t *testing.T) {
 	t.Parallel()
-	sut, _, uid := stripeTestService(t)
+	sut, sqldb, uid := stripeTestService(t)
 	start := time.Now().Unix()
 	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
-		UserID: uid, EventID: "e1", Plan: domain.QuotaPlanPro, PriceID: "price_pro",
+		UserID: uid, EventID: "e1", EventCreatedUnix: 100, Plan: domain.QuotaPlanPro, PriceID: "price_pro",
 		Status: "active", PeriodStartUnix: start, PeriodEndUnix: start + 86400*30, AllowanceCredits: 8000,
 	}))
+	_, err := sqldb.Exec(`UPDATE user_quota SET topup_credits_remaining = 250 WHERE user_id = ?`, uid)
+	require.NoError(t, err)
 	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
-		UserID: uid, EventID: "e2", Terminate: true, Status: "canceled",
+		UserID: uid, EventID: "e2", EventCreatedUnix: 200, Terminate: true, Status: "canceled",
 	}))
 	row, _ := sut.RowForUser(uid)
 	assert.Equal(t, domain.QuotaPlanExpired, row.Plan)
 	assert.Equal(t, int64(0), row.PeriodAllowanceCredits)
+	assert.Equal(t, int64(0), row.TopUpCreditsRemaining)
+}
+
+func TestApplyStripeSubscription_StaleEventDoesNotRevive(t *testing.T) {
+	t.Parallel()
+	sut, _, uid := stripeTestService(t)
+	start := time.Now().Unix()
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "del", EventCreatedUnix: 2000, Terminate: true, Status: "canceled",
+	}))
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "old_upd", EventCreatedUnix: 1000,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: start, PeriodEndUnix: start + 86400*30, AllowanceCredits: 3000,
+	}))
+	row, _ := sut.RowForUser(uid)
+	assert.Equal(t, domain.QuotaPlanExpired, row.Plan)
+}
+
+func TestApplyStripeSubscription_CancelAtPeriodEndKeepsTopUp(t *testing.T) {
+	t.Parallel()
+	sut, sqldb, uid := stripeTestService(t)
+	start := time.Now().Unix()
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e1", EventCreatedUnix: 100,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: start, PeriodEndUnix: start + 86400*30, AllowanceCredits: 3000,
+	}))
+	_, err := sqldb.Exec(`UPDATE user_quota SET topup_credits_remaining = 400 WHERE user_id = ?`, uid)
+	require.NoError(t, err)
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e2", EventCreatedUnix: 200,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		CancelAtPeriodEnd: true, PeriodStartUnix: start, PeriodEndUnix: start + 86400*30, AllowanceCredits: 3000,
+	}))
+	row, _ := sut.RowForUser(uid)
+	assert.Equal(t, int64(400), row.TopUpCreditsRemaining)
+	assert.True(t, row.CancelAtPeriodEnd)
+}
+
+func TestApplyStripeSubscription_UpgradeSamePeriod(t *testing.T) {
+	t.Parallel()
+	sut, sqldb, uid := stripeTestService(t)
+	start := time.Now().Unix()
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e1", EventCreatedUnix: 100,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: start, PeriodEndUnix: start + 86400*30, AllowanceCredits: 3000,
+	}))
+	_, err := sqldb.Exec(`UPDATE user_quota SET period_used_micro = 1200 WHERE user_id = ?`, uid)
+	require.NoError(t, err)
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e2", EventCreatedUnix: 200,
+		Plan: domain.QuotaPlanPro, PriceID: "price_pro", Status: "active",
+		PeriodStartUnix: start, PeriodEndUnix: start + 86400*30, AllowanceCredits: 8000,
+	}))
+	row, _ := sut.RowForUser(uid)
+	assert.Equal(t, domain.QuotaPlanPro, row.Plan)
+	assert.Equal(t, int64(8000), row.PeriodAllowanceCredits)
+	assert.Equal(t, int64(1200), row.PeriodUsedCredits)
+}
+
+func TestApplyStripeSubscription_DowngradeSamePeriod(t *testing.T) {
+	t.Parallel()
+	sut, sqldb, uid := stripeTestService(t)
+	start := time.Now().Unix()
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e1", EventCreatedUnix: 100,
+		Plan: domain.QuotaPlanPro, PriceID: "price_pro", Status: "active",
+		PeriodStartUnix: start, PeriodEndUnix: start + 86400*30, AllowanceCredits: 8000,
+	}))
+	_, err := sqldb.Exec(`UPDATE user_quota SET period_used_micro = 5000 WHERE user_id = ?`, uid)
+	require.NoError(t, err)
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e2", EventCreatedUnix: 200,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: start, PeriodEndUnix: start + 86400*30, AllowanceCredits: 3000,
+	}))
+	row, _ := sut.RowForUser(uid)
+	assert.Equal(t, domain.QuotaPlanStarter, row.Plan)
+	assert.Equal(t, int64(3000), row.PeriodAllowanceCredits)
+	assert.Equal(t, int64(5000), row.PeriodUsedCredits)
 }
 
 func TestGrantTopUpOnce_Idempotent(t *testing.T) {

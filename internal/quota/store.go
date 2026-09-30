@@ -21,6 +21,7 @@ func scanQuotaRow(row *sql.Row) (domain.UserQuotaRow, error) {
 		&r.OverageDebtCredits, &r.StripeCustomerID, &r.StripeSubscriptionID,
 		&trialEnds, &r.TopUpCreditsRemaining,
 		&subStatus, &cancelEnd, &priceID, &lastEvent, &subUpdated,
+		&r.LastStripeStateEventCreatedAt,
 	)
 	if err != nil {
 		return domain.UserQuotaRow{}, err
@@ -61,7 +62,8 @@ const quotaSelectSQL = `
 		       overage_debt_micro, COALESCE(stripe_customer_id,''), COALESCE(stripe_subscription_id,''),
 		       trial_ends_at, topup_credits_remaining,
 		       COALESCE(stripe_subscription_status,''), cancel_at_period_end,
-		       COALESCE(stripe_price_id,''), COALESCE(last_stripe_event_id,''), subscription_updated_at
+		       COALESCE(stripe_price_id,''), COALESCE(last_stripe_event_id,''), subscription_updated_at,
+		       COALESCE(last_stripe_state_event_created_at, 0)
 		FROM user_quota WHERE user_id = ?`
 
 func getRow(db *sql.DB, userID string) (domain.UserQuotaRow, error) {
@@ -119,6 +121,7 @@ func updateRowTx(exec interface {
 			trial_ends_at = ?, topup_credits_remaining = ?,
 			stripe_subscription_status = ?, cancel_at_period_end = ?,
 			stripe_price_id = ?, last_stripe_event_id = ?, subscription_updated_at = ?,
+			last_stripe_state_event_created_at = ?,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE user_id = ?`,
 		row.Plan, en, row.TrialRemainingCredits,
@@ -128,6 +131,7 @@ func updateRowTx(exec interface {
 		te, row.TopUpCreditsRemaining,
 		row.StripeSubscriptionStatus, cancel,
 		row.StripePriceID, row.LastStripeEventID, subUp,
+		row.LastStripeStateEventCreatedAt,
 		row.UserID)
 	return err
 }
@@ -156,13 +160,15 @@ func rowByStripeCustomer(db *sql.DB, customerID string) (domain.UserQuotaRow, er
 		       overage_debt_micro, COALESCE(stripe_customer_id,''), COALESCE(stripe_subscription_id,''),
 		       trial_ends_at, topup_credits_remaining,
 		       COALESCE(stripe_subscription_status,''), cancel_at_period_end,
-		       COALESCE(stripe_price_id,''), COALESCE(last_stripe_event_id,''), subscription_updated_at
+		       COALESCE(stripe_price_id,''), COALESCE(last_stripe_event_id,''), subscription_updated_at,
+		       COALESCE(last_stripe_state_event_created_at, 0)
 		FROM user_quota WHERE stripe_customer_id = ?`, customerID).Scan(
 		&row.UserID, &row.Plan, &enforce, &row.TrialRemainingCredits,
 		&row.PeriodAllowanceCredits, &row.PeriodUsedCredits, &periodStart, &periodEnd,
 		&row.OverageDebtCredits, &row.StripeCustomerID, &row.StripeSubscriptionID,
 		&trialEnds, &row.TopUpCreditsRemaining,
 		&subStatus, &cancelEnd, &priceID, &lastEvent, &subUpdated,
+		&row.LastStripeStateEventCreatedAt,
 	)
 	if err != nil {
 		return domain.UserQuotaRow{}, err

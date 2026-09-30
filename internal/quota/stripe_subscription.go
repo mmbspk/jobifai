@@ -15,8 +15,19 @@ type StripeSubscriptionUpdate struct {
 	CancelAtPeriodEnd                           bool
 	PeriodStartUnix, PeriodEndUnix              int64
 	AllowanceCredits                            int64
+	EventCreatedUnix                            int64
 	MetadataOnly                                bool
 	Terminate                                   bool
+}
+
+// SubscriptionAllowsUsage is true when paid plan + Stripe status permit LLM usage.
+func SubscriptionAllowsUsage(row domain.UserQuotaRow) bool {
+	switch row.Plan {
+	case domain.QuotaPlanStarter, domain.QuotaPlanPro:
+		return subscriptionActiveStatus(row.StripeSubscriptionStatus)
+	default:
+		return false
+	}
 }
 
 // ApplyStripeSubscription updates entitlement; resets monthly usage only on a new billing period.
@@ -24,6 +35,9 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 	row, err := s.getOrCreateRow(in.UserID)
 	if err != nil {
 		return err
+	}
+	if in.EventCreatedUnix > 0 && row.LastStripeStateEventCreatedAt > in.EventCreatedUnix {
+		return nil
 	}
 	if in.CustomerID != "" {
 		row.StripeCustomerID = in.CustomerID
@@ -37,7 +51,10 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 	}
 
 	if in.Terminate {
-		return s.terminateSubscription(row)
+		if err := s.terminateSubscription(row, in.EventCreatedUnix); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	if in.MetadataOnly {
@@ -67,9 +84,15 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 			row.PeriodEnd = quotaTimePtr(unixUTC(in.PeriodEndUnix))
 			row.Plan = in.Plan
 			row.PeriodAllowanceCredits = in.AllowanceCredits
+			if in.EventCreatedUnix > 0 {
+				row.LastStripeStateEventCreatedAt = in.EventCreatedUnix
+			}
 			return updateRow(s.db, row)
 		}
-		return s.terminateSubscription(row)
+		if err := s.terminateSubscription(row, in.EventCreatedUnix); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	row.Plan = in.Plan
@@ -93,6 +116,9 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 	if in.PeriodEndUnix > 0 {
 		row.PeriodEnd = quotaTimePtr(unixUTC(in.PeriodEndUnix))
 	}
+	if in.EventCreatedUnix > 0 {
+		row.LastStripeStateEventCreatedAt = in.EventCreatedUnix
+	}
 	return updateRow(s.db, row)
 }
 
@@ -105,12 +131,17 @@ func subscriptionActiveStatus(status string) bool {
 	}
 }
 
-func (s *Service) terminateSubscription(row domain.UserQuotaRow) error {
+func (s *Service) terminateSubscription(row domain.UserQuotaRow, eventCreatedUnix int64) error {
 	row.Plan = domain.QuotaPlanExpired
 	row.StripeSubscriptionID = ""
 	row.PeriodAllowanceCredits = 0
+	row.PeriodUsedCredits = 0
+	row.TopUpCreditsRemaining = 0
 	row.StripeSubscriptionStatus = "canceled"
 	row.CancelAtPeriodEnd = false
+	if eventCreatedUnix > 0 {
+		row.LastStripeStateEventCreatedAt = eventCreatedUnix
+	}
 	return updateRow(s.db, row)
 }
 

@@ -28,8 +28,24 @@ Unknown Stripe price IDs **fail closed** (no plan change; webhook row marked fai
 ## Idempotency
 
 - Every delivery is recorded in `stripe_webhook_events` keyed by Stripe `event.id`.
+- Claim uses a unique insert / processing lock so concurrent deliveries cannot double-apply side effects.
 - Successfully **processed** or **ignored** events return HTTP 200 on retry without re-running side effects.
+- **Failed** events remain retryable (Stripe may redeliver; `attempt_count` increments).
+- Subscription updates compare Stripe `event.created` to `user_quota.last_stripe_state_event_created_at` so older events cannot overwrite newer state.
 - Top-ups use `stripe_credit_grants.stripe_event_id` (and checkout session id) for exactly-once grants.
+
+## Invoice webhooks
+
+- `invoice.paid` and `invoice.payment_failed` fetch the current Stripe subscription and run the same apply logic as subscription webhooks (no guessed `past_due` from invoice alone).
+- If Stripe API lookup fails, the webhook is marked **failed** and returns an error for retry.
+
+## Plan changes (same billing period)
+
+Starter ↔ Pro updates `period_allowance_micro` immediately; **does not** reset `period_used_micro` or top-up balance until a new `current_period_start`.
+
+## Termination
+
+When paid entitlement ends (`expired`), monthly allowance and **top-up balance are cleared**; enforcement blocks usage even if credits existed locally.
 
 ## Subscription states (Stripe → UI)
 

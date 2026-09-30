@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -25,9 +26,36 @@ func WebhookConfigured() bool {
 	return StripeWebhookSecret() != ""
 }
 
-// AllowInsecureWebhook is an explicit dev/test escape hatch (never enable in production).
+// IsProduction reports explicit production deployment (fail-closed Stripe webhook rules).
+func IsProduction() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("JOBIFAI_ENV"))) {
+	case "production", "prod":
+		return true
+	default:
+		return strings.EqualFold(os.Getenv("GO_ENV"), "production")
+	}
+}
+
+// AllowInsecureWebhook is an explicit dev/test escape hatch (never in production).
 func AllowInsecureWebhook() bool {
+	if IsProduction() {
+		return false
+	}
 	return os.Getenv("JOBIFAI_STRIPE_WEBHOOK_INSECURE") == "1"
+}
+
+// ValidateProductionStripeConfig returns an error when production webhook settings are unsafe.
+func ValidateProductionStripeConfig() error {
+	if !IsProduction() {
+		return nil
+	}
+	if os.Getenv("JOBIFAI_STRIPE_WEBHOOK_INSECURE") == "1" {
+		return fmt.Errorf("JOBIFAI_STRIPE_WEBHOOK_INSECURE must not be set in production")
+	}
+	if StripeWebhookSecret() == "" {
+		return fmt.Errorf("STRIPE_WEBHOOK_SECRET is required in production")
+	}
+	return nil
 }
 
 // AppBaseURL for Checkout return URLs.

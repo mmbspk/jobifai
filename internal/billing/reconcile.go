@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -59,7 +60,8 @@ func (p *Processor) ReconcileUser(ctx context.Context, userID string) (Reconcile
 		if row.StripeSubscriptionID != "" || row.Plan == domain.QuotaPlanStarter || row.Plan == domain.QuotaPlanPro {
 			eventID := "admin_reconcile_" + uuid.NewString()
 			procErr := p.Quota.ApplyStripeSubscription(quota.StripeSubscriptionUpdate{
-				UserID: userID, EventID: eventID, CustomerID: row.StripeCustomerID,
+				UserID: userID, EventID: eventID, EventCreatedUnix: time.Now().Unix(),
+				CustomerID: row.StripeCustomerID,
 				Status: string(stripe.SubscriptionStatusCanceled), Terminate: true,
 			})
 			if procErr != nil {
@@ -78,7 +80,8 @@ func (p *Processor) ReconcileUser(ctx context.Context, userID string) (Reconcile
 	res.SubscriptionID = sub.ID
 	res.SubscriptionStatus = string(sub.Status)
 	eventID := "admin_reconcile_" + uuid.NewString()
-	if err := p.applySubscription(eventID, *sub); err != nil {
+	ev := stripe.Event{ID: eventID, Created: time.Now().Unix()}
+	if err := p.applySubscriptionEvent(ev, *sub); err != nil {
 		return res, fmt.Errorf("apply subscription: %w", err)
 	}
 	res.Action = "synced"

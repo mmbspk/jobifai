@@ -150,10 +150,14 @@ func (s *Service) fillStatus(st *domain.QuotaStatus, row domain.UserQuotaRow, de
 	st.UsedCredits = row.PeriodUsedCredits
 	st.RemainingCredits = s.totalRemaining(row)
 	if row.Plan == domain.QuotaPlanExpired {
-		st.Blocked = s.totalRemaining(row) <= 0
-		if st.Blocked {
-			st.BlockCode = "subscription_expired"
-		}
+		st.Blocked = true
+		st.BlockCode = "subscription_expired"
+		st.RemainingCredits = 0
+		return
+	}
+	if (row.Plan == domain.QuotaPlanStarter || row.Plan == domain.QuotaPlanPro) && !SubscriptionAllowsUsage(row) {
+		st.Blocked = true
+		st.BlockCode = "subscription_inactive"
 		return
 	}
 	if row.StripeSubscriptionStatus == "past_due" {
@@ -222,6 +226,14 @@ func (s *Service) BeforeLLM(_ context.Context, userID, model string, estInput, e
 			return &ExceededError{Code: "trial_exhausted", Scope: "trial"}
 		}
 		return nil
+	}
+	if row.Plan == domain.QuotaPlanExpired {
+		return &ExceededError{Code: "subscription_expired", Scope: "period"}
+	}
+	if row.Plan == domain.QuotaPlanStarter || row.Plan == domain.QuotaPlanPro {
+		if !SubscriptionAllowsUsage(row) {
+			return &ExceededError{Code: "subscription_inactive", Scope: "period"}
+		}
 	}
 	if s.totalRemaining(row) >= est {
 		return nil

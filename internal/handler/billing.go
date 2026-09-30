@@ -225,6 +225,10 @@ func (h *BillingHandlers) Webhook(w http.ResponseWriter, r *http.Request) {
 	}
 	proc := &billing.Processor{DB: h.svc.DB, Quota: h.svc.Quota}
 	if err := proc.ProcessEvent(r.Context(), event); err != nil {
+		if errors.Is(err, billing.ErrEventClaimLost) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "webhook processing in progress"})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "processing failed"})
 		return
 	}

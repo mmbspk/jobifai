@@ -31,14 +31,16 @@ type Processor struct {
 
 func (p *Processor) ProcessEvent(ctx context.Context, event stripe.Event) error {
 	meta := WebhookEventMeta{}
-	row, err := BeginWebhookEvent(ctx, p.DB, event.ID, string(event.Type), event.Created, meta)
+	_, err := ClaimWebhookEvent(ctx, p.DB, event.ID, string(event.Type), event.Created, meta)
 	if errors.Is(err, ErrAlreadyProcessed) {
 		return nil
+	}
+	if errors.Is(err, ErrEventClaimLost) {
+		return err
 	}
 	if err != nil {
 		return err
 	}
-	_ = row
 
 	var procErr error
 	switch event.Type {
@@ -105,7 +107,7 @@ func (p *Processor) handleSubscription(_ context.Context, event stripe.Event) er
 	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
 		return err
 	}
-	return p.applySubscription(event.ID, sub)
+	return p.applySubscriptionEvent(event, sub)
 }
 
 func (p *Processor) handleSubscriptionDeleted(_ context.Context, event stripe.Event) error {
@@ -118,44 +120,53 @@ func (p *Processor) handleSubscriptionDeleted(_ context.Context, event stripe.Ev
 		return errors.New("subscription deleted: no user")
 	}
 	up := quota.StripeSubscriptionUpdate{
-		UserID: userID, EventID: event.ID, CustomerID: customerIDSub(&sub), SubscriptionID: sub.ID,
+		UserID: userID, EventID: event.ID, EventCreatedUnix: event.Created,
+		CustomerID: customerIDSub(&sub), SubscriptionID: sub.ID,
 		Status: string(stripe.SubscriptionStatusCanceled), CancelAtPeriodEnd: false,
 		Terminate: true,
 	}
 	return p.Quota.ApplyStripeSubscription(up)
 }
 
-func (p *Processor) handleInvoicePaid(_ context.Context, _ stripe.Event) error {
-	return nil
-}
-
-func (p *Processor) handleInvoicePaymentFailed(_ context.Context, event stripe.Event) error {
-	var inv stripe.Invoice
-	if err := json.Unmarshal(event.Data.Raw, &inv); err != nil {
+func (p *Processor) handleInvoicePaid(_ context.Context, event stripe.Event) error {
+	subID, err := p.invoiceSubscriptionID(event)
+	if err != nil {
 		return err
 	}
-	subID := invoiceSubscriptionID(&inv)
 	if subID == "" {
 		return nil
 	}
-	userID := ""
-	if inv.Customer != nil {
-		if row, err := p.Quota.RowByStripeCustomer(inv.Customer.ID); err == nil {
-			userID = row.UserID
-		}
-	}
-	if userID == "" {
-		return nil
-	}
-	up := quota.StripeSubscriptionUpdate{
-		UserID: userID, EventID: event.ID, CustomerID: customerIDInv(&inv),
-		SubscriptionID: subID, Status: string(stripe.SubscriptionStatusPastDue),
-		CancelAtPeriodEnd: false, MetadataOnly: true,
-	}
-	return p.Quota.ApplyStripeSubscription(up)
+	return p.reconcileSubscriptionFromStripe(event, subID)
 }
 
-func (p *Processor) applySubscription(eventID string, sub stripe.Subscription) error {
+func (p *Processor) handleInvoicePaymentFailed(_ context.Context, event stripe.Event) error {
+	subID, err := p.invoiceSubscriptionID(event)
+	if err != nil {
+		return err
+	}
+	if subID == "" {
+		return nil
+	}
+	return p.reconcileSubscriptionFromStripe(event, subID)
+}
+
+func (p *Processor) invoiceSubscriptionID(event stripe.Event) (string, error) {
+	var inv stripe.Invoice
+	if err := json.Unmarshal(event.Data.Raw, &inv); err != nil {
+		return "", err
+	}
+	return invoiceSubscriptionID(&inv), nil
+}
+
+func (p *Processor) reconcileSubscriptionFromStripe(event stripe.Event, subID string) error {
+	sub, err := fetchSubscription(subID)
+	if err != nil {
+		return err
+	}
+	return p.applySubscriptionEvent(event, sub)
+}
+
+func (p *Processor) applySubscriptionEvent(event stripe.Event, sub stripe.Subscription) error {
 	userID := resolveUserID(p.Quota, sub.Metadata, customerIDSub(&sub))
 	if userID == "" {
 		return errors.New("subscription: no user mapping")
@@ -167,15 +178,21 @@ func (p *Processor) applySubscription(eventID string, sub stripe.Subscription) e
 	}
 	allowance := quota.AllowanceCreditsForPlan(p.Quota.LoadDefaults(), plan)
 	up := quota.StripeSubscriptionUpdate{
-		UserID: userID, EventID: eventID, CustomerID: customerIDSub(&sub), SubscriptionID: sub.ID,
+		UserID: userID, EventID: event.ID, EventCreatedUnix: event.Created,
+		CustomerID: customerIDSub(&sub), SubscriptionID: sub.ID,
 		Plan: plan, PriceID: priceID, Status: string(sub.Status),
 		CancelAtPeriodEnd: sub.CancelAtPeriodEnd,
 		PeriodStartUnix: periodStart, PeriodEndUnix: periodEnd,
 		AllowanceCredits: allowance,
 	}
-	if !subscriptionGrantsAccess(sub.Status) && sub.Status != stripe.SubscriptionStatusPastDue {
-		up.Terminate = sub.Status == stripe.SubscriptionStatusCanceled || sub.Status == stripe.SubscriptionStatusUnpaid
+	if subscriptionGrantsAccess(sub.Status) {
+		return p.Quota.ApplyStripeSubscription(up)
 	}
+	if sub.CancelAtPeriodEnd && periodEnd > 0 &&
+		(sub.Status == stripe.SubscriptionStatusActive || sub.Status == stripe.SubscriptionStatusTrialing) {
+		return p.Quota.ApplyStripeSubscription(up)
+	}
+	up.Terminate = true
 	return p.Quota.ApplyStripeSubscription(up)
 }
 
@@ -235,13 +252,6 @@ func customerID(sess *stripe.CheckoutSession) string {
 func customerIDSub(sub *stripe.Subscription) string {
 	if sub.Customer != nil {
 		return sub.Customer.ID
-	}
-	return ""
-}
-
-func customerIDInv(inv *stripe.Invoice) string {
-	if inv.Customer != nil {
-		return inv.Customer.ID
 	}
 	return ""
 }

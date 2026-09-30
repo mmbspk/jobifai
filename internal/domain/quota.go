@@ -100,5 +100,6 @@ type UserQuotaRow struct {
 	CancelAtPeriodEnd         bool
 	StripePriceID             string
 	LastStripeEventID         string
+	LastStripeStateEventCreatedAt int64
 	SubscriptionUpdatedAt     *time.Time
 }

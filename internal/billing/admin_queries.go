@@ -38,7 +38,7 @@ func LoadBillingSummary(ctx context.Context, db *sql.DB) (BillingSummary, error)
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var pc PlanCount
 		if err := rows.Scan(&pc.Plan, &pc.Count); err != nil {
@@ -81,7 +81,7 @@ func ListUserBilling(ctx context.Context, db *sql.DB) ([]AdminUserBillingRow, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []AdminUserBillingRow
 	for rows.Next() {
 		var r AdminUserBillingRow
@@ -160,7 +160,7 @@ func ListWebhookEvents(ctx context.Context, db *sql.DB, f WebhookEventFilter) ([
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []WebhookEventListItem
 	for rows.Next() {
 		var it WebhookEventListItem

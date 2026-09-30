@@ -2,11 +2,11 @@ package handler
 
 import (
 	"net/http"
-	"os"
 	"sort"
 	"strconv"
 	"time"
 
+	"github.com/user/jobifai/internal/billing"
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
 	evalpolicy "github.com/user/jobifai/internal/eval/policy"
@@ -254,10 +254,8 @@ func (h *AdminHandlers) Health(w http.ResponseWriter, r *http.Request) {
 	_ = h.svc.DB.QueryRowContext(ctx, `
 		SELECT COALESCE(source,'builtin'), COALESCE(last_error,''), COALESCE(last_refresh_at,'')
 		FROM model_catalog_meta WHERE id=1`).Scan(&catSource, &catErr, &catRefresh)
-	stripeConfigured := h.svc.Secrets.Has(domain.SystemUserID, "stripe_secret_key") ||
-		os.Getenv("STRIPE_SECRET_KEY") != ""
-	webhookConfigured := h.svc.Secrets.Has(domain.SystemUserID, "stripe_webhook_secret") ||
-		os.Getenv("STRIPE_WEBHOOK_SECRET") != ""
+	stripeConfigured := billing.StripeConfigured()
+	webhookConfigured := billing.WebhookConfigured()
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"provider": gs.LLM.Provider, "global_model": gs.LLM.Model,
