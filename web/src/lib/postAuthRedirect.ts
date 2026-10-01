@@ -1,0 +1,30 @@
+const STORAGE_KEY = 'jobifai:post_auth_redirect'
+
+const BLOCKED_PATHS = new Set(['/login', '/register', '/welcome', '/pricing'])
+
+/** Safe in-app path for redirect after sign-in; default `/` (dashboard home). */
+export function sanitizePostAuthPath(path: string | null | undefined): string | null {
+  if (!path || !path.startsWith('/') || path.startsWith('//')) return null
+  const pathname = path.split(/[?#]/)[0]
+  if (BLOCKED_PATHS.has(pathname)) return null
+  return path
+}
+
+export function postAuthPathFromLocation(
+  from: { pathname: string; search?: string; hash?: string } | undefined,
+): string {
+  if (!from?.pathname) return '/'
+  const combined = `${from.pathname}${from.search ?? ''}${from.hash ?? ''}`
+  return sanitizePostAuthPath(combined) ?? '/'
+}
+
+export function savePostAuthRedirect(path: string): void {
+  const safe = sanitizePostAuthPath(path)
+  if (safe) sessionStorage.setItem(STORAGE_KEY, safe)
+}
+
+export function consumePostAuthRedirect(): string | null {
+  const raw = sessionStorage.getItem(STORAGE_KEY)
+  sessionStorage.removeItem(STORAGE_KEY)
+  return sanitizePostAuthPath(raw)
+}

@@ -1,13 +1,18 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { postAuthPathFromLocation, savePostAuthRedirect } from '../lib/postAuthRedirect'
 import { useAuth } from '../contexts/AuthContext'
 import { Button } from '../components/Button'
 import { Input } from '../components/ui/input'
 import { AuthDivider, AuthLayout, GoogleSignInButton } from '../components/auth/AuthLayout'
 
+type AuthRedirectState = { from?: { pathname: string; search?: string; hash?: string } }
+
 export function Register() {
   const { register, googleLoginUrl } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const returnTo = postAuthPathFromLocation((location.state as AuthRedirectState | null)?.from)
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
@@ -21,7 +26,7 @@ export function Register() {
     setBusy(true)
     try {
       await register(email, password, name)
-      navigate('/', { replace: true })
+      navigate(returnTo, { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed')
     } finally {
@@ -36,7 +41,7 @@ export function Register() {
       footer={
         <>
           Already have an account?{' '}
-          <Link to="/login" className="text-[var(--color-accent)] hover:underline font-medium">
+          <Link to="/login" state={location.state} className="text-[var(--color-accent)] hover:underline font-medium">
             Sign in
           </Link>
         </>
@@ -81,7 +86,7 @@ export function Register() {
       </form>
 
       <AuthDivider />
-      <GoogleSignInButton href={googleLoginUrl} />
+      <GoogleSignInButton href={googleLoginUrl} onBeforeNavigate={() => savePostAuthRedirect(returnTo)} />
     </AuthLayout>
   )
 }
