@@ -28,6 +28,7 @@ import { Pricing } from './pages/Pricing'
 import { PostAuthRedirect } from './components/auth/PostAuthRedirect'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { hasStoredAuthCredentials } from './lib/authSession'
+import { savePostAuthRedirect } from './lib/postAuthRedirect'
 import { SettingsTabNav } from './components/settings/SettingsTabNav'
 import { AdminTabNav } from './components/admin/AdminTabNav'
 import { Badge } from './components/ui/badge'
@@ -111,7 +112,10 @@ function ProtectedRoute({ children }: Readonly<{ children: React.ReactNode }>) {
   const { user, loading } = useAuth()
   const location = useLocation()
   if (loading) return null
-  if (!user) return <Navigate to="/login" state={{ from: location }} replace />
+  if (!user) {
+    savePostAuthRedirect(`${location.pathname}${location.search}${location.hash}`)
+    return <Navigate to="/login" state={{ from: location }} replace />
+  }
   return <>{children}</>
 }
 
@@ -119,7 +123,10 @@ function AdminRoute({ children }: Readonly<{ children: React.ReactNode }>) {
   const { user, loading } = useAuth()
   const location = useLocation()
   if (loading) return null
-  if (!user) return <Navigate to="/login" state={{ from: location }} replace />
+  if (!user) {
+    savePostAuthRedirect(`${location.pathname}${location.search}${location.hash}`)
+    return <Navigate to="/login" state={{ from: location }} replace />
+  }
   if (!user.is_admin) return <Navigate to="/" replace state={{ from: location }} />
   return <>{children}</>
 }

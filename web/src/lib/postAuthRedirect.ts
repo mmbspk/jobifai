@@ -23,8 +23,28 @@ export function savePostAuthRedirect(path: string): void {
   if (safe) sessionStorage.setItem(STORAGE_KEY, safe)
 }
 
-export function consumePostAuthRedirect(): string | null {
-  const raw = sessionStorage.getItem(STORAGE_KEY)
+export function peekPostAuthRedirect(): string | null {
+  return sanitizePostAuthPath(sessionStorage.getItem(STORAGE_KEY))
+}
+
+export function clearPostAuthRedirect(): void {
   sessionStorage.removeItem(STORAGE_KEY)
-  return sanitizePostAuthPath(raw)
+}
+
+export function consumePostAuthRedirect(): string | null {
+  const dest = peekPostAuthRedirect()
+  clearPostAuthRedirect()
+  return dest
+}
+
+/** Path to open after sign-in: router state first, then session fallback (protected-route redirect). */
+export function resolvePostAuthDestination(
+  from: { pathname: string; search?: string; hash?: string } | undefined,
+): string {
+  if (from?.pathname) {
+    const combined = `${from.pathname}${from.search ?? ''}${from.hash ?? ''}`
+    const safe = sanitizePostAuthPath(combined)
+    if (safe) return safe
+  }
+  return peekPostAuthRedirect() ?? '/'
 }

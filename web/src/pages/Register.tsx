@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { postAuthPathFromLocation, savePostAuthRedirect } from '../lib/postAuthRedirect'
+import {
+  clearPostAuthRedirect,
+  resolvePostAuthDestination,
+  savePostAuthRedirect,
+} from '../lib/postAuthRedirect'
 import { useAuth } from '../contexts/AuthContext'
 import { Button } from '../components/Button'
 import { Input } from '../components/ui/input'
@@ -12,7 +16,7 @@ export function Register() {
   const { register, googleLoginUrl } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const returnTo = postAuthPathFromLocation((location.state as AuthRedirectState | null)?.from)
+  const returnTo = resolvePostAuthDestination((location.state as AuthRedirectState | null)?.from)
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
@@ -26,6 +30,7 @@ export function Register() {
     setBusy(true)
     try {
       await register(email, password, name)
+      clearPostAuthRedirect()
       navigate(returnTo, { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed')
