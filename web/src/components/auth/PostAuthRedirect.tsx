@@ -3,8 +3,8 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 import { consumePostAuthRedirect } from '../../lib/postAuthRedirect'
 
-/** Paths where a stored redirect may run (OAuth lands on `/`; sign-in pages may still hold a saved target). */
-const POST_AUTH_APPLY_PATHS = new Set(['/', '/login', '/register'])
+/** Google OAuth returns to `/` with tokens in the hash; email sign-in navigates from Login/Register. */
+const POST_AUTH_APPLY_PATHS = new Set(['/'])
 
 /** Applies a stored post-OAuth redirect once the session is active. */
 export function PostAuthRedirect() {

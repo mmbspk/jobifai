@@ -30,8 +30,9 @@ export function Register() {
     setBusy(true)
     try {
       await register(email, password, name)
+      const dest = resolvePostAuthDestination((location.state as AuthRedirectState | null)?.from)
       clearPostAuthRedirect()
-      navigate(returnTo, { replace: true })
+      navigate(dest, { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed')
     } finally {

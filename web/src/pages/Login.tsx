@@ -28,8 +28,9 @@ export function Login() {
     setBusy(true)
     try {
       await login(email, password)
+      const dest = resolvePostAuthDestination((location.state as AuthRedirectState | null)?.from)
       clearPostAuthRedirect()
-      navigate(returnTo, { replace: true })
+      navigate(dest, { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed')
     } finally {
