@@ -8,8 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
-	"github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/subscription"
+	"github.com/stripe/stripe-go/v86"
+	"github.com/stripe/stripe-go/v86/subscription"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/quota"
 )

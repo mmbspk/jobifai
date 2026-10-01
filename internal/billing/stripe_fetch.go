@@ -1,8 +1,8 @@
 package billing
 
 import (
-	"github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/subscription"
+	"github.com/stripe/stripe-go/v86"
+	"github.com/stripe/stripe-go/v86/subscription"
 )
 
 // fetchSubscription loads authoritative subscription state from Stripe (overridable in tests).
