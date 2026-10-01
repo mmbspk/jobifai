@@ -3,6 +3,9 @@ package domain
 import "time"
 
 // Quota plan identifiers stored on user_quota.plan.
+// TrialDailyApplicationLimit is the default cap on applications per day for trial users.
+const TrialDailyApplicationLimit = 5
+
 const (
 	QuotaPlanTrial   = "trial"
 	QuotaPlanStarter = "starter"

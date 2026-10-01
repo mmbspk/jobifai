@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
 	"gopkg.in/yaml.v3"
 )
@@ -148,14 +149,20 @@ func (h *SettingsHandlers) isAdmin(r *http.Request) bool {
 }
 
 func userFacingGeneral(s domain.GeneralSettings) domain.GeneralSettings {
-	return domain.GeneralSettings{
-		DefaultResumeMarket:       s.DefaultResumeMarket,
-		RequireReview:             s.RequireReview,
-		JobSuitabilityScore:       s.JobSuitabilityScore,
-		MaxJobsPerKeyword:         s.MaxJobsPerKeyword,
-		HalalJobFilter:            s.HalalJobFilter,
+	out := domain.GeneralSettings{
+		DefaultResumeMarket:   s.DefaultResumeMarket,
+		RequireReview:         s.RequireReview,
+		JobSuitabilityScore:   s.JobSuitabilityScore,
+		MaxJobsPerKeyword:     s.MaxJobsPerKeyword,
+		HalalJobFilter:        s.HalalJobFilter,
 		GenerateNewResumeDocs: s.GenerateNewResumeDocs,
 	}
+	if s.HumanBehavior.DailyApplicationLimit > 0 {
+		out.HumanBehavior = domain.HumanBehaviorConfig{
+			DailyApplicationLimit: s.HumanBehavior.DailyApplicationLimit,
+		}
+	}
+	return out
 }
 
 func mergeUserGeneralUpdate(stored, incoming domain.GeneralSettings) domain.GeneralSettings {
@@ -166,7 +173,20 @@ func mergeUserGeneralUpdate(stored, incoming domain.GeneralSettings) domain.Gene
 	out.MaxJobsPerKeyword = incoming.MaxJobsPerKeyword
 	out.HalalJobFilter = incoming.HalalJobFilter
 	out.GenerateNewResumeDocs = incoming.GenerateNewResumeDocs
+	if incoming.HumanBehavior.DailyApplicationLimit > 0 {
+		out.HumanBehavior.DailyApplicationLimit = clampDailyApplicationLimit(incoming.HumanBehavior.DailyApplicationLimit)
+	}
 	return out
+}
+
+func clampDailyApplicationLimit(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > 200 {
+		return 200
+	}
+	return n
 }
 
 // GET /api/settings/general
@@ -180,7 +200,12 @@ func (h *SettingsHandlers) GeneralGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.isAdmin(r) {
-		writeJSON(w, http.StatusOK, userFacingGeneral(s))
+		resolved := config.ResolveOperationalSettings(h.svc.Config, userID)
+		uf := userFacingGeneral(s)
+		if uf.HumanBehavior.DailyApplicationLimit == 0 {
+			uf.HumanBehavior.DailyApplicationLimit = resolved.HumanBehavior.DailyApplicationLimit
+		}
+		writeJSON(w, http.StatusOK, uf)
 		return
 	}
 	writeJSON(w, http.StatusOK, s)

@@ -14,6 +14,7 @@ const DEFAULT: GeneralSettings = {
   job_suitability_score: 7,
   max_jobs_per_keyword: 25,
   halal_job_filter: false,
+  human_behavior: { daily_application_limit: 5 },
 }
 
 export function ApplicationSettingsPage() {
@@ -48,6 +49,24 @@ export function ApplicationSettingsPage() {
       />
 
       <SettingsSection title="Application behaviour" description="Changes apply to the next automation run.">
+        <div id="daily-applications">
+          <SettingsField
+            label="Daily applications"
+            sub="Maximum applications Jobifai may submit for you per calendar day"
+          >
+            <SettingsNumberInput
+              value={form.human_behavior?.daily_application_limit ?? 5}
+              onChange={v =>
+                setForm(f => ({
+                  ...f,
+                  human_behavior: { ...f.human_behavior, daily_application_limit: v },
+                }))
+              }
+              min={1}
+              max={200}
+            />
+          </SettingsField>
+        </div>
         <Switch
           label="Review before submission"
           helper="Require your approval before Jobifai submits an application."

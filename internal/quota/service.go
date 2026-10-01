@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/pricing"
 )
@@ -81,7 +82,13 @@ func (s *Service) InitTrial(_ context.Context, userID string) error {
 	}
 	def := loadDefaults(s.cfg)
 	ends := time.Now().UTC().Add(time.Duration(def.TrialDays) * 24 * time.Hour)
-	return insertTrialRow(s.db, userID, int64(def.TrialCredits), ends, def.EnforcementDefault)
+	if err := insertTrialRow(s.db, userID, int64(def.TrialCredits), ends, def.EnforcementDefault); err != nil {
+		return err
+	}
+	if kv, ok := s.cfg.(config.KV); ok {
+		config.SeedTrialDailyApplicationLimit(kv, userID)
+	}
+	return nil
 }
 
 func (s *Service) trialExpired(row domain.UserQuotaRow) bool {
@@ -186,6 +193,11 @@ func (s *Service) Status(_ context.Context, userID string) (domain.QuotaStatus, 
 	row, err := s.getOrCreateRow(userID)
 	if err != nil {
 		return domain.QuotaStatus{}, err
+	}
+	if row.Plan == domain.QuotaPlanTrial {
+		if kv, ok := s.cfg.(config.KV); ok {
+			config.SeedTrialDailyApplicationLimit(kv, userID)
+		}
 	}
 	def := loadDefaults(s.cfg)
 	overrides := loadOverrides(s.cfg, userID)

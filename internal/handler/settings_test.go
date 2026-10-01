@@ -37,6 +37,24 @@ func TestSettings_General_RoundTrip(t *testing.T) {
 	assert.True(t, got.HalalJobFilter)
 }
 
+func TestSettings_General_UserDailyApplicationLimit(t *testing.T) {
+	svc, _ := newTestServices(t)
+	router := handler.NewRouter(svc)
+	token := registerAndLogin(t, router, "gen-daily@example.com", "password123")
+
+	gs := domain.GeneralSettings{
+		JobSuitabilityScore: 7,
+		HumanBehavior:       domain.HumanBehaviorConfig{DailyApplicationLimit: 15},
+	}
+	wPost := authPost(t, router, "/api/settings/general", token, gs)
+	assert.Equal(t, 200, wPost.Code)
+
+	wGet := authGet(t, router, "/api/settings/general", token)
+	var got domain.GeneralSettings
+	require.NoError(t, json.NewDecoder(wGet.Body).Decode(&got))
+	assert.Equal(t, 15, got.HumanBehavior.DailyApplicationLimit)
+}
+
 func TestSettings_Preferences_EmptyReturns200(t *testing.T) {
 	svc, _ := newTestServices(t)
 	router := handler.NewRouter(svc)

@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/bot"
+	"github.com/user/jobifai/internal/config"
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 )
@@ -113,10 +114,8 @@ func (h *BotHandlers) Status(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	if h.svc.Bot == nil {
 		s := domain.BotStatus{State: domain.BotStateIdle}
-		var gs domain.GeneralSettings
-		if err := h.svc.Config.Get(userID, "general_settings", &gs); err == nil {
-			s.DailyLimit = gs.HumanBehavior.DailyApplicationLimit
-		}
+		gs := config.ResolveOperationalSettings(h.svc.Config, userID)
+		s.DailyLimit = gs.HumanBehavior.DailyApplicationLimit
 		writeJSON(w, http.StatusOK, s)
 		return
 	}
