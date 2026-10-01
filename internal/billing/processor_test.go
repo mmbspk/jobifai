@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/stripe/stripe-go/v82"
+	"github.com/stripe/stripe-go/v86"
 	"github.com/user/jobifai/internal/billing"
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"

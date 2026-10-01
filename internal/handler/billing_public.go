@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/stripe/stripe-go/v82"
-	"github.com/stripe/stripe-go/v82/price"
+	"github.com/stripe/stripe-go/v86"
+	"github.com/stripe/stripe-go/v86/price"
 	"github.com/user/jobifai/internal/domain"
 )
 

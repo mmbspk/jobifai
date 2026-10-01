@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 
-	"github.com/stripe/stripe-go/v82"
+	"github.com/stripe/stripe-go/v86"
 )
 
 // ExtractWebhookEventMeta pulls safe attribution fields from a Stripe event payload.
