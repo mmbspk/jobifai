@@ -4,7 +4,7 @@ MAIN    := ./cmd/server
 IMAGE   := $(APP):latest
 DB      := data/$(APP).db
 
-.PHONY: all build run dev start test test-web test-coverage test-all test-all-e2e lint clean docker docker-run web-dev web-build e2e-server test-e2e test-e2e-ui
+.PHONY: all build run dev start test test-web test-coverage test-all test-all-e2e lint clean docker docker-run web-dev web-build e2e-server test-e2e test-e2e-ui deploy-gcp deploy-gcp-rollout
 
 # Application packages only (excludes vendored Go under web/node_modules).
 GO_PACKAGES := $(shell go list ./... | grep -v node_modules)
@@ -112,3 +112,11 @@ test-e2e: web-build
 ## test-e2e-ui: open Playwright interactive UI (local dev only)
 test-e2e-ui: web-build
 	cd web && npx playwright test --ui
+
+## deploy-gcp: build (from main), push image, roll out on jobifai-vm
+deploy-gcp:
+	./infra/gcp/deploy.sh
+
+## deploy-gcp-rollout: pull latest image on VM only (no local build)
+deploy-gcp-rollout:
+	./infra/gcp/deploy.sh --rollout-only
