@@ -19,11 +19,17 @@ func TestTopUpEligible(t *testing.T) {
 
 func TestBlocksNewSubscriptionCheckout(t *testing.T) {
 	t.Parallel()
+	assert.False(t, BlocksNewSubscriptionCheckout(domain.UserQuotaRow{}))
 	assert.True(t, BlocksNewSubscriptionCheckout(domain.UserQuotaRow{
 		StripeSubscriptionID: "sub_1", StripeSubscriptionStatus: "active",
+	}))
+	assert.True(t, BlocksNewSubscriptionCheckout(domain.UserQuotaRow{
+		StripeSubscriptionID: "sub_legacy", StripeSubscriptionStatus: "",
 	}))
 	assert.False(t, BlocksNewSubscriptionCheckout(domain.UserQuotaRow{
 		StripeSubscriptionID: "sub_1", StripeSubscriptionStatus: "canceled",
 	}))
-	assert.False(t, BlocksNewSubscriptionCheckout(domain.UserQuotaRow{}))
+	assert.False(t, BlocksNewSubscriptionCheckout(domain.UserQuotaRow{
+		StripeSubscriptionID: "sub_1", StripeSubscriptionStatus: "incomplete_expired",
+	}))
 }

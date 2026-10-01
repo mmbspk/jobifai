@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"testing"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/user/jobifai/internal/quota"
 )
 
-func billingTestRouter(t *testing.T) (http.Handler, *handler.Services, string) {
+func billingTestRouter(t *testing.T) (http.Handler, *handler.Services, string, *sql.DB) {
 	t.Helper()
 	t.Setenv("STRIPE_SECRET_KEY", "sk_test_fake")
 	svc, db := newTestServices(t)
@@ -29,18 +30,18 @@ func billingTestRouter(t *testing.T) (http.Handler, *handler.Services, string) {
 	token := registerAndLogin(t, router, "bill@example.com", "password123")
 	users, _ := svc.Users.ByEmail("bill@example.com")
 	require.NoError(t, svc.Quota.InitTrial(context.Background(), users.ID))
-	return router, svc, token
+	return router, svc, token, db
 }
 
 func TestBilling_TopUpRejectedForTrial(t *testing.T) {
-	router, _, token := billingTestRouter(t)
+	router, _, token, _ := billingTestRouter(t)
 	w := authPost(t, router, "/api/billing/topup", token, map[string]any{"credits": 1000})
 	assert.Equal(t, http.StatusConflict, w.Code)
 	assert.Contains(t, w.Body.String(), "top-ups require an active paid subscription")
 }
 
 func TestBilling_TopUpRejectedForExpired(t *testing.T) {
-	router, svc, token := billingTestRouter(t)
+	router, svc, token, _ := billingTestRouter(t)
 	u, _ := svc.Users.ByEmail("bill@example.com")
 	require.NoError(t, svc.Quota.ApplyStripeSubscription(quota.StripeSubscriptionUpdate{
 		UserID: u.ID, EventID: "e1", EventCreatedUnix: 100, Terminate: true, Status: "canceled",
@@ -50,7 +51,7 @@ func TestBilling_TopUpRejectedForExpired(t *testing.T) {
 }
 
 func TestBilling_CheckoutRejectedWhenSubscriptionActive(t *testing.T) {
-	router, svc, token := billingTestRouter(t)
+	router, svc, token, _ := billingTestRouter(t)
 	u, _ := svc.Users.ByEmail("bill@example.com")
 	def := svc.Quota.LoadDefaults()
 	def.StripePriceStarter = "price_starter"
@@ -64,6 +65,17 @@ func TestBilling_CheckoutRejectedWhenSubscriptionActive(t *testing.T) {
 		AllowanceCredits: 3000,
 	}))
 	w := authPost(t, router, "/api/billing/checkout", token, map[string]any{"plan": "pro"})
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), "already have a subscription")
+}
+
+func TestBilling_CheckoutRejectedWhenSubscriptionIDLegacyEmptyStatus(t *testing.T) {
+	router, svc, token, db := billingTestRouter(t)
+	u, _ := svc.Users.ByEmail("bill@example.com")
+	_, err := db.Exec(`UPDATE user_quota SET stripe_subscription_id = ?, stripe_subscription_status = '' WHERE user_id = ?`,
+		"sub_legacy_empty_status", u.ID)
+	require.NoError(t, err)
+	w := authPost(t, router, "/api/billing/checkout", token, map[string]any{"plan": "starter"})
 	assert.Equal(t, http.StatusConflict, w.Code)
 	assert.Contains(t, w.Body.String(), "already have a subscription")
 }

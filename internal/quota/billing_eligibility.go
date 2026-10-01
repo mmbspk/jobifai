@@ -22,9 +22,10 @@ func BlocksNewSubscriptionCheckout(row domain.UserQuotaRow) bool {
 		return false
 	}
 	switch row.StripeSubscriptionStatus {
-	case "canceled", "incomplete_expired", "":
+	case "canceled", "incomplete_expired":
 		return false
 	default:
+		// Empty/unknown status with a subscription ID: block until reconcile (legacy rows).
 		return true
 	}
 }
