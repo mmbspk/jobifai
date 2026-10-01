@@ -121,9 +121,13 @@ export function LogPanel({ lines, connected, onClear, className, currentJob }: P
   }
 
   return (
-    <div className={cn('flex flex-col rounded-xl border overflow-hidden', 'bg-[var(--color-background)] border-[var(--color-border)] shadow-[var(--shadow-sm)]', className)}>
+    <div className={cn(
+      'flex min-h-0 flex-col overflow-hidden rounded-xl border',
+      'bg-[var(--color-background)] border-[var(--color-border)] shadow-[var(--shadow-sm)]',
+      className,
+    )}>
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
+      <div className="flex shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5">
         <div className="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
           <span
             className={cn(
@@ -182,7 +186,7 @@ export function LogPanel({ lines, connected, onClear, className, currentJob }: P
 
       {/* Search bar */}
       {showSearch && (
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
+        <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-1.5">
           <svg className="shrink-0 w-3 h-3 text-[var(--color-text-dim)]" viewBox="0 0 16 16" fill="currentColor">
             <path d="M6.5 0a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zm0 1a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11zm4.78 9.72 3.5 3.5-.72.72-3.5-3.5.72-.72z"/>
           </svg>
@@ -214,8 +218,7 @@ export function LogPanel({ lines, connected, onClear, className, currentJob }: P
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="font-terminal flex-1 overflow-y-auto p-3 space-y-0.5 min-h-0"
-        style={{ maxHeight: '400px' }}
+        className="min-h-0 flex-1 overflow-y-auto p-3 space-y-0.5 font-terminal"
       >
         {filteredLines.length === 0 && (
           <div className="text-[var(--color-text-dim)] text-xs">
