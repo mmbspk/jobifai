@@ -866,7 +866,8 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					log.Debug().Int("index", f.Index).Msg("form: file input already has attachment, skipping upload")
 					filled = true
 				} else {
-					log.Warn().Int("index", f.Index).Msg("form: no generated PDF path, skipping file upload (existing LinkedIn resume will be used)")
+					log.Warn().Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
+						Msg("form: no generated PDF path, skipping file upload (platform profile resume may be used)")
 				}
 				fileUploadIdx++
 				continue
@@ -1220,6 +1221,10 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 			return answer
 		}
 		if err != nil {
+			if isQuotaExceeded(err) {
+				b.abortOnLLMFailure(err)
+				return ""
+			}
 			log.Warn().Err(err).Str("question", question).Msg("form: LLM answer failed")
 		} else {
 			log.Warn().Str("question", question).Msg("form: LLM returned empty answer")

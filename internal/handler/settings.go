@@ -126,7 +126,7 @@ var defaultGeneralSettings = domain.GeneralSettings{
 	Browser: domain.BrowserConfig{
 		ShowBrowser:      true,
 		UseChromeProfile: true,
-		RemoteDebugPort:  9222,
+		RemoteDebugPort:  0,
 	},
 	HumanBehavior: domain.HumanBehaviorConfig{
 		DailyApplicationLimit: 40,

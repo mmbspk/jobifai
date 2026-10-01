@@ -23,6 +23,7 @@ import (
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
 	"github.com/user/jobifai/internal/scraper"
 )
@@ -1174,6 +1175,10 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	if b.cfg.HalalChecker != nil {
 		verdict, err := b.cfg.HalalChecker.CheckHalal(b.llmCtx(ctx, "halal check", job.ID), job.Title, job.Company, jobDesc)
 		if err != nil {
+			if isQuotaExceeded(err) {
+				b.abortOnLLMFailure(err)
+				return result.Score, result.Reasoning, nil, false
+			}
 			log.Warn().Err(err).Msg("halal check failed, letting job through")
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
@@ -1189,10 +1194,22 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	return result.Score, result.Reasoning, halalVerdict, true
 }
 
+func isQuotaExceeded(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, quota.ErrExceeded) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "quota exceeded")
+}
+
 func (b *Bot) abortOnLLMFailure(err error) {
 	msg := err.Error()
 	var reason string
 	switch {
+	case isQuotaExceeded(err):
+		reason = "LLM quota exhausted — trial or plan credits are used up. Add credits or upgrade in Settings → Plan, then restart the bot."
 	case strings.Contains(msg, "401") || strings.Contains(msg, "Jwt is expired") || strings.Contains(msg, "LOGIN_FAILED"):
 		reason = "LLM authentication failed — the proxy JWT has expired or the API key is invalid. Restart the LLM proxy to refresh credentials."
 	case strings.Contains(msg, "connection refused"):

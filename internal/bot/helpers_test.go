@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/quota"
 )
 
 // ── deduplicateTitle ─────────────────────────────────────────────────────────
@@ -343,4 +344,12 @@ func TestSeekWhereCanonical(t *testing.T) {
 	where, ok := domain.SeekSearchLocation("Melbourne, Victoria, Australia")
 	assert.True(t, ok)
 	assert.Equal(t, "All Melbourne VIC", where)
+}
+
+func TestIsQuotaExceeded(t *testing.T) {
+	assert.False(t, isQuotaExceeded(nil))
+	assert.True(t, isQuotaExceeded(quota.ErrExceeded))
+	assert.True(t, isQuotaExceeded(&quota.ExceededError{Code: "trial_exhausted", Scope: "trial"}))
+	assert.True(t, isQuotaExceeded(fmt.Errorf("scorer: llm: %w", quota.ErrExceeded)))
+	assert.False(t, isQuotaExceeded(fmt.Errorf("connection refused")))
 }

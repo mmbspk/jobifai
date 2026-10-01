@@ -942,8 +942,8 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 	}
 	result, err := b.cfg.Scorer.EvaluateJob(ctx, b.currentProfile(), jobDesc)
 	if err != nil {
-		log.Warn().Err(err).Msg("seek: suitability score failed, letting job through")
-		return minScore, "", nil, true
+		b.abortOnLLMFailure(err)
+		return 0, "", nil, false
 	}
 	if result.Score < minScore {
 		b.recordSeekSkipped(job, fmt.Sprintf("score %d < %d", result.Score, minScore), result.Score, result.Reasoning, nil)
@@ -957,6 +957,10 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 	if b.cfg.HalalChecker != nil {
 		verdict, err := b.cfg.HalalChecker.CheckHalal(ctx, job.Title, job.Company, jobDesc)
 		if err != nil {
+			if isQuotaExceeded(err) {
+				b.abortOnLLMFailure(err)
+				return result.Score, result.Reasoning, nil, false
+			}
 			log.Warn().Err(err).Msg("seek: halal check failed, letting job through")
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
