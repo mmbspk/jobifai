@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/billing"
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/config"
@@ -55,6 +56,9 @@ func main() {
 	}
 	defer func() { _ = database.Close() }()
 	log.Info().Str("path", *dbPath).Msg("database ready")
+	if err := billing.ValidateProductionStripeConfig(); err != nil {
+		log.Fatal().Err(err).Msg("stripe configuration")
+	}
 
 	// ── Config + Secrets ────────────────────────────────────────────────
 	machineKey, err := config.MachineKey(database)

@@ -116,6 +116,8 @@ func (s *Service) fillStatus(st *domain.QuotaStatus, row domain.UserQuotaRow, de
 	st.TopUpCreditsRemaining = row.TopUpCreditsRemaining
 	st.StripeConfigured = def.StripePriceStarter != "" || def.StripePricePro != ""
 	st.TopUpPacks = def.TopUpPacks
+	st.StripeSubscriptionStatus = row.StripeSubscriptionStatus
+	st.CancelAtPeriodEnd = row.CancelAtPeriodEnd
 
 	if row.Plan == domain.QuotaPlanTrial {
 		st.TrialRemainingCredits = &row.TrialRemainingCredits
@@ -147,6 +149,20 @@ func (s *Service) fillStatus(st *domain.QuotaStatus, row domain.UserQuotaRow, de
 	st.AllowanceCredits = row.PeriodAllowanceCredits
 	st.UsedCredits = row.PeriodUsedCredits
 	st.RemainingCredits = s.totalRemaining(row)
+	if row.Plan == domain.QuotaPlanExpired {
+		st.Blocked = true
+		st.BlockCode = "subscription_expired"
+		st.RemainingCredits = 0
+		return
+	}
+	if (row.Plan == domain.QuotaPlanStarter || row.Plan == domain.QuotaPlanPro) && !SubscriptionAllowsUsage(row) {
+		st.Blocked = true
+		st.BlockCode = "subscription_inactive"
+		return
+	}
+	if row.StripeSubscriptionStatus == "past_due" {
+		st.BlockCode = "past_due"
+	}
 	if st.AllowanceCredits > 0 {
 		st.UsagePercent = float64(st.UsedCredits) / float64(st.AllowanceCredits) * 100
 		if st.UsagePercent > 100 {
@@ -210,6 +226,14 @@ func (s *Service) BeforeLLM(_ context.Context, userID, model string, estInput, e
 			return &ExceededError{Code: "trial_exhausted", Scope: "trial"}
 		}
 		return nil
+	}
+	if row.Plan == domain.QuotaPlanExpired {
+		return &ExceededError{Code: "subscription_expired", Scope: "period"}
+	}
+	if row.Plan == domain.QuotaPlanStarter || row.Plan == domain.QuotaPlanPro {
+		if !SubscriptionAllowsUsage(row) {
+			return &ExceededError{Code: "subscription_inactive", Scope: "period"}
+		}
 	}
 	if s.totalRemaining(row) >= est {
 		return nil
@@ -345,36 +369,13 @@ func (s *Service) EndSubscriberSession(userID string) {
 	}
 }
 
-// ApplySubscriptionPeriod resets usage for a new Stripe billing period.
+// ApplySubscriptionPeriod resets usage for a new Stripe billing period (legacy callers).
 func (s *Service) ApplySubscriptionPeriod(userID, plan, customerID, subID string, start, end int64, allowanceCredits int64) error {
-	row, err := s.getOrCreateRow(userID)
-	if err != nil {
-		return err
-	}
-	if row.PeriodUsedCredits > row.PeriodAllowanceCredits {
-		row.OverageDebtCredits += row.PeriodUsedCredits - row.PeriodAllowanceCredits
-	}
-	row.Plan = plan
-	row.PeriodAllowanceCredits = allowanceCredits
-	row.PeriodUsedCredits = 0
-	row.TopUpCreditsRemaining = 0
-	row.TrialRemainingCredits = 0
-	row.TrialEndsAt = nil
-	if customerID != "" {
-		row.StripeCustomerID = customerID
-	}
-	if subID != "" {
-		row.StripeSubscriptionID = subID
-	}
-	if start > 0 {
-		t := unixUTC(start)
-		row.PeriodStart = &t
-	}
-	if end > 0 {
-		t := unixUTC(end)
-		row.PeriodEnd = &t
-	}
-	return updateRow(s.db, row)
+	return s.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: userID, CustomerID: customerID, SubscriptionID: subID,
+		Plan: plan, Status: "active",
+		PeriodStartUnix: start, PeriodEndUnix: end, AllowanceCredits: allowanceCredits,
+	})
 }
 
 // AddTopUpCredits adds one-time credits (expire at current period end — cleared on renewal).

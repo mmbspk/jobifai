@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/billing"
 )
 
 // QuotaHandlers serves quota status for the current user.
@@ -23,5 +24,6 @@ func (h *QuotaHandlers) Status(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
+	st.StripeConfigured = billing.StripeConfigured()
 	writeJSON(w, http.StatusOK, st)
 }

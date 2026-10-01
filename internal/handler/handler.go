@@ -17,6 +17,7 @@ import (
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/quota"
 )
 
 // ResumeExtractor is the interface the upload handler uses to parse resume files.
@@ -180,6 +181,8 @@ type QuotaService interface {
 	SetStripeCustomer(userID, customerID string) error
 	ApplySubscriptionPeriod(userID, plan, customerID, subID string, start, end int64, allowanceCredits int64) error
 	AddTopUpCredits(userID string, credits int64) error
+	ApplyStripeSubscription(in quota.StripeSubscriptionUpdate) error
+	GrantTopUpOnce(userID, eventID, checkoutSessionID string, credits int64) error
 }
 
 // UsageStore provides per-user LLM token usage snapshots.
