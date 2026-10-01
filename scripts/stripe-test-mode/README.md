@@ -30,3 +30,18 @@ source data/stripe-test-mode.local.env
 ```
 
 Price IDs are written to `data/stripe-test-price-ids.json` (not secret; still gitignored under `data/`).
+
+## Webhook API version (local CLI vs stripe-go)
+
+| Source | API version (observed) |
+|--------|-------------------------|
+| Stripe CLI `listen` (Test Mode, 2026-03) | `2026-08-26.dahlia` (account/CLI default) |
+| `github.com/stripe/stripe-go/v82` v82.5.1 | `2025-08-27.basil` (`stripe.APIVersion`) |
+
+`webhook.ConstructEvent` rejects events when `event.api_version` ≠ SDK version unless
+`IgnoreAPIVersionMismatch` is set. The branch `fix/stripe-webhook-api-version` uses that
+flag **for local signed-webhook E2E only** — not a decided production policy.
+
+**After E2E, choose one:** pin Dashboard/CLI webhook endpoint API version to match stripe-go,
+upgrade stripe-go when a release aligns with your Stripe account version, or keep explicit
+mismatch handling with review.
