@@ -211,6 +211,130 @@ func TestApplyStripeSubscription_DowngradeSamePeriod(t *testing.T) {
 	assert.Equal(t, int64(0), row3.OverageDebtCredits)
 }
 
+func TestApplyStripeSubscription_FailedRenewalPastDuePreservesEntitlement(t *testing.T) {
+	t.Parallel()
+	sut, sqldb, uid := stripeTestService(t)
+	oldStart := int64(1_700_000_000)
+	oldEnd := oldStart + 86400*30
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e1", EventCreatedUnix: 100,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: oldStart, PeriodEndUnix: oldEnd, AllowanceCredits: 3000,
+	}))
+	_, err := sqldb.Exec(`UPDATE user_quota SET period_used_micro = 777, topup_credits_remaining = 333 WHERE user_id = ?`, uid)
+	require.NoError(t, err)
+
+	newStart := oldStart + 86400*31
+	newEnd := newStart + 86400*30
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e_fail", EventCreatedUnix: 200,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "past_due",
+		PeriodStartUnix: newStart, PeriodEndUnix: newEnd, AllowanceCredits: 3000,
+	}))
+	row, err := sut.RowForUser(uid)
+	require.NoError(t, err)
+	assert.Equal(t, "past_due", row.StripeSubscriptionStatus)
+	assert.Equal(t, int64(3000), row.PeriodAllowanceCredits)
+	assert.Equal(t, int64(777), row.PeriodUsedCredits)
+	assert.Equal(t, int64(333), row.TopUpCreditsRemaining)
+	require.NotNil(t, row.PeriodStart)
+	assert.Equal(t, oldStart, row.PeriodStart.Unix())
+	require.NotNil(t, row.PeriodEnd)
+	assert.Equal(t, oldEnd, row.PeriodEnd.Unix())
+
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e_fail2", EventCreatedUnix: 201,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "past_due",
+		PeriodStartUnix: newStart, PeriodEndUnix: newEnd, AllowanceCredits: 3000,
+	}))
+	row2, _ := sut.RowForUser(uid)
+	assert.Equal(t, int64(777), row2.PeriodUsedCredits)
+	assert.Equal(t, int64(333), row2.TopUpCreditsRemaining)
+}
+
+func TestApplyStripeSubscription_PastDueRecoveryActiveAdvancesPeriod(t *testing.T) {
+	t.Parallel()
+	sut, sqldb, uid := stripeTestService(t)
+	oldStart := int64(1_700_000_000)
+	oldEnd := oldStart + 86400*30
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e1", EventCreatedUnix: 100,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: oldStart, PeriodEndUnix: oldEnd, AllowanceCredits: 3000,
+	}))
+	_, err := sqldb.Exec(`UPDATE user_quota SET period_used_micro = 777, topup_credits_remaining = 333 WHERE user_id = ?`, uid)
+	require.NoError(t, err)
+
+	newStart := oldStart + 86400*31
+	newEnd := newStart + 86400*30
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e_fail", EventCreatedUnix: 200,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "past_due",
+		PeriodStartUnix: newStart, PeriodEndUnix: newEnd, AllowanceCredits: 3000,
+	}))
+
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e_paid", EventCreatedUnix: 300,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: newStart, PeriodEndUnix: newEnd, AllowanceCredits: 3000,
+	}))
+	row, err := sut.RowForUser(uid)
+	require.NoError(t, err)
+	assert.Equal(t, "active", row.StripeSubscriptionStatus)
+	assert.Equal(t, int64(3000), row.PeriodAllowanceCredits)
+	assert.Equal(t, int64(0), row.PeriodUsedCredits)
+	assert.Equal(t, int64(0), row.TopUpCreditsRemaining)
+	require.NotNil(t, row.PeriodStart)
+	assert.Equal(t, newStart, row.PeriodStart.Unix())
+	require.NotNil(t, row.PeriodEnd)
+	assert.Equal(t, newEnd, row.PeriodEnd.Unix())
+
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e_paid_dup", EventCreatedUnix: 301,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: newStart, PeriodEndUnix: newEnd, AllowanceCredits: 3000,
+	}))
+	row2, _ := sut.RowForUser(uid)
+	assert.Equal(t, int64(0), row2.PeriodUsedCredits)
+	assert.Equal(t, int64(0), row2.TopUpCreditsRemaining)
+}
+
+func TestApplyStripeSubscription_StalePastDueAfterRecoveryIgnored(t *testing.T) {
+	t.Parallel()
+	sut, sqldb, uid := stripeTestService(t)
+	oldStart := int64(1_700_000_000)
+	oldEnd := oldStart + 86400*30
+	newStart := oldStart + 86400*31
+	newEnd := newStart + 86400*30
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e1", EventCreatedUnix: 100,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: oldStart, PeriodEndUnix: oldEnd, AllowanceCredits: 3000,
+	}))
+	_, err := sqldb.Exec(`UPDATE user_quota SET period_used_micro = 777, topup_credits_remaining = 333 WHERE user_id = ?`, uid)
+	require.NoError(t, err)
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e_fail", EventCreatedUnix: 200,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "past_due",
+		PeriodStartUnix: newStart, PeriodEndUnix: newEnd, AllowanceCredits: 3000,
+	}))
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e_paid", EventCreatedUnix: 300,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "active",
+		PeriodStartUnix: newStart, PeriodEndUnix: newEnd, AllowanceCredits: 3000,
+	}))
+
+	require.NoError(t, sut.ApplyStripeSubscription(StripeSubscriptionUpdate{
+		UserID: uid, EventID: "e_stale_past_due", EventCreatedUnix: 150,
+		Plan: domain.QuotaPlanStarter, PriceID: "price_starter", Status: "past_due",
+		PeriodStartUnix: newStart, PeriodEndUnix: newEnd, AllowanceCredits: 3000,
+	}))
+	row, _ := sut.RowForUser(uid)
+	assert.Equal(t, "active", row.StripeSubscriptionStatus)
+	assert.Equal(t, int64(0), row.PeriodUsedCredits)
+	assert.Equal(t, newStart, row.PeriodStart.Unix())
+}
+
 func TestGrantTopUpOnce_Idempotent(t *testing.T) {
 	t.Parallel()
 	sut, _, uid := stripeTestService(t)

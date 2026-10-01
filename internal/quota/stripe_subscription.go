@@ -105,7 +105,13 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 	row.TrialRemainingCredits = 0
 	row.TrialEndsAt = nil
 
-	if newPeriod {
+	// Stripe may advance subscription period dates before a renewal charge succeeds; defer local
+	// entitlement rollover until status is active (e.g. after invoice.paid on recovery).
+	deferPastDuePeriodAdvance := in.Status == "past_due" && newPeriod && prevStart > 0
+
+	if deferPastDuePeriodAdvance {
+		// Preserve funded period boundary, allowance, usage, top-ups, and overage; status/metadata already set.
+	} else if newPeriod {
 		if row.PeriodUsedCredits > row.PeriodAllowanceCredits {
 			row.OverageDebtCredits += row.PeriodUsedCredits - row.PeriodAllowanceCredits
 		}
@@ -118,11 +124,13 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 		}
 	}
 
-	if in.PeriodStartUnix > 0 {
-		row.PeriodStart = quotaTimePtr(unixUTC(in.PeriodStartUnix))
-	}
-	if in.PeriodEndUnix > 0 {
-		row.PeriodEnd = quotaTimePtr(unixUTC(in.PeriodEndUnix))
+	if !deferPastDuePeriodAdvance {
+		if in.PeriodStartUnix > 0 {
+			row.PeriodStart = quotaTimePtr(unixUTC(in.PeriodStartUnix))
+		}
+		if in.PeriodEndUnix > 0 {
+			row.PeriodEnd = quotaTimePtr(unixUTC(in.PeriodEndUnix))
+		}
 	}
 	if in.EventCreatedUnix > 0 {
 		row.LastStripeStateEventCreatedAt = in.EventCreatedUnix
