@@ -22,7 +22,9 @@ func ParseWebhookEvent(payload []byte, sigHeader string) (stripe.Event, error) {
 	}
 	secret := StripeWebhookSecret()
 	if secret != "" {
-		return webhook.ConstructEvent(payload, sigHeader, secret)
+		return webhook.ConstructEventWithOptions(payload, sigHeader, secret, webhook.ConstructEventOptions{
+			IgnoreAPIVersionMismatch: true,
+		})
 	}
 	if AllowInsecureWebhook() {
 		var event stripe.Event
