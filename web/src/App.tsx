@@ -27,6 +27,7 @@ import { Landing } from './pages/Landing'
 import { Pricing } from './pages/Pricing'
 import { PostAuthRedirect } from './components/auth/PostAuthRedirect'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { hasStoredAuthCredentials } from './lib/authSession'
 import { SettingsTabNav } from './components/settings/SettingsTabNav'
 import { AdminTabNav } from './components/admin/AdminTabNav'
 import { Badge } from './components/ui/badge'
@@ -105,7 +106,7 @@ function AdminLayout() {
   )
 }
 
-// Redirects unauthenticated users to /login; shows nothing while auth is loading.
+// Protected URLs always sign in via login so we can return to the requested page.
 function ProtectedRoute({ children }: Readonly<{ children: React.ReactNode }>) {
   const { user, loading } = useAuth()
   const location = useLocation()
@@ -123,18 +124,43 @@ function AdminRoute({ children }: Readonly<{ children: React.ReactNode }>) {
   return <>{children}</>
 }
 
+/** Signed-in users skip marketing / auth pages and go to the app home. */
+function GuestRoute({ children }: Readonly<{ children: React.ReactNode }>) {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (user) return <Navigate to="/" replace />
+  return <>{children}</>
+}
+
+/** App root: dashboard when signed in; welcome or login when not. */
+function HomeGate() {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (user) return <Layout><Dashboard /></Layout>
+  if (hasStoredAuthCredentials()) return <Navigate to="/login" replace />
+  return <Landing />
+}
+
+/** Public welcome URL — same landing, redirect to app when already signed in. */
+function WelcomePage() {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (user) return <Navigate to="/" replace />
+  return <Landing />
+}
+
 function AppRoutes() {
   return (
     <Routes>
       {/* Public pages — kept outside the authenticated app shell. */}
-      <Route path="/welcome"  element={<Landing />} />
-      <Route path="/pricing"  element={<Pricing />} />
-      <Route path="/login"    element={<Login />} />
-      <Route path="/register" element={<Register />} />
+      <Route path="/"        element={<HomeGate />} />
+      <Route path="/welcome" element={<WelcomePage />} />
+      <Route path="/pricing" element={<Pricing />} />
+      <Route path="/login"    element={<GuestRoute><Login /></GuestRoute>} />
+      <Route path="/register" element={<GuestRoute><Register /></GuestRoute>} />
 
-      {/* All other routes require authentication */}
+      {/* Authenticated app shell (paths other than /) */}
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        <Route path="/"                      element={<Dashboard />} />
         <Route path="/jobs/applied"          element={<JobsApplied />} />
         <Route path="/jobs/skipped"          element={<JobsSkipped />} />
         <Route path="/jobs/cannot-apply"     element={<JobsCannotApply />} />
