@@ -3,6 +3,9 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 import { consumePostAuthRedirect } from '../../lib/postAuthRedirect'
 
+/** Paths where a stored redirect may run (OAuth lands on `/`; sign-in pages may still hold a saved target). */
+const POST_AUTH_APPLY_PATHS = new Set(['/', '/login', '/register'])
+
 /** Applies a stored post-OAuth redirect once the session is active. */
 export function PostAuthRedirect() {
   const { user } = useAuth()
@@ -12,6 +15,7 @@ export function PostAuthRedirect() {
 
   useEffect(() => {
     if (!user || applied.current) return
+    if (!POST_AUTH_APPLY_PATHS.has(location.pathname)) return
     const dest = consumePostAuthRedirect()
     if (!dest) return
     const here = `${location.pathname}${location.search}${location.hash}`

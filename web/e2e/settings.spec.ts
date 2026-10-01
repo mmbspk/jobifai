@@ -10,7 +10,7 @@ test.describe('Settings', () => {
   test('Application settings page loads with expected sections', async ({ page }) => {
     await expect(page.getByRole('heading', { name: 'Application', exact: true })).toBeVisible()
     await expect(page.getByText('Application behaviour')).toBeVisible()
-    await expect(page.getByText('Resume generation')).toBeVisible()
+    await expect(page.getByText('Resume and documents')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Save changes' })).toBeVisible()
   })
 

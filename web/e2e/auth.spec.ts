@@ -63,8 +63,9 @@ test.describe('Auth flows', () => {
     await page.locator('input[type="password"]').fill('e2epassword1')
     await page.getByRole('button', { name: 'Sign in' }).click()
 
-    await page.waitForURL('/review')
-    await expect(page.getByText("You're all caught up")).toBeVisible()
+    await expect(page).toHaveURL(/\/review$/)
+    await expect(page.getByRole('heading', { name: 'Review' })).toBeVisible()
+    await expect(page.getByText(/all caught up/i)).toBeVisible()
   })
 
   test('returning visitor with stored tokens is sent to login from app root', async ({ page }) => {
