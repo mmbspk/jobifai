@@ -79,10 +79,20 @@ func (p *Processor) ReconcileUser(ctx context.Context, userID string) (Reconcile
 
 	res.SubscriptionID = sub.ID
 	res.SubscriptionStatus = string(sub.Status)
+	priceID, _, _ := subscriptionPeriod(*sub)
+	plan, planErr := planFromPrice(p.Quota.LoadDefaults(), priceID)
+	if planErr != nil {
+		return res, planErr
+	}
 	eventID := "admin_reconcile_" + uuid.NewString()
 	ev := stripe.Event{ID: eventID, Created: time.Now().Unix()}
 	if err := p.applySubscriptionEvent(ev, *sub); err != nil {
 		return res, fmt.Errorf("apply subscription: %w", err)
+	}
+	if subscriptionGrantsAccess(sub.Status) {
+		if err := p.Quota.RepairReconcileAllowance(userID, plan); err != nil {
+			return res, fmt.Errorf("repair allowance: %w", err)
+		}
 	}
 	res.Action = "synced"
 	res.Message = "applied Stripe subscription to local quota"

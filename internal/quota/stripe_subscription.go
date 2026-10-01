@@ -105,7 +105,13 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 	row.TrialRemainingCredits = 0
 	row.TrialEndsAt = nil
 
-	if newPeriod {
+	// Stripe may advance subscription period dates before a renewal charge succeeds; defer local
+	// entitlement rollover until status is active (e.g. after invoice.paid on recovery).
+	deferPastDuePeriodAdvance := in.Status == "past_due" && newPeriod && prevStart > 0
+
+	if deferPastDuePeriodAdvance {
+		// Preserve funded period boundary, allowance, usage, top-ups, and overage; status/metadata already set.
+	} else if newPeriod {
 		if row.PeriodUsedCredits > row.PeriodAllowanceCredits {
 			row.OverageDebtCredits += row.PeriodUsedCredits - row.PeriodAllowanceCredits
 		}
@@ -118,11 +124,13 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 		}
 	}
 
-	if in.PeriodStartUnix > 0 {
-		row.PeriodStart = quotaTimePtr(unixUTC(in.PeriodStartUnix))
-	}
-	if in.PeriodEndUnix > 0 {
-		row.PeriodEnd = quotaTimePtr(unixUTC(in.PeriodEndUnix))
+	if !deferPastDuePeriodAdvance {
+		if in.PeriodStartUnix > 0 {
+			row.PeriodStart = quotaTimePtr(unixUTC(in.PeriodStartUnix))
+		}
+		if in.PeriodEndUnix > 0 {
+			row.PeriodEnd = quotaTimePtr(unixUTC(in.PeriodEndUnix))
+		}
 	}
 	if in.EventCreatedUnix > 0 {
 		row.LastStripeStateEventCreatedAt = in.EventCreatedUnix
@@ -132,6 +140,29 @@ func (s *Service) ApplyStripeSubscription(in StripeSubscriptionUpdate) error {
 
 func isPlanDowngrade(from, to string) bool {
 	return from == domain.QuotaPlanPro && to == domain.QuotaPlanStarter
+}
+
+// RepairReconcileAllowance raises under-allocated period allowance to the configured plan
+// grant without resetting usage, top-ups, or starting a new billing period. If local
+// allowance is already at or above the configured grant (e.g. same-period Pro→Starter),
+// it is preserved.
+func (s *Service) RepairReconcileAllowance(userID, plan string) error {
+	if plan != domain.QuotaPlanStarter && plan != domain.QuotaPlanPro {
+		return nil
+	}
+	configured := AllowanceCreditsForPlan(s.LoadDefaults(), plan)
+	if configured <= 0 {
+		return nil
+	}
+	row, err := s.getOrCreateRow(userID)
+	if err != nil {
+		return err
+	}
+	if row.PeriodAllowanceCredits >= configured {
+		return nil
+	}
+	row.PeriodAllowanceCredits = configured
+	return updateRow(s.db, row)
 }
 
 func subscriptionActiveStatus(status string) bool {

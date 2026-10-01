@@ -182,6 +182,7 @@ type QuotaService interface {
 	ApplySubscriptionPeriod(userID, plan, customerID, subID string, start, end int64, allowanceCredits int64) error
 	AddTopUpCredits(userID string, credits int64) error
 	ApplyStripeSubscription(in quota.StripeSubscriptionUpdate) error
+	RepairReconcileAllowance(userID, plan string) error
 	GrantTopUpOnce(userID, eventID, checkoutSessionID string, credits int64) error
 }
 

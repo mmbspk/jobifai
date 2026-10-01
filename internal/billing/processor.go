@@ -20,6 +20,7 @@ type QuotaSync interface {
 	RowByStripeCustomer(customerID string) (domain.UserQuotaRow, error)
 	SetStripeCustomer(userID, customerID string) error
 	ApplyStripeSubscription(in quota.StripeSubscriptionUpdate) error
+	RepairReconcileAllowance(userID, plan string) error
 	GrantTopUpOnce(userID, eventID, checkoutSessionID string, credits int64) error
 }
 

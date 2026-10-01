@@ -71,6 +71,7 @@ func TestBroadcaster_RegisterUnregister(t *testing.T) {
 	srv := serveWS(t, b)
 
 	conn := dialTest(t, srv, "/ws")
+	time.Sleep(20 * time.Millisecond) // allow server handler to Register before Write
 
 	// Write to broadcaster — registered client should receive it.
 	payload := `{"level":"info","message":"hello"}`
