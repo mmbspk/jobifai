@@ -6,6 +6,7 @@ import (
 	"flag"
 	"net/http"
 	"os"
+	"path/filepath"
 	"os/signal"
 	"syscall"
 	"time"
@@ -167,6 +168,13 @@ func main() {
 	botMgr.SetLLMQuota(quotaSvc)
 	botMgr.SetLLMBilling(policyStore, catalog, usageLedger)
 
+	const marketDir = "resume_markets"
+	if n := countYAMLFiles(marketDir); n == 0 {
+		log.Warn().Str("dir", marketDir).Msg("resume markets missing — Default market and Generate presets will be empty; ship resume_markets/ with the binary or rebuild the Docker image")
+	} else {
+		log.Info().Str("dir", marketDir).Int("markets", n).Msg("resume markets loaded from disk")
+	}
+
 	// ── Router ──────────────────────────────────────────────────────────
 	svc := &handler.Services{
 		StartedAt:    time.Now(),
@@ -180,7 +188,7 @@ func main() {
 		SessionStore: sessionStore,
 		Logs:         logBroadcaster,
 		Bot:          botMgr,
-		MarketDir:    "resume_markets",
+		MarketDir:    marketDir,
 		StylesDir:    "resume_style",
 		FileToText:   resume.TextFromReader,
 		FetchJobPage: resume.FetchJobPage,
@@ -367,4 +375,18 @@ func (a *usageStoreAdapter) Session(userID string) domain.SessionUsage {
 		OutputTokens: snap.OutputTokens,
 		Calls:        snap.Calls,
 	}
+}
+
+func countYAMLFiles(dir string) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".yaml" {
+			n++
+		}
+	}
+	return n
 }
