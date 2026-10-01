@@ -85,6 +85,10 @@ func main() {
 	}
 	tokenManager := auth.NewTokenManager(jwtSecret)
 	userStore := auth.NewUserStore(database)
+	logBroadcaster.SetStreamPolicy(jobws.StreamPolicy{
+		Production: billing.IsProduction(),
+		Verbose:    userStore.VerboseLogsEnabled,
+	})
 	quotaSvc := quota.NewService(database, cfgStore, userStore)
 
 	// ── Google OAuth (optional, requires env vars) ──────────────────────

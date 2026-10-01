@@ -35,7 +35,7 @@ export const adminApi = {
     },
     update: (
       userId: string,
-      body: { is_admin?: boolean; llm_overrides?: LLMOverrides; quota_overrides?: QuotaUserOverrides },
+      body: { is_admin?: boolean; verbose_logs?: boolean; llm_overrides?: LLMOverrides; quota_overrides?: QuotaUserOverrides },
     ) => apiPut<void>(`/admin/users/${userId}`, body),
     setApiKey: (userId: string, value: string) =>
       apiPost<void>(`/admin/users/${userId}/secrets/api-key`, { value }),

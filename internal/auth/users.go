@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -22,6 +23,7 @@ type User struct {
 	GoogleID     string // empty for email/password accounts
 	AvatarURL    string
 	IsAdmin      bool
+	VerboseLogs  bool
 	CreatedAt    time.Time
 }
 
@@ -30,11 +32,15 @@ var ErrEmailTaken = errors.New("email already registered")
 
 // UserStore provides user persistence over SQLite.
 type UserStore struct {
-	db *sql.DB
+	db           *sql.DB
+	verboseMu    sync.RWMutex
+	verboseCache map[string]bool
 }
 
 // NewUserStore creates a UserStore backed by db.
-func NewUserStore(db *sql.DB) *UserStore { return &UserStore{db: db} }
+func NewUserStore(db *sql.DB) *UserStore {
+	return &UserStore{db: db, verboseCache: make(map[string]bool)}
+}
 
 // Create inserts a new user and returns it. Returns ErrEmailTaken if the email
 // is already registered.
@@ -104,7 +110,7 @@ func (s *UserStore) UpsertGoogle(googleID, email, displayName, avatarURL string)
 func (s *UserStore) ByID(id string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), created_at
 		 FROM users WHERE id = ?`, id,
 	))
 }
@@ -113,7 +119,7 @@ func (s *UserStore) ByID(id string) (*User, error) {
 func (s *UserStore) ByEmail(email string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), created_at
 		 FROM users WHERE email = ?`, email,
 	))
 }
@@ -122,7 +128,7 @@ func (s *UserStore) ByEmail(email string) (*User, error) {
 func (s *UserStore) ByGoogleID(googleID string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), created_at
 		 FROM users WHERE google_id = ?`, googleID,
 	))
 }
@@ -131,7 +137,7 @@ func (s *UserStore) ByGoogleID(googleID string) (*User, error) {
 func (s *UserStore) List() ([]User, error) {
 	rows, err := s.db.Query(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), created_at
 		 FROM users ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -141,9 +147,11 @@ func (s *UserStore) List() ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &u.CreatedAt); err != nil {
+		var verbose int
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &u.CreatedAt); err != nil {
 			return nil, err
 		}
+		u.VerboseLogs = verbose != 0
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -153,6 +161,42 @@ func (s *UserStore) List() ([]User, error) {
 func (s *UserStore) SetAdmin(userID string, isAdmin bool) error {
 	_, err := s.db.Exec(`UPDATE users SET is_admin = ?, updated_at = ? WHERE id = ?`, isAdmin, time.Now(), userID)
 	return err
+}
+
+// SetVerboseLogs toggles full dashboard log streaming for a user (production debugging).
+func (s *UserStore) SetVerboseLogs(userID string, verbose bool) error {
+	v := 0
+	if verbose {
+		v = 1
+	}
+	_, err := s.db.Exec(`UPDATE users SET verbose_logs = ?, updated_at = ? WHERE id = ?`, v, time.Now(), userID)
+	if err == nil {
+		s.verboseMu.Lock()
+		s.verboseCache[userID] = verbose
+		s.verboseMu.Unlock()
+	}
+	return err
+}
+
+// VerboseLogsEnabled reports whether dashboard WebSocket clients for userID receive full logs in production.
+func (s *UserStore) VerboseLogsEnabled(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	s.verboseMu.RLock()
+	if v, ok := s.verboseCache[userID]; ok {
+		s.verboseMu.RUnlock()
+		return v
+	}
+	s.verboseMu.RUnlock()
+
+	var n int
+	err := s.db.QueryRow(`SELECT COALESCE(verbose_logs, 0) FROM users WHERE id = ?`, userID).Scan(&n)
+	verbose := err == nil && n != 0
+	s.verboseMu.Lock()
+	s.verboseCache[userID] = verbose
+	s.verboseMu.Unlock()
+	return verbose
 }
 
 // Update applies display_name and/or avatar_url changes.
@@ -166,7 +210,9 @@ func (s *UserStore) Update(userID, displayName, avatarURL string) error {
 
 func (s *UserStore) scan(row *sql.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &u.CreatedAt)
+	var verbose int
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &u.CreatedAt)
+	u.VerboseLogs = verbose != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}

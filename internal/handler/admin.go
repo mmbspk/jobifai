@@ -135,6 +135,7 @@ func (h *AdminHandlers) UsersList(w http.ResponseWriter, r *http.Request) {
 			Email:       u.Email,
 			DisplayName: u.DisplayName,
 			IsAdmin:     u.IsAdmin,
+			VerboseLogs: u.VerboseLogs,
 			CreatedAt:   u.CreatedAt.Format(time.RFC3339),
 			HasAPIKey:   config.HasUserLLMAPIKey(h.svc.Secrets, u.ID),
 		})
@@ -172,6 +173,7 @@ func (h *AdminHandlers) UserGet(w http.ResponseWriter, r *http.Request) {
 			Email:       u.Email,
 			DisplayName: u.DisplayName,
 			IsAdmin:     u.IsAdmin,
+			VerboseLogs: u.VerboseLogs,
 			CreatedAt:   u.CreatedAt.Format(time.RFC3339),
 			HasAPIKey:   config.HasUserLLMAPIKey(h.svc.Secrets, u.ID),
 		},
@@ -199,9 +201,10 @@ func (h *AdminHandlers) UserUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		IsAdmin         *bool                      `json:"is_admin"`
-		LLMOverrides    *domain.LLMOverrides       `json:"llm_overrides"`
-		QuotaOverrides  *domain.QuotaUserOverrides `json:"quota_overrides"`
+		IsAdmin        *bool                      `json:"is_admin"`
+		VerboseLogs    *bool                      `json:"verbose_logs"`
+		LLMOverrides   *domain.LLMOverrides       `json:"llm_overrides"`
+		QuotaOverrides *domain.QuotaUserOverrides `json:"quota_overrides"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
@@ -209,6 +212,12 @@ func (h *AdminHandlers) UserUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IsAdmin != nil {
 		if err := h.svc.Users.SetAdmin(userID, *req.IsAdmin); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+			return
+		}
+	}
+	if req.VerboseLogs != nil {
+		if err := h.svc.Users.SetVerboseLogs(userID, *req.VerboseLogs); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 			return
 		}
