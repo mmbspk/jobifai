@@ -111,6 +111,7 @@ func (s *Service) saveResumeVersion(ctx context.Context, userID, documentID, tit
 	if _, err := s.renderAndPersistPDF(ctx, userID, versionID, profile, rc.StyleName, cssSnap, RenderOptsFromSnapshot(renderSnap)); err != nil {
 		return versionID, err
 	}
+	s.noteStyleDrift(userID, rc.StyleName)
 	return versionID, nil
 }
 
@@ -171,6 +172,7 @@ func (s *Service) SaveCoverLetterWithSourceOnDocument(ctx context.Context, userI
 	if _, err := s.renderCoverPDF(ctx, userID, versionID, body, rc.StyleName, cssSnap); err != nil {
 		return versionID, err
 	}
+	s.noteStyleDrift(userID, rc.StyleName)
 	return versionID, nil
 }
 
@@ -204,8 +206,10 @@ func (s *Service) StoreOriginalUpload(ctx context.Context, userID, filename, med
 	if err != nil {
 		return "", err
 	}
-	_, err = s.Store.InsertOriginalFile(ctx, userID, docID, versionID, filename, mediaType, key, sha, size)
-	return versionID, err
+	if err := s.Store.InsertOriginalFile(ctx, userID, origID, docID, versionID, filename, mediaType, key, sha, size); err != nil {
+		return versionID, err
+	}
+	return versionID, nil
 }
 
 func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string) error {
@@ -233,9 +237,21 @@ func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string
 		}
 		meta.ProfileHash = hash
 		meta.Market = market
+		meta.Style = p.StyleName
 		_ = s.SaveDefaultsMeta(userID, meta)
 	}
 	return nil
+}
+
+func (s *Service) noteStyleDrift(userID, styleName string) {
+	if s.SaveDefaultsMeta == nil {
+		return
+	}
+	meta, _ := s.DefaultsMeta(userID)
+	if meta.Style == "" || strings.EqualFold(meta.Style, styleName) {
+		return
+	}
+	s.MarkDefaultsOutdated(userID, "document style changed — review your default documents", "", "")
 }
 
 func (s *Service) OriginalBytes(ctx context.Context, userID, versionID string) ([]byte, string, string, error) {
@@ -284,20 +300,15 @@ func (s *Service) ReconstructPDF(ctx context.Context, userID, versionID string) 
 	if err := AssertSupportedRenderer(p.RendererVersion); err != nil {
 		return nil, "", err
 	}
-	var renderSnap RenderSnapshot
 	if p.RenderSnapshotJSON == "" {
-		renderSnap, err = BuildRenderSnapshot(p.Market, s.MarketDir)
-		if err != nil {
-			return nil, "", err
-		}
-	} else {
-		renderSnap, err = ParseRenderSnapshot(p.RenderSnapshotJSON)
-		if err != nil {
-			return nil, "", err
-		}
-		if err := AssertSupportedRenderer(renderSnap.RendererVersion); err != nil {
-			return nil, "", err
-		}
+		return nil, "", fmt.Errorf("missing render snapshot for reconstruction (version is not reconstructible)")
+	}
+	renderSnap, err := ParseRenderSnapshot(p.RenderSnapshotJSON)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := AssertSupportedRenderer(renderSnap.RendererVersion); err != nil {
+		return nil, "", err
 	}
 	opts := RenderOptsFromSnapshot(renderSnap)
 	switch p.ContentKind {

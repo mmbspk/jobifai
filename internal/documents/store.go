@@ -119,13 +119,15 @@ func (s *Store) OriginalFileForVersion(ctx context.Context, userID, versionID st
 	return storageKey, filename, mediaType, err
 }
 
-func (s *Store) InsertOriginalFile(ctx context.Context, userID, documentID, versionID, filename, mediaType, storageKey, sha string, size int64) (string, error) {
-	id := uuid.NewString()
+func (s *Store) InsertOriginalFile(ctx context.Context, userID, originalID, documentID, versionID, filename, mediaType, storageKey, sha string, size int64) error {
+	if originalID == "" {
+		originalID = uuid.NewString()
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO document_original_files (id, user_id, document_id, content_version_id, filename, media_type, storage_key, sha256, byte_size)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, userID, documentID, versionID, filename, mediaType, storageKey, sha, size)
-	return id, err
+		originalID, userID, documentID, versionID, filename, mediaType, storageKey, sha, size)
+	return err
 }
 
 func (s *Store) LinkArtifact(ctx context.Context, userID, versionID, storageKey, sha string, size int64, templateIdentity string) error {
@@ -213,19 +215,35 @@ func (s *Store) ListDocuments(ctx context.Context, userID string) ([]Document, D
 	if err != nil {
 		return nil, DefaultsView{}, err
 	}
-	defer func() { _ = rows.Close() }()
-	var docs []Document
+	type docRow struct {
+		id, kind, title, createdAt, updatedAt string
+	}
+	var pending []docRow
 	for rows.Next() {
-		var d Document
-		if err := rows.Scan(&d.ID, &d.Kind, &d.Title, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		var r docRow
+		if err := rows.Scan(&r.id, &r.kind, &r.title, &r.createdAt, &r.updatedAt); err != nil {
+			_ = rows.Close()
 			return nil, DefaultsView{}, err
 		}
-		vers, err := s.listVersions(ctx, d.ID, userID)
+		pending = append(pending, r)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, DefaultsView{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, DefaultsView{}, err
+	}
+
+	var docs []Document
+	for _, r := range pending {
+		vers, err := s.listVersions(ctx, r.id, userID)
 		if err != nil {
 			return nil, DefaultsView{}, err
 		}
-		d.Versions = vers
-		docs = append(docs, d)
+		docs = append(docs, Document{
+			ID: r.id, Kind: r.kind, Title: r.title,
+			CreatedAt: r.createdAt, UpdatedAt: r.updatedAt, Versions: vers,
+		})
 	}
 	def, err := s.loadDefaults(ctx, userID)
 	if docs == nil {
@@ -286,6 +304,7 @@ type DefaultsMeta struct {
 	OutdatedReason  string `json:"outdated_reason,omitempty"`
 	ProfileHash     string `json:"profile_hash,omitempty"`
 	Market          string `json:"market,omitempty"`
+	Style           string `json:"style,omitempty"`
 }
 
 func MergeDefaultsMeta(def DefaultsView, meta DefaultsMeta) DefaultsView {

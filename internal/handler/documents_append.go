@@ -29,11 +29,7 @@ func (h *DocumentHandlers) AppendResumeVersion(w http.ResponseWriter, r *http.Re
 	versionID, err := h.svc.Documents.AppendResumeVersion(r.Context(), userID, documentID, req.Title, documents.SourceUserEdit, &req.Profile, documents.RenderContext{
 		Market: req.Market, StyleName: req.Style, Language: "en",
 	})
-	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]string{"content_version_id": versionID})
+	writeDocumentVersionCreated(w, versionID, err)
 }
 
 // POST /api/documents/{document_id}/cover-versions
@@ -48,9 +44,5 @@ func (h *DocumentHandlers) AppendCoverVersion(w http.ResponseWriter, r *http.Req
 	versionID, err := h.svc.Documents.AppendCoverVersion(r.Context(), userID, documentID, req.Title, req.Body, documents.SourceUserEdit, documents.RenderContext{
 		Market: req.Market, StyleName: req.Style, Language: "en",
 	})
-	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]string{"content_version_id": versionID})
+	writeDocumentVersionCreated(w, versionID, err)
 }

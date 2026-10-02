@@ -65,11 +65,7 @@ func (h *DocumentHandlers) CreateResumeFromProfile(w http.ResponseWriter, r *htt
 	versionID, err := h.svc.Documents.CreateResumeFromProfile(r.Context(), userID, req.Title, documents.RenderContext{
 		Market: req.Market, StyleName: req.Style, Language: "en",
 	})
-	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]string{"content_version_id": versionID})
+	writeDocumentVersionCreated(w, versionID, err)
 }
 
 type saveCoverReq struct {
@@ -99,11 +95,7 @@ func (h *DocumentHandlers) SaveCoverLetter(w http.ResponseWriter, r *http.Reques
 			Market: req.Market, StyleName: req.Style, Language: "en",
 		})
 	}
-	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]string{"content_version_id": versionID})
+	writeDocumentVersionCreated(w, versionID, err)
 }
 
 // POST /api/documents/cover-letter/ai-generate
@@ -133,11 +125,7 @@ func (h *DocumentHandlers) AIGenerateCoverLetter(w http.ResponseWriter, r *http.
 	versionID, err := h.svc.Documents.SaveCoverLetterWithSource(r.Context(), userID, req.Title, body, documents.SourceAIGeneral, documents.RenderContext{
 		Market: req.Market, StyleName: req.Style, Language: "en",
 	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]string{"content_version_id": versionID})
+	writeDocumentVersionCreated(w, versionID, err)
 }
 
 // POST /api/documents/resume/ai-improve
@@ -166,11 +154,7 @@ func (h *DocumentHandlers) AIImproveResume(w http.ResponseWriter, r *http.Reques
 	versionID, err := h.svc.Documents.SaveResumeVersion(r.Context(), userID, req.DocumentID, req.Title, documents.SourceAIImprove, improved, documents.RenderContext{
 		Market: req.Market, StyleName: req.Style, Language: "en",
 	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]string{"content_version_id": versionID})
+	writeDocumentVersionCreated(w, versionID, err)
 }
 
 type setDefaultReq struct {

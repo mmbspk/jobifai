@@ -5,6 +5,7 @@ import {
   documentsApi,
   fetchDocumentOriginal,
   fetchDocumentPdf,
+  type DocumentVersionCreated,
   type UserDocument,
 } from '../api/documents'
 import { settingsApi } from '../api/settings'
@@ -54,6 +55,13 @@ export function Documents() {
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['documents'] })
 
+  const afterCreate = (res?: DocumentVersionCreated) => {
+    invalidate()
+    if (res?.render_status === 'failed') {
+      setActionErr(`${res.message ?? 'PDF rendering failed'}. Use Create PDF on the saved version to retry without AI.`)
+    }
+  }
+
   const wrap = <TArgs extends readonly unknown[], T>(fn: (...args: TArgs) => Promise<T>) =>
     async (...args: TArgs) => {
       setActionErr(null)
@@ -67,19 +75,19 @@ export function Documents() {
 
   const createResume = useMutation({
     mutationFn: wrap(() => documentsApi.createResumeFromProfile({ market, style, title: 'Resume from profile' })),
-    onSuccess: invalidate,
+    onSuccess: afterCreate,
   })
   const aiImprove = useMutation({
     mutationFn: wrap(() => documentsApi.aiImproveResume({ market, style, title: 'Improved resume' })),
-    onSuccess: invalidate,
+    onSuccess: afterCreate,
   })
   const saveCover = useMutation({
     mutationFn: wrap(() => documentsApi.saveCoverLetter({ market, style, title: 'General cover letter', body: coverBody })),
-    onSuccess: () => { setCoverBody(''); invalidate() },
+    onSuccess: (res: DocumentVersionCreated) => { setCoverBody(''); afterCreate(res) },
   })
   const aiCover = useMutation({
     mutationFn: wrap(() => documentsApi.aiGenerateCover({ market, style, title: 'AI cover letter' })),
-    onSuccess: invalidate,
+    onSuccess: afterCreate,
   })
   const saveResumeEdit = useMutation({
     mutationFn: wrap(() => {
@@ -88,7 +96,7 @@ export function Documents() {
         market, style, title: 'Resume', profile: editingResume.profile,
       })
     }),
-    onSuccess: () => { setEditingResume(null); invalidate() },
+    onSuccess: (res: DocumentVersionCreated) => { setEditingResume(null); afterCreate(res) },
   })
   const saveCoverEdit = useMutation({
     mutationFn: wrap(() => {
@@ -97,7 +105,7 @@ export function Documents() {
         market, style, title: 'Cover letter', body: editingCover.body,
       })
     }),
-    onSuccess: () => { setEditingCover(null); invalidate() },
+    onSuccess: (res: DocumentVersionCreated) => { setEditingCover(null); afterCreate(res) },
   })
   const setDefault = useMutation({
     mutationFn: wrap(({ kind, id }: { kind: 'resume' | 'cover_letter'; id: string }) =>
@@ -320,8 +328,10 @@ function DocumentCard({
               {v.content_kind === 'original_file_ref' && (
                 <Button size="sm" variant="secondary" onClick={() => onDownloadOriginal(v.id)}>Download original</Button>
               )}
-              {v.has_pdf && (
-                <Button size="sm" variant="secondary" onClick={() => onPreview(v.id)}>Preview PDF</Button>
+              {(v.has_pdf || v.reconstructible) && (
+                <Button size="sm" variant="secondary" onClick={() => onPreview(v.id)}>
+                  {v.has_pdf ? 'Preview PDF' : 'Create PDF'}
+                </Button>
               )}
               {doc.kind === 'resume' && v.content_kind === 'resume_json' && (
                 <Button size="sm" variant="ghost" onClick={() => onEditResume(doc.id, v.id)}>Edit → new version</Button>

@@ -38,7 +38,7 @@ func wireDocumentService(t *testing.T, svc *handler.Services) {
 		Blobs:     blobs,
 		Renderer:  r,
 		MarketDir: "resume_markets",
-		StylesDir: "resume_markets/styles",
+		StylesDir: filepath.Join("..", "..", documents.StylesDirRelative),
 		LoadProfile: func(userID string) (*domain.ResumeProfile, error) {
 			var p domain.ResumeProfile
 			if err := svc.Config.Get(userID, "resume_profile", &p); errors.Is(err, domain.ErrNotFound) {

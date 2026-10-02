@@ -47,8 +47,8 @@ func newTestService(t *testing.T, r documents.PDFRenderer) (*documents.Service, 
 		Store:     documents.NewStore(db),
 		Blobs:     blobs,
 		Renderer:  r,
-		MarketDir: "resume_markets",
-		StylesDir: "resume_markets/styles",
+		MarketDir: filepath.Join("..", "..", "resume_markets"),
+		StylesDir: filepath.Join("..", "..", documents.StylesDirRelative),
 		LoadProfile: func(uid string) (*domain.ResumeProfile, error) {
 			if uid != userID {
 				return nil, nil

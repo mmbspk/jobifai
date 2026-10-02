@@ -28,7 +28,7 @@ func EffectiveStylesheet(stylesDir, marketDir, market, styleName string) (cssOve
 }
 
 func loadStyleCSS(stylesDir, styleName string) (css, path string, ok bool) {
-	if stylesDir == "" {
+	if stylesDir == "" || strings.TrimSpace(styleName) == "" {
 		return "", "", false
 	}
 	entries, err := os.ReadDir(stylesDir)

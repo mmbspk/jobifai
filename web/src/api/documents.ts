@@ -36,6 +36,12 @@ export type DocumentsListResponse = {
   defaults: DocumentDefaults
 }
 
+export type DocumentVersionCreated = {
+  content_version_id: string
+  render_status?: 'ok' | 'failed'
+  message?: string
+}
+
 export type VersionDetail = {
   id: string
   document_id: string
@@ -50,22 +56,22 @@ export const documentsApi = {
   getVersion: (versionId: string) => apiGet<VersionDetail>(`/documents/versions/${versionId}`),
 
   createResumeFromProfile: (body: { title?: string; market?: string; style?: string; document_id?: string }) =>
-    apiPost<{ content_version_id: string }>('/documents/resume/from-profile', body),
+    apiPost<DocumentVersionCreated>('/documents/resume/from-profile', body),
 
   appendResumeVersion: (documentId: string, body: { title?: string; market?: string; style?: string; profile: ResumeProfile }) =>
-    apiPost<{ content_version_id: string }>(`/documents/${documentId}/resume-versions`, body),
+    apiPost<DocumentVersionCreated>(`/documents/${documentId}/resume-versions`, body),
 
   saveCoverLetter: (body: { title?: string; body: string; market?: string; style?: string; document_id?: string }) =>
-    apiPost<{ content_version_id: string }>('/documents/cover-letter', body),
+    apiPost<DocumentVersionCreated>('/documents/cover-letter', body),
 
   appendCoverVersion: (documentId: string, body: { title?: string; body: string; market?: string; style?: string }) =>
-    apiPost<{ content_version_id: string }>(`/documents/${documentId}/cover-versions`, body),
+    apiPost<DocumentVersionCreated>(`/documents/${documentId}/cover-versions`, body),
 
   aiImproveResume: (body: { title?: string; market?: string; style?: string; document_id?: string }) =>
-    apiPost<{ content_version_id: string }>('/documents/resume/ai-improve', body),
+    apiPost<DocumentVersionCreated>('/documents/resume/ai-improve', body),
 
   aiGenerateCover: (body: { title?: string; market?: string; style?: string; document_id?: string }) =>
-    apiPost<{ content_version_id: string }>('/documents/cover-letter/ai-generate', body),
+    apiPost<DocumentVersionCreated>('/documents/cover-letter/ai-generate', body),
 
   setDefault: (kind: 'resume' | 'cover_letter', content_version_id: string) =>
     apiPut<{ message: string }>('/documents/defaults', { kind, content_version_id }),

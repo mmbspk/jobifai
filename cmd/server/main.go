@@ -190,7 +190,7 @@ func main() {
 		Blobs:     docBlobs,
 		Renderer:  renderer,
 		MarketDir: marketDir,
-		StylesDir: "resume_style",
+		StylesDir: documents.StylesDirRelative,
 		LoadProfile: func(userID string) (*domain.ResumeProfile, error) {
 			var p domain.ResumeProfile
 			if err := cfgStore.Get(userID, "resume_profile", &p); errors.Is(err, domain.ErrNotFound) {
@@ -229,7 +229,7 @@ func main() {
 		Logs:         logBroadcaster,
 		Bot:          botMgr,
 		MarketDir:    marketDir,
-		StylesDir:    "resume_style",
+		StylesDir:    documents.StylesDirRelative,
 		FileToText:   resume.TextFromReader,
 		FetchJobPage: resume.FetchJobPage,
 		MarketLoader: func(path, yamlFile string) (*domain.ResumeMarket, error) {
