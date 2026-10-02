@@ -25,7 +25,10 @@ import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { Landing } from './pages/Landing'
 import { Pricing } from './pages/Pricing'
+import { PostAuthRedirect } from './components/auth/PostAuthRedirect'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { hasStoredAuthCredentials } from './lib/authSession'
+import { resolvePostAuthDestination, savePostAuthRedirect } from './lib/postAuthRedirect'
 import { SettingsTabNav } from './components/settings/SettingsTabNav'
 import { AdminNav } from './components/admin/AdminNav'
 import { Badge } from './components/ui/badge'
@@ -93,12 +96,15 @@ function AdminLayout() {
   )
 }
 
-// Redirects unauthenticated users to /login; shows nothing while auth is loading.
+// Protected URLs always sign in via login so we can return to the requested page.
 function ProtectedRoute({ children }: Readonly<{ children: React.ReactNode }>) {
   const { user, loading } = useAuth()
   const location = useLocation()
   if (loading) return null
-  if (!user) return <Navigate to="/login" state={{ from: location }} replace />
+  if (!user) {
+    savePostAuthRedirect(`${location.pathname}${location.search}${location.hash}`)
+    return <Navigate to="/login" state={{ from: location }} replace />
+  }
   return <>{children}</>
 }
 
@@ -106,23 +112,57 @@ function AdminRoute({ children }: Readonly<{ children: React.ReactNode }>) {
   const { user, loading } = useAuth()
   const location = useLocation()
   if (loading) return null
-  if (!user) return <Navigate to="/login" state={{ from: location }} replace />
+  if (!user) {
+    savePostAuthRedirect(`${location.pathname}${location.search}${location.hash}`)
+    return <Navigate to="/login" state={{ from: location }} replace />
+  }
   if (!user.is_admin) return <Navigate to="/" replace state={{ from: location }} />
   return <>{children}</>
+}
+
+type AuthRedirectState = { from?: { pathname: string; search?: string; hash?: string } }
+
+/** Signed-in users leave auth pages for their intended destination (or home). */
+function GuestRoute({ children }: Readonly<{ children: React.ReactNode }>) {
+  const { user, loading } = useAuth()
+  const location = useLocation()
+  if (loading) return null
+  if (user) {
+    const dest = resolvePostAuthDestination((location.state as AuthRedirectState | null)?.from)
+    return <Navigate to={dest} replace />
+  }
+  return <>{children}</>
+}
+
+/** App root: dashboard when signed in; welcome or login when not. */
+function HomeGate() {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (user) return <Layout><Dashboard /></Layout>
+  if (hasStoredAuthCredentials()) return <Navigate to="/login" replace />
+  return <Landing />
+}
+
+/** Public welcome URL — same landing, redirect to app when already signed in. */
+function WelcomePage() {
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (user) return <Navigate to="/" replace />
+  return <Landing />
 }
 
 function AppRoutes() {
   return (
     <Routes>
       {/* Public pages — kept outside the authenticated app shell. */}
-      <Route path="/welcome"  element={<Landing />} />
-      <Route path="/pricing"  element={<Pricing />} />
-      <Route path="/login"    element={<Login />} />
-      <Route path="/register" element={<Register />} />
+      <Route path="/"        element={<HomeGate />} />
+      <Route path="/welcome" element={<WelcomePage />} />
+      <Route path="/pricing" element={<Pricing />} />
+      <Route path="/login"    element={<GuestRoute><Login /></GuestRoute>} />
+      <Route path="/register" element={<GuestRoute><Register /></GuestRoute>} />
 
-      {/* All other routes require authentication */}
+      {/* Authenticated app shell (paths other than /) */}
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-        <Route path="/"                      element={<Dashboard />} />
         <Route path="/jobs/applied"          element={<JobsApplied />} />
         <Route path="/jobs/skipped"          element={<JobsSkipped />} />
         <Route path="/jobs/cannot-apply"     element={<JobsCannotApply />} />
@@ -141,6 +181,7 @@ export function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <PostAuthRedirect />
         <AppRoutes />
       </AuthProvider>
     </BrowserRouter>

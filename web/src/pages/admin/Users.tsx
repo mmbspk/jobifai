@@ -70,6 +70,14 @@ export function AdminUsersPage() {
     },
   })
 
+  const toggleVerboseLogs = useMutation({
+    mutationFn: (next: boolean) => adminApi.users.update(selectedId!, { verbose_logs: next }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-users'] })
+      qc.invalidateQueries({ queryKey: ['admin-user', selectedId] })
+    },
+  })
+
   const pruneE2E = useMutation({
     mutationFn: () => adminApi.users.pruneE2E(),
     onSuccess: () => {
@@ -149,6 +157,12 @@ export function AdminUsersPage() {
                   helper="Can open the Admin area and change deployment defaults."
                   checked={detail.is_admin}
                   onCheckedChange={v => toggleAdmin.mutate(v)}
+                />
+                <Switch
+                  label="Verbose dashboard logs"
+                  helper="In production, show debug and LLM lines on this account’s home log panel (default off)."
+                  checked={detail.verbose_logs ?? false}
+                  onCheckedChange={v => toggleVerboseLogs.mutate(v)}
                 />
                 {'usage_summary' in detail && detail.usage_summary && (
                   <div className="mt-4 grid gap-2 sm:grid-cols-2 text-sm">

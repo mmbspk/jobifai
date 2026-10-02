@@ -15,7 +15,7 @@ test.describe('Auth flows', () => {
     await expect(page.getByText('Automation is ready')).toBeVisible()
   })
 
-  test('login via UI → dashboard → logout → back to /login', async ({ page, request }) => {
+  test('login via UI → dashboard → logout → back to welcome', async ({ page, request }) => {
     const email = `login-${Date.now()}@e2e.test`
     await request.post('/auth/register', {
       data: { email, password: 'e2epassword1', display_name: 'E2E Login Test' },
@@ -30,19 +30,50 @@ test.describe('Auth flows', () => {
     await expect(page.getByText('Automation is ready')).toBeVisible()
 
     await page.getByTitle('Sign out').click()
-    await page.waitForURL('/login')
-    await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible()
+    await page.waitForURL('/')
+    await expect(page.getByRole('heading', { name: /Job applications, without the repetitive work/i })).toBeVisible()
   })
 
-  test('protected routes redirect unauthenticated users to /login', async ({ page }) => {
-    // No token injection — fresh context starts with empty localStorage
-    await page.goto('/')
-    await expect(page).toHaveURL(/\/login/)
-
+  test('protected routes redirect unauthenticated users to login', async ({ page }) => {
     await page.goto('/jobs/applied')
     await expect(page).toHaveURL(/\/login/)
 
-    await page.goto('/settings/general')
+    await page.goto('/settings/application')
+    await expect(page).toHaveURL(/\/login/)
+
+    await page.goto('/review')
+    await expect(page).toHaveURL(/\/login/)
+  })
+
+  test('app root shows welcome for new visitors', async ({ page }) => {
+    await page.goto('/')
+    await expect(page.getByRole('heading', { name: /Job applications, without the repetitive work/i })).toBeVisible()
+  })
+
+  test('login returns to the protected page the user tried to open', async ({ page, request }) => {
+    const email = `deep-${Date.now()}@e2e.test`
+    await request.post('/auth/register', {
+      data: { email, password: 'e2epassword1', display_name: 'Deep Link Test' },
+    })
+
+    await page.goto('/review')
+    await expect(page).toHaveURL(/\/login/)
+
+    await page.locator('input[type="email"]').fill(email)
+    await page.locator('input[type="password"]').fill('e2epassword1')
+    await page.getByRole('button', { name: 'Sign in' }).click()
+
+    await expect(page).toHaveURL(/\/review$/)
+    await expect(page.getByRole('heading', { name: 'Review' })).toBeVisible()
+    await expect(page.getByText(/all caught up/i)).toBeVisible()
+  })
+
+  test('returning visitor with stored tokens is sent to login from app root', async ({ page }) => {
+    await page.goto('/login')
+    await page.evaluate(() => {
+      localStorage.setItem('refresh_token', 'stale-e2e-token')
+    })
+    await page.goto('/')
     await expect(page).toHaveURL(/\/login/)
   })
 

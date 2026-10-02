@@ -13,7 +13,7 @@ export function AuthLayout({ title, subtitle, children, footer }: AuthLayoutProp
     <div className="min-h-dvh auth-bg flex items-center justify-center px-4 py-10">
       <div className="w-full max-w-[400px] space-y-8">
         <div className="flex flex-col items-center text-center space-y-3">
-          <Link to="/login" className="inline-flex rounded-[var(--radius-md)] focus-visible:outline-offset-4">
+          <Link to="/" className="inline-flex rounded-[var(--radius-md)] focus-visible:outline-offset-4">
             <JobifaiLogo markSize={32} className="text-base" />
           </Link>
           <div>
@@ -28,10 +28,17 @@ export function AuthLayout({ title, subtitle, children, footer }: AuthLayoutProp
   )
 }
 
-export function GoogleSignInButton({ href }: { readonly href: string }) {
+export function GoogleSignInButton({
+  href,
+  onBeforeNavigate,
+}: {
+  readonly href: string
+  readonly onBeforeNavigate?: () => void
+}) {
   return (
     <a
       href={href}
+      onClick={() => onBeforeNavigate?.()}
       className={[
         'flex items-center justify-center gap-2 w-full min-h-[44px] py-2.5',
         'rounded-[var(--radius-md)] border border-[var(--color-border)]',
