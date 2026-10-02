@@ -18,6 +18,7 @@ import (
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/quota"
+	"github.com/user/jobifai/internal/resume"
 )
 
 // ResumeExtractor is the interface the upload handler uses to parse resume files.
@@ -124,7 +125,7 @@ type JobQuestionAnswerer interface {
 
 // ResumeRenderer turns a profile into a PDF byte slice.
 type ResumeRenderer interface {
-	RenderResume(ctx context.Context, profile *domain.ResumeProfile, styleName, cssOverride string) ([]byte, error)
+	RenderResume(ctx context.Context, profile *domain.ResumeProfile, styleName, cssOverride string, opts *resume.RenderOptions) ([]byte, error)
 	RenderCoverLetter(ctx context.Context, body string, styleName, cssOverride string) ([]byte, error)
 }
 

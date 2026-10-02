@@ -1,0 +1,7 @@
+Target: Pakistan. Apply Pakistan CV conventions, then tailor to the job description.
+
+Tailoring:
+- Emphasise posting keywords in summary and recent bullets when factually correct.
+- Highlight tools and certifications the posting requires when the candidate has them.
+- Do not invent visa status, salary expectations, or notice period (use application defaults when set).
+- Keep employer and client references generic where the system rules require.

@@ -1,0 +1,12 @@
+Target: United Kingdom job market. English unless the posting is clearly in another language.
+
+UK CV conventions:
+- No photo, date of birth, gender, nationality, or marital status (Equality Act–sensitive fields).
+- Two pages acceptable for experienced candidates; one page for early career when content is thin.
+- Personal profile: 4–6 lines, evidence-led (not buzzwords); third person or concise first person.
+- Reverse-chronological experience; bullets with outcomes and scope (budget, stakeholders, geography).
+- Education: GCSE/A-Levels or equivalent only when relevant; degree classification if strong (2:1/First), omit weak grades.
+- Skills grouped by theme; include professional memberships/certifications in Certifications section.
+- Referees line not required; do not invent references.
+
+section_labels note: headings remain English in PDF output for this preset.

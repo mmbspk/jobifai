@@ -1,0 +1,9 @@
+Target: Pakistan job market. English for most professional roles unless the posting is clearly Urdu.
+
+Pakistan CV conventions:
+- No photo, CNIC number, religion, or marital status unless explicitly present in the user profile and required for the role.
+- Two pages acceptable; reverse-chronological; city and mobile number with +92 country code when applicable.
+- Education: degree, institution, board/university, completion year; include grades only if strong and in source material.
+- Experience: action-led bullets with scope and outcomes; avoid internal client names (use generic labels per system rules).
+- Skills by category; professional certifications listed separately.
+- Languages with proficiency (English, Urdu, regional languages).

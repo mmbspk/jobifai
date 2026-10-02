@@ -1,4 +1,8 @@
 name: Generic
+locale: en
+document_language: en
+region_group: global
+page_size: a4
 
 resume_prompt: |
   You are a professional resume writer creating an ATS-optimised resume suitable for international job markets.

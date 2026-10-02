@@ -54,7 +54,7 @@ func ProviderMessages(task string, input json.RawMessage) ([]llm.Message, error)
 		if err := json.Unmarshal(input, &in); err != nil {
 			return nil, err
 		}
-		return []llm.Message{{Role: "user", Content: BuildExtractPrompt(in.ResumeText)}}, nil
+		return BuildExtractMessages(in.ResumeText), nil
 	case domain.TaskResumeTailoring:
 		var in struct {
 			Profile        json.RawMessage `json:"profile"`
@@ -67,11 +67,7 @@ func ProviderMessages(task string, input json.RawMessage) ([]llm.Message, error)
 		if err := json.Unmarshal(in.Profile, &profile); err != nil {
 			return nil, err
 		}
-		p, err := BuildTailorPrompt(&profile, in.JobDescription)
-		if err != nil {
-			return nil, err
-		}
-		return []llm.Message{{Role: "user", Content: p}}, nil
+		return BuildTailorMessages(&profile, in.JobDescription)
 	case domain.TaskCoverLetter:
 		var in struct {
 			Profile        json.RawMessage `json:"profile"`
@@ -84,11 +80,7 @@ func ProviderMessages(task string, input json.RawMessage) ([]llm.Message, error)
 		if err := json.Unmarshal(in.Profile, &profile); err != nil {
 			return nil, err
 		}
-		p, err := BuildCoverLetterPrompt(&profile, in.JobDescription)
-		if err != nil {
-			return nil, err
-		}
-		return []llm.Message{{Role: "user", Content: p}}, nil
+		return BuildCoverLetterMessages(&profile, in.JobDescription)
 	case domain.TaskApplicationQuestions:
 		var in struct {
 			Profile    json.RawMessage   `json:"profile"`

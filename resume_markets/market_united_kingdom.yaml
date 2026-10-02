@@ -1,0 +1,11 @@
+name: United Kingdom
+locale: en-GB
+document_language: en
+region_group: europe
+page_size: a4
+css_file: resume_markets/styles/style_uk.css
+
+prompt_files:
+  resume: prompts/en-GB/united_kingdom.resume.txt
+  tailored: prompts/en-GB/united_kingdom.tailored.txt
+  cover: prompts/en-GB/united_kingdom.cover.txt

@@ -1,0 +1,11 @@
+name: Nordics
+locale: en-SE
+document_language: en
+region_group: europe
+page_size: a4
+css_file: resume_markets/styles/style_nordics.css
+
+prompt_files:
+  resume: prompts/en-SE/nordics.resume.txt
+  tailored: prompts/en-SE/nordics.tailored.txt
+  cover: prompts/en-SE/nordics.cover.txt

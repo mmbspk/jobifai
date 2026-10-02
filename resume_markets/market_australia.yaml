@@ -1,4 +1,8 @@
 name: Australia
+locale: en-AU
+document_language: en
+region_group: asia_pacific
+page_size: a4
 css_file: resume_markets/styles/style_au.css
 
 resume_prompt: |

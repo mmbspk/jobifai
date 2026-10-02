@@ -18,14 +18,17 @@ cover_letter_prompt: "Write a cover letter."
 
 func TestLoadMarket_Valid(t *testing.T) {
 	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "prompts", "_shared"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompts", "_shared", "ats_json.en.txt"), []byte("ATS & EXTRACTION shared rules."), 0o644))
 	path := filepath.Join(dir, "market_test.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(minimalMarketYAML), 0o644))
 
 	m, err := resume.LoadMarket(path)
 	require.NoError(t, err)
 	assert.Equal(t, "TestMarket", m.Name)
-	assert.Equal(t, "Write a great resume.", m.ResumePrompt)
-	assert.Equal(t, "Tailor for the job.", m.TailoredPrompt)
+	assert.Contains(t, m.ResumePrompt, "Write a great resume.")
+	assert.Contains(t, m.ResumePrompt, "ATS & EXTRACTION")
+	assert.Contains(t, m.TailoredPrompt, "Tailor for the job.")
 }
 
 func TestLoadMarket_Missing(t *testing.T) {

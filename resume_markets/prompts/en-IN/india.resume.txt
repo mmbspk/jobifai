@@ -1,0 +1,9 @@
+Target: India job market. English for corporate and multinational roles unless the posting is clearly Hindi or another language.
+
+India CV conventions:
+- No photo, religion, caste, father’s name, or marital status unless already in the user profile and explicitly required.
+- Two pages common; reverse-chronological; city and phone with country code in structured fields.
+- Education: degree, institution, board/university, year; include GPA/percentage only if strong and present in source.
+- Experience bullets with metrics (cost, scale, team size, revenue impact) when factual.
+- Skills grouped by domain; certifications (PMP, cloud, domain licences) in Certifications.
+- Languages in languages array with proficiency.

@@ -1,0 +1,10 @@
+Target: United States job market. Write in English unless the role materials are clearly in another language.
+
+US resume conventions (recruiter + ATS):
+- No photo, date of birth, marital status, religion, or full street address; city and state are enough.
+- Length: one page for most profiles under ~10 years experience; two pages maximum for senior roles.
+- Reverse-chronological roles; measurable bullets (%, $, volume, team size) when factual.
+- Professional summary: 2–4 tight lines aligned to the candidate's target role (not a generic objective).
+- Skills as "Category: item, item" strings or a concise flat list; mirror job keywords only when accurate.
+- Education: degree, institution, location optional, graduation year; omit high school if tertiary is listed.
+- No "References available upon request" block.

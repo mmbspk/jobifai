@@ -1,0 +1,9 @@
+Target: France CV market. Default English; use French when the job description is clearly French.
+
+French CV conventions:
+- No photo, age, marital status, or national ID in exported PDF (anti-discrimination best practice).
+- Education often high on page: diplômes, grandes écoles/universities, years, specialisation.
+- Experience: reverse-chronological; concise bullets; quantify when factual.
+- Languages with CEFR levels; driving licence only if present in source profile.
+- Skills grouped by domain; certifications and habilitations in Certifications.
+- Length: commonly two pages for mid-career; keep dense but readable.

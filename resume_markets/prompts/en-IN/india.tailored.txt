@@ -1,0 +1,7 @@
+Target: India. Apply India CV conventions, then tailor to the job description.
+
+Tailoring:
+- Prioritise keywords from the posting in summary and recent role bullets when accurate.
+- Surface relevant certifications and tools the posting mentions.
+- Do not invent notice period, current CTC, or expected CTC (those live in application defaults when provided).
+- Do not fabricate work authorization.

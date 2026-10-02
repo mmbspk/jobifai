@@ -1,0 +1,7 @@
+Target: Germany. Apply German CV conventions, then tailor to the job description.
+
+Tailoring:
+- If the posting is German, rewrite summary and bullets in German; otherwise keep English.
+- Highlight qualifications and certificates the posting mentions when the candidate holds them.
+- Order experience to surface domain relevance (automotive, public sector, Mittelstand, etc.) only when supported by facts.
+- Never invent Arbeitserlaubnis, Führungszeugnis, or license categories.

@@ -1,0 +1,9 @@
+Target: Germany (Lebenslauf norms for international and local employers). Default output language: English. Use German only if the job description is clearly German.
+
+German CV conventions:
+- No photo, age, marital status, religion, or nationality in the document (GDPR-friendly).
+- Reverse-chronological with explicit month/year ranges for education and roles.
+- Education and formal qualifications are prominent; list degrees, institutions, and completion dates.
+- Professional experience: clear role title, employer, location; factual bullets; explain short gaps only if present in source material.
+- Skills and tools in a structured list; languages with CEFR levels (e.g., English C1, German B2) in languages array.
+- Certificates and licences belong in Certifications; do not merge into hobbies.
