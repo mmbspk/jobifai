@@ -197,7 +197,11 @@ func renderResumeHTML(p *domain.ResumeProfile, css string, labels SectionLabels)
 	return buf.String(), nil
 }
 
-// expandStylesheetImports inlines local @import "./file.css" for PDF rendering.
+// ExpandStylesheetImports inlines local @import "./file.css" for PDF rendering.
+func ExpandStylesheetImports(css, dir string) string {
+	return expandStylesheetImports(css, dir)
+}
+
 func expandStylesheetImports(css, dir string) string {
 	const lead = `@import "./`
 	for {
@@ -278,6 +282,9 @@ func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) ([]byte, error
 }
 
 // ── built-in minimal CSS (fallback) ──────────────────────────────────────
+
+// DefaultPDFCSS returns the built-in stylesheet used when no market/style override applies.
+func DefaultPDFCSS() string { return defaultCSS }
 
 const defaultCSS = `
 body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11pt; color: #222; margin: 0; padding: 2cm; }

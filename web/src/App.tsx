@@ -7,6 +7,7 @@ import { JobsCannotApply } from './pages/JobsCannotApply'
 import { TopMatches } from './pages/TopMatches'
 import { Review } from './pages/Review'
 import { Generate } from './pages/Generate'
+import { Documents } from './pages/Documents'
 import { ApplicationSettingsPage } from './pages/settings/Application'
 import { AdminOverviewPage } from './pages/admin/Overview'
 import { AdminDefaultsPage } from './pages/admin/Defaults'
@@ -169,6 +170,7 @@ function AppRoutes() {
         <Route path="/jobs/top-matches"      element={<TopMatches />} />
         <Route path="/review"                element={<Review />} />
         <Route path="/generate"              element={<Generate />} />
+        <Route path="/documents"            element={<Documents />} />
         <Route path="/settings/*"            element={<SettingsLayout />} />
         <Route path="/admin/*"               element={<AdminRoute><AdminLayout /></AdminRoute>} />
         <Route path="*"                      element={<Navigate to="/" replace />} />

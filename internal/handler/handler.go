@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/bot"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
@@ -82,6 +83,8 @@ type Services struct {
 	MarketPrefixLookup func(marketDir, name, section string) string
 	// MarketCSSFileLookup returns the CSS file path for a named market, or "".
 	MarketCSSFileLookup func(marketDir, name string) string
+	// Documents manages versioned resumes, cover letters, and PDF artifacts (Epic #40 / #58).
+	Documents *documents.Service
 }
 
 // GoogleOAuthHandler handles the Google OAuth2 redirect + callback.

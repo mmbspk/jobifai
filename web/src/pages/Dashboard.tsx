@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { ChevronRight, CircleSlash2, ClipboardCheck, Send, Settings, Star } from 'lucide-react'
+import { ChevronRight, CircleSlash2, ClipboardCheck, FileText, Send, Settings, Star } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useBot } from '../hooks/useBot'
 import { useLogs } from '../hooks/useLogs'
@@ -113,6 +113,18 @@ export function Dashboard() {
             pausePending={pause.isPending}
             resumePending={resume.isPending}
           />
+
+          <Link
+            to="/documents"
+            className="flex items-center gap-3 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 text-sm hover:border-[var(--color-accent)]/40 transition-colors"
+          >
+            <FileText size={18} className="text-[var(--color-accent)]" />
+            <span className="flex-1">
+              <span className="font-medium block">Saved documents</span>
+              <span className="text-[var(--color-text-dim)]">Versioned resumes and cover letters with explicit defaults</span>
+            </span>
+            <ChevronRight size={16} className="text-[var(--color-text-dim)]" />
+          </Link>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <StatCard

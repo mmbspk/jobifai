@@ -12,14 +12,16 @@ import (
 
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/config"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	keyGeneralSettings = "general_settings"
-	keyWorkPreferences = "work_preferences"
-	keyResumeProfile   = "resume_profile"
+	keyGeneralSettings      = "general_settings"
+	keyWorkPreferences      = "work_preferences"
+	keyResumeProfile        = "resume_profile"
+	keyDocumentDefaultsMeta = "document_defaults_meta"
 )
 
 // SettingsHandlers groups all settings/configuration handlers.
@@ -54,6 +56,9 @@ func (h *SettingsHandlers) ResumeSet(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Config.Set(userID, keyResumeProfile, p); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
+	}
+	if h.svc.Documents != nil {
+		h.svc.Documents.MarkDefaultsOutdated(userID, "confirmed profile changed — review your default documents", documents.ProfileSnapshotHash(&p), "")
 	}
 	okMsg(w, "resume profile saved")
 }
@@ -232,6 +237,9 @@ func (h *SettingsHandlers) GeneralSet(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Config.Set(userID, keyGeneralSettings, toSave); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
+	}
+	if h.svc.Documents != nil && stored.DefaultResumeMarket != toSave.DefaultResumeMarket {
+		h.svc.Documents.MarkDefaultsOutdated(userID, "default resume market changed — review your default documents", "", toSave.DefaultResumeMarket)
 	}
 	okMsg(w, "general settings saved")
 }
