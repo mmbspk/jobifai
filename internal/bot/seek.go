@@ -957,7 +957,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 	if b.cfg.HalalChecker != nil {
 		verdict, err := b.cfg.HalalChecker.CheckHalal(ctx, job.Title, job.Company, jobDesc)
 		if err != nil {
-			if isQuotaExceeded(err) {
+			if isJobifaiQuotaExceeded(err) {
 				b.abortOnLLMFailure(err)
 				return result.Score, result.Reasoning, nil, false
 			}
@@ -1419,11 +1419,23 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		time.Sleep(300 * time.Millisecond)
 
 		// Fill any screening questions visible on the current page.
-		filled, hasFields := b.fillFormStep(ctx, page, lazy)
+		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy)
+		if fillErr != nil {
+			if isJobifaiQuotaExceeded(fillErr) {
+				b.abortOnLLMFailure(fillErr)
+			}
+			return fmt.Errorf("seek apply: form fill aborted: %w", fillErr)
+		}
 		if hasFields && !filled {
 			// React may still be mounting fields — retry once before advancing.
 			time.Sleep(800 * time.Millisecond)
-			filled, hasFields = b.fillFormStep(ctx, page, lazy)
+			filled, hasFields, fillErr = b.fillFormStep(ctx, page, lazy)
+			if fillErr != nil {
+				if isJobifaiQuotaExceeded(fillErr) {
+					b.abortOnLLMFailure(fillErr)
+				}
+				return fmt.Errorf("seek apply: form fill aborted: %w", fillErr)
+			}
 		}
 		if hasFields && !filled {
 			if msgs := b.seekValidationMessages(page); len(msgs) > 0 {
@@ -1454,7 +1466,14 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if isSubmit {
 			// Final step: ensure consent/terms checkboxes are ticked before submit.
 			if b.seekEnsureConsentChecked(page) {
-				if refilled, _ := b.fillFormStep(ctx, page, lazy); refilled {
+				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)
+				if refillErr != nil {
+					if isJobifaiQuotaExceeded(refillErr) {
+						b.abortOnLLMFailure(refillErr)
+					}
+					return fmt.Errorf("seek apply: form fill aborted: %w", refillErr)
+				}
+				if refilled {
 					log.Info().Msg("seek: filled consent checkbox(es) before submit")
 				}
 			}
@@ -1470,7 +1489,12 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 				// Retry once: consent checkbox or validation may have blocked submit.
 				log.Warn().Err(err).Msg("seek: first submit unconfirmed, retrying consent+submit")
 				if b.seekEnsureConsentChecked(page) {
-					b.fillFormStep(ctx, page, lazy)
+					if _, _, refillErr := b.fillFormStep(ctx, page, lazy); refillErr != nil {
+						if isJobifaiQuotaExceeded(refillErr) {
+							b.abortOnLLMFailure(refillErr)
+						}
+						return fmt.Errorf("seek apply: form fill aborted: %w", refillErr)
+					}
 				}
 				if retryBtn, retrySubmit := b.seekFindActionButton(page); retryBtn != nil && retrySubmit {
 					if rtxt, _ := retryBtn.Text(); retryBtn.Click(proto.InputMouseButtonLeft, 1) == nil {

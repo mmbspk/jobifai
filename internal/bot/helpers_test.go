@@ -346,10 +346,34 @@ func TestSeekWhereCanonical(t *testing.T) {
 	assert.Equal(t, "All Melbourne VIC", where)
 }
 
-func TestIsQuotaExceeded(t *testing.T) {
-	assert.False(t, isQuotaExceeded(nil))
-	assert.True(t, isQuotaExceeded(quota.ErrExceeded))
-	assert.True(t, isQuotaExceeded(&quota.ExceededError{Code: "trial_exhausted", Scope: "trial"}))
-	assert.True(t, isQuotaExceeded(fmt.Errorf("scorer: llm: %w", quota.ErrExceeded)))
-	assert.False(t, isQuotaExceeded(fmt.Errorf("connection refused")))
+func TestIsJobifaiQuotaExceeded(t *testing.T) {
+	assert.False(t, isJobifaiQuotaExceeded(nil))
+	assert.True(t, isJobifaiQuotaExceeded(quota.ErrExceeded))
+	assert.True(t, isJobifaiQuotaExceeded(&quota.ExceededError{Code: "trial_exhausted", Scope: "trial"}))
+	assert.True(t, isJobifaiQuotaExceeded(fmt.Errorf("scorer: llm: %w", quota.ErrExceeded)))
+	assert.False(t, isJobifaiQuotaExceeded(fmt.Errorf("openai quota exceeded")))
+	assert.False(t, isJobifaiQuotaExceeded(fmt.Errorf("connection refused")))
+}
+
+func TestLlmAbortReason_JobifaiVsProviderQuota(t *testing.T) {
+	jobifai := llmAbortReason(fmt.Errorf("scorer: llm: %w", quota.ErrExceeded))
+	assert.Contains(t, jobifai, "Settings → Plan")
+	assert.NotContains(t, jobifai, "provider")
+
+	provider := llmAbortReason(fmt.Errorf("llm http 429: rate limit"))
+	assert.Contains(t, provider, "provider")
+	assert.NotContains(t, provider, "Settings → Plan")
+}
+
+func TestResolveFormFieldAnswer_QuotaBlocksFallback(t *testing.T) {
+	qErr := fmt.Errorf("form question: %w", quota.ErrExceeded)
+	ans, err := resolveFormFieldAnswer("", qErr, "first option")
+	assert.Error(t, err)
+	assert.True(t, isJobifaiQuotaExceeded(err))
+	assert.Empty(t, ans)
+}
+
+func TestShouldAdvanceApplyForm_BlocksOnJobifaiQuota(t *testing.T) {
+	assert.True(t, shouldAdvanceApplyForm(nil))
+	assert.False(t, shouldAdvanceApplyForm(fmt.Errorf("form: %w", quota.ErrExceeded)))
 }
