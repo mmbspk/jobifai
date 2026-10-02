@@ -17,7 +17,7 @@ test.describe('Admin', () => {
     await page.goto('/admin/overview')
     await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible()
     const adminNav = page.getByRole('navigation', { name: 'Admin sections' })
-    await expect(adminNav.getByText('People & billing')).toBeVisible()
+    await expect(adminNav.getByRole('link', { name: 'Users' })).toBeVisible()
     await adminNav.getByRole('link', { name: 'Audit & operations' }).click()
     await expect(page).toHaveURL(/\/admin\/audit/)
     await expect(page.getByRole('heading', { name: 'Audit & operations' })).toBeVisible()
