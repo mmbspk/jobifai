@@ -149,7 +149,7 @@ export function AdminAuditErrorsPage() {
             <tbody>
               {(jobsRecentQ.data?.jobs ?? []).map((row, i) => (
                 <tr key={i} className="border-t border-[var(--color-border-subtle)]">
-                  <td className="px-3 py-2 text-xs">{String(row.created_at).slice(0, 19)}</td>
+                  <td className="px-3 py-2 text-xs whitespace-nowrap">{localTime(row.created_at)}</td>
                   <td className="px-3 py-2 font-mono text-xs">{String(row.user_id).slice(0, 8)}</td>
                   <td className="px-3 py-2">{String(row.platform)}</td>
                   <td className="px-3 py-2">{String(row.company)}</td>
@@ -195,7 +195,7 @@ export function AdminAuditErrorsPage() {
             <tbody>
               {(errorsQ.data?.errors ?? []).map((row, i) => (
                 <tr key={i} className="border-t border-[var(--color-border-subtle)]">
-                  <td className="px-3 py-2 text-xs">{row.timestamp?.slice(0, 19)}</td>
+                  <td className="px-3 py-2 text-xs whitespace-nowrap">{localTime(row.timestamp)}</td>
                   <td className="px-3 py-2">{row.subsystem}</td>
                   <td className="px-3 py-2 font-mono text-xs">{row.task || '—'}</td>
                   <td className="px-3 py-2 text-red-600 dark:text-red-400">{row.error_code || '—'}</td>
@@ -234,7 +234,7 @@ export function AdminAuditErrorsPage() {
             <tbody>
               {(auditQ.data?.audit ?? []).map((row, i) => (
                 <tr key={i} className="border-t border-[var(--color-border-subtle)]">
-                  <td className="px-3 py-2 text-xs">{row.timestamp?.slice(0, 19)}</td>
+                  <td className="px-3 py-2 text-xs whitespace-nowrap">{localTime(row.timestamp)}</td>
                   <td className="px-3 py-2 font-mono text-xs">{row.task}</td>
                   <td className="px-3 py-2 text-xs">{row.changed_by}</td>
                   <td className="px-3 py-2 text-xs">{row.action}</td>

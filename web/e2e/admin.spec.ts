@@ -13,6 +13,7 @@ test.describe('Admin', () => {
   })
 
   test('grouped admin navigation opens key sections', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 })
     await page.goto('/admin/overview')
     await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible()
     const adminNav = page.getByRole('navigation', { name: 'Admin sections' })
@@ -20,6 +21,12 @@ test.describe('Admin', () => {
     await adminNav.getByRole('link', { name: 'Audit & operations' }).click()
     await expect(page).toHaveURL(/\/admin\/audit/)
     await expect(page.getByRole('heading', { name: 'Audit & operations' })).toBeVisible()
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(adminNav.getByLabel('Admin section')).toBeVisible()
+    await adminNav.getByLabel('Admin section').selectOption('/admin/users')
+    await expect(page).toHaveURL(/\/admin\/users/)
+    await expect(page.getByRole('heading', { name: 'Users', exact: true })).toBeVisible()
 
     await page.goto('/admin/models')
     await expect(page.getByRole('heading', { name: 'Models', exact: true })).toBeVisible()
