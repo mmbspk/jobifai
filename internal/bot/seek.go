@@ -1421,7 +1421,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		// Fill any screening questions visible on the current page.
 		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy)
 		if fillErr != nil {
-			if isJobifaiQuotaExceeded(fillErr) {
+			if isFormFillFatalLLM(fillErr) {
 				b.abortOnLLMFailure(fillErr)
 			}
 			return fmt.Errorf("seek apply: form fill aborted: %w", fillErr)
@@ -1431,7 +1431,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			time.Sleep(800 * time.Millisecond)
 			filled, hasFields, fillErr = b.fillFormStep(ctx, page, lazy)
 			if fillErr != nil {
-				if isJobifaiQuotaExceeded(fillErr) {
+				if isFormFillFatalLLM(fillErr) {
 					b.abortOnLLMFailure(fillErr)
 				}
 				return fmt.Errorf("seek apply: form fill aborted: %w", fillErr)
@@ -1468,7 +1468,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			if b.seekEnsureConsentChecked(page) {
 				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)
 				if refillErr != nil {
-					if isJobifaiQuotaExceeded(refillErr) {
+					if isFormFillFatalLLM(refillErr) {
 						b.abortOnLLMFailure(refillErr)
 					}
 					return fmt.Errorf("seek apply: form fill aborted: %w", refillErr)
@@ -1490,7 +1490,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 				log.Warn().Err(err).Msg("seek: first submit unconfirmed, retrying consent+submit")
 				if b.seekEnsureConsentChecked(page) {
 					if _, _, refillErr := b.fillFormStep(ctx, page, lazy); refillErr != nil {
-						if isJobifaiQuotaExceeded(refillErr) {
+						if isFormFillFatalLLM(refillErr) {
 							b.abortOnLLMFailure(refillErr)
 						}
 						return fmt.Errorf("seek apply: form fill aborted: %w", refillErr)

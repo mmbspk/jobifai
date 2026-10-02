@@ -759,12 +759,12 @@ func clampNumericString(n string, max int) string {
 }
 
 // shouldAdvanceApplyForm reports whether Continue/Submit is allowed after fillFormStep.
-// LinkedIn Easy Apply and Seek Quick Apply must not advance when Jobifai quota blocked filling.
+// LinkedIn Easy Apply and Seek Quick Apply must not advance after fatal LLM errors.
 func shouldAdvanceApplyForm(fillErr error) bool {
-	return !isJobifaiQuotaExceeded(fillErr)
+	return !isFormFillFatalLLM(fillErr)
 }
 
-// resolveFormFieldAnswer applies a fallback only when err is nil (never after quota failure).
+// resolveFormFieldAnswer applies a fallback only when err is nil (never after fatal LLM errors).
 func resolveFormFieldAnswer(answer string, err error, fallback string) (string, error) {
 	if err != nil {
 		return "", err
@@ -784,7 +784,7 @@ func resolveFormFieldAnswer(answer string, err error, fallback string) (string, 
 // Returns (filled, hasFields, err):
 //   - filled=true  when at least one field was successfully written
 //   - hasFields=true when the scan found at least one field (even if none could be filled)
-//   - err non-nil on fatal LLM failures (e.g. Jobifai quota) — callers must not click Continue/Submit
+//   - err non-nil on fatal LLM failures (Jobifai quota or provider usage limits) — callers must not click Continue/Submit
 func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (filled bool, hasFields bool, err error) {
 	// Prefer the document (top page or iframe) that hosts the apply form.
 	// LinkedIn SDUI often mounts Easy Apply in a CDP frame opaque to top-page JS.
@@ -1268,7 +1268,7 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 			return answer, nil
 		}
 		if err != nil {
-			if isJobifaiQuotaExceeded(err) {
+			if isFormFillFatalLLM(err) {
 				return "", fmt.Errorf("form question: %w", err)
 			}
 			log.Warn().Err(err).Str("question", question).Msg("form: LLM answer failed")

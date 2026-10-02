@@ -1209,6 +1209,11 @@ func isProviderUsageLimit(err error) bool {
 		strings.Contains(lower, "quota exceeded")
 }
 
+// isFormFillFatalLLM is true when form filling must abort (no fallback answers, no Continue/Submit).
+func isFormFillFatalLLM(err error) bool {
+	return isJobifaiQuotaExceeded(err) || isProviderUsageLimit(err)
+}
+
 func llmAbortReason(err error) string {
 	if err == nil {
 		return ""
@@ -2029,7 +2034,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		// Fill any unanswered fields on the current step before clicking the action button.
 		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy)
 		if fillErr != nil {
-			if isJobifaiQuotaExceeded(fillErr) {
+			if isFormFillFatalLLM(fillErr) {
 				b.abortOnLLMFailure(fillErr)
 			}
 			return fmt.Errorf("easy apply: form fill aborted: %w", fillErr)
@@ -2086,7 +2091,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 				log.Warn().Strs("errors", errs).Msg("easy apply: validation errors on page, re-filling step")
 				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)
 				if refillErr != nil {
-					if isJobifaiQuotaExceeded(refillErr) {
+					if isFormFillFatalLLM(refillErr) {
 						b.abortOnLLMFailure(refillErr)
 					}
 					return fmt.Errorf("easy apply: form fill aborted: %w", refillErr)

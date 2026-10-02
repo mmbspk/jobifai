@@ -376,4 +376,5 @@ func TestResolveFormFieldAnswer_QuotaBlocksFallback(t *testing.T) {
 func TestShouldAdvanceApplyForm_BlocksOnJobifaiQuota(t *testing.T) {
 	assert.True(t, shouldAdvanceApplyForm(nil))
 	assert.False(t, shouldAdvanceApplyForm(fmt.Errorf("form: %w", quota.ErrExceeded)))
+	assert.False(t, shouldAdvanceApplyForm(fmt.Errorf("form question: llm http 429: rate limit")))
 }
