@@ -14,8 +14,10 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null)
 
-const ACCESS_KEY = 'access_token'
-const REFRESH_KEY = 'refresh_token'
+import { authStorageKeys } from '../lib/authSession'
+
+const ACCESS_KEY = authStorageKeys.access
+const REFRESH_KEY = authStorageKeys.refresh
 
 function saveTokens(tokens: AuthTokens) {
   localStorage.setItem(ACCESS_KEY, tokens.access_token)

@@ -47,6 +47,7 @@ ENV DISPLAY=:99
 WORKDIR /app
 COPY --from=builder /jobifai ./jobifai
 COPY --from=builder /src/web/dist ./web/dist
+COPY --from=builder /src/resume_markets ./resume_markets
 COPY docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh \
     && mkdir -p resume_style job_applications uploads

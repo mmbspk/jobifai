@@ -1,13 +1,22 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import {
+  clearPostAuthRedirect,
+  resolvePostAuthDestination,
+  savePostAuthRedirect,
+} from '../lib/postAuthRedirect'
 import { useAuth } from '../contexts/AuthContext'
 import { Button } from '../components/Button'
 import { Input } from '../components/ui/input'
 import { AuthDivider, AuthLayout, GoogleSignInButton } from '../components/auth/AuthLayout'
 
+type AuthRedirectState = { from?: { pathname: string; search?: string; hash?: string } }
+
 export function Login() {
   const { login, googleLoginUrl } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const returnTo = resolvePostAuthDestination((location.state as AuthRedirectState | null)?.from)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -19,7 +28,9 @@ export function Login() {
     setBusy(true)
     try {
       await login(email, password)
-      navigate('/', { replace: true })
+      const dest = resolvePostAuthDestination((location.state as AuthRedirectState | null)?.from)
+      clearPostAuthRedirect()
+      navigate(dest, { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed')
     } finally {
@@ -34,7 +45,7 @@ export function Login() {
       footer={
         <>
           New to Jobifai?{' '}
-          <Link to="/register" className="text-[var(--color-accent)] hover:underline font-medium">
+          <Link to="/register" state={location.state} className="text-[var(--color-accent)] hover:underline font-medium">
             Create account
           </Link>
         </>
@@ -68,7 +79,7 @@ export function Login() {
       </form>
 
       <AuthDivider />
-      <GoogleSignInButton href={googleLoginUrl} />
+      <GoogleSignInButton href={googleLoginUrl} onBeforeNavigate={() => savePostAuthRedirect(returnTo)} />
     </AuthLayout>
   )
 }

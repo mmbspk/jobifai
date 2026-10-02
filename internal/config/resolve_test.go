@@ -37,6 +37,13 @@ func TestResolveOperationalSettings_SystemDefaultAPIKeyScope(t *testing.T) {
 	assert.Equal(t, 9, got.JobSuitabilityScore)
 	assert.Equal(t, 25, got.HumanBehavior.DailyApplicationLimit)
 
+	require.NoError(t, store.Set(userID, config.KeyGeneralSettings, domain.GeneralSettings{
+		JobSuitabilityScore: 9,
+		HumanBehavior:       domain.HumanBehaviorConfig{DailyApplicationLimit: 12},
+	}))
+	got = config.ResolveOperationalSettings(store, userID)
+	assert.Equal(t, 12, got.HumanBehavior.DailyApplicationLimit)
+
 	key, err := config.ResolveLLMAPIKey(secrets, userID, false)
 	require.NoError(t, err)
 	assert.Equal(t, "sk-system", key)
