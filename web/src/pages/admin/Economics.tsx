@@ -79,7 +79,7 @@ export function AdminEconomicsPage() {
         <StatCard label="Loaded cost (USD)" value={o ? usdFromMicro(o.loaded_cost_usd_micro) : '…'} />
         <StatCard label="Credits burned" value={o ? o.credits_burned.toLocaleString() : '…'} />
         <StatCard label="Avg raw $/call" value={o ? o.avg_raw_cost_per_call_usd.toFixed(6) : '…'} />
-        <StatCard label="Error rate" value={errRate != null ? pct(errRate) : '…'} />
+        <StatCard label="Error rate" value={errRate != null ? pct(errRate) : o ? 'No calls' : '…'} />
       </div>
 
       <EconomicsTable title="By task" loading={tasksQ.isLoading}>

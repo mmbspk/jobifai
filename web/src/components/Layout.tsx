@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Sidebar } from './Sidebar'
 import { BottomNav } from './BottomNav'
-import { Link, Outlet } from 'react-router-dom'
+import { Link, Outlet, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { cn } from '../lib'
 import { Bell, Moon, Sun } from 'lucide-react'
@@ -9,6 +9,7 @@ import { JobifaiLogo } from './brand/JobifaiLogo'
 import { useTheme } from '../hooks/useTheme'
 
 export function Layout({ children }: { readonly children?: ReactNode }) {
+  const isAdmin = useLocation().pathname.startsWith('/admin')
   const { theme, toggle } = useTheme()
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem('sidebar-collapsed') === 'true',
@@ -42,7 +43,7 @@ export function Layout({ children }: { readonly children?: ReactNode }) {
         )}
         style={{ transition: 'padding-left 200ms' }}
       >
-        <div className="mx-auto max-w-[1120px] px-4 py-6 md:px-7 md:py-10 lg:px-8 lg:py-12">
+        <div className={cn('mx-auto px-4 py-6 md:px-7 md:py-10 lg:px-8 lg:py-12', isAdmin ? 'max-w-[1600px]' : 'max-w-[1120px]')}>
           {children ?? <Outlet />}
         </div>
       </main>

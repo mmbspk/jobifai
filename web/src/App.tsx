@@ -30,7 +30,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { hasStoredAuthCredentials } from './lib/authSession'
 import { resolvePostAuthDestination, savePostAuthRedirect } from './lib/postAuthRedirect'
 import { SettingsTabNav } from './components/settings/SettingsTabNav'
-import { AdminTabNav } from './components/admin/AdminTabNav'
+import { AdminNav } from './components/admin/AdminNav'
 import { Badge } from './components/ui/badge'
 import { PageHeader } from './components/shell/PageHeader'
 
@@ -40,18 +40,6 @@ const SETTINGS_TABS = [
   { to: '/settings/resume',      label: 'Profile' },
   { to: '/settings/platforms',   label: 'Platforms' },
   { to: '/settings/plan',        label: 'Plan' },
-]
-
-const ADMIN_TABS = [
-  { to: '/admin/overview',    label: 'Overview' },
-  { to: '/admin/users',       label: 'Users' },
-  { to: '/admin/automation',  label: 'Automation' },
-  { to: '/admin/models',      label: 'Models' },
-  { to: '/admin/llm-usage',   label: 'AI usage' },
-  { to: '/admin/economics',   label: 'Economics' },
-  { to: '/admin/quota',       label: 'Credits & billing' },
-  { to: '/admin/defaults',    label: 'Defaults' },
-  { to: '/admin/audit',       label: 'Audit / errors' },
 ]
 
 function SettingsLayout() {
@@ -80,29 +68,30 @@ function SettingsLayout() {
 function AdminLayout() {
   return (
     <div className="space-y-6">
-      <div className="space-y-3">
-        <Badge variant="admin">Admin</Badge>
-        <PageHeader
-          title="System"
-          description="Deployment configuration — only visible to administrators."
-        />
+      <div className="flex flex-wrap items-center gap-3 border-b border-[var(--color-border-subtle)] pb-5">
+        <div className="flex-1"><PageHeader title="Admin workspace" description="Monitor operations and manage Jobifai." /></div>
+        <Badge variant="admin">Administrator</Badge>
       </div>
-      <AdminTabNav tabs={ADMIN_TABS} />
-      <Routes>
-        <Route path="overview"   element={<AdminOverviewPage />} />
-        <Route path="defaults"   element={<AdminDefaultsPage />} />
-        <Route path="automation" element={<AdminAutomationPage />} />
-        <Route path="users"      element={<AdminUsersPage />} />
-        <Route path="quota"      element={<AdminQuotaPage />} />
-        <Route path="economics"  element={<AdminEconomicsPage />} />
-        <Route path="models"     element={<AdminModelsPage />} />
-        <Route path="llm-usage"  element={<AdminLlmUsagePage />} />
-        <Route path="audit"      element={<AdminAuditErrorsPage />} />
-        <Route path="usage"      element={<Navigate to="/admin/llm-usage" replace />} />
-        <Route path="system"     element={<Navigate to="/admin/defaults" replace />} />
-        <Route path="secrets"    element={<Navigate to="/admin/defaults" replace />} />
-        <Route index element={<Navigate to="overview" replace />} />
-      </Routes>
+      <div className="grid min-w-0 gap-6 lg:grid-cols-[208px_minmax(0,1fr)] lg:gap-8">
+        <AdminNav />
+        <div className="min-w-0 space-y-6">
+          <Routes>
+            <Route path="overview"   element={<AdminOverviewPage />} />
+            <Route path="defaults"   element={<AdminDefaultsPage />} />
+            <Route path="automation" element={<AdminAutomationPage />} />
+            <Route path="users"      element={<AdminUsersPage />} />
+            <Route path="quota"      element={<AdminQuotaPage />} />
+            <Route path="economics"  element={<AdminEconomicsPage />} />
+            <Route path="models"     element={<AdminModelsPage />} />
+            <Route path="llm-usage"  element={<AdminLlmUsagePage />} />
+            <Route path="audit"      element={<AdminAuditErrorsPage />} />
+            <Route path="usage"      element={<Navigate to="/admin/llm-usage" replace />} />
+            <Route path="system"     element={<Navigate to="/admin/defaults" replace />} />
+            <Route path="secrets"    element={<Navigate to="/admin/defaults" replace />} />
+            <Route index element={<Navigate to="overview" replace />} />
+          </Routes>
+        </div>
+      </div>
     </div>
   )
 }

@@ -27,6 +27,7 @@ export function AdminUsersPage() {
   const qc = useQueryClient()
   const { data: users = [] } = useQuery({ queryKey: ['admin-users'], queryFn: adminApi.users.list })
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [userSearch, setUserSearch] = useState('')
   const { data: detail } = useQuery({
     queryKey: ['admin-user', selectedId],
     queryFn: () => adminApi.users.get(selectedId!),
@@ -94,6 +95,7 @@ export function AdminUsersPage() {
   })
 
   const e2eCount = users.filter(u => u.email.endsWith('@e2e.test')).length
+  const visibleUsers = users.filter(u => `${u.display_name} ${u.email}`.toLowerCase().includes(userSearch.trim().toLowerCase()))
 
   return (
     <div className="space-y-6">
@@ -115,11 +117,13 @@ export function AdminUsersPage() {
 
       <div className="grid lg:grid-cols-2 gap-6">
         <section className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden shadow-[var(--shadow-sm)]">
-          <div className="px-4 py-3 border-b border-[var(--color-border-subtle)]">
-            <h2 className="text-sm font-semibold text-[var(--color-text)]">Accounts</h2>
+          <div className="space-y-3 px-4 py-3 border-b border-[var(--color-border-subtle)]">
+            <div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold text-[var(--color-text)]">Accounts</h2><span className="text-xs text-[var(--color-text-dim)]">{users.length} total</span></div>
+            <label className="sr-only" htmlFor="admin-user-search">Search accounts</label>
+            <input id="admin-user-search" type="search" value={userSearch} onChange={event => setUserSearch(event.target.value)} placeholder="Search name or email…" className={cn(inputClassName, 'w-full')} />
           </div>
           <ul className="divide-y divide-[var(--color-border-subtle)] max-h-[480px] overflow-y-auto">
-            {users.map(u => (
+            {visibleUsers.map(u => (
               <li key={u.id}>
                 <button
                   type="button"
@@ -138,6 +142,7 @@ export function AdminUsersPage() {
                 </button>
               </li>
             ))}
+            {visibleUsers.length === 0 && <li className="px-4 py-6 text-sm text-[var(--color-text-dim)]">No accounts match this search.</li>}
           </ul>
         </section>
 

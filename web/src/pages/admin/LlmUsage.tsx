@@ -155,7 +155,7 @@ export function AdminLlmUsagePage() {
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard label="Calls" value={s ? String(s.calls) : '…'} />
         <StatCard label="Success" value={s ? String(s.success_calls) : '…'} />
-        <StatCard label="Error rate" value={s ? pct(s.error_rate) : '…'} />
+          <StatCard label="Error rate" value={s ? (s.calls ? pct(s.error_rate) : 'No calls') : '…'} />
         <StatCard label="Raw USD" value={s ? usdFromMicro(s.raw_cost_usd_micro) : '…'} />
         <StatCard label="Loaded USD" value={s ? usdFromMicro(s.loaded_cost_usd_micro) : '…'} />
         <StatCard label="Credits" value={s ? s.credits_burned.toLocaleString() : '…'} />
@@ -165,8 +165,9 @@ export function AdminLlmUsagePage() {
         <StatCard label="P90 latency" value={s ? `${Math.round(s.p90_latency_ms)} ms` : '…'} />
       </div>
 
-      <section className="rounded-[var(--radius-lg)] border border-[var(--color-border)] p-4 space-y-3">
-        <h2 className="text-sm font-semibold">Filters</h2>
+      <details className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+        <summary className="cursor-pointer text-sm font-semibold">Filters{Object.keys(filterParams).length > 0 ? ` · ${Object.keys(filterParams).length} active` : ''}</summary>
+        <div className="mt-4 space-y-3">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {(
             [
@@ -194,7 +195,8 @@ export function AdminLlmUsagePage() {
         <Button variant="secondary" onClick={applyFilters}>
           Apply filters
         </Button>
-      </section>
+        </div>
+      </details>
 
       <section className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
