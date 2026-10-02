@@ -29,7 +29,7 @@ func VisibleOnDashboard(entry map[string]any) bool {
 		return false
 	}
 	if level == "error" || level == "warn" || level == "warning" {
-		return customerMessage(msg)
+		return true
 	}
 	if level != "info" && level != "" {
 		return customerMessage(msg)

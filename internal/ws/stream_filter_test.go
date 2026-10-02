@@ -17,4 +17,6 @@ func TestVisibleOnDashboard_ProductionCustomer(t *testing.T) {
 	assert.True(t, jobws.VisibleOnDashboard(map[string]any{"level": "info", "message": "seek: found 3 jobs for \"engineer\", processing"}))
 	assert.True(t, jobws.VisibleOnDashboard(map[string]any{"level": "info", "message": "linkedin: score 8/10, \"Role\" @ Co"}))
 	assert.True(t, jobws.VisibleOnDashboard(map[string]any{"level": "error", "message": "seek: reconnect failed, stopping"}))
+	assert.True(t, jobws.VisibleOnDashboard(map[string]any{"level": "error", "message": "browser launch failed"}))
+	assert.True(t, jobws.VisibleOnDashboard(map[string]any{"level": "warn", "message": "automation paused due to quota"}))
 }

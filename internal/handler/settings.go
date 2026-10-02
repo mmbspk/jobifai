@@ -200,12 +200,8 @@ func (h *SettingsHandlers) GeneralGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.isAdmin(r) {
-		resolved := config.ResolveOperationalSettings(h.svc.Config, userID)
-		uf := userFacingGeneral(s)
-		if uf.HumanBehavior.DailyApplicationLimit == 0 {
-			uf.HumanBehavior.DailyApplicationLimit = resolved.HumanBehavior.DailyApplicationLimit
-		}
-		writeJSON(w, http.StatusOK, uf)
+		s = config.ApplyUnsetUserApplicationFields(s)
+		writeJSON(w, http.StatusOK, userFacingGeneral(s))
 		return
 	}
 	writeJSON(w, http.StatusOK, s)

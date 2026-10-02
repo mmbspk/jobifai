@@ -14,11 +14,7 @@ func SeedTrialDailyApplicationLimit(store KV, userID string) {
 	var gs domain.GeneralSettings
 	err := store.Get(userID, KeyGeneralSettings, &gs)
 	if errors.Is(err, domain.ErrNotFound) {
-		gs = domain.GeneralSettings{
-			HumanBehavior: domain.HumanBehaviorConfig{
-				DailyApplicationLimit: domain.TrialDailyApplicationLimit,
-			},
-		}
+		gs = DefaultUserApplicationSettings()
 		_ = store.Set(userID, KeyGeneralSettings, gs)
 		return
 	}
