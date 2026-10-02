@@ -14,24 +14,32 @@ func DefaultUserApplicationSettings() domain.GeneralSettings {
 	}
 }
 
-// ApplyUnsetUserApplicationFields fills zero-valued application prefs from defaults without
-// overwriting choices the user saved (e.g. review off with a custom suitability threshold).
+// isLegacySparseApplicationRecord detects pre-fix trial rows that only stored a daily cap.
+func isLegacySparseApplicationRecord(stored domain.GeneralSettings) bool {
+	if stored.JobSuitabilityScore != 0 || stored.MaxJobsPerKeyword != 0 {
+		return false
+	}
+	if stored.RequireReview || stored.HalalJobFilter || stored.GenerateNewResumeDocs {
+		return false
+	}
+	if stored.DefaultResumeMarket != "" {
+		return false
+	}
+	return stored.HumanBehavior.DailyApplicationLimit > 0
+}
+
+// ApplyUnsetUserApplicationFields upgrades legacy sparse trial rows to full application defaults.
 func ApplyUnsetUserApplicationFields(stored domain.GeneralSettings) domain.GeneralSettings {
+	if !isLegacySparseApplicationRecord(stored) {
+		return stored
+	}
 	def := DefaultUserApplicationSettings()
 	out := stored
-	unsetPrefs := out.JobSuitabilityScore == 0 && out.MaxJobsPerKeyword == 0 &&
-		!out.HalalJobFilter && !out.GenerateNewResumeDocs && out.DefaultResumeMarket == ""
-	if out.JobSuitabilityScore == 0 {
-		out.JobSuitabilityScore = def.JobSuitabilityScore
-	}
-	if out.MaxJobsPerKeyword == 0 {
-		out.MaxJobsPerKeyword = def.MaxJobsPerKeyword
-	}
-	if unsetPrefs && out.HumanBehavior.DailyApplicationLimit == 0 {
+	out.JobSuitabilityScore = def.JobSuitabilityScore
+	out.MaxJobsPerKeyword = def.MaxJobsPerKeyword
+	out.RequireReview = def.RequireReview
+	if out.HumanBehavior.DailyApplicationLimit == 0 {
 		out.HumanBehavior.DailyApplicationLimit = def.HumanBehavior.DailyApplicationLimit
-	}
-	if unsetPrefs && !stored.RequireReview {
-		out.RequireReview = def.RequireReview
 	}
 	return out
 }

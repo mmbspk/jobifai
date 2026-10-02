@@ -29,3 +29,14 @@ func TestApplyUnsetUserApplicationFields_PreservesExplicitReviewOff(t *testing.T
 	assert.False(t, got.RequireReview)
 	assert.Equal(t, 8, got.JobSuitabilityScore)
 }
+
+func TestApplyUnsetUserApplicationFields_PreservesExplicitZeroSuitabilityThreshold(t *testing.T) {
+	custom := domain.GeneralSettings{
+		RequireReview:       true,
+		JobSuitabilityScore: 0,
+		MaxJobsPerKeyword:   25,
+	}
+	got := config.ApplyUnsetUserApplicationFields(custom)
+	assert.Equal(t, 0, got.JobSuitabilityScore)
+	assert.Equal(t, 25, got.MaxJobsPerKeyword)
+}
