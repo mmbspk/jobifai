@@ -75,6 +75,9 @@ export const documentsApi = {
 
   setDefault: (kind: 'resume' | 'cover_letter', content_version_id: string) =>
     apiPut<{ message: string }>('/documents/defaults', { kind, content_version_id }),
+
+  setPreferredStyle: (kind: 'resume' | 'cover_letter', style: string) =>
+    apiPut<{ message: string }>('/documents/preferred-style', { kind, style }),
 }
 
 export async function fetchDocumentPdf(versionId: string): Promise<Blob> {

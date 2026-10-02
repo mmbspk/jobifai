@@ -207,7 +207,7 @@ func main() {
 			} else if err != nil {
 				return documents.DefaultsMeta{}, err
 			}
-			return m, nil
+			return documents.CoalesceDefaultsMeta(m), nil
 		},
 		SaveDefaultsMeta: func(userID string, m documents.DefaultsMeta) error {
 			return cfgStore.Set(userID, "document_defaults_meta", m)

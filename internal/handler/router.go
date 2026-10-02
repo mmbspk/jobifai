@@ -142,6 +142,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/cover-letter/ai-generate", documentsH.AIGenerateCoverLetter)
 			r.Post("/originals", documentsH.UploadOriginal)
 			r.Put("/defaults", documentsH.SetDefault)
+			r.Put("/preferred-style", documentsH.SetPreferredStyle)
 			r.Post("/{document_id}/resume-versions", documentsH.AppendResumeVersion)
 			r.Post("/{document_id}/cover-versions", documentsH.AppendCoverVersion)
 			r.Get("/versions/{version_id}/pdf", documentsH.DownloadPDF)

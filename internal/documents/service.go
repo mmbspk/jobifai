@@ -49,6 +49,7 @@ func (s *Service) List(ctx context.Context, userID string) (ListResponse, error)
 	}
 	if s.DefaultsMeta != nil {
 		meta, _ := s.DefaultsMeta(userID)
+		meta = CoalesceDefaultsMeta(meta)
 		def = MergeDefaultsMeta(def, meta)
 	}
 	if docs == nil {
@@ -111,7 +112,6 @@ func (s *Service) saveResumeVersion(ctx context.Context, userID, documentID, tit
 	if _, err := s.renderAndPersistPDF(ctx, userID, versionID, profile, rc.StyleName, cssSnap, RenderOptsFromSnapshot(renderSnap)); err != nil {
 		return versionID, err
 	}
-	s.noteStyleDrift(userID, rc.StyleName)
 	return versionID, nil
 }
 
@@ -172,7 +172,6 @@ func (s *Service) SaveCoverLetterWithSourceOnDocument(ctx context.Context, userI
 	if _, err := s.renderCoverPDF(ctx, userID, versionID, body, rc.StyleName, cssSnap); err != nil {
 		return versionID, err
 	}
-	s.noteStyleDrift(userID, rc.StyleName)
 	return versionID, nil
 }
 
@@ -235,23 +234,62 @@ func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string
 		if !meta.ResumeOutdated && !meta.CoverOutdated {
 			meta.OutdatedReason = ""
 		}
+		meta = CoalesceDefaultsMeta(meta)
 		meta.ProfileHash = hash
 		meta.Market = market
-		meta.Style = p.StyleName
+		norm := NormalizeStyleName(p.StyleName)
+		switch kind {
+		case KindResume:
+			meta.ResumeStyle = norm
+		case KindCoverLetter:
+			meta.CoverStyle = norm
+		}
 		_ = s.SaveDefaultsMeta(userID, meta)
 	}
 	return nil
 }
 
-func (s *Service) noteStyleDrift(userID, styleName string) {
+// NotePreferredStyleChange records that the user changed their preferred document design (style picker).
+// It does not run when creating alternative document versions. Empty style means Default.
+func (s *Service) NotePreferredStyleChange(userID, kind, styleName string) {
 	if s.SaveDefaultsMeta == nil {
 		return
 	}
-	meta, _ := s.DefaultsMeta(userID)
-	if meta.Style == "" || strings.EqualFold(meta.Style, styleName) {
+	ctx := context.Background()
+	_, def, err := s.Store.ListDocuments(ctx, userID)
+	if err != nil {
 		return
 	}
-	s.MarkDefaultsOutdated(userID, "document style changed — review your default documents", "", "")
+	meta, _ := s.DefaultsMeta(userID)
+	meta = CoalesceDefaultsMeta(meta)
+	preferred := NormalizeStyleName(styleName)
+	const reason = "preferred document style changed — review your default documents"
+
+	switch kind {
+	case KindResume:
+		if def.ResumeVersionID == "" {
+			return
+		}
+		if styleNamesEqual(meta.ResumeStyle, preferred) {
+			return
+		}
+		meta.ResumeOutdated = true
+		meta.OutdatedReason = reason
+	case KindCoverLetter:
+		if def.CoverLetterVersionID == "" {
+			return
+		}
+		if styleNamesEqual(meta.CoverStyle, preferred) {
+			return
+		}
+		meta.CoverOutdated = true
+		if meta.OutdatedReason == "" {
+			meta.OutdatedReason = reason
+		}
+	default:
+		return
+	}
+	_ = s.SaveDefaultsMeta(userID, meta)
 }
 
 func (s *Service) OriginalBytes(ctx context.Context, userID, versionID string) ([]byte, string, string, error) {

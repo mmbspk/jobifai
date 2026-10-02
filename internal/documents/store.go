@@ -304,7 +304,9 @@ type DefaultsMeta struct {
 	OutdatedReason  string `json:"outdated_reason,omitempty"`
 	ProfileHash     string `json:"profile_hash,omitempty"`
 	Market          string `json:"market,omitempty"`
-	Style           string `json:"style,omitempty"`
+	ResumeStyle     string `json:"resume_style,omitempty"`
+	CoverStyle      string `json:"cover_style,omitempty"`
+	Style           string `json:"style,omitempty"` // legacy; coalesced on read
 }
 
 func MergeDefaultsMeta(def DefaultsView, meta DefaultsMeta) DefaultsView {
@@ -317,7 +319,7 @@ func MergeDefaultsMeta(def DefaultsView, meta DefaultsMeta) DefaultsView {
 func ParseDefaultsMeta(raw []byte) DefaultsMeta {
 	var m DefaultsMeta
 	_ = json.Unmarshal(raw, &m)
-	return m
+	return CoalesceDefaultsMeta(m)
 }
 
 func (s *Store) MarshalMeta(m DefaultsMeta) ([]byte, error) {

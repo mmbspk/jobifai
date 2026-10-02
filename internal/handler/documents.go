@@ -162,6 +162,27 @@ type setDefaultReq struct {
 	ContentVersionID  string `json:"content_version_id"`
 }
 
+type preferredStyleReq struct {
+	Kind  string `json:"kind"`
+	Style string `json:"style"`
+}
+
+// PUT /api/documents/preferred-style
+func (h *DocumentHandlers) SetPreferredStyle(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	var req preferredStyleReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid json"})
+		return
+	}
+	if req.Kind != documents.KindResume && req.Kind != documents.KindCoverLetter {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "kind must be resume or cover_letter"})
+		return
+	}
+	h.svc.Documents.NotePreferredStyleChange(userID, req.Kind, req.Style)
+	okMsg(w, "preferred style noted")
+}
+
 // PUT /api/documents/defaults
 func (h *DocumentHandlers) SetDefault(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())

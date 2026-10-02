@@ -157,7 +157,18 @@ export function Documents() {
         {styles.length > 0 && (
           <label className="block text-sm">
             <span className="text-[var(--color-text-dim)]">Style</span>
-            <select className={inputClassName + ' mt-1'} value={style} onChange={e => setStyle(e.target.value)}>
+            <select
+              className={inputClassName + ' mt-1'}
+              value={style}
+              onChange={e => {
+                const next = e.target.value
+                setStyle(next)
+                void Promise.all([
+                  documentsApi.setPreferredStyle('resume', next),
+                  documentsApi.setPreferredStyle('cover_letter', next),
+                ]).then(() => qc.invalidateQueries({ queryKey: ['documents'] }))
+              }}
+            >
               <option value="">Default</option>
               {styles.map(s => (
                 <option key={s.name} value={s.name}>{s.name}</option>
