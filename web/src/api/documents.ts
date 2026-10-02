@@ -1,4 +1,4 @@
-import { ApiError, apiFetch, getToken } from './client'
+import { ApiError, apiGet, apiPost, apiPut, getToken } from './client'
 import type { ResumeProfile } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? '') + '/api'
@@ -45,51 +45,30 @@ export type VersionDetail = {
 }
 
 export const documentsApi = {
-  list: () => apiFetch<DocumentsListResponse>('/documents'),
+  list: () => apiGet<DocumentsListResponse>('/documents'),
 
-  getVersion: (versionId: string) => apiFetch<VersionDetail>(`/documents/versions/${versionId}`),
+  getVersion: (versionId: string) => apiGet<VersionDetail>(`/documents/versions/${versionId}`),
 
   createResumeFromProfile: (body: { title?: string; market?: string; style?: string; document_id?: string }) =>
-    apiFetch<{ content_version_id: string }>('/documents/resume/from-profile', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
+    apiPost<{ content_version_id: string }>('/documents/resume/from-profile', body),
 
   appendResumeVersion: (documentId: string, body: { title?: string; market?: string; style?: string; profile: ResumeProfile }) =>
-    apiFetch<{ content_version_id: string }>(`/documents/${documentId}/resume-versions`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
+    apiPost<{ content_version_id: string }>(`/documents/${documentId}/resume-versions`, body),
 
   saveCoverLetter: (body: { title?: string; body: string; market?: string; style?: string; document_id?: string }) =>
-    apiFetch<{ content_version_id: string }>('/documents/cover-letter', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
+    apiPost<{ content_version_id: string }>('/documents/cover-letter', body),
 
   appendCoverVersion: (documentId: string, body: { title?: string; body: string; market?: string; style?: string }) =>
-    apiFetch<{ content_version_id: string }>(`/documents/${documentId}/cover-versions`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
+    apiPost<{ content_version_id: string }>(`/documents/${documentId}/cover-versions`, body),
 
   aiImproveResume: (body: { title?: string; market?: string; style?: string; document_id?: string }) =>
-    apiFetch<{ content_version_id: string }>('/documents/resume/ai-improve', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
+    apiPost<{ content_version_id: string }>('/documents/resume/ai-improve', body),
 
   aiGenerateCover: (body: { title?: string; market?: string; style?: string; document_id?: string }) =>
-    apiFetch<{ content_version_id: string }>('/documents/cover-letter/ai-generate', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
+    apiPost<{ content_version_id: string }>('/documents/cover-letter/ai-generate', body),
 
   setDefault: (kind: 'resume' | 'cover_letter', content_version_id: string) =>
-    apiFetch<{ message: string }>('/documents/defaults', {
-      method: 'PUT',
-      body: JSON.stringify({ kind, content_version_id }),
-    }),
+    apiPut<{ message: string }>('/documents/defaults', { kind, content_version_id }),
 }
 
 export async function fetchDocumentPdf(versionId: string): Promise<Blob> {

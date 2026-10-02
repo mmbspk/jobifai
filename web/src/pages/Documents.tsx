@@ -54,15 +54,16 @@ export function Documents() {
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['documents'] })
 
-  const wrap = <T,>(fn: () => Promise<T>) => async () => {
-    setActionErr(null)
-    try {
-      await fn()
-    } catch (e: unknown) {
-      setActionErr(actionError(e))
-      throw e
+  const wrap = <TArgs extends readonly unknown[], T>(fn: (...args: TArgs) => Promise<T>) =>
+    async (...args: TArgs) => {
+      setActionErr(null)
+      try {
+        return await fn(...args)
+      } catch (e: unknown) {
+        setActionErr(actionError(e))
+        throw e
+      }
     }
-  }
 
   const createResume = useMutation({
     mutationFn: wrap(() => documentsApi.createResumeFromProfile({ market, style, title: 'Resume from profile' })),
@@ -116,7 +117,7 @@ export function Documents() {
     }
   }
 
-  const documents = data?.documents ?? []
+  const documents: UserDocument[] = data?.documents ?? []
   const defaults = data?.defaults
   const outdated = defaults?.resume_outdated || defaults?.cover_outdated
 
