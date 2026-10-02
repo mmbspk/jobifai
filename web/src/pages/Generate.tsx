@@ -7,6 +7,7 @@ import { isAbortError } from '../api/client'
 import { settingsApi } from '../api/settings'
 import { botApi } from '../api/bot'
 import type { ApplyURLResponse } from '../api/bot'
+import type { ResumeMarket } from '../types'
 import { ScorePill } from '../components/ScorePill'
 import { PageHeader } from '../components/shell/PageHeader'
 import { EthicsVerdict } from '../components/review/EthicsVerdict'
@@ -31,6 +32,32 @@ const APPLY_STEPS = ['Detecting platform…', 'Scoring job fit…', 'Verifying E
 const TAB_ACTIVE = 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] border border-[var(--color-accent)]/30'
 const TAB_IDLE = 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] border border-transparent'
 const CHIP_ACTIVE = 'border-[var(--color-accent)]/60 bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
+
+const REGION_GROUP_LABELS: Record<string, string> = {
+  global: 'Global',
+  americas: 'Americas',
+  europe: 'Europe',
+  asia_pacific: 'Asia Pacific',
+}
+
+function marketsByRegion(markets: ResumeMarket[]): { group: string; label: string; items: ResumeMarket[] }[] {
+  const order = ['global', 'americas', 'europe', 'asia_pacific']
+  const buckets = new Map<string, ResumeMarket[]>()
+  for (const m of markets) {
+    if (m.name === 'Generic') continue
+    const g = m.region_group || 'global'
+    buckets.set(g, [...(buckets.get(g) ?? []), m])
+  }
+  for (const [, list] of buckets) {
+    list.sort((a, b) => a.name.localeCompare(b.name))
+  }
+  const out: { group: string; label: string; items: ResumeMarket[] }[] = []
+  for (const g of order) {
+    const items = buckets.get(g)
+    if (items?.length) out.push({ group: g, label: REGION_GROUP_LABELS[g] ?? g, items })
+  }
+  return out
+}
 const LOADING_PANEL = 'rounded-[var(--radius-lg)] border border-[var(--color-accent)]/20 bg-[var(--color-accent-soft)]/50 p-6 text-center space-y-3'
 
 export function Generate() {
@@ -279,13 +306,18 @@ export function Generate() {
                   ? CHIP_ACTIVE
                   : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] bg-[var(--color-surface)]')}
             >Generic</button>
-            {markets.filter(m => m.name !== 'Generic').map(m => (
-              <button key={m.yaml_file} onClick={() => { generationStore.setForm({ market: m.name }); setMarketTouched(true) }}
-                className={cn('px-3 py-1.5 rounded-lg text-xs border transition-all',
-                  f.market === m.name
-                    ? CHIP_ACTIVE
-                    : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] bg-[var(--color-surface)]')}
-              >{m.name}</button>
+            {marketsByRegion(markets).map(({ group, label, items }) => (
+              <div key={group} className="flex flex-wrap items-center gap-2">
+                <span className="text-[0.65rem] uppercase tracking-wide text-[var(--color-text-dim)] w-full sm:w-auto">{label}</span>
+                {items.map(m => (
+                  <button key={m.yaml_file} type="button" onClick={() => { generationStore.setForm({ market: m.name }); setMarketTouched(true) }}
+                    className={cn('px-3 py-1.5 rounded-lg text-xs border transition-all',
+                      f.market === m.name
+                        ? CHIP_ACTIVE
+                        : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] bg-[var(--color-surface)]')}
+                  >{m.name}</button>
+                ))}
+              </div>
             ))}
           </div>
         </div>

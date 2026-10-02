@@ -9,6 +9,7 @@ import (
 
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/resume"
 )
 
 const (
@@ -87,6 +88,18 @@ func (h *ResumeHandlers) marketCSSFile(r *http.Request) string {
 	return h.svc.MarketCSSFileLookup(h.svc.MarketDir, market)
 }
 
+func (h *ResumeHandlers) marketRenderOptions(r *http.Request) *resume.RenderOptions {
+	market := strings.TrimSpace(r.FormValue("market"))
+	if market == "" || h.svc.MarketDir == "" {
+		return nil
+	}
+	m := resume.LoadMarketByName(h.svc.MarketDir, market)
+	if m == nil {
+		return nil
+	}
+	return &resume.RenderOptions{SectionLabels: m.LabelsOrDefault()}
+}
+
 // POST /api/resume/generate
 func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
@@ -135,7 +148,7 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pdf, err := h.svc.Renderer.RenderResume(r.Context(), profile, r.FormValue("style"), h.marketCSSFile(r))
+	pdf, err := h.svc.Renderer.RenderResume(r.Context(), profile, r.FormValue("style"), h.marketCSSFile(r), h.marketRenderOptions(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
@@ -205,7 +218,7 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	pdf, err := h.svc.Renderer.RenderResume(r.Context(), tailored, r.FormValue("style"), h.marketCSSFile(r))
+	pdf, err := h.svc.Renderer.RenderResume(r.Context(), tailored, r.FormValue("style"), h.marketCSSFile(r), h.marketRenderOptions(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return

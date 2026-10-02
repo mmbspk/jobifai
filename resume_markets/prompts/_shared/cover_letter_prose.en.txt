@@ -1,0 +1,4 @@
+COVER LETTER OUTPUT:
+- Return plain-text body paragraphs only (no JSON, HTML, or Markdown).
+- No address block, date line, subject line, or "Dear Hiring Manager" placeholder without context.
+- One clear idea per sentence; 3–4 paragraphs; match the market tone rules above.

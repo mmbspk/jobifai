@@ -1,0 +1,11 @@
+name: Pakistan
+locale: en-PK
+document_language: en
+region_group: asia_pacific
+page_size: a4
+css_file: resume_markets/styles/style_pk.css
+
+prompt_files:
+  resume: prompts/en-PK/pakistan.resume.txt
+  tailored: prompts/en-PK/pakistan.tailored.txt
+  cover: prompts/en-PK/pakistan.cover.txt

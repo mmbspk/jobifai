@@ -46,6 +46,9 @@ func taskLabel(ctx context.Context) string {
 type Message struct {
 	Role    string `json:"role"` // "user" | "assistant" | "system"
 	Content string `json:"content"`
+	// CacheEphemeral requests Claude ephemeral prompt caching on this block when supported.
+	// Cache writes/reads are not guaranteed (model minimum prefix length and request shape apply).
+	CacheEphemeral bool `json:"-"`
 }
 
 // Client dispatches LLM requests based on the active configuration.
@@ -239,7 +242,7 @@ func (c *Client) recordTerminalFailure(ctx context.Context, errCode string) {
 type claudeRequest struct {
 	Model        string              `json:"model"`
 	MaxTokens    int                 `json:"max_tokens"`
-	System       string              `json:"system,omitempty"`
+	System       any                 `json:"system,omitempty"`
 	Messages     []claudeMessage     `json:"messages"`
 	OutputConfig *claudeOutputConfig `json:"output_config,omitempty"`
 }
@@ -250,7 +253,31 @@ type claudeOutputConfig struct {
 
 type claudeMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
+}
+
+type claudeTextBlock struct {
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text"`
+	CacheControl *claudeCacheControl    `json:"cache_control,omitempty"`
+}
+
+type claudeCacheControl struct {
+	Type string `json:"type"`
+}
+
+func claudeContentPayload(text string, cacheEphemeral bool) any {
+	if text == "" {
+		return ""
+	}
+	if !cacheEphemeral {
+		return text
+	}
+	return []claudeTextBlock{{
+		Type:         "text",
+		Text:         text,
+		CacheControl: &claudeCacheControl{Type: "ephemeral"},
+	}}
 }
 
 type claudeUsage struct {
@@ -309,14 +336,17 @@ type openaiUsage struct {
 
 func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error) {
 	start := time.Now()
-	var system string
+	var system any
 	var turns []claudeMessage
 	for _, m := range msgs {
 		if m.Role == "system" {
-			system = m.Content
+			system = claudeContentPayload(m.Content, m.CacheEphemeral)
 			continue
 		}
-		turns = append(turns, claudeMessage(m))
+		turns = append(turns, claudeMessage{
+			Role:    m.Role,
+			Content: claudeContentPayload(m.Content, m.CacheEphemeral),
+		})
 	}
 
 	maxTokens := c.cfg.MaxTokens
@@ -507,9 +537,12 @@ type openaiResponse struct {
 
 func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error) {
 	start := time.Now()
-	turns := make([]openaiMessage, len(msgs))
-	for i, m := range msgs {
-		turns[i] = openaiMessage(m)
+	turns := make([]openaiMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Content == "" {
+			continue
+		}
+		turns = append(turns, openaiMessage{Role: m.Role, Content: m.Content})
 	}
 
 	body := openaiRequest{Model: c.cfg.Model, Messages: turns, MaxTokens: c.cfg.MaxTokens}
@@ -577,9 +610,12 @@ type ollamaResponse struct {
 func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (string, error) {
 	start := time.Now()
 	ctx = c.prepareCallContext(ctx)
-	turns := make([]openaiMessage, len(msgs))
-	for i, m := range msgs {
-		turns[i] = openaiMessage(m)
+	turns := make([]openaiMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Content == "" {
+			continue
+		}
+		turns = append(turns, openaiMessage{Role: m.Role, Content: m.Content})
 	}
 
 	baseURL := "http://localhost:11434"

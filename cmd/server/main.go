@@ -197,7 +197,11 @@ func main() {
 			if err != nil {
 				return nil, err
 			}
-			return &domain.ResumeMarket{Name: m.Name, YAMLFile: yamlFile, HasCSS: m.CSSFile != ""}, nil
+			return &domain.ResumeMarket{
+				Name: m.Name, YAMLFile: yamlFile, HasCSS: m.CSSFile != "",
+				Locale: m.Locale, DocumentLanguage: m.DocumentLanguage,
+				RegionGroup: m.RegionGroup, PageSize: m.PageSize,
+			}, nil
 		},
 		MarketPrefixLookup: func(marketDir, name, section string) string {
 			m := resume.LoadMarketByName(marketDir, name)

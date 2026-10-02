@@ -1,0 +1,11 @@
+name: United States
+locale: en-US
+document_language: en
+region_group: americas
+page_size: letter
+css_file: resume_markets/styles/style_us.css
+
+prompt_files:
+  resume: prompts/en-US/united_states.resume.txt
+  tailored: prompts/en-US/united_states.tailored.txt
+  cover: prompts/en-US/united_states.cover.txt

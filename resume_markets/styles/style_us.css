@@ -1,0 +1,5 @@
+@import "./_base_letter.css";
+
+:root {
+  --accent: #1a4480;
+}

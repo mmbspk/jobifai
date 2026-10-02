@@ -1,0 +1,11 @@
+name: France
+locale: fr-FR
+document_language: en
+region_group: europe
+page_size: a4
+css_file: resume_markets/styles/style_fr.css
+
+prompt_files:
+  resume: prompts/en-FR/france.resume.txt
+  tailored: prompts/en-FR/france.tailored.txt
+  cover: prompts/en-FR/france.cover.txt

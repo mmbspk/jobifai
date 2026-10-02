@@ -327,6 +327,10 @@ export interface ResumeMarket {
   name: string
   yaml_file: string
   has_css: boolean
+  locale?: string
+  document_language?: string
+  region_group?: string
+  page_size?: string
 }
 
 export interface SessionUsage {

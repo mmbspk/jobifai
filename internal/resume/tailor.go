@@ -15,14 +15,10 @@ import (
 	"github.com/user/jobifai/internal/llm"
 )
 
-var tailorTempl = template.Must(template.New("tailor").Parse(`You are an expert resume writer. Given a candidate's resume profile and a job description, rewrite the resume profile JSON to maximally highlight relevant experience, skills, and achievements for this specific role.
+var tailorSystemTempl = template.Must(template.New("tailor-sys").Parse(`You are an expert resume writer. Given a candidate's resume profile and a job description, rewrite the resume profile JSON to maximally highlight relevant experience, skills, and achievements for this specific role.
 {{if .MarketInstructions}}
 MARKET-SPECIFIC INSTRUCTIONS (these override default behaviour, follow exactly):
 {{.MarketInstructions}}
-{{end}}
-{{- if .PromptInstructions}}
-ADDITIONAL INSTRUCTIONS FROM CANDIDATE (follow these):
-{{.PromptInstructions}}
 {{end}}
 HUMAN WRITING RULES, apply to all text fields (summary, bullets):
 - No em dashes (—) anywhere. Use a comma, full stop, or colon instead.
@@ -41,22 +37,22 @@ Rules:
 - For presentations: include all conference presentations, do not remove any
 - For grants: include all grants and funding entries, do not remove any
 - For projects: reorder to lead with most relevant to the job description
-- Return ONLY valid JSON with no markdown fencing, matching the exact ResumeProfile shape provided
+- Return ONLY valid JSON with no markdown fencing, matching the exact ResumeProfile shape provided`))
 
+var tailorUserTempl = template.Must(template.New("tailor-user").Parse(`{{- if .PromptInstructions}}
+ADDITIONAL INSTRUCTIONS FROM CANDIDATE (follow these):
+{{.PromptInstructions}}
+{{end}}
 Candidate profile:
 {{.Profile}}
 
 Job description:
 {{.JobDescription}}`))
 
-var coverLetterTempl = template.Must(template.New("cover").Parse(`You are an expert cover letter writer. Write a cover letter (3–4 paragraphs) for the candidate.
+var coverLetterSystemTempl = template.Must(template.New("cover-sys").Parse(`You are an expert cover letter writer. Write a cover letter (3–4 paragraphs) for the candidate.
 {{if .MarketInstructions}}
 MARKET-SPECIFIC INSTRUCTIONS (follow exactly):
 {{.MarketInstructions}}
-{{end}}
-{{- if .PromptInstructions}}
-ADDITIONAL INSTRUCTIONS FROM CANDIDATE (follow these):
-{{.PromptInstructions}}
 {{end}}
 {{if .ExperienceContext}}
 FACTUAL CONTEXT, these values are pre-computed and correct; use them exactly, do not recalculate from dates:
@@ -85,8 +81,12 @@ HUMAN WRITING RULES, NON-NEGOTIABLE:
 10. Before writing, check: zero em dashes, no banned phrases, no generic opener, all claims are specific.
 11. TENURE: When stating how long the candidate worked somewhere, use the pre-computed values from FACTUAL CONTEXT above, never calculate years from date strings yourself.
 12. INTERNAL NAMES: Never name specific internal systems, proprietary tools, project codenames, clients, or team-specific terminology from the profile. Keep all such references generic: "a platform", "our systems", "the product", "internal tooling", "client projects", "key accounts", whatever fits the field.
-13. COUNTS: Never state an exact number of systems, projects, clients, products, or similar countable items. If the count is fewer than 10, say "multiple". If 10 or more, say "tens of".
+13. COUNTS: Never state an exact number of systems, projects, clients, products, or similar countable items. If the count is fewer than 10, say "multiple". If 10 or more, say "tens of".`))
 
+var coverLetterUserTempl = template.Must(template.New("cover-user").Parse(`{{- if .PromptInstructions}}
+ADDITIONAL INSTRUCTIONS FROM CANDIDATE (follow these):
+{{.PromptInstructions}}
+{{end}}
 Candidate profile:
 {{.Profile}}
 {{if .JobDescription}}
@@ -205,7 +205,7 @@ func (t *Tailor) IdentifyFormFields(ctx context.Context, imageBytes []byte) ([]d
 // the first "Job URL:" or "LinkedIn:" line) from the combined jobDesc string.
 // Returns (marketInstructions, remainder).
 func splitMarketPrefix(s string) (string, string) {
-	markers := []string{"Job URL:", "LinkedIn:", "GitHub:"}
+	markers := []string{"Job URL:", "Job Description:", "LinkedIn:", "GitHub:"}
 	for _, marker := range markers {
 		if idx := strings.Index(s, marker); idx > 0 {
 			return strings.TrimSpace(s[:idx]), strings.TrimSpace(s[idx:])

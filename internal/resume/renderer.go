@@ -28,12 +28,17 @@ func NewPDFRenderer(styleDir string) *PDFRenderer {
 // RenderResume generates a PDF from a ResumeProfile using the named CSS style.
 // If styleName is empty the first available style is used (or the built-in default).
 // cssOverride, if non-empty, is a direct file path that takes precedence over styleName.
-func (r *PDFRenderer) RenderResume(ctx context.Context, profile *domain.ResumeProfile, styleName, cssOverride string) ([]byte, error) {
+// opts may supply market-specific section headings; nil uses English defaults.
+func (r *PDFRenderer) RenderResume(ctx context.Context, profile *domain.ResumeProfile, styleName, cssOverride string, opts *RenderOptions) ([]byte, error) {
 	css, err := r.loadCSS(styleName, cssOverride)
 	if err != nil {
 		return nil, err
 	}
-	html, err := renderResumeHTML(profile, css)
+	labels := DefaultSectionLabels()
+	if opts != nil {
+		labels = opts.SectionLabels
+	}
+	html, err := renderResumeHTML(profile, css, labels)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +64,7 @@ func (r *PDFRenderer) loadCSS(styleName, cssOverride string) (string, error) {
 	if cssOverride != "" {
 		data, err := os.ReadFile(cssOverride)
 		if err == nil {
-			return string(data), nil
+			return expandStylesheetImports(string(data), filepath.Dir(cssOverride)), nil
 		}
 		// file not found, fall through to style directory lookup
 	}
@@ -120,14 +125,14 @@ var resumeTempl = template.Must(
   </div>
 </header>
 <main>
-  {{if .P.Summary}}<section id="summary"><h2>Professional Summary</h2><p>{{.P.Summary}}</p></section>{{end}}
+  {{if .P.Summary}}<section id="summary"><h2>{{.L.Summary}}</h2><p>{{.P.Summary}}</p></section>{{end}}
 
-  {{if .P.Skills}}<section id="skills-technical"><h2>Technical Expertise</h2>
+  {{if .P.Skills}}<section id="skills-technical"><h2>{{.L.Skills}}</h2>
   <div class="two-column">
     {{range .P.Skills}}<div class="skill-row">{{skillRow .}}</div>{{end}}
   </div></section>{{end}}
 
-  {{if .P.ExperienceDetails}}<section id="work-experience"><h2>Work Experience</h2>
+  {{if .P.ExperienceDetails}}<section id="work-experience"><h2>{{.L.Experience}}</h2>
   {{range .P.ExperienceDetails}}
   <div class="entry">
     <div class="entry-title-line">{{.Position}}</div>
@@ -136,7 +141,7 @@ var resumeTempl = template.Must(
   </div>
   {{end}}</section>{{end}}
 
-  {{if .P.Projects}}<section id="side-projects"><h2>Projects</h2>
+  {{if .P.Projects}}<section id="side-projects"><h2>{{.L.Projects}}</h2>
   {{range .P.Projects}}
   <div class="entry">
     <div class="entry-title-line">{{if .Link}}<a href="{{.Link}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}{{if .Technologies}}<span class="entry-tech"> · {{join .Technologies ", "}}</span>{{end}}</div>
@@ -144,27 +149,27 @@ var resumeTempl = template.Must(
   </div>
   {{end}}</section>{{end}}
 
-  {{if .P.Certifications}}<section id="certifications"><h2>Certifications</h2>
+  {{if .P.Certifications}}<section id="certifications"><h2>{{.L.Certifications}}</h2>
   <ul class="compact-list">
     {{range .P.Certifications}}<li><strong>{{.Name}}</strong>{{if .Issuer}}, {{.Issuer}}{{end}}{{if .Date}}, {{.Date}}{{end}}</li>{{end}}
   </ul></section>{{end}}
 
-  {{if .P.Publications}}<section id="publications"><h2>Publications</h2>
+  {{if .P.Publications}}<section id="publications"><h2>{{.L.Publications}}</h2>
   <ul class="compact-list">
     {{range .P.Publications}}<li>{{if .Authors}}{{.Authors}}. {{end}}<strong>{{.Title}}</strong>{{if .Journal}}. <em>{{.Journal}}</em>{{end}}{{if .Year}}, {{.Year}}{{end}}{{if .DOI}}. {{.DOI}}{{end}}{{if .Status}} [{{.Status}}]{{end}}</li>{{end}}
   </ul></section>{{end}}
 
-  {{if .P.Presentations}}<section id="presentations"><h2>Conference Presentations</h2>
+  {{if .P.Presentations}}<section id="presentations"><h2>{{.L.Presentations}}</h2>
   <ul class="compact-list">
     {{range .P.Presentations}}<li>{{if .Year}}{{.Year}}, {{end}}<strong>{{.Title}}</strong>{{if .Conference}}, <em>{{.Conference}}</em>{{end}}{{if .Role}} ({{.Role}}){{end}}</li>{{end}}
   </ul></section>{{end}}
 
-  {{if .P.Grants}}<section id="grants"><h2>Research Grants &amp; Funding</h2>
+  {{if .P.Grants}}<section id="grants"><h2>{{.L.Grants}}</h2>
   <ul class="compact-list">
     {{range .P.Grants}}<li>{{if .Year}}{{.Year}}, {{end}}<strong>{{.Funder}}</strong>{{if .Project}}: {{.Project}}{{end}}{{if .Amount}} ({{.Amount}}){{end}}</li>{{end}}
   </ul></section>{{end}}
 
-  {{if .P.EducationDetails}}<section id="education"><h2>Education</h2>
+  {{if .P.EducationDetails}}<section id="education"><h2>{{.L.Education}}</h2>
   {{range .P.EducationDetails}}
   <div class="entry">
     <div class="entry-title-line">{{.EducationLevel}}{{if .FieldOfStudy}} in {{.FieldOfStudy}}{{end}}</div>
@@ -173,22 +178,54 @@ var resumeTempl = template.Must(
   </div>
   {{end}}</section>{{end}}
 
-  {{if .P.Languages}}<section id="skills-languages"><h2>Languages</h2>
+  {{if .P.Languages}}<section id="skills-languages"><h2>{{.L.Languages}}</h2>
   <p>{{range .P.Languages}}{{.Language}} ({{.Proficiency}})  {{end}}</p>
   </section>{{end}}
 </main>
 </body></html>`))
 
-func renderResumeHTML(p *domain.ResumeProfile, css string) (string, error) {
+func renderResumeHTML(p *domain.ResumeProfile, css string, labels SectionLabels) (string, error) {
 	var buf bytes.Buffer
 	data := struct {
 		P   *domain.ResumeProfile
+		L   SectionLabels
 		CSS template.CSS
-	}{P: p, CSS: template.CSS(css)}
+	}{P: p, L: labels, CSS: template.CSS(css)}
 	if err := resumeTempl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("render resume html: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// expandStylesheetImports inlines local @import "./file.css" for PDF rendering.
+func expandStylesheetImports(css, dir string) string {
+	const lead = `@import "./`
+	for {
+		idx := strings.Index(css, lead)
+		if idx < 0 {
+			break
+		}
+		after := css[idx+len(lead):]
+		file, rest, ok := strings.Cut(after, `"`)
+		if !ok || file == "" {
+			break
+		}
+		semicolon := strings.Index(rest, ";")
+		if semicolon < 0 {
+			break
+		}
+		importEnd := idx + len(lead) + len(file) + 1 + semicolon + 1
+		if importEnd > len(css) {
+			break
+		}
+		importStmt := css[idx:importEnd]
+		embedded, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil {
+			break
+		}
+		css = strings.Replace(css, importStmt, string(embedded), 1)
+	}
+	return css
 }
 
 func renderCoverLetterHTML(body, css string) string {

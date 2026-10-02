@@ -1,0 +1,11 @@
+name: India
+locale: en-IN
+document_language: en
+region_group: asia_pacific
+page_size: a4
+css_file: resume_markets/styles/style_in.css
+
+prompt_files:
+  resume: prompts/en-IN/india.resume.txt
+  tailored: prompts/en-IN/india.tailored.txt
+  cover: prompts/en-IN/india.cover.txt

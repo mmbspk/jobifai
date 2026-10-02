@@ -1,0 +1,7 @@
+Target: United States job market. Apply all US resume conventions from the base market rules, then tailor to the job description.
+
+Tailoring:
+- Lead experience bullets with requirements the posting repeats; keep facts accurate.
+- Adjust summary to the role title and top 3 posting themes.
+- Reorder skills so the most relevant categories appear first.
+- Do not add tools, credentials, or employers the candidate does not have.

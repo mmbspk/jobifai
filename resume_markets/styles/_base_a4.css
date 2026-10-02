@@ -1,0 +1,98 @@
+/* Shared A4 resume layout (market skins import this file). */
+@import url("https://fonts.googleapis.com/css2?family=Carlito:ital,wght@0,400;0,700;1,400;1,700&display=swap");
+
+@page {
+  size: A4 portrait;
+  margin: 1.5cm 1.8cm;
+}
+
+:root {
+  --accent: #2B579A;
+  --text: #1a1a1a;
+  --subtle: #555555;
+  --body-font: "Carlito", "Calibri", Arial, sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--body-font);
+  font-size: 10.5pt;
+  color: var(--text);
+  line-height: 1.4;
+  background: #ffffff;
+}
+
+@media screen {
+  body { max-width: 21cm; margin: 0 auto; padding: 1.5cm 1.8cm; }
+}
+
+a { color: var(--accent); text-decoration: none; }
+
+header {
+  padding-bottom: 0.45rem;
+  margin-bottom: 0.6rem;
+  border-bottom: 1.5px solid var(--accent);
+}
+
+header h1 {
+  font-size: 20pt;
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 0.1rem;
+  line-height: 1.15;
+}
+
+.job-title { font-size: 10pt; color: var(--accent); margin-bottom: 0.35rem; }
+
+.contact-info {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin-top: 0.2rem;
+}
+
+.contact-info p { font-size: 9.5pt; color: var(--subtle); }
+.contact-info p + p::before { content: " | "; color: var(--subtle); margin: 0 0.3rem; }
+
+section { margin-top: 0.75rem; }
+section:first-of-type { margin-top: 0; }
+
+section h2 {
+  font-size: 10.5pt;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding-bottom: 0.15rem;
+  margin-bottom: 0.45rem;
+}
+
+#summary p, #cover-letter p { text-align: justify; line-height: 1.5; }
+
+.two-column { display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.2rem; }
+.skill-row { margin-bottom: 0.2rem; line-height: 1.45; font-size: 10pt; }
+
+.entry { margin-bottom: 0.55rem; }
+.entry-title-line { font-weight: 700; font-size: 10.5pt; margin-bottom: 0.05rem; }
+.entry-meta-line { font-size: 9.5pt; color: var(--subtle); font-style: italic; margin-bottom: 0.25rem; }
+.entry-tech { font-weight: 400; color: var(--subtle); font-size: 9.5pt; }
+.entry-desc { font-size: 10pt; margin-top: 0.1rem; line-height: 1.4; }
+
+.compact-list { padding-left: 1.3rem; list-style-type: disc; margin: 0; }
+.compact-list li { margin-bottom: 0.12rem; line-height: 1.4; font-size: 10pt; }
+
+#certifications .compact-list { list-style: none; padding-left: 0; }
+
+#summary { order: 1; }
+#skills-technical { order: 2; }
+#work-experience { order: 3; }
+#side-projects { order: 4; }
+#certifications { order: 5; }
+#publications { order: 6; }
+#presentations { order: 7; }
+#grants { order: 8; }
+#education { order: 9; margin-top: 1.2rem; }
+#skills-languages { order: 10; }
+
+main { display: flex; flex-direction: column; }

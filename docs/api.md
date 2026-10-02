@@ -675,7 +675,7 @@ List available resume CSS styles.
 List available resume target markets.
 
 - **Auth required**: Yes
-- **Response**: `[{ "name": "Australia", "yaml_file": "market_australia.yaml", "has_css": true }]`
+- **Response**: `[{ "name": "Australia", "yaml_file": "market_australia.yaml", "has_css": true, "locale": "en-AU", "document_language": "en", "region_group": "asia_pacific", "page_size": "a4" }]`
 
 ---
 

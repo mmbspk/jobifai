@@ -377,9 +377,13 @@ type ResumeStyle struct {
 }
 
 type ResumeMarket struct {
-	Name     string `json:"name"`
-	YAMLFile string `json:"yaml_file"`
-	HasCSS   bool   `json:"has_css"`
+	Name             string `json:"name"`
+	YAMLFile         string `json:"yaml_file"`
+	HasCSS           bool   `json:"has_css"`
+	Locale           string `json:"locale,omitempty"`
+	DocumentLanguage string `json:"document_language,omitempty"`
+	RegionGroup      string `json:"region_group,omitempty"`
+	PageSize         string `json:"page_size,omitempty"`
 }
 
 // SessionUsage holds LLM token usage accumulated during the current server session.

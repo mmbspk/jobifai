@@ -1,0 +1,10 @@
+@import "./_base_a4.css";
+
+@page {
+  size: letter portrait;
+  margin: 0.5in 0.6in;
+}
+
+@media screen {
+  body { max-width: 8.5in; padding: 0.5in 0.6in; }
+}

@@ -7,11 +7,12 @@ import (
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
+	"github.com/user/jobifai/internal/resume"
 )
 
 type stubRenderer struct{}
 
-func (stubRenderer) RenderResume(_ context.Context, _ *domain.ResumeProfile, _, _ string) ([]byte, error) {
+func (stubRenderer) RenderResume(_ context.Context, _ *domain.ResumeProfile, _, _ string, _ *resume.RenderOptions) ([]byte, error) {
 	return []byte("%PDF-resume-stub"), nil
 }
 

@@ -105,7 +105,7 @@ type ResumeTailor interface {
 
 // ResumeRenderer is the subset of resume.PDFRenderer the bot uses.
 type ResumeRenderer interface {
-	RenderResume(ctx context.Context, profile *domain.ResumeProfile, styleName, cssOverride string) ([]byte, error)
+	RenderResume(ctx context.Context, profile *domain.ResumeProfile, styleName, cssOverride string, opts *resume.RenderOptions) ([]byte, error)
 	RenderCoverLetter(ctx context.Context, body string, styleName, cssOverride string) ([]byte, error)
 }
 
@@ -1284,7 +1284,11 @@ func (b *Bot) generateDocs(ctx context.Context, job linkedInJob, jobDesc string)
 	if market != nil && market.CSSFile != "" {
 		cssOverride = market.CSSFile
 	}
-	if pdf, err := b.cfg.Renderer.RenderResume(ctx, profile, "", cssOverride); err == nil {
+	var renderOpts *resume.RenderOptions
+	if market != nil {
+		renderOpts = &resume.RenderOptions{SectionLabels: market.LabelsOrDefault()}
+	}
+	if pdf, err := b.cfg.Renderer.RenderResume(ctx, profile, "", cssOverride, renderOpts); err == nil {
 		resumePath = b.savePDF(pdf, job.Company, job.Title, "resume")
 	}
 	coverPath = b.generateCoverLetter(ctx, profile, job, jobDesc, market, cssOverride)
@@ -1308,7 +1312,7 @@ func (b *Bot) tailoredProfile(ctx context.Context, jobID, jobDesc string, market
 	}
 	promptCtx := jobDesc
 	if market != nil && market.TailoredPrompt != "" {
-		promptCtx = market.TailoredPrompt + "\n" + jobDesc
+		promptCtx = market.TailoredPrompt + "\n\nJob Description:\n" + jobDesc
 	}
 	tailored, err := b.cfg.Tailor.TailorProfile(b.llmCtx(ctx, "tailor resume", jobID), profile, promptCtx)
 	if err != nil {
@@ -1324,7 +1328,7 @@ func (b *Bot) generateCoverLetter(ctx context.Context, profile *domain.ResumePro
 	}
 	promptCtx := jobDesc
 	if market != nil && market.CoverLetterPrompt != "" {
-		promptCtx = market.CoverLetterPrompt + "\n" + jobDesc
+		promptCtx = market.CoverLetterPrompt + "\n\nJob Description:\n" + jobDesc
 	}
 	body, err := b.cfg.Tailor.WriteCoverLetter(b.llmCtx(ctx, "cover letter", job.ID), profile, promptCtx)
 	if err != nil {

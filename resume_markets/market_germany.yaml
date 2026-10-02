@@ -1,0 +1,11 @@
+name: Germany
+locale: en-DE
+document_language: en
+region_group: europe
+page_size: a4
+css_file: resume_markets/styles/style_de.css
+
+prompt_files:
+  resume: prompts/en-DE/germany.resume.txt
+  tailored: prompts/en-DE/germany.tailored.txt
+  cover: prompts/en-DE/germany.cover.txt
