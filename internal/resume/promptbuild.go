@@ -104,7 +104,7 @@ func BuildExtractPrompt(resumeText string) string {
 	return extractPromptHeader + "\nResume text:\n" + resumeText
 }
 
-// BuildExtractMessages splits cached extraction instructions from resume text (provider prompt caching).
+// BuildExtractMessages splits static extraction instructions from resume text (optional Claude cache block).
 func BuildExtractMessages(resumeText string) []llm.Message {
 	return []llm.Message{
 		{Role: "system", Content: extractPromptHeader, CacheEphemeral: true},
@@ -154,7 +154,7 @@ func BuildTailorPrompt(profile *domain.ResumeProfile, jobDesc string) (string, e
 	return strings.Join(parts, "\n\n"), nil
 }
 
-// BuildTailorMessages renders production resume tailoring messages (cached system + dynamic user).
+// BuildTailorMessages renders production resume tailoring messages (static system + dynamic user).
 func BuildTailorMessages(profile *domain.ResumeProfile, jobDesc string) ([]llm.Message, error) {
 	marketInstructions, jobDesc := splitMarketPrefix(jobDesc)
 	trimmed := ForTailoring(profile)
@@ -194,7 +194,7 @@ func BuildCoverLetterPrompt(profile *domain.ResumeProfile, jobDesc string) (stri
 	return strings.Join(parts, "\n\n"), nil
 }
 
-// BuildCoverLetterMessages renders production cover letter messages (cached system + dynamic user).
+// BuildCoverLetterMessages renders production cover letter messages (static system + dynamic user).
 func BuildCoverLetterMessages(profile *domain.ResumeProfile, jobDesc string) ([]llm.Message, error) {
 	marketInstructions, jobDesc := splitMarketPrefix(jobDesc)
 	trimmed := ForCoverLetter(profile)

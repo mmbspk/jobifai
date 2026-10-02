@@ -1,8 +1,8 @@
-Target: France lettre de motivation. Match posting language.
+Target: France lettre de motivation. Write in English for this preset.
 
 Structure:
-- Formal salutation (Madame, Monsieur,).
+- Formal salutation (Dear Hiring Manager, or Madame/Monsieur when a French name is given).
 - Paragraph 1: role and motivation for this employer specifically.
 - Paragraph 2–3: evidence mapped to posting requirements with concrete outcomes.
-- Brief closing expressing interview availability; Cordialement / Best regards with name.
+- Brief closing expressing interview availability; Best regards with name.
 - 200–350 words; no address header block.

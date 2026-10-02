@@ -1,4 +1,4 @@
-Target: France CV market. Default English; use French when the job description is clearly French.
+Target: France CV market. Write all resume text in English for this preset (PDF section headings are English).
 
 French CV conventions:
 - No photo, age, marital status, or national ID in exported PDF (anti-discrimination best practice).

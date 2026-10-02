@@ -1,8 +1,8 @@
-Target: Germany cover letter (Anschreiben). Match the language of the job description.
+Target: Germany cover letter (Anschreiben). Write in English for this preset.
 
 Structure:
-- Formal greeting (Sehr geehrte Damen und Herren, or named contact).
+- Formal greeting (Dear Hiring Manager, or named contact).
 - Motivation paragraph tied to the role and employer; factual, not effusive.
 - One paragraph mapping 2–3 requirements to evidence from the profile.
-- Short closing with availability; professional sign-off (Mit freundlichen Grüßen / Kind regards).
+- Short closing with availability; professional sign-off (Kind regards).
 - No duplicate CV content; 200–350 words.

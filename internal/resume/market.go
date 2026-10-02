@@ -8,7 +8,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const sharedATSPromptRel = "prompts/_shared/ats_json.en.txt"
+const (
+	sharedATSPromptRel   = "prompts/_shared/ats_json.en.txt"
+	sharedCoverPromptRel = "prompts/_shared/cover_letter_prose.en.txt"
+)
 
 // MarketPrompts holds locale metadata and prompt prefixes for a target market.
 type MarketPrompts struct {
@@ -50,7 +53,7 @@ func LoadMarket(path string) (*MarketPrompts, error) {
 	if err := loadPromptFileRefs(&m, marketDir, doc.PromptFiles); err != nil {
 		return nil, err
 	}
-	appendSharedATSRules(&m, marketDir)
+	appendSharedPromptRules(&m, marketDir)
 	normalizeMarketMeta(&m)
 	return &m, nil
 }
@@ -64,17 +67,28 @@ func normalizeMarketMeta(m *MarketPrompts) {
 	}
 }
 
-func appendSharedATSRules(m *MarketPrompts, marketDir string) {
-	data, err := os.ReadFile(filepath.Join(marketDir, sharedATSPromptRel))
+func appendSharedPromptRules(m *MarketPrompts, marketDir string) {
+	resumeSuffix := readSharedPromptSuffix(marketDir, sharedATSPromptRel)
+	coverSuffix := readSharedPromptSuffix(marketDir, sharedCoverPromptRel)
+	for _, p := range []*string{&m.ResumePrompt, &m.TailoredPrompt} {
+		appendSuffix(p, resumeSuffix)
+	}
+	appendSuffix(&m.CoverLetterPrompt, coverSuffix)
+}
+
+func readSharedPromptSuffix(marketDir, rel string) string {
+	data, err := os.ReadFile(filepath.Join(marketDir, rel))
 	if err != nil {
+		return ""
+	}
+	return "\n\n" + strings.TrimSpace(string(data))
+}
+
+func appendSuffix(p *string, suffix string) {
+	if suffix == "" || strings.TrimSpace(*p) == "" {
 		return
 	}
-	suffix := "\n\n" + strings.TrimSpace(string(data))
-	for _, p := range []*string{&m.ResumePrompt, &m.TailoredPrompt, &m.CoverLetterPrompt} {
-		if strings.TrimSpace(*p) != "" {
-			*p = strings.TrimSpace(*p) + suffix
-		}
-	}
+	*p = strings.TrimSpace(*p) + suffix
 }
 
 func loadPromptFileRefs(m *MarketPrompts, marketDir string, refs promptFiles) error {

@@ -19,7 +19,8 @@ cover_letter_prompt: "Write a cover letter."
 func TestLoadMarket_Valid(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "prompts", "_shared"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompts", "_shared", "ats_json.en.txt"), []byte("ATS & EXTRACTION shared rules."), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompts", "_shared", "ats_json.en.txt"), []byte("ATS & EXTRACTION JSON string fields."), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "prompts", "_shared", "cover_letter_prose.en.txt"), []byte("COVER LETTER OUTPUT plain text."), 0o644))
 	path := filepath.Join(dir, "market_test.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(minimalMarketYAML), 0o644))
 

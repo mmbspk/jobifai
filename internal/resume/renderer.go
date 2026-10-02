@@ -199,23 +199,26 @@ func renderResumeHTML(p *domain.ResumeProfile, css string, labels SectionLabels)
 
 // expandStylesheetImports inlines local @import "./file.css" for PDF rendering.
 func expandStylesheetImports(css, dir string) string {
+	const lead = `@import "./`
 	for {
-		const prefix = `@import "./`
-		idx := strings.Index(css, prefix)
+		idx := strings.Index(css, lead)
 		if idx < 0 {
 			break
 		}
-		rest := css[idx+len(prefix):]
-		end := strings.Index(rest, `"`)
-		if end < 0 {
+		after := css[idx+len(lead):]
+		file, rest, ok := strings.Cut(after, `"`)
+		if !ok || file == "" {
 			break
 		}
-		file := rest[:end]
-		semicolon := strings.Index(rest[end:], ";")
+		semicolon := strings.Index(rest, ";")
 		if semicolon < 0 {
 			break
 		}
-		importStmt := css[idx : idx+len(prefix)+end+1+semicolon+1]
+		importEnd := idx + len(lead) + len(file) + 1 + semicolon + 1
+		if importEnd > len(css) {
+			break
+		}
+		importStmt := css[idx:importEnd]
 		embedded, err := os.ReadFile(filepath.Join(dir, file))
 		if err != nil {
 			break

@@ -1,4 +1,4 @@
-ATS & EXTRACTION OUTPUT (all documents):
+ATS & EXTRACTION OUTPUT (resume JSON):
 - Return plain text in JSON string fields only; no HTML, Markdown, bullets symbols, or inline styling in values.
 - Use consistent date ranges: "Jan 2020 – Mar 2023" or "2019 – Present" (en dash between dates).
 - One achievement or fact per experience bullet; start bullets with a past-tense action verb.

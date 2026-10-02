@@ -1,7 +1,7 @@
 Target: France. Apply French CV conventions, then tailor to the job description.
 
 Tailoring:
-- Match posting language (French vs English) in summary and bullets.
+- Keep summary and bullets in English (match PDF section headings).
 - Surface diplomas and certifications the posting prioritises when the candidate has them.
-- Align role wording with French job titles only when accurate to the candidate's history.
+- Align role wording with posting titles only when accurate to the candidate's history.
 - Do not invent visa status or carte de séjour details.

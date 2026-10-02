@@ -46,7 +46,8 @@ func taskLabel(ctx context.Context) string {
 type Message struct {
 	Role    string `json:"role"` // "user" | "assistant" | "system"
 	Content string `json:"content"`
-	// CacheEphemeral marks static prompt prefixes for provider prompt caching (Claude).
+	// CacheEphemeral requests Claude ephemeral prompt caching on this block when supported.
+	// Cache writes/reads are not guaranteed (model minimum prefix length and request shape apply).
 	CacheEphemeral bool `json:"-"`
 }
 

@@ -1,4 +1,4 @@
-Target: Germany (Lebenslauf norms for international and local employers). Default output language: English. Use German only if the job description is clearly German.
+Target: Germany (Lebenslauf norms for international and local employers). Write all resume text in English for this preset (PDF section headings are English).
 
 German CV conventions:
 - No photo, age, marital status, religion, or nationality in the document (GDPR-friendly).
