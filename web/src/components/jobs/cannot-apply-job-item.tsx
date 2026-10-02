@@ -61,6 +61,26 @@ export function CannotApplyJobItem({
             <Button variant="ghost" size="sm" leftIcon={<RotateCcw size={12} />} disabled={actionPending} onClick={() => onRequeue(job.id)}>
               Re-queue
             </Button>
+            {confirmDelete ? (
+              <span className="flex items-center gap-1 text-xs self-center">
+                <button type="button" disabled={actionPending} onClick={() => onDelete(job.id)} className="text-[var(--color-danger)] font-medium disabled:opacity-50">
+                  Delete
+                </button>
+                <button type="button" onClick={() => setConfirmDelete(false)} className="text-[var(--color-text-muted)]">
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                leftIcon={<Trash2 size={12} />}
+                disabled={actionPending}
+                onClick={() => setConfirmDelete(true)}
+              >
+                Delete
+              </Button>
+            )}
           </div>
 
           {expandable && (
@@ -75,16 +95,6 @@ export function CannotApplyJobItem({
         <div className="px-4 pb-4 space-y-3 border-t border-[var(--color-border-subtle)] bg-[var(--color-surface-2)]/30">
           <JobMatchReasoning reasoning={job.suitability_reasoning} />
           {halalEnabled && job.halal_verdict && <EthicsVerdict verdict={job.halal_verdict} />}
-          {confirmDelete ? (
-            <span className="flex items-center gap-2 text-xs">
-              <button type="button" onClick={() => onDelete(job.id)} className="text-[var(--color-danger)]">Delete</button>
-              <button type="button" onClick={() => setConfirmDelete(false)}>Cancel</button>
-            </span>
-          ) : (
-            <button type="button" onClick={() => setConfirmDelete(true)} className="inline-flex items-center gap-1 text-xs text-[var(--color-text-dim)] hover:text-[var(--color-danger)]">
-              <Trash2 size={12} /> Delete
-            </button>
-          )}
         </div>
       )}
     </div>
