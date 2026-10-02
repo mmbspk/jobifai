@@ -23,6 +23,7 @@ import (
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
 	"github.com/user/jobifai/internal/scraper"
 )
@@ -1174,6 +1175,10 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	if b.cfg.HalalChecker != nil {
 		verdict, err := b.cfg.HalalChecker.CheckHalal(b.llmCtx(ctx, "halal check", job.ID), job.Title, job.Company, jobDesc)
 		if err != nil {
+			if isJobifaiQuotaExceeded(err) {
+				b.abortOnLLMFailure(err)
+				return result.Score, result.Reasoning, nil, false
+			}
 			log.Warn().Err(err).Msg("halal check failed, letting job through")
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
@@ -1189,18 +1194,51 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	return result.Score, result.Reasoning, halalVerdict, true
 }
 
-func (b *Bot) abortOnLLMFailure(err error) {
+func isJobifaiQuotaExceeded(err error) bool {
+	return err != nil && errors.Is(err, quota.ErrExceeded)
+}
+
+func isProviderUsageLimit(err error) bool {
+	if err == nil || isJobifaiQuotaExceeded(err) {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "429") ||
+		strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "too many requests") ||
+		strings.Contains(lower, "quota exceeded")
+}
+
+// isFormFillFatalLLM is true when form filling must abort (no fallback answers, no Continue/Submit).
+func isFormFillFatalLLM(err error) bool {
+	return isJobifaiQuotaExceeded(err) || isProviderUsageLimit(err)
+}
+
+func llmAbortReason(err error) string {
+	if err == nil {
+		return ""
+	}
 	msg := err.Error()
-	var reason string
 	switch {
+	case isJobifaiQuotaExceeded(err):
+		return "LLM quota exhausted — trial or plan credits are used up. Add credits or upgrade in Settings → Plan, then restart the bot."
+	case isProviderUsageLimit(err):
+		return "LLM provider usage or rate limit reached — check your provider account, API billing, or model limits in Settings → LLM (this is not Jobifai plan credits)."
 	case strings.Contains(msg, "401") || strings.Contains(msg, "Jwt is expired") || strings.Contains(msg, "LOGIN_FAILED"):
-		reason = "LLM authentication failed — the proxy JWT has expired or the API key is invalid. Restart the LLM proxy to refresh credentials."
+		return "LLM authentication failed — the proxy JWT has expired or the API key is invalid. Restart the LLM proxy to refresh credentials."
 	case strings.Contains(msg, "connection refused"):
-		reason = "LLM proxy is not running — connection refused. Start the proxy at the configured address."
+		return "LLM proxy is not running — connection refused. Start the proxy at the configured address."
 	case strings.Contains(msg, "502") || strings.Contains(msg, "503"):
-		reason = "LLM service is unavailable (502/503) — a network issue persisted after 3 retry attempts."
+		return "LLM service is unavailable (502/503) — a network issue persisted after 3 retry attempts."
 	default:
-		reason = fmt.Sprintf("LLM call failed after 3 attempts: %v", err)
+		return fmt.Sprintf("LLM call failed after 3 attempts: %v", err)
+	}
+}
+
+func (b *Bot) abortOnLLMFailure(err error) {
+	reason := llmAbortReason(err)
+	if reason == "" {
+		reason = fmt.Sprintf("LLM call failed: %v", err)
 	}
 	log.Error().Msgf("bot: aborting — %s", reason)
 	b.Stop()
@@ -1994,7 +2032,13 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		}
 
 		// Fill any unanswered fields on the current step before clicking the action button.
-		filled, hasFields := b.fillFormStep(ctx, page, lazy)
+		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy)
+		if fillErr != nil {
+			if isFormFillFatalLLM(fillErr) {
+				b.abortOnLLMFailure(fillErr)
+			}
+			return fmt.Errorf("easy apply: form fill aborted: %w", fillErr)
+		}
 		if hasFields && !filled {
 			consecutiveUnfillable++
 			log.Warn().Int("count", consecutiveUnfillable).Msg("easy apply: fields present but none filled")
@@ -2045,7 +2089,13 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		if noAdvanceCount >= stuckThreshold {
 			if errs := pageValidationErrors(page); len(errs) > 0 {
 				log.Warn().Strs("errors", errs).Msg("easy apply: validation errors on page, re-filling step")
-				refilled, _ := b.fillFormStep(ctx, page, lazy)
+				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)
+				if refillErr != nil {
+					if isFormFillFatalLLM(refillErr) {
+						b.abortOnLLMFailure(refillErr)
+					}
+					return fmt.Errorf("easy apply: form fill aborted: %w", refillErr)
+				}
 				if refilled {
 					noAdvanceCount = 0
 					consecutiveUnfillable = 0

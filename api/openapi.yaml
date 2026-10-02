@@ -963,7 +963,8 @@ components:
           description: Path to Chrome --user-data-dir
         remote_debug_port:
           type: integer
-          default: 9222
+          default: 0
+          description: Connect to Chrome remote debugging on this port (0 = launch managed browser)
 
     HumanBehaviorConfig:
       type: object

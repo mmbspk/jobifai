@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/quota"
 )
 
 // ── deduplicateTitle ─────────────────────────────────────────────────────────
@@ -343,4 +344,37 @@ func TestSeekWhereCanonical(t *testing.T) {
 	where, ok := domain.SeekSearchLocation("Melbourne, Victoria, Australia")
 	assert.True(t, ok)
 	assert.Equal(t, "All Melbourne VIC", where)
+}
+
+func TestIsJobifaiQuotaExceeded(t *testing.T) {
+	assert.False(t, isJobifaiQuotaExceeded(nil))
+	assert.True(t, isJobifaiQuotaExceeded(quota.ErrExceeded))
+	assert.True(t, isJobifaiQuotaExceeded(&quota.ExceededError{Code: "trial_exhausted", Scope: "trial"}))
+	assert.True(t, isJobifaiQuotaExceeded(fmt.Errorf("scorer: llm: %w", quota.ErrExceeded)))
+	assert.False(t, isJobifaiQuotaExceeded(fmt.Errorf("openai quota exceeded")))
+	assert.False(t, isJobifaiQuotaExceeded(fmt.Errorf("connection refused")))
+}
+
+func TestLlmAbortReason_JobifaiVsProviderQuota(t *testing.T) {
+	jobifai := llmAbortReason(fmt.Errorf("scorer: llm: %w", quota.ErrExceeded))
+	assert.Contains(t, jobifai, "Settings → Plan")
+	assert.NotContains(t, jobifai, "provider")
+
+	provider := llmAbortReason(fmt.Errorf("llm http 429: rate limit"))
+	assert.Contains(t, provider, "provider")
+	assert.NotContains(t, provider, "Settings → Plan")
+}
+
+func TestResolveFormFieldAnswer_QuotaBlocksFallback(t *testing.T) {
+	qErr := fmt.Errorf("form question: %w", quota.ErrExceeded)
+	ans, err := resolveFormFieldAnswer("", qErr, "first option")
+	assert.Error(t, err)
+	assert.True(t, isJobifaiQuotaExceeded(err))
+	assert.Empty(t, ans)
+}
+
+func TestShouldAdvanceApplyForm_BlocksOnJobifaiQuota(t *testing.T) {
+	assert.True(t, shouldAdvanceApplyForm(nil))
+	assert.False(t, shouldAdvanceApplyForm(fmt.Errorf("form: %w", quota.ErrExceeded)))
+	assert.False(t, shouldAdvanceApplyForm(fmt.Errorf("form question: llm http 429: rate limit")))
 }

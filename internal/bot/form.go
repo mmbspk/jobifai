@@ -758,13 +758,34 @@ func clampNumericString(n string, max int) string {
 	return n
 }
 
+// shouldAdvanceApplyForm reports whether Continue/Submit is allowed after fillFormStep.
+// LinkedIn Easy Apply and Seek Quick Apply must not advance after fatal LLM errors.
+func shouldAdvanceApplyForm(fillErr error) bool {
+	return !isFormFillFatalLLM(fillErr)
+}
+
+// resolveFormFieldAnswer applies a fallback only when err is nil (never after fatal LLM errors).
+func resolveFormFieldAnswer(answer string, err error, fallback string) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(answer) != "" {
+		return answer, nil
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", nil
+}
+
 // fillFormStep scans the current form page/modal step for unanswered fields and
 // fills them using profile defaults, heuristics, or LLM.
 //
-// Returns (filled, hasFields):
+// Returns (filled, hasFields, err):
 //   - filled=true  when at least one field was successfully written
 //   - hasFields=true when the scan found at least one field (even if none could be filled)
-func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (filled bool, hasFields bool) {
+//   - err non-nil on fatal LLM failures (Jobifai quota or provider usage limits) — callers must not click Continue/Submit
+func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (filled bool, hasFields bool, err error) {
 	// Prefer the document (top page or iframe) that hosts the apply form.
 	// LinkedIn SDUI often mounts Easy Apply in a CDP frame opaque to top-page JS.
 	pages := []*rod.Page{page}
@@ -839,7 +860,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 			}
 		}
-		return false, hasVisibleButUnscanned
+		return false, hasVisibleButUnscanned, nil
 	}
 	// Log each found field so we can debug what's being detected.
 	for _, f := range fields {
@@ -866,7 +887,8 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					log.Debug().Int("index", f.Index).Msg("form: file input already has attachment, skipping upload")
 					filled = true
 				} else {
-					log.Warn().Int("index", f.Index).Msg("form: no generated PDF path, skipping file upload (existing LinkedIn resume will be used)")
+					log.Warn().Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
+						Msg("form: no generated PDF path, skipping file upload (platform profile resume may be used)")
 				}
 				fileUploadIdx++
 				continue
@@ -885,10 +907,17 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			fileUploadIdx++
 
 		case "radio":
-			answer := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())
-			if answer == "" && len(f.Options) > 0 {
-				answer = f.Options[0].Label
-				log.Warn().Str("question", f.Question).Str("fallback", f.Options[0].Label).Msg("form: radio fallback to first option")
+			fallback := ""
+			if len(f.Options) > 0 {
+				fallback = f.Options[0].Label
+			}
+			raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())
+			answer, qErr := resolveFormFieldAnswer(raw, qErr, fallback)
+			if qErr != nil {
+				return filled, true, qErr
+			}
+			if answer == fallback && raw == "" && fallback != "" {
+				log.Warn().Str("question", f.Question).Str("fallback", fallback).Msg("form: radio fallback to first option")
 			}
 			if answer == "" {
 				continue
@@ -924,10 +953,17 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			filled = true
 
 		case "checkbox":
-			answer := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())
-			if answer == "" && len(f.Options) > 0 {
-				answer = f.Options[0].Label
-				log.Warn().Str("question", f.Question).Str("fallback", f.Options[0].Label).Msg("form: checkbox fallback to first option")
+			fallback := ""
+			if len(f.Options) > 0 {
+				fallback = f.Options[0].Label
+			}
+			raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())
+			answer, qErr := resolveFormFieldAnswer(raw, qErr, fallback)
+			if qErr != nil {
+				return filled, true, qErr
+			}
+			if answer == fallback && raw == "" && fallback != "" {
+				log.Warn().Str("question", f.Question).Str("fallback", fallback).Msg("form: checkbox fallback to first option")
 			}
 			var targetID string
 			for _, opt := range f.Options {
@@ -954,16 +990,24 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			// Open-ended prompts misclassified as <select>: ask LLM for free text,
 			// then fill the sibling textarea — never force an essay into a dropdown.
 			if looksLikeOpenEndedQuestion(f.Question) {
-				answer := b.answerFormQuestion(ctx, lazy, f.Question, nil)
+				answer, qErr := b.answerFormQuestion(ctx, lazy, f.Question, nil)
+				if qErr != nil {
+					return filled, true, qErr
+				}
 				if ok := b.fillOpenEndedNearSelect(page, f, answer); ok {
 					filled = true
 					break
 				}
 				log.Warn().Str("question", f.Question).Msg("form: open-ended question has no textarea to fill")
 			}
-			answer := b.answerFormQuestion(ctx, lazy, f.Question, labels)
-			if answer == "" && len(f.Options) > 0 {
-				answer = f.Options[0].Label
+			fallback := ""
+			if len(f.Options) > 0 {
+				fallback = f.Options[0].Label
+			}
+			raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, labels)
+			answer, qErr := resolveFormFieldAnswer(raw, qErr, fallback)
+			if qErr != nil {
+				return filled, true, qErr
 			}
 			if answer != "" {
 				if chosen, ok := matchSelectOption(f, answer); ok {
@@ -985,7 +1029,11 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				answer = profileContactAnswer(f.Question, f.InputType, &profile.PersonalInformation)
 			}
 			if answer == "" {
-				answer = b.answerFormQuestion(ctx, lazy, f.Question, nil)
+				var qErr error
+				answer, qErr = b.answerFormQuestion(ctx, lazy, f.Question, nil)
+				if qErr != nil {
+					return filled, true, qErr
+				}
 			}
 			if answer == "" {
 				continue
@@ -1073,7 +1121,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 	if filled {
 		time.Sleep(600 * time.Millisecond) // let React process field changes
 	}
-	return filled, true
+	return filled, true, nil
 }
 
 // formUploadFile uploads filePath into the nth file input, walking shadow DOM to find it.
@@ -1142,7 +1190,7 @@ func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int) error {
 // work-authorisation) where the profile has a definitive yes/no.  Everything else
 // goes straight to the LLM so it can reason over the full profile context and
 // handle any question dynamically.
-func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question string, options []string) string {
+func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question string, options []string) (string, error) {
 	lower := strings.ToLower(question)
 	ad := b.profileDefaults()
 
@@ -1151,7 +1199,7 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 		if profile := b.currentProfile(); profile != nil {
 			if ans := profileContactAnswer(question, inferContactInputType(question), &profile.PersonalInformation); ans != "" {
 				log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (contact info)")
-				return sanitizeContactFieldAnswer(ans, question, inferContactInputType(question))
+				return sanitizeContactFieldAnswer(ans, question, inferContactInputType(question)), nil
 			}
 		}
 	}
@@ -1166,14 +1214,14 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 				ans = "yes"
 			}
 			log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (sponsorship)")
-			return ans
+			return ans, nil
 		}
 		ans := pickFormOption(options, "no")
 		if ans == "" {
 			ans = "no"
 		}
 		log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (sponsorship)")
-		return ans
+		return ans, nil
 	}
 
 	// Years-of-experience numeric fields (LinkedIn "Additional Questions").
@@ -1185,7 +1233,7 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 			}
 			ans := strconv.Itoa(years)
 			log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (years of experience)")
-			return ans
+			return ans, nil
 		}
 	}
 
@@ -1197,14 +1245,14 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 				ans = "no"
 			}
 			log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (work auth)")
-			return ans
+			return ans, nil
 		}
 		ans := pickFormOption(options, "yes")
 		if ans == "" {
 			ans = "yes"
 		}
 		log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (work auth)")
-		return ans
+		return ans, nil
 	}
 
 	// ── LLM, handles all other questions dynamically ─────────────────────────
@@ -1217,9 +1265,12 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 		answer, err := b.cfg.Tailor.AnswerFormQuestion(b.llmCtx(llmCtx, "form question", lazy.job.ID), lazy.formProfileJSON(), question, options)
 		if err == nil && answer != "" {
 			log.Info().Str("question", question).Str("answer", answer).Msg("form: answered via LLM")
-			return answer
+			return answer, nil
 		}
 		if err != nil {
+			if isFormFillFatalLLM(err) {
+				return "", fmt.Errorf("form question: %w", err)
+			}
 			log.Warn().Err(err).Str("question", question).Msg("form: LLM answer failed")
 		} else {
 			log.Warn().Str("question", question).Msg("form: LLM returned empty answer")
@@ -1229,9 +1280,9 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 	// ── Last resort: first option or empty ────────────────────────────────────
 	if len(options) > 0 {
 		log.Warn().Str("question", question).Str("fallback", options[0]).Msg("form: answered via last-resort fallback")
-		return options[0]
+		return options[0], nil
 	}
-	return ""
+	return "", nil
 }
 
 // profileDefaults extracts the application-defaults section from the bot's profile.
