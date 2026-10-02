@@ -100,8 +100,7 @@ export function AdminQuotaPage() {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-3">
-        <Badge variant="admin">Admin</Badge>
+      <div>
         <PageHeader
           title="Credits & billing"
           description="Deployment-wide credit formula, trial limits, Starter/Pro grants, and Stripe price IDs."

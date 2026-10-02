@@ -77,6 +77,7 @@ func applyUserApplicationFields(base, user domain.GeneralSettings, hasUser bool)
 	if !hasUser {
 		return base
 	}
+	user = ApplyUnsetUserApplicationFields(user)
 	out := base
 	out.DefaultResumeMarket = user.DefaultResumeMarket
 	out.RequireReview = user.RequireReview
@@ -87,6 +88,9 @@ func applyUserApplicationFields(base, user domain.GeneralSettings, hasUser bool)
 	}
 	out.HalalJobFilter = user.HalalJobFilter
 	out.GenerateNewResumeDocs = user.GenerateNewResumeDocs
+	if user.HumanBehavior.DailyApplicationLimit > 0 {
+		out.HumanBehavior.DailyApplicationLimit = user.HumanBehavior.DailyApplicationLimit
+	}
 	return out
 }
 

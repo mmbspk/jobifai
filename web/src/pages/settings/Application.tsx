@@ -14,6 +14,7 @@ const DEFAULT: GeneralSettings = {
   job_suitability_score: 7,
   max_jobs_per_keyword: 25,
   halal_job_filter: false,
+  human_behavior: { daily_application_limit: 5 },
 }
 
 export function ApplicationSettingsPage() {
@@ -48,6 +49,24 @@ export function ApplicationSettingsPage() {
       />
 
       <SettingsSection title="Application behaviour" description="Changes apply to the next automation run.">
+        <div id="daily-applications">
+          <SettingsField
+            label="Daily applications"
+            sub="Maximum applications Jobifai may submit for you per calendar day"
+          >
+            <SettingsNumberInput
+              value={form.human_behavior?.daily_application_limit ?? 5}
+              onChange={v =>
+                setForm(f => ({
+                  ...f,
+                  human_behavior: { ...f.human_behavior, daily_application_limit: v },
+                }))
+              }
+              min={1}
+              max={200}
+            />
+          </SettingsField>
+        </div>
         <Switch
           label="Review before submission"
           helper="Require your approval before Jobifai submits an application."
@@ -92,8 +111,8 @@ export function ApplicationSettingsPage() {
         />
       </SettingsSection>
 
-      <SettingsSection title="Resume generation">
-        <SettingsField label="Default market" sub="Adjusts prompts and resume styling for your target region">
+      <SettingsSection title="Resume and documents">
+        <SettingsField label="Default market" sub="When document generation is on, adjusts prompts and styling for your target region">
           <SettingsSelect
             value={form.default_resume_market ?? ''}
             onChange={e => set('default_resume_market', e.target.value)}
@@ -103,11 +122,11 @@ export function ApplicationSettingsPage() {
           </SettingsSelect>
         </SettingsField>
         <Switch
-          label="Generate tailored documents"
+          label="Generate resume and cover letter for each application"
           helper={
             form.generate_new_resume_docs
-              ? 'A tailored resume (and cover letter when applicable) is generated for each application.'
-              : 'Use your existing on-platform resume without generating new documents.'
+              ? 'Jobifai creates tailored files from your profile and each job description (cover letter when the form requires one).'
+              : 'Jobifai skips creating new files; it still uses your profile for form answers and relies on the resume already stored on the job site.'
           }
           checked={form.generate_new_resume_docs ?? false}
           onCheckedChange={v => set('generate_new_resume_docs', v)}

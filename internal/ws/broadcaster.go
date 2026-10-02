@@ -16,13 +16,28 @@ import (
 // Each connection is associated with a userID at registration time. Log entries
 // that carry a "user_id" JSON field are delivered only to the matching connection;
 // entries without that field are broadcast to every connection.
+// StreamPolicy controls production log filtering for dashboard WebSocket clients.
+type StreamPolicy struct {
+	Production bool
+	// Verbose returns true when the user should receive full log streams (debug, LLM, etc.).
+	Verbose func(userID string) bool
+}
+
 type Broadcaster struct {
 	mu      sync.RWMutex
 	clients map[*websocket.Conn]string // conn → userID
+	policy  StreamPolicy
 }
 
 func NewBroadcaster() *Broadcaster {
 	return &Broadcaster{clients: make(map[*websocket.Conn]string)}
+}
+
+// SetStreamPolicy configures production filtering. Safe to call before clients connect.
+func (b *Broadcaster) SetStreamPolicy(p StreamPolicy) {
+	b.mu.Lock()
+	b.policy = p
+	b.mu.Unlock()
 }
 
 // Write implements io.Writer so it can be used as a zerolog output.
@@ -46,17 +61,28 @@ func (b *Broadcaster) Write(p []byte) (int, error) {
 	// Snapshot matching connections under the read lock, then write outside it.
 	// This prevents a slow or stalled WebSocket client from blocking all log writes.
 	b.mu.RLock()
-	conns := make([]*websocket.Conn, 0, len(b.clients))
+	policy := b.policy
+	type target struct {
+		conn *websocket.Conn
+		user string
+	}
+	targets := make([]target, 0, len(b.clients))
 	for conn, connUserID := range b.clients {
-		if targetUser == "" || connUserID == targetUser {
-			conns = append(conns, conn)
+		if targetUser != "" && connUserID != targetUser {
+			continue
 		}
+		if policy.Production && policy.Verbose != nil && !policy.Verbose(connUserID) {
+			if m, ok := payload.(map[string]any); ok && !VisibleOnDashboard(m) {
+				continue
+			}
+		}
+		targets = append(targets, target{conn: conn, user: connUserID})
 	}
 	b.mu.RUnlock()
 
-	for _, conn := range conns {
+	for _, t := range targets {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = wsjson.Write(ctx, conn, payload)
+		_ = wsjson.Write(ctx, t.conn, payload)
 		cancel()
 	}
 	return len(p), nil

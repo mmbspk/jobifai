@@ -261,7 +261,7 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             {user && (
               <button
                 type="button"
-                onClick={async () => { await logout(); navigate('/login', { replace: true }) }}
+                onClick={async () => { await logout(); navigate('/', { replace: true }) }}
                 title="Sign out"
                 className="p-2 rounded-md hover:bg-[var(--color-surface-2)] text-[var(--color-text-dim)] hover:text-[var(--color-text)] transition-colors min-w-[44px] min-h-[44px] lg:min-h-0 lg:min-w-0 lg:p-1 flex items-center justify-center"
               >

@@ -242,6 +242,7 @@ export interface AdminUserRow {
   email: string
   display_name: string
   is_admin: boolean
+  verbose_logs?: boolean
   created_at: string
   has_api_key: boolean
 }

@@ -96,6 +96,8 @@ make docker-run
 | `./job_applications`| `/app/job_applications`   | Generated resume and cover letter PDFs |
 | `./resume_style`    | `/app/resume_style`       | Custom resume CSS overrides      |
 
+**Bundled in the image (not a volume):** `resume_markets/` — YAML market presets for **Default market** and resume generation. If you run the Go binary outside Docker, keep a `resume_markets/` directory next to the executable (same layout as the repo).
+
 The container runs Chromium on a virtual display (Xvfb) and exposes a noVNC viewer embedded on **Settings → Platforms** when you use **Connect browser**. Do not run the bare `jobifai` binary on a headless Linux VPS without Xvfb — Chrome will fail with `Missing X server or $DISPLAY`.
 
 **Connect browser on production:** use this Docker image (default `ENTRYPOINT` starts Xvfb and x11vnc). After **Connect browser**, sign in in the noVNC panel on the Platforms page, then **Save session**.

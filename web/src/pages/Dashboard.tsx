@@ -196,12 +196,12 @@ export function Dashboard() {
             </div>
           </section>
 
-          <div className="xl:hidden">
+          <div className="xl:hidden h-[clamp(16rem,45dvh,28rem)] min-h-[16rem]">
             <ActivitySection lines={lines} connected={connected} onClear={clear} currentJob={status?.current_job} />
           </div>
         </div>
 
-        <div className="hidden xl:block xl:sticky xl:top-6">
+        <div className="hidden xl:flex xl:sticky xl:top-6 xl:h-[min(calc(100dvh-7rem),40rem)] xl:min-h-[18rem] xl:w-full xl:self-start">
           <ActivitySection lines={lines} connected={connected} onClear={clear} currentJob={status?.current_job} />
         </div>
       </div>
@@ -218,15 +218,21 @@ function ActivitySection({
   currentJob: Parameters<typeof LogPanel>[0]['currentJob']
 }) {
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="mb-2 flex shrink-0 items-center justify-between">
         <h2 className="text-sm font-semibold text-[var(--color-text)]">Activity</h2>
-        <span className="text-xs text-[var(--color-text-dim)] flex items-center gap-1.5">
-          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-dim)]'}`} />
+        <span className="flex items-center gap-1.5 text-xs text-[var(--color-text-dim)]">
+          <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-dim)]'}`} />
           {connected ? 'Live' : 'Disconnected'}
         </span>
       </div>
-      <LogPanel lines={lines} connected={connected} onClear={onClear} className="h-80 xl:h-[calc(100dvh-8rem)] xl:max-h-[640px]" currentJob={currentJob} />
+      <LogPanel
+        lines={lines}
+        connected={connected}
+        onClear={onClear}
+        className="min-h-0 flex-1"
+        currentJob={currentJob}
+      />
     </div>
   )
 }
