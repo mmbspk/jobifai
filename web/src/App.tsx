@@ -28,7 +28,7 @@ import { Pricing } from './pages/Pricing'
 import { PostAuthRedirect } from './components/auth/PostAuthRedirect'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { hasStoredAuthCredentials } from './lib/authSession'
-import { savePostAuthRedirect } from './lib/postAuthRedirect'
+import { resolvePostAuthDestination, savePostAuthRedirect } from './lib/postAuthRedirect'
 import { SettingsTabNav } from './components/settings/SettingsTabNav'
 import { AdminTabNav } from './components/admin/AdminTabNav'
 import { Badge } from './components/ui/badge'
@@ -131,11 +131,17 @@ function AdminRoute({ children }: Readonly<{ children: React.ReactNode }>) {
   return <>{children}</>
 }
 
-/** Signed-in users skip marketing / auth pages and go to the app home. */
+type AuthRedirectState = { from?: { pathname: string; search?: string; hash?: string } }
+
+/** Signed-in users leave auth pages for their intended destination (or home). */
 function GuestRoute({ children }: Readonly<{ children: React.ReactNode }>) {
   const { user, loading } = useAuth()
+  const location = useLocation()
   if (loading) return null
-  if (user) return <Navigate to="/" replace />
+  if (user) {
+    const dest = resolvePostAuthDestination((location.state as AuthRedirectState | null)?.from)
+    return <Navigate to={dest} replace />
+  }
   return <>{children}</>
 }
 
