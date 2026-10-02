@@ -16,6 +16,22 @@ type DocumentHandlers struct{ svc *Services }
 
 func NewDocumentHandlers(svc *Services) *DocumentHandlers { return &DocumentHandlers{svc: svc} }
 
+// GET /api/documents/versions/{version_id}
+func (h *DocumentHandlers) GetVersion(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	versionID := chi.URLParam(r, "version_id")
+	out, err := h.svc.Documents.GetVersion(r.Context(), userID, versionID)
+	if err != nil {
+		if errors.Is(err, documents.ErrForbidden) || errors.Is(err, documents.ErrNotFound) {
+			notFound(w, "document not found")
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // GET /api/documents
 func (h *DocumentHandlers) List(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
@@ -32,9 +48,10 @@ func (h *DocumentHandlers) List(w http.ResponseWriter, r *http.Request) {
 }
 
 type createResumeFromProfileReq struct {
-	Title  string `json:"title"`
-	Market string `json:"market"`
-	Style  string `json:"style"`
+	Title      string `json:"title"`
+	Market     string `json:"market"`
+	Style      string `json:"style"`
+	DocumentID string `json:"document_id,omitempty"`
 }
 
 // POST /api/documents/resume/from-profile
@@ -56,10 +73,11 @@ func (h *DocumentHandlers) CreateResumeFromProfile(w http.ResponseWriter, r *htt
 }
 
 type saveCoverReq struct {
-	Title  string `json:"title"`
-	Body   string `json:"body"`
-	Market string `json:"market"`
-	Style  string `json:"style"`
+	Title      string `json:"title"`
+	Body       string `json:"body"`
+	Market     string `json:"market"`
+	Style      string `json:"style"`
+	DocumentID string `json:"document_id,omitempty"`
 }
 
 // POST /api/documents/cover-letter
@@ -70,9 +88,17 @@ func (h *DocumentHandlers) SaveCoverLetter(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid json"})
 		return
 	}
-	versionID, err := h.svc.Documents.SaveCoverLetter(r.Context(), userID, req.Title, req.Body, documents.RenderContext{
-		Market: req.Market, StyleName: req.Style, Language: "en",
-	})
+	var versionID string
+	var err error
+	if req.DocumentID != "" {
+		versionID, err = h.svc.Documents.SaveCoverLetterWithSourceOnDocument(r.Context(), userID, req.DocumentID, req.Title, req.Body, documents.SourceUserEdit, documents.RenderContext{
+			Market: req.Market, StyleName: req.Style, Language: "en",
+		})
+	} else {
+		versionID, err = h.svc.Documents.SaveCoverLetter(r.Context(), userID, req.Title, req.Body, documents.RenderContext{
+			Market: req.Market, StyleName: req.Style, Language: "en",
+		})
+	}
 	if err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
 		return
@@ -137,7 +163,7 @@ func (h *DocumentHandlers) AIImproveResume(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	versionID, err := h.svc.Documents.SaveResumeVersion(r.Context(), userID, req.Title, documents.SourceAIImprove, improved, documents.RenderContext{
+	versionID, err := h.svc.Documents.SaveResumeVersion(r.Context(), userID, req.DocumentID, req.Title, documents.SourceAIImprove, improved, documents.RenderContext{
 		Market: req.Market, StyleName: req.Style, Language: "en",
 	})
 	if err != nil {

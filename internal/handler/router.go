@@ -135,12 +135,15 @@ func NewRouter(svc *Services) *chi.Mux {
 		// ── Versioned documents (defaults foundation; bot unchanged in PR1) ─
 		r.Route("/api/documents", func(r chi.Router) {
 			r.Get("/", documentsH.List)
+			r.Get("/versions/{version_id}", documentsH.GetVersion)
 			r.Post("/resume/from-profile", documentsH.CreateResumeFromProfile)
 			r.Post("/resume/ai-improve", documentsH.AIImproveResume)
 			r.Post("/cover-letter", documentsH.SaveCoverLetter)
 			r.Post("/cover-letter/ai-generate", documentsH.AIGenerateCoverLetter)
 			r.Post("/originals", documentsH.UploadOriginal)
 			r.Put("/defaults", documentsH.SetDefault)
+			r.Post("/{document_id}/resume-versions", documentsH.AppendResumeVersion)
+			r.Post("/{document_id}/cover-versions", documentsH.AppendCoverVersion)
 			r.Get("/versions/{version_id}/pdf", documentsH.DownloadPDF)
 			r.Get("/versions/{version_id}/original", documentsH.DownloadOriginal)
 		})

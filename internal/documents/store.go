@@ -42,6 +42,7 @@ type InsertVersionParams struct {
 	CSSFilePath         string
 	CSSSnapshot         string
 	RendererVersion     string
+	RenderSnapshotJSON  string
 	Reconstructible     bool
 }
 
@@ -61,12 +62,12 @@ func (s *Store) InsertVersion(ctx context.Context, p InsertVersionParams) (versi
 		INSERT INTO document_content_versions (
 			id, document_id, user_id, version_number, source, content_kind, content_json,
 			profile_snapshot_json, profile_snapshot_hash, market, document_language,
-			style_name, css_file_path, css_snapshot, renderer_version, reconstructible
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			style_name, css_file_path, css_snapshot, renderer_version, render_snapshot_json, reconstructible
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		versionID, p.DocumentID, p.UserID, versionNum, p.Source, p.ContentKind, p.ContentJSON,
 		nullIfEmpty(p.ProfileSnapshotJSON), nullIfEmpty(p.ProfileSnapshotHash), nullIfEmpty(p.Market),
 		nullIfEmpty(p.DocumentLanguage), nullIfEmpty(p.StyleName), nullIfEmpty(p.CSSFilePath),
-		p.CSSSnapshot, p.RendererVersion, rec)
+		p.CSSSnapshot, p.RendererVersion, p.RenderSnapshotJSON, rec)
 	if err != nil {
 		return "", 0, err
 	}
@@ -81,31 +82,31 @@ func nullIfEmpty(s string) any {
 	return s
 }
 
-func (s *Store) GetVersionRow(ctx context.Context, userID, versionID string) (docID string, p InsertVersionParams, err error) {
+func (s *Store) GetVersionRow(ctx context.Context, userID, versionID string) (docID string, versionNum int, p InsertVersionParams, err error) {
 	var rec int
 	err = s.db.QueryRowContext(ctx, `
-		SELECT document_id, user_id, source, content_kind, content_json,
+		SELECT document_id, version_number, user_id, source, content_kind, content_json,
 			COALESCE(profile_snapshot_json,''), COALESCE(profile_snapshot_hash,''),
 			COALESCE(market,''), COALESCE(document_language,''),
 			COALESCE(style_name,''), COALESCE(css_file_path,''), css_snapshot,
-			COALESCE(renderer_version,''), reconstructible
+			COALESCE(renderer_version,''), COALESCE(render_snapshot_json,''), reconstructible
 		FROM document_content_versions WHERE id = ?`, versionID).Scan(
-		&docID, &p.UserID, &p.Source, &p.ContentKind, &p.ContentJSON,
+		&docID, &versionNum, &p.UserID, &p.Source, &p.ContentKind, &p.ContentJSON,
 		&p.ProfileSnapshotJSON, &p.ProfileSnapshotHash, &p.Market, &p.DocumentLanguage,
-		&p.StyleName, &p.CSSFilePath, &p.CSSSnapshot, &p.RendererVersion, &rec,
+		&p.StyleName, &p.CSSFilePath, &p.CSSSnapshot, &p.RendererVersion, &p.RenderSnapshotJSON, &rec,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", p, ErrNotFound
+		return "", 0, p, ErrNotFound
 	}
 	if err != nil {
-		return "", p, err
+		return "", 0, p, err
 	}
 	if p.UserID != userID {
-		return "", p, ErrForbidden
+		return "", 0, p, ErrForbidden
 	}
 	p.DocumentID = docID
 	p.Reconstructible = rec == 1
-	return docID, p, nil
+	return docID, versionNum, p, nil
 }
 
 func (s *Store) OriginalFileForVersion(ctx context.Context, userID, versionID string) (storageKey, filename, mediaType string, err error) {
@@ -179,7 +180,7 @@ func (s *Store) ArtifactForVersion(ctx context.Context, userID, versionID string
 }
 
 func (s *Store) SetDefault(ctx context.Context, userID, kind, versionID, profileHash, market string) error {
-	docID, p, err := s.GetVersionRow(ctx, userID, versionID)
+	docID, _, p, err := s.GetVersionRow(ctx, userID, versionID)
 	if err != nil {
 		return err
 	}
@@ -187,7 +188,7 @@ func (s *Store) SetDefault(ctx context.Context, userID, kind, versionID, profile
 	if err := s.db.QueryRowContext(ctx, `SELECT kind FROM user_documents WHERE id = ? AND user_id = ?`, docID, userID).Scan(&docKind); err != nil {
 		return err
 	}
-	if kind == KindResume && docKind != KindResume {
+	if kind == KindResume && docKind != KindResume && docKind != KindOriginalUpload {
 		return fmt.Errorf("version is not a resume")
 	}
 	if kind == KindCoverLetter && docKind != KindCoverLetter {
@@ -227,13 +228,25 @@ func (s *Store) ListDocuments(ctx context.Context, userID string) ([]Document, D
 		docs = append(docs, d)
 	}
 	def, err := s.loadDefaults(ctx, userID)
+	if docs == nil {
+		docs = []Document{}
+	}
 	return docs, def, err
+}
+
+func (s *Store) GetDocument(ctx context.Context, userID, documentID string) (kind, title string, err error) {
+	err = s.db.QueryRowContext(ctx, `
+		SELECT kind, title FROM user_documents WHERE id = ? AND user_id = ?`, documentID, userID).Scan(&kind, &title)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", ErrNotFound
+	}
+	return kind, title, err
 }
 
 func (s *Store) listVersions(ctx context.Context, docID, userID string) ([]VersionSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT v.id, v.version_number, v.source, v.content_kind, COALESCE(v.market,''), v.reconstructible, v.created_at,
-			(SELECT 1 FROM document_version_artifact_refs r WHERE r.content_version_id = v.id LIMIT 1) AS has_pdf
+			COALESCE((SELECT 1 FROM document_version_artifact_refs r WHERE r.content_version_id = v.id LIMIT 1), 0) AS has_pdf
 		FROM document_content_versions v
 		WHERE v.document_id = ? AND v.user_id = ?
 		ORDER BY v.version_number DESC`, docID, userID)
@@ -251,6 +264,9 @@ func (s *Store) listVersions(ctx context.Context, docID, userID string) ([]Versi
 		v.Reconstructible = rec == 1
 		v.HasPDF = has == 1
 		out = append(out, v)
+	}
+	if out == nil {
+		out = []VersionSummary{}
 	}
 	return out, nil
 }

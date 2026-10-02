@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -85,7 +87,24 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 	}
 	defer func() { _ = f.Close() }()
 
-	text, err := h.svc.FileToText(f, fh.Filename)
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not read file: " + err.Error()})
+		return
+	}
+
+	if h.svc.Documents != nil && len(raw) > 0 {
+		mediaType := fh.Header.Get("Content-Type")
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		if _, storeErr := h.svc.Documents.StoreOriginalUpload(r.Context(), userID, fh.Filename, mediaType, bytes.NewReader(raw)); storeErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not store original upload: " + storeErr.Error()})
+			return
+		}
+	}
+
+	text, err := h.svc.FileToText(bytes.NewReader(raw), fh.Filename)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not read file: " + err.Error()})
 		return

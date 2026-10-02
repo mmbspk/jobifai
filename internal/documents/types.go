@@ -53,8 +53,16 @@ type DefaultsView struct {
 }
 
 type ListResponse struct {
-	Documents []Document    `json:"documents"`
-	Defaults  DefaultsView  `json:"defaults"`
+	Documents []Document   `json:"documents"`
+	Defaults  DefaultsView `json:"defaults"`
+}
+
+type VersionDetail struct {
+	ID           string `json:"id"`
+	DocumentID   string `json:"document_id"`
+	ContentKind  string `json:"content_kind"`
+	ContentJSON  string `json:"content_json"`
+	VersionNumber int   `json:"version_number"`
 }
 
 type ResumeContent struct {

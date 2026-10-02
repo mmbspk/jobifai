@@ -3,11 +3,17 @@ package documents
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/google/uuid"
 )
+
+var ErrBlobNotFound = errors.New("blob not found")
 
 // BlobStore persists opaque bytes at durable keys (local filesystem adapter).
 type BlobStore interface {
@@ -27,6 +33,14 @@ func NewLocalBlobStore(root string) (*LocalBlobStore, error) {
 	return &LocalBlobStore{Root: root}, nil
 }
 
+func pathContainedInBase(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func (s *LocalBlobStore) abs(key string) (string, error) {
 	if key == "" || filepath.IsAbs(key) || key != filepath.Clean(key) {
 		return "", fmt.Errorf("invalid storage key")
@@ -39,7 +53,7 @@ func (s *LocalBlobStore) abs(key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !filepath.HasPrefix(target, base+string(filepath.Separator)) && target != base {
+	if !pathContainedInBase(base, target) {
 		return "", fmt.Errorf("storage key escapes root")
 	}
 	return target, nil
@@ -53,22 +67,24 @@ func (s *LocalBlobStore) PutAtomic(key string, r io.Reader) (string, int64, erro
 	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 		return "", 0, err
 	}
-	tmp := target + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".blob-"+uuid.NewString()+".tmp")
 	if err != nil {
 		return "", 0, err
 	}
+	tmpPath := tmp.Name()
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), r)
-	if closeErr := f.Close(); err == nil && closeErr != nil {
-		err = closeErr
+	n, copyErr := io.Copy(io.MultiWriter(tmp, h), r)
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return "", 0, copyErr
 	}
-	if err != nil {
-		_ = os.Remove(tmp)
-		return "", 0, err
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return "", 0, closeErr
 	}
-	if err := os.Rename(tmp, target); err != nil {
-		_ = os.Remove(tmp)
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
 		return "", 0, err
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
@@ -79,7 +95,14 @@ func (s *LocalBlobStore) Read(key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return os.ReadFile(target)
+	data, err := os.ReadFile(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %s", ErrBlobNotFound, key)
+		}
+		return nil, err
+	}
+	return data, nil
 }
 
 func (s *LocalBlobStore) Open(key string) (io.ReadCloser, error) {
@@ -87,5 +110,12 @@ func (s *LocalBlobStore) Open(key string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	return os.Open(target)
+	f, err := os.Open(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %s", ErrBlobNotFound, key)
+		}
+		return nil, err
+	}
+	return f, nil
 }

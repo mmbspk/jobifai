@@ -1,4 +1,5 @@
 import { ApiError, apiFetch, getToken } from './client'
+import type { ResumeProfile } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? '') + '/api'
 
@@ -35,28 +36,50 @@ export type DocumentsListResponse = {
   defaults: DocumentDefaults
 }
 
+export type VersionDetail = {
+  id: string
+  document_id: string
+  content_kind: string
+  content_json: string
+  version_number: number
+}
+
 export const documentsApi = {
   list: () => apiFetch<DocumentsListResponse>('/documents'),
 
-  createResumeFromProfile: (body: { title?: string; market?: string; style?: string }) =>
+  getVersion: (versionId: string) => apiFetch<VersionDetail>(`/documents/versions/${versionId}`),
+
+  createResumeFromProfile: (body: { title?: string; market?: string; style?: string; document_id?: string }) =>
     apiFetch<{ content_version_id: string }>('/documents/resume/from-profile', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
-  saveCoverLetter: (body: { title?: string; body: string; market?: string; style?: string }) =>
+  appendResumeVersion: (documentId: string, body: { title?: string; market?: string; style?: string; profile: ResumeProfile }) =>
+    apiFetch<{ content_version_id: string }>(`/documents/${documentId}/resume-versions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  saveCoverLetter: (body: { title?: string; body: string; market?: string; style?: string; document_id?: string }) =>
     apiFetch<{ content_version_id: string }>('/documents/cover-letter', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
-  aiImproveResume: (body: { title?: string; market?: string; style?: string }) =>
+  appendCoverVersion: (documentId: string, body: { title?: string; body: string; market?: string; style?: string }) =>
+    apiFetch<{ content_version_id: string }>(`/documents/${documentId}/cover-versions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  aiImproveResume: (body: { title?: string; market?: string; style?: string; document_id?: string }) =>
     apiFetch<{ content_version_id: string }>('/documents/resume/ai-improve', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
-  aiGenerateCover: (body: { title?: string; market?: string; style?: string }) =>
+  aiGenerateCover: (body: { title?: string; market?: string; style?: string; document_id?: string }) =>
     apiFetch<{ content_version_id: string }>('/documents/cover-letter/ai-generate', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -67,12 +90,27 @@ export const documentsApi = {
       method: 'PUT',
       body: JSON.stringify({ kind, content_version_id }),
     }),
-
 }
 
 export async function fetchDocumentPdf(versionId: string): Promise<Blob> {
   const token = getToken()
   const res = await fetch(`${API_BASE}/documents/versions/${versionId}/pdf?inline=1`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) {
+    let msg = res.statusText
+    try {
+      const j = await res.json()
+      msg = j.message ?? msg
+    } catch { /* ignore */ }
+    throw new ApiError(res.status, msg)
+  }
+  return res.blob()
+}
+
+export async function fetchDocumentOriginal(versionId: string): Promise<Blob> {
+  const token = getToken()
+  const res = await fetch(`${API_BASE}/documents/versions/${versionId}/original`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   })
   if (!res.ok) {

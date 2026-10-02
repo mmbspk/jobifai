@@ -190,6 +190,7 @@ func main() {
 		Blobs:     docBlobs,
 		Renderer:  renderer,
 		MarketDir: marketDir,
+		StylesDir: "resume_style",
 		LoadProfile: func(userID string) (*domain.ResumeProfile, error) {
 			var p domain.ResumeProfile
 			if err := cfgStore.Get(userID, "resume_profile", &p); errors.Is(err, domain.ErrNotFound) {

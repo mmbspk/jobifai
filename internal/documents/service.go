@@ -26,12 +26,13 @@ type PDFRenderer interface {
 }
 
 type Service struct {
-	Store         *Store
-	Blobs         BlobStore
-	Renderer      PDFRenderer
-	MarketDir     string
-	LoadProfile   ProfileLoader
-	DefaultsMeta  func(userID string) (DefaultsMeta, error)
+	Store            *Store
+	Blobs            BlobStore
+	Renderer         PDFRenderer
+	MarketDir        string
+	StylesDir        string
+	LoadProfile      ProfileLoader
+	DefaultsMeta     func(userID string) (DefaultsMeta, error)
 	SaveDefaultsMeta func(userID string, m DefaultsMeta) error
 }
 
@@ -50,7 +51,20 @@ func (s *Service) List(ctx context.Context, userID string) (ListResponse, error)
 		meta, _ := s.DefaultsMeta(userID)
 		def = MergeDefaultsMeta(def, meta)
 	}
+	if docs == nil {
+		docs = []Document{}
+	}
 	return ListResponse{Documents: docs, Defaults: def}, nil
+}
+
+func (s *Service) GetVersion(ctx context.Context, userID, versionID string) (VersionDetail, error) {
+	docID, num, p, err := s.Store.GetVersionRow(ctx, userID, versionID)
+	if err != nil {
+		return VersionDetail{}, err
+	}
+	return VersionDetail{
+		ID: versionID, DocumentID: docID, ContentKind: p.ContentKind, ContentJSON: p.ContentJSON, VersionNumber: num,
+	}, nil
 }
 
 func (s *Service) CreateResumeFromProfile(ctx context.Context, userID, title string, rc RenderContext) (versionID string, err error) {
@@ -58,15 +72,19 @@ func (s *Service) CreateResumeFromProfile(ctx context.Context, userID, title str
 	if err != nil {
 		return "", err
 	}
-	return s.saveResumeVersion(ctx, userID, title, SourceProfileRender, profile, rc)
+	return s.saveResumeVersion(ctx, userID, "", title, SourceProfileRender, profile, rc)
 }
 
-func (s *Service) SaveResumeVersion(ctx context.Context, userID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (versionID string, err error) {
-	return s.saveResumeVersion(ctx, userID, title, source, profile, rc)
+func (s *Service) SaveResumeVersion(ctx context.Context, userID, documentID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (versionID string, err error) {
+	return s.saveResumeVersion(ctx, userID, documentID, title, source, profile, rc)
 }
 
-func (s *Service) saveResumeVersion(ctx context.Context, userID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (versionID string, err error) {
-	cssPath, cssSnap, err := s.resolveCSS(userID, rc.Market, rc.StyleName)
+func (s *Service) saveResumeVersion(ctx context.Context, userID, documentID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (versionID string, err error) {
+	docID, err := s.ensureDocument(ctx, userID, documentID, KindResume, defaultTitle(title, "Default resume"))
+	if err != nil {
+		return "", err
+	}
+	cssPath, cssSnap, renderSnap, err := s.prepareRenderSnapshot(rc.Market, rc.StyleName)
 	if err != nil {
 		return "", err
 	}
@@ -74,23 +92,23 @@ func (s *Service) saveResumeVersion(ctx context.Context, userID, title, source s
 	if err != nil {
 		return "", err
 	}
-	docID, err := s.Store.CreateDocument(ctx, userID, KindResume, defaultTitle(title, "Default resume"))
+	snapJSON, _ := json.Marshal(profile)
+	renderJSON, err := renderSnap.JSON()
 	if err != nil {
 		return "", err
 	}
-	snapJSON, _ := json.Marshal(profile)
 	versionID, _, err = s.Store.InsertVersion(ctx, InsertVersionParams{
 		DocumentID: docID, UserID: userID, Source: source,
 		ContentKind: ContentResumeJSON, ContentJSON: string(content),
 		ProfileSnapshotJSON: string(snapJSON), ProfileSnapshotHash: ProfileSnapshotHash(profile),
 		Market: rc.Market, DocumentLanguage: rc.Language, StyleName: rc.StyleName,
 		CSSFilePath: cssPath, CSSSnapshot: cssSnap, RendererVersion: RendererVersion,
-		Reconstructible: cssSnap != "",
+		RenderSnapshotJSON: renderJSON, Reconstructible: cssSnap != "" && renderJSON != "",
 	})
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.renderAndPersistPDF(ctx, userID, versionID, profile, nil, rc, cssPath, cssSnap); err != nil {
+	if _, err := s.renderAndPersistPDF(ctx, userID, versionID, profile, rc.StyleName, cssSnap, RenderOptsFromSnapshot(renderSnap)); err != nil {
 		return versionID, err
 	}
 	return versionID, nil
@@ -101,6 +119,17 @@ func (s *Service) SaveCoverLetter(ctx context.Context, userID, title, body strin
 }
 
 func (s *Service) SaveCoverLetterWithSource(ctx context.Context, userID, title, body, source string, rc RenderContext) (versionID string, err error) {
+	return s.SaveCoverLetterWithSourceOnDocument(ctx, userID, "", title, body, source, rc)
+}
+
+func (s *Service) AppendCoverVersion(ctx context.Context, userID, documentID, title, body, source string, rc RenderContext) (versionID string, err error) {
+	if strings.TrimSpace(documentID) == "" {
+		return "", fmt.Errorf("document_id is required")
+	}
+	return s.SaveCoverLetterWithSourceOnDocument(ctx, userID, documentID, title, body, source, rc)
+}
+
+func (s *Service) SaveCoverLetterWithSourceOnDocument(ctx context.Context, userID, documentID, title, body, source string, rc RenderContext) (versionID string, err error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return "", fmt.Errorf("cover letter body is required")
@@ -108,21 +137,25 @@ func (s *Service) SaveCoverLetterWithSource(ctx context.Context, userID, title, 
 	if source == "" {
 		source = SourceUserEdit
 	}
+	docID, err := s.ensureDocument(ctx, userID, documentID, KindCoverLetter, defaultTitle(title, "General cover letter"))
+	if err != nil {
+		return "", err
+	}
 	profile, _ := s.LoadProfile(userID)
-	cssPath, cssSnap, err := s.resolveCSS(userID, rc.Market, rc.StyleName)
+	cssPath, cssSnap, renderSnap, err := s.prepareRenderSnapshot(rc.Market, rc.StyleName)
 	if err != nil {
 		return "", err
 	}
 	content, _ := json.Marshal(CoverContent{Body: body})
-	docID, err := s.Store.CreateDocument(ctx, userID, KindCoverLetter, defaultTitle(title, "General cover letter"))
-	if err != nil {
-		return "", err
-	}
 	var snapJSON, hash string
 	if profile != nil {
 		b, _ := json.Marshal(profile)
 		snapJSON = string(b)
 		hash = ProfileSnapshotHash(profile)
+	}
+	renderJSON, err := renderSnap.JSON()
+	if err != nil {
+		return "", err
 	}
 	versionID, _, err = s.Store.InsertVersion(ctx, InsertVersionParams{
 		DocumentID: docID, UserID: userID, Source: source,
@@ -130,15 +163,22 @@ func (s *Service) SaveCoverLetterWithSource(ctx context.Context, userID, title, 
 		ProfileSnapshotJSON: snapJSON, ProfileSnapshotHash: hash,
 		Market: rc.Market, DocumentLanguage: rc.Language, StyleName: rc.StyleName,
 		CSSFilePath: cssPath, CSSSnapshot: cssSnap, RendererVersion: RendererVersion,
-		Reconstructible: cssSnap != "",
+		RenderSnapshotJSON: renderJSON, Reconstructible: cssSnap != "" && renderJSON != "",
 	})
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.renderCoverPDF(ctx, userID, versionID, body, rc, cssPath, cssSnap); err != nil {
+	if _, err := s.renderCoverPDF(ctx, userID, versionID, body, rc.StyleName, cssSnap); err != nil {
 		return versionID, err
 	}
 	return versionID, nil
+}
+
+func (s *Service) AppendResumeVersion(ctx context.Context, userID, documentID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (versionID string, err error) {
+	if strings.TrimSpace(documentID) == "" {
+		return "", fmt.Errorf("document_id is required")
+	}
+	return s.saveResumeVersion(ctx, userID, documentID, title, source, profile, rc)
 }
 
 func (s *Service) StoreOriginalUpload(ctx context.Context, userID, filename, mediaType string, r io.Reader) (versionID string, err error) {
@@ -172,7 +212,7 @@ func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string
 	profile, _ := s.LoadProfile(userID)
 	hash := ProfileSnapshotHash(profile)
 	market := ""
-	_, p, err := s.Store.GetVersionRow(ctx, userID, versionID)
+	_, _, p, err := s.Store.GetVersionRow(ctx, userID, versionID)
 	if err != nil {
 		return err
 	}
@@ -182,9 +222,10 @@ func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string
 	}
 	if s.SaveDefaultsMeta != nil {
 		meta, _ := s.DefaultsMeta(userID)
-		if kind == KindResume {
+		switch kind {
+		case KindResume:
 			meta.ResumeOutdated = false
-		} else if kind == KindCoverLetter {
+		case KindCoverLetter:
 			meta.CoverOutdated = false
 		}
 		if !meta.ResumeOutdated && !meta.CoverOutdated {
@@ -198,7 +239,7 @@ func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string
 }
 
 func (s *Service) OriginalBytes(ctx context.Context, userID, versionID string) ([]byte, string, string, error) {
-	if _, p, err := s.Store.GetVersionRow(ctx, userID, versionID); err != nil {
+	if _, _, p, err := s.Store.GetVersionRow(ctx, userID, versionID); err != nil {
 		return nil, "", "", err
 	} else if p.ContentKind != ContentOriginalFileRef {
 		return nil, "", "", fmt.Errorf("version is not an original upload")
@@ -214,8 +255,14 @@ func (s *Service) OriginalBytes(ctx context.Context, userID, versionID string) (
 func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) ([]byte, string, error) {
 	key, _, err := s.Store.ArtifactForVersion(ctx, userID, versionID)
 	if err == nil {
-		data, err := s.Blobs.Read(key)
-		return data, "application/pdf", err
+		data, readErr := s.Blobs.Read(key)
+		if readErr == nil {
+			return data, "application/pdf", nil
+		}
+		if errors.Is(readErr, ErrBlobNotFound) {
+			return s.ReconstructPDF(ctx, userID, versionID)
+		}
+		return nil, "", readErr
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return nil, "", err
@@ -224,7 +271,7 @@ func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) ([]byt
 }
 
 func (s *Service) ReconstructPDF(ctx context.Context, userID, versionID string) ([]byte, string, error) {
-	_, p, err := s.Store.GetVersionRow(ctx, userID, versionID)
+	_, _, p, err := s.Store.GetVersionRow(ctx, userID, versionID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -234,13 +281,31 @@ func (s *Service) ReconstructPDF(ctx context.Context, userID, versionID string) 
 	if p.CSSSnapshot == "" {
 		return nil, "", fmt.Errorf("missing CSS snapshot for reconstruction")
 	}
+	if err := AssertSupportedRenderer(p.RendererVersion); err != nil {
+		return nil, "", err
+	}
+	var renderSnap RenderSnapshot
+	if p.RenderSnapshotJSON == "" {
+		renderSnap, err = BuildRenderSnapshot(p.Market, s.MarketDir)
+		if err != nil {
+			return nil, "", err
+		}
+	} else {
+		renderSnap, err = ParseRenderSnapshot(p.RenderSnapshotJSON)
+		if err != nil {
+			return nil, "", err
+		}
+		if err := AssertSupportedRenderer(renderSnap.RendererVersion); err != nil {
+			return nil, "", err
+		}
+	}
+	opts := RenderOptsFromSnapshot(renderSnap)
 	switch p.ContentKind {
 	case ContentResumeJSON:
 		var rc ResumeContent
 		if err := json.Unmarshal([]byte(p.ContentJSON), &rc); err != nil {
 			return nil, "", err
 		}
-		opts := marketRenderOpts(p.Market, s.MarketDir)
 		pdf, err := s.renderResumeWithSnapshot(ctx, &rc.Profile, p.StyleName, p.CSSSnapshot, opts)
 		if err != nil {
 			return nil, "", err
@@ -295,42 +360,49 @@ func (s *Service) requireProfile(userID string) (*domain.ResumeProfile, error) {
 	return p, nil
 }
 
-func (s *Service) resolveCSS(userID, market, style string) (cssPath, cssSnapshot string, err error) {
-	_ = userID
-	if market != "" && s.MarketDir != "" {
-		m := resume.LoadMarketByName(s.MarketDir, market)
-		if m != nil && m.CSSFile != "" {
-			data, readErr := os.ReadFile(m.CSSFile)
-			if readErr == nil {
-				snap := resume.ExpandStylesheetImports(string(data), filepath.Dir(m.CSSFile))
-				return m.CSSFile, snap, nil
-			}
-		}
+func (s *Service) prepareRenderSnapshot(market, style string) (cssPath, cssSnap string, snap RenderSnapshot, err error) {
+	cssPath, cssSnap, err = EffectiveStylesheet(s.StylesDir, s.MarketDir, market, style)
+	if err != nil {
+		return "", "", RenderSnapshot{}, err
 	}
-	return "", resume.DefaultPDFCSS(), nil
+	snap, err = BuildRenderSnapshot(market, s.MarketDir)
+	return cssPath, cssSnap, snap, err
 }
 
-func (s *Service) renderAndPersistPDF(ctx context.Context, userID, versionID string, profile *domain.ResumeProfile, _ *domain.ResumeProfile, rc RenderContext, cssPath, cssSnap string) ([]byte, error) {
-	opts := marketRenderOpts(rc.Market, s.MarketDir)
-	cssOverride := cssPath
-	if cssSnap != "" {
-		cssOverride = writeTempCSS(cssSnap)
-		defer os.Remove(cssOverride)
+func (s *Service) ensureDocument(ctx context.Context, userID, documentID, kind, title string) (string, error) {
+	if strings.TrimSpace(documentID) == "" {
+		return s.Store.CreateDocument(ctx, userID, kind, title)
 	}
-	pdf, err := s.Renderer.RenderResume(ctx, profile, rc.StyleName, cssOverride, opts)
+	gotKind, _, err := s.Store.GetDocument(ctx, userID, documentID)
+	if err != nil {
+		return "", err
+	}
+	if gotKind != kind {
+		return "", fmt.Errorf("document kind mismatch")
+	}
+	return documentID, nil
+}
+
+func (s *Service) renderAndPersistPDF(ctx context.Context, userID, versionID string, profile *domain.ResumeProfile, styleName, cssSnap string, opts *resume.RenderOptions) ([]byte, error) {
+	cssOverride, cleanup, err := writeTempCSS(cssSnap)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	pdf, err := s.Renderer.RenderResume(ctx, profile, styleName, cssOverride, opts)
 	if err != nil {
 		return nil, err
 	}
 	return pdf, s.persistArtifact(ctx, userID, versionID, pdf, cssSnap)
 }
 
-func (s *Service) renderCoverPDF(ctx context.Context, userID, versionID, body string, rc RenderContext, cssPath, cssSnap string) ([]byte, error) {
-	cssOverride := cssPath
-	if cssSnap != "" {
-		cssOverride = writeTempCSS(cssSnap)
-		defer os.Remove(cssOverride)
+func (s *Service) renderCoverPDF(ctx context.Context, userID, versionID, body, styleName, cssSnap string) ([]byte, error) {
+	cssOverride, cleanup, err := writeTempCSS(cssSnap)
+	if err != nil {
+		return nil, err
 	}
-	pdf, err := s.Renderer.RenderCoverLetter(ctx, body, rc.StyleName, cssOverride)
+	defer cleanup()
+	pdf, err := s.Renderer.RenderCoverLetter(ctx, body, styleName, cssOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -338,25 +410,38 @@ func (s *Service) renderCoverPDF(ctx context.Context, userID, versionID, body st
 }
 
 func (s *Service) renderResumeWithSnapshot(ctx context.Context, profile *domain.ResumeProfile, style, cssSnap string, opts *resume.RenderOptions) ([]byte, error) {
-	tmp := writeTempCSS(cssSnap)
-	defer os.Remove(tmp)
-	return s.Renderer.RenderResume(ctx, profile, style, tmp, opts)
+	cssOverride, cleanup, err := writeTempCSS(cssSnap)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	return s.Renderer.RenderResume(ctx, profile, style, cssOverride, opts)
 }
 
 func (s *Service) renderCoverWithSnapshot(ctx context.Context, body, style, cssSnap string) ([]byte, error) {
-	tmp := writeTempCSS(cssSnap)
-	defer os.Remove(tmp)
-	return s.Renderer.RenderCoverLetter(ctx, body, style, tmp)
+	cssOverride, cleanup, err := writeTempCSS(cssSnap)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	return s.Renderer.RenderCoverLetter(ctx, body, style, cssOverride)
 }
 
-func writeTempCSS(css string) string {
+func writeTempCSS(css string) (path string, cleanup func(), err error) {
 	f, err := os.CreateTemp("", "doc-css-*.css")
 	if err != nil {
-		return ""
+		return "", func() {}, err
 	}
-	_, _ = f.WriteString(css)
-	_ = f.Close()
-	return f.Name()
+	if _, err := f.WriteString(css); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", func() {}, err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return "", func() {}, err
+	}
+	return f.Name(), func() { _ = os.Remove(f.Name()) }, nil
 }
 
 func (s *Service) persistArtifact(ctx context.Context, userID, versionID string, pdf []byte, cssSnap string) error {
@@ -376,18 +461,6 @@ func templateIdentity(cssSnap string) string {
 	}
 	h := sha256.Sum256([]byte(cssSnap))
 	return RendererVersion + ":" + hex.EncodeToString(h[:8])
-}
-
-func marketRenderOpts(market, marketDir string) *resume.RenderOptions {
-	if market == "" || marketDir == "" {
-		return nil
-	}
-	m := resume.LoadMarketByName(marketDir, market)
-	if m == nil {
-		return nil
-	}
-	labels := m.LabelsOrDefault()
-	return &resume.RenderOptions{SectionLabels: labels}
 }
 
 func defaultTitle(title, fallback string) string {

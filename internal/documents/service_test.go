@@ -48,6 +48,7 @@ func newTestService(t *testing.T, r documents.PDFRenderer) (*documents.Service, 
 		Blobs:     blobs,
 		Renderer:  r,
 		MarketDir: "resume_markets",
+		StylesDir: "resume_markets/styles",
 		LoadProfile: func(uid string) (*domain.ResumeProfile, error) {
 			if uid != userID {
 				return nil, nil
@@ -156,7 +157,7 @@ func TestService_OriginalUpload_NonReconstructible(t *testing.T) {
 	vID, err := svc.StoreOriginalUpload(ctx, userID, "resume.pdf", "application/pdf", bytes.NewReader([]byte("raw-bytes")))
 	require.NoError(t, err)
 
-	_, p, err := svc.Store.GetVersionRow(ctx, userID, vID)
+	_, _, p, err := svc.Store.GetVersionRow(ctx, userID, vID)
 	require.NoError(t, err)
 	assert.False(t, p.Reconstructible)
 
