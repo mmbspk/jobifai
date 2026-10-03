@@ -174,7 +174,10 @@ func (h *DocumentHandlers) SetPreferredStyle(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid json"})
 		return
 	}
-	h.svc.Documents.NotePreferredStyle(userID, req.Style)
+	if err := h.svc.Documents.NotePreferredStyle(r.Context(), userID, req.Style); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
 	okMsg(w, "preferred style noted")
 }
 

@@ -251,16 +251,18 @@ func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string
 
 // NotePreferredStyle records that the user changed their preferred document design (shared style picker).
 // Resume and cover drift flags are updated in a single meta write. Empty style means Default.
-func (s *Service) NotePreferredStyle(userID, styleName string) {
+func (s *Service) NotePreferredStyle(ctx context.Context, userID, styleName string) error {
 	if s.SaveDefaultsMeta == nil {
-		return
+		return nil
 	}
-	ctx := context.Background()
 	_, def, err := s.Store.ListDocuments(ctx, userID)
 	if err != nil {
-		return
+		return fmt.Errorf("list documents: %w", err)
 	}
-	meta, _ := s.DefaultsMeta(userID)
+	meta, err := s.DefaultsMeta(userID)
+	if err != nil {
+		return fmt.Errorf("load defaults meta: %w", err)
+	}
 	meta = CoalesceDefaultsMeta(meta)
 	preferred := NormalizeStyleName(styleName)
 	const reason = "preferred document style changed — review your default documents"
@@ -275,10 +277,13 @@ func (s *Service) NotePreferredStyle(userID, styleName string) {
 		changed = true
 	}
 	if !changed {
-		return
+		return nil
 	}
 	meta.OutdatedReason = reason
-	_ = s.SaveDefaultsMeta(userID, meta)
+	if err := s.SaveDefaultsMeta(userID, meta); err != nil {
+		return fmt.Errorf("save defaults meta: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) OriginalBytes(ctx context.Context, userID, versionID string) ([]byte, string, string, error) {
