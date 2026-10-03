@@ -53,17 +53,22 @@ type lazyDocGen struct {
 	coverVersionID        string
 	refsJSON              string
 	useSiteResume         bool
+	matMu                 sync.Mutex
+	materialized          bool
+	packRestored          bool
+	pack                  documents.ApplicationDocumentPack
 }
 
 // get returns the generated resume and cover letter paths, generating them on
 // the first call. If override paths from a prior attempt are set, they are
 // returned directly without calling the LLM again.
 func (l *lazyDocGen) get() (resume, cover string) {
-	if l.resumeOverride != "" || l.coverOverride != "" {
-		return l.resumeOverride, l.coverOverride
+	if l.frozen {
+		l.restoreFrozenPack()
+		return l.resume, l.cover
 	}
 	if l.b.cfg.Documents != nil {
-		l.once.Do(l.materializeWithPolicies)
+		l.ensureMaterialized()
 		if l.policyBlocked() {
 			return "", ""
 		}
@@ -75,6 +80,12 @@ func (l *lazyDocGen) get() (resume, cover string) {
 	l.once.Do(func() {
 		l.resume, l.cover = l.b.generateDocs(l.ctx, l.job, l.jobDesc)
 	})
+	if l.resumeOverride != "" {
+		return l.resumeOverride, l.cover
+	}
+	if l.coverOverride != "" {
+		return l.resume, l.coverOverride
+	}
 	return l.resume, l.cover
 }
 
@@ -82,10 +93,20 @@ func (l *lazyDocGen) get() (resume, cover string) {
 // Returns override paths if set, otherwise whatever get() has already cached.
 // Returns empty strings if generation never ran.
 func (l *lazyDocGen) peek() (resume, cover string) {
-	if l.resumeOverride != "" || l.coverOverride != "" {
-		return l.resumeOverride, l.coverOverride
+	if l.frozen {
+		l.restoreFrozenPack()
 	}
-	return l.resume, l.cover
+	if l.resumeOverride != "" {
+		resume = l.resumeOverride
+	} else {
+		resume = l.resume
+	}
+	if l.coverOverride != "" {
+		cover = l.coverOverride
+	} else {
+		cover = l.cover
+	}
+	return resume, cover
 }
 
 // preload kicks off doc generation in the background so the LLM calls run
@@ -984,21 +1005,19 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	// Docs are generated lazily at the file-upload step, only if the toggle is on
 	// and a file field is actually encountered during form filling.
 	lazy := &lazyDocGen{b: b, ctx: ctx, job: job, jobDesc: details.Description}
-	lazy.prepareForReview()
 
 	if b.cfg.RequireReview {
+		packJSON := documents.WriteApplicationPackJSON(documents.ApplicationDocumentPack{
+			HoldReason: "Documents prepare after you approve and the apply form is scanned",
+		})
 		b.queueForReview(ctx, &domain.PendingReview{
-			JobID:                       job.ID,
-			Company:                     job.Company,
-			Role:                        job.Title,
-			Location:                    job.Location,
-			Platform:                    domain.PlatformLinkedIn,
-			Link:                        job.URL,
-			ResumePath:                  lazy.resume,
-			CoverLetterPath:             lazy.cover,
-			ResumeContentVersionID:      lazy.resumeVersionID,
-			CoverLetterContentVersionID: lazy.coverVersionID,
-			DocumentRefsJSON:            lazy.refsJSON,
+			JobID:                job.ID,
+			Company:              job.Company,
+			Role:                 job.Title,
+			Location:             job.Location,
+			Platform:             domain.PlatformLinkedIn,
+			Link:                 job.URL,
+			DocumentRefsJSON:     packJSON,
 			SuitabilityScore:     score,
 			SuitabilityReasoning: reasoning,
 			DueDate:              details.DueDate,

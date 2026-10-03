@@ -8,44 +8,46 @@ import (
 
 // FormDocumentCapabilities describes what the application form supports for attachments.
 type FormDocumentCapabilities struct {
-	ResumeFileSlots     int  // number of file inputs expected (0 = unknown until scan)
-	CoverRequired       bool // form marks cover as required
-	CoverOptional       bool // form accepts cover but not required
-	SiteResumePresent   bool // platform shows an attached/site resume
-	SiteResumeAmbiguous bool // cannot verify which resume is selected
+	Detected            bool // true after form scan / capability probe
+	ResumeFileSlots     int  // count of file inputs (0 when unknown)
+	CoverRequired       bool
+	CoverOptional       bool
+	SiteResumePresent   bool
+	SiteResumeAmbiguous bool
 }
 
 // ApplicationDocumentOverrides are explicit per-application choices (review UI / preflight).
 type ApplicationDocumentOverrides struct {
 	ResumeVersionID string
 	CoverVersionID  string
-	Frozen          bool // approved queue: do not re-resolve content
+	Frozen          bool
 }
 
 // ResolveInput bundles policy, defaults, overrides, and form capabilities.
 type ResolveInput struct {
-	Policies            domain.DocumentPolicies
-	Defaults            DefaultsView
-	Overrides           ApplicationDocumentOverrides
-	Caps                FormDocumentCapabilities
-	EffectiveMarket     string
-	HasConfirmedProfile bool
-	DefaultResumeExists bool // resume default pointer or authorised original
-	DefaultCoverExists  bool
+	Policies              domain.DocumentPolicies
+	Defaults              DefaultsView
+	EffectiveResumeVersionID string // global or regional default resume version
+	Overrides             ApplicationDocumentOverrides
+	Caps                  FormDocumentCapabilities
+	EffectiveMarket       string
+	HasConfirmedProfile     bool
+	DefaultResumeExists     bool
+	DefaultCoverExists      bool
 }
 
 // ResolvedDocument is the resolver output for one kind (resume or cover).
 type ResolvedDocument struct {
-	Kind       string
-	Outcome    domain.DocumentResolutionOutcome
-	VersionID  string
-	HoldReason string
-	UseSite    bool
-	Skip       bool
-	NeedTailor bool
-	NeedDefaultPDF bool
+	Kind              string
+	Outcome           domain.DocumentResolutionOutcome
+	VersionID         string
+	HoldReason        string
+	UseSite           bool
+	Skip              bool
+	NeedTailor        bool
+	NeedDefaultUpload bool
 	NeedGenerateCover bool
-	PolicyMode string
+	PolicyMode        string
 }
 
 // ResolveResult is the paired resume/cover resolution. Hold is true when submission must stop.
@@ -77,39 +79,46 @@ func (Resolver) Resolve(in ResolveInput) ResolveResult {
 
 func resolveResume(in ResolveInput) ResolvedDocument {
 	const kind = KindResume
-	if in.Overrides.Frozen && strings.TrimSpace(in.Overrides.ResumeVersionID) != "" {
-		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: in.Overrides.ResumeVersionID, PolicyMode: "frozen_override"}
+	if in.Overrides.Frozen {
+		return frozenKind(kind, in.Overrides.ResumeVersionID)
 	}
 	if vid := strings.TrimSpace(in.Overrides.ResumeVersionID); vid != "" {
-		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: vid, PolicyMode: "application_override"}
+		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: vid, NeedDefaultUpload: true, PolicyMode: "application_override"}
 	}
 	mode := in.Policies.ResumeMode
 	if mode == "" {
 		mode = domain.ResumeDocumentModeDefault
+	}
+	if needsLocalResume(mode) && !in.Caps.Detected {
+		return holdDoc(kind, "form document requirements unknown — scan apply form before preparing resume", string(mode))
 	}
 	switch mode {
 	case domain.ResumeDocumentModeSiteHosted:
 		if in.Caps.SiteResumeAmbiguous {
 			return holdDoc(kind, "site resume selection is ambiguous — verify manually", string(mode))
 		}
-		if in.Caps.SiteResumePresent || in.Caps.ResumeFileSlots == 0 {
-			return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeSiteHosted, UseSite: true, PolicyMode: string(mode)}
+		if !in.Caps.SiteResumePresent {
+			return holdDoc(kind, "job-site resume mode but no site resume is attached", string(mode))
 		}
-		return holdDoc(kind, "job-site resume mode but no site resume is attached", string(mode))
+		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeSiteHosted, UseSite: true, PolicyMode: string(mode)}
 	case domain.ResumeDocumentModeTailorJob:
 		if !in.HasConfirmedProfile {
 			return holdDoc(kind, "confirmed profile required for tailoring", string(mode))
 		}
 		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, NeedTailor: true, PolicyMode: string(mode)}
 	case domain.ResumeDocumentModeDefault:
-		if !in.Policies.OnboardingComplete && !in.DefaultResumeExists {
-			return holdDoc(kind, "select a default resume in Documents before applying", string(mode))
+		vid := strings.TrimSpace(in.EffectiveResumeVersionID)
+		if vid == "" {
+			vid = strings.TrimSpace(in.Defaults.ResumeVersionID)
 		}
-		if in.Defaults.ResumeVersionID != "" {
-			return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: in.Defaults.ResumeVersionID, NeedDefaultPDF: true, PolicyMode: string(mode)}
+		if vid != "" {
+			return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: vid, NeedDefaultUpload: true, PolicyMode: string(mode)}
 		}
 		if in.Policies.Fallback.AllowSiteResumeWhenDefaultMissing && in.Caps.SiteResumePresent && !in.Caps.SiteResumeAmbiguous {
 			return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeSiteHosted, UseSite: true, PolicyMode: "fallback_site"}
+		}
+		if !in.Policies.OnboardingComplete && !in.DefaultResumeExists {
+			return holdDoc(kind, "select a default resume in Documents before applying", string(mode))
 		}
 		return holdDoc(kind, "no default resume selected", string(mode))
 	default:
@@ -119,24 +128,27 @@ func resolveResume(in ResolveInput) ResolvedDocument {
 
 func resolveCover(in ResolveInput) ResolvedDocument {
 	const kind = KindCoverLetter
-	if in.Overrides.Frozen && strings.TrimSpace(in.Overrides.CoverVersionID) != "" {
-		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: in.Overrides.CoverVersionID, PolicyMode: "frozen_override"}
+	if in.Overrides.Frozen {
+		return frozenKind(kind, in.Overrides.CoverVersionID)
 	}
 	if vid := strings.TrimSpace(in.Overrides.CoverVersionID); vid != "" {
-		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: vid, PolicyMode: "application_override"}
+		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: vid, NeedDefaultUpload: true, PolicyMode: "application_override"}
 	}
 	mode := in.Policies.CoverMode
 	if mode == "" {
 		mode = domain.CoverDocumentModeWhenRequired
 	}
-	wantCover := coverWanted(mode, in.Caps)
-	if !wantCover {
+	want, needCaps := coverIntent(mode, in.Caps)
+	if needCaps && !in.Caps.Detected {
+		return holdDoc(kind, "form document requirements unknown — scan apply form before preparing cover letter", string(mode))
+	}
+	if !want {
 		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeSkipped, Skip: true, PolicyMode: string(mode)}
 	}
 	switch mode {
 	case domain.CoverDocumentModeGeneralDefault:
 		if in.Defaults.CoverLetterVersionID != "" {
-			return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: in.Defaults.CoverLetterVersionID, NeedDefaultPDF: true, PolicyMode: string(mode)}
+			return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: in.Defaults.CoverLetterVersionID, NeedDefaultUpload: true, PolicyMode: string(mode)}
 		}
 		return holdDoc(kind, "no general cover letter default selected", string(mode))
 	case domain.CoverDocumentModeWhenRequired, domain.CoverDocumentModeWhenAccepted:
@@ -150,26 +162,39 @@ func resolveCover(in ResolveInput) ResolvedDocument {
 		}
 		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeSkipped, Skip: true, PolicyMode: string(mode)}
 	default:
-		if in.Policies.Fallback.AllowGeneralCoverWhenGenerateFails && in.DefaultCoverExists {
-			return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: in.Defaults.CoverLetterVersionID, NeedDefaultPDF: true, PolicyMode: "fallback_default"}
-		}
 		return holdDoc(kind, "unknown cover policy", string(mode))
 	}
 }
 
-func coverWanted(mode domain.CoverDocumentMode, caps FormDocumentCapabilities) bool {
+// coverIntent returns whether cover action is needed and whether capabilities must be known first.
+func coverIntent(mode domain.CoverDocumentMode, caps FormDocumentCapabilities) (want, needCaps bool) {
+	if !caps.Detected {
+		return false, true
+	}
 	switch mode {
 	case domain.CoverDocumentModeWhenRequired:
-		return caps.CoverRequired || caps.CoverOptional || caps.ResumeFileSlots >= 2
+		return caps.CoverRequired, true
 	case domain.CoverDocumentModeWhenAccepted:
-		return caps.CoverOptional || caps.ResumeFileSlots >= 2
+		return caps.CoverOptional || caps.CoverRequired || caps.ResumeFileSlots >= 2, true
 	case domain.CoverDocumentModeGeneralDefault:
-		return caps.CoverRequired || caps.CoverOptional || caps.ResumeFileSlots >= 2
+		return caps.CoverRequired || caps.CoverOptional || caps.ResumeFileSlots >= 2, true
 	case domain.CoverDocumentModeSkipOptional:
-		return caps.CoverRequired
+		return caps.CoverRequired, true
 	default:
-		return caps.CoverRequired
+		return caps.CoverRequired, true
 	}
+}
+
+func needsLocalResume(mode domain.ResumeDocumentMode) bool {
+	return mode == domain.ResumeDocumentModeDefault || mode == domain.ResumeDocumentModeTailorJob
+}
+
+func frozenKind(kind, versionID string) ResolvedDocument {
+	vid := strings.TrimSpace(versionID)
+	if vid == "" {
+		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeSkipped, Skip: true, PolicyMode: "frozen_override"}
+	}
+	return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: vid, NeedDefaultUpload: true, PolicyMode: "frozen_override"}
 }
 
 func holdDoc(kind, reason, mode string) ResolvedDocument {
@@ -193,22 +218,14 @@ func PackDocumentRefs(resume, cover ResolvedDocument, resumePath, coverPath stri
 	out := make([]domain.ApplicationDocumentRef, 0, 2)
 	if resume.Outcome != domain.DocumentOutcomeSkipped {
 		out = append(out, domain.ApplicationDocumentRef{
-			Kind:             KindResume,
-			Outcome:          resume.Outcome,
-			ContentVersionID: resume.VersionID,
-			LocalPath:        resumePath,
-			SiteHosted:       resume.UseSite,
-			HoldReason:       resume.HoldReason,
-			PolicyMode:       resume.PolicyMode,
+			Kind: KindResume, Outcome: resume.Outcome, ContentVersionID: resume.VersionID,
+			LocalPath: resumePath, SiteHosted: resume.UseSite, HoldReason: resume.HoldReason, PolicyMode: resume.PolicyMode,
 		})
 	}
 	if cover.Outcome != domain.DocumentOutcomeSkipped {
 		out = append(out, domain.ApplicationDocumentRef{
-			Kind:             KindCoverLetter,
-			Outcome:          cover.Outcome,
-			ContentVersionID: cover.VersionID,
-			LocalPath:        coverPath,
-			PolicyMode:       cover.PolicyMode,
+			Kind: KindCoverLetter, Outcome: cover.Outcome, ContentVersionID: cover.VersionID,
+			LocalPath: coverPath, PolicyMode: cover.PolicyMode,
 		})
 	}
 	return out

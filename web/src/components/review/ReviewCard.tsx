@@ -69,6 +69,16 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
     ? new Date(review.due_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
     : null
 
+  let documentPreflight: string | null = null
+  if (review.document_refs_json) {
+    try {
+      const parsed = JSON.parse(review.document_refs_json) as { hold_reason?: string }
+      if (parsed.hold_reason) documentPreflight = parsed.hold_reason
+    } catch {
+      /* ignore */
+    }
+  }
+
   return (
     <article
       onTouchStart={onTouchStart}
@@ -145,7 +155,9 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
           )}
         </div>
       ) : (
-        <p className="text-xs leading-5 text-[var(--color-text-dim)]">No tailored documents were generated for this application.</p>
+        <p className="text-xs leading-5 text-[var(--color-text-dim)]">
+          {documentPreflight ?? 'Documents are prepared when you approve and the apply form is scanned. Rendering and reusing saved PDFs do not use AI credits.'}
+        </p>
       )}
 
       {review.link && (

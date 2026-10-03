@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
 	appdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/scraper"
@@ -884,22 +885,18 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 		return false
 	}
 
-	reviewLazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: job.Company, Title: job.Title}, jobDesc: details.Description}
-	reviewLazy.prepareForReview()
-
 	if b.cfg.RequireReview {
+		packJSON := documents.WriteApplicationPackJSON(documents.ApplicationDocumentPack{
+			HoldReason: "Documents prepare after you approve and the apply form is scanned",
+		})
 		b.saveSeekPendingReview(ctx, &domain.PendingReview{
-			JobID:                       job.ID,
-			Company:                     job.Company,
-			Role:                        job.Title,
-			Location:                    job.Location,
-			Platform:                    domain.PlatformSeek,
-			Link:                        job.URL,
-			ResumePath:                  reviewLazy.resume,
-			CoverLetterPath:             reviewLazy.cover,
-			ResumeContentVersionID:      reviewLazy.resumeVersionID,
-			CoverLetterContentVersionID: reviewLazy.coverVersionID,
-			DocumentRefsJSON:            reviewLazy.refsJSON,
+			JobID:            job.ID,
+			Company:          job.Company,
+			Role:             job.Title,
+			Location:         job.Location,
+			Platform:         domain.PlatformSeek,
+			Link:             job.URL,
+			DocumentRefsJSON: packJSON,
 			SuitabilityScore:     score,
 			SuitabilityReasoning: reasoning,
 			DueDate:              details.DueDate,
@@ -934,7 +931,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	}
 
 	// Docs generated lazily at the file-upload step, only when toggle is on.
-	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: job.Company, Title: job.Title}, jobDesc: details.Description}
+	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: job.ID, Company: job.Company, Title: job.Title}, jobDesc: details.Description}
 	return b.submitSeekApplication(ctx, br, job, lazy, score, reasoning, halalVerdict, llmBefore) == seekSubmitApplied
 }
 
@@ -1340,14 +1337,6 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 	}
 
-	// Generate docs NOW, while we're still on the stable job detail page and
-	// BEFORE clicking Quick Apply. The LLM call can take 60–90 s; if we click
-	// first and block on lazy.get() afterwards, Seek's SPA destroys the apply
-	// form (idle navigation, auth0 token rotation, etc.) and the upload step
-	// runs against the wrong DOM. Blocking here means by the time we click
-	// Quick Apply, the docs are ready and the upload runs on a fresh form.
-	resumePath, coverPath := lazy.get()
-
 	if err := b.seekClickQuickApply(page); err != nil {
 		return err
 	}
@@ -1398,18 +1387,10 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		return err
 	}
 
-	// Upload resume: activate the "Upload a resumé" radio then set file.
-	if resumePath != "" {
-		if err := b.seekUploadResume(page, resumePath); err != nil {
-			log.Warn().Err(err).Msg("seek: resume upload failed, Seek profile resume will be used")
-		}
-	}
-
-	// Upload cover letter: activate the "Upload a cover letter" radio then set file.
-	if coverPath != "" {
-		if err := b.seekUploadCoverLetter(page, coverPath); err != nil {
-			log.Warn().Err(err).Msg("seek: cover letter upload failed, continuing without it")
-		}
+	lazy.applyCaps(probeLinkedInApplyCaps(page))
+	lazy.ensureMaterialized()
+	if lazy.policyBlocked() {
+		return fmt.Errorf("documents: %s", lazy.holdReason)
 	}
 
 	b.humanPause()

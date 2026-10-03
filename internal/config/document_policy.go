@@ -42,3 +42,8 @@ func EnsureDocumentPolicies(gs *domain.GeneralSettings) {
 	migrated := MigrateDocumentPolicies(*gs)
 	gs.DocumentPolicies = migrated
 }
+
+// ApplyPoliciesForNewUser sets recommended policies without legacy migration side effects.
+func ApplyPoliciesForNewUser(gs *domain.GeneralSettings) {
+	gs.DocumentPolicies = RecommendedDocumentPolicies()
+}

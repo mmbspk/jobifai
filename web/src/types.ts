@@ -59,6 +59,9 @@ export interface PendingReview {
   link?: string
   resume_path?: string
   cover_letter_path?: string
+  resume_content_version_id?: string
+  cover_letter_content_version_id?: string
+  document_refs_json?: string
   suitability_score?: number
   suitability_reasoning?: string
   due_date?: string

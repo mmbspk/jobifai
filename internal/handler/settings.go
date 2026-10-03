@@ -224,6 +224,9 @@ func (h *SettingsHandlers) GeneralGet(w http.ResponseWriter, r *http.Request) {
 	var s domain.GeneralSettings
 	if err := h.svc.Config.Get(userID, keyGeneralSettings, &s); errors.Is(err, domain.ErrNotFound) {
 		s = defaultGeneralSettings
+		config.ApplyPoliciesForNewUser(&s)
+		writeJSON(w, http.StatusOK, userFacingGeneral(s))
+		return
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return

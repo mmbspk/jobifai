@@ -13,6 +13,7 @@ import (
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/config"
 	appdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 )
 
@@ -180,8 +181,8 @@ func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 		 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID,
 	).Scan(&req.Company, &req.Role, &req.Location, &req.Platform, &req.Link, &req.ResumePath, &req.CoverPath,
 		&req.ResumeContentVersionID, &req.CoverContentVersionID, &req.DocumentRefsJSON, &req.SuitabilityReasoning)
-	if err == nil && (req.ResumeContentVersionID != "" || req.CoverContentVersionID != "" || req.DocumentRefsJSON != "") {
-		req.FrozenDocuments = true
+	if err == nil {
+		req.FrozenDocuments = documents.ParseApplicationPackJSON(req.DocumentRefsJSON).ReadyForSubmit()
 	}
 	if err != nil {
 		notFound(w, "no pending review for job_id "+jobID)

@@ -91,7 +91,7 @@ func applyUserApplicationFields(base, user domain.GeneralSettings, hasUser bool)
 	if hasUser {
 		out.DocumentPolicies = MigrateDocumentPolicies(user)
 	} else {
-		out.DocumentPolicies = RecommendedDocumentPolicies()
+		ApplyPoliciesForNewUser(&out)
 	}
 	if user.HumanBehavior.DailyApplicationLimit > 0 {
 		out.HumanBehavior.DailyApplicationLimit = user.HumanBehavior.DailyApplicationLimit

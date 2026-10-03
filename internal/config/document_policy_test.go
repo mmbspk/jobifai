@@ -27,6 +27,15 @@ func TestMigrateDocumentPolicies_LegacyTrueMapsToTailorAndCoverWhenAccepted(t *t
 	require.Equal(t, domain.CoverDocumentModeWhenAccepted, p.CoverMode)
 }
 
+func TestApplyPoliciesForNewUser_RecommendedDefaults(t *testing.T) {
+	t.Parallel()
+	var gs domain.GeneralSettings
+	config.ApplyPoliciesForNewUser(&gs)
+	require.Equal(t, domain.ResumeDocumentModeDefault, gs.DocumentPolicies.ResumeMode)
+	require.Equal(t, domain.CoverDocumentModeWhenRequired, gs.DocumentPolicies.CoverMode)
+	require.False(t, gs.DocumentPolicies.OnboardingComplete)
+}
+
 func TestMigrateDocumentPolicies_Idempotent(t *testing.T) {
 	t.Parallel()
 	gs := domain.GeneralSettings{

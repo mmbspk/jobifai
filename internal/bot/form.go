@@ -868,6 +868,20 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 	}
 	log.Info().Int("count", len(fields)).Msg("form: fields to fill")
 
+	lazy.applyCaps(capsFromFormFields(fields))
+	siteMode := b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted
+	for _, f := range fields {
+		if f.Type != "file" {
+			continue
+		}
+		if present, amb := detectSiteResumeOnField(f, siteMode); present {
+			lazy.formCaps.SiteResumePresent = true
+			if amb {
+				lazy.formCaps.SiteResumeAmbiguous = true
+			}
+		}
+	}
+
 	fileUploadIdx := 0 // track how many file inputs we've processed
 
 	for _, f := range fields {
@@ -911,16 +925,20 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				continue
 			}
 			// Always upload our generated file, replace LinkedIn's default resume.
-			if err := b.formUploadFile(page, path, f.Index); err != nil {
-				log.Warn().Err(err).Int("index", f.Index).Msg("form: file upload failed")
-			} else {
-				kind := "resume"
+			var uploadErr error
+			if b.cfg.Platform == domain.PlatformSeek {
+				uploadErr = b.seekUploadResume(page, path)
 				if fileUploadIdx > 0 {
-					kind = "cover letter"
+					uploadErr = b.seekUploadCoverLetter(page, path)
 				}
-				log.Info().Str("path", path).Str("kind", kind).Msg("form: file uploaded")
-				filled = true
+			} else {
+				uploadErr = b.formUploadFile(page, path, f.Index)
 			}
+			if uploadErr != nil {
+				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kind, uploadErr)
+			}
+			log.Info().Str("path", path).Str("kind", kind).Msg("form: file uploaded")
+			filled = true
 			fileUploadIdx++
 
 		case "radio":

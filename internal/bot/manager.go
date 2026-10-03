@@ -372,7 +372,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			}
 		}
 		managerLazy = &lazyDocGen{
-			b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: jobDesc,
+			b: b, ctx: m.ctx, job: linkedInJob{ID: req.JobID, Company: req.Company, Title: req.Role}, jobDesc: jobDesc,
 			resumeOverride: req.ResumePath, coverOverride: req.CoverPath,
 			resumeVersionOverride: req.ResumeContentVersionID, coverVersionOverride: req.CoverContentVersionID,
 			frozen: req.FrozenDocuments, refsJSON: req.DocumentRefsJSON,
@@ -380,18 +380,13 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	} else {
 		managerDetails := b.fetchJob(m.ctx, linkedInJob{URL: req.Link, Company: req.Company, Title: req.Role})
 		managerLazy = &lazyDocGen{
-			b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description,
+			b: b, ctx: m.ctx, job: linkedInJob{ID: req.JobID, Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description,
 			resumeOverride: req.ResumePath, coverOverride: req.CoverPath,
 			resumeVersionOverride: req.ResumeContentVersionID, coverVersionOverride: req.CoverContentVersionID,
 			frozen: req.FrozenDocuments, refsJSON: req.DocumentRefsJSON,
 		}
 	}
-	if req.FrozenDocuments {
-		managerLazy.resume = req.ResumePath
-		managerLazy.cover = req.CoverPath
-		managerLazy.resumeVersionID = req.ResumeContentVersionID
-		managerLazy.coverVersionID = req.CoverContentVersionID
-	}
+	managerLazy.restoreFrozenPack()
 
 	// Extract location from the job page; fall back to the value stored in pending_review.
 	location := extractJobLocation(jobPage, domain.Platform(req.Platform))
@@ -425,13 +420,18 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 				if savedCover == "" {
 					savedCover = req.CoverPath
 				}
+				packJSON := documents.WriteApplicationPackJSON(documents.PackFromPrepared(
+					"", documents.ResolvedDocument{}, documents.ResolvedDocument{}, savedResume, savedCover,
+				))
 				_, _ = m.db.Exec(
 					`INSERT OR REPLACE INTO jobs_pending_review
 					 (job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,
+					  resume_content_version_id,cover_letter_content_version_id,document_refs_json,
 					  suitability_score,suitability_reasoning,easy_apply,created_at)
-					 VALUES(?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'))`,
+					 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'))`,
 					req.JobID, userID, req.Company, req.Role, location, req.Platform, req.Link,
-					savedResume, savedCover, score, req.SuitabilityReasoning,
+					savedResume, savedCover, managerLazy.resumeVersionID, managerLazy.coverVersionID, packJSON,
+					score, req.SuitabilityReasoning,
 				)
 				_, _ = m.db.Exec(
 					`UPDATE jobs_pending_review
@@ -459,23 +459,38 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			if savedCover == "" {
 				savedCover = req.CoverPath
 			}
+			packJSON := documents.WriteApplicationPackJSON(documents.PackFromPrepared(
+				"", documents.ResolvedDocument{}, documents.ResolvedDocument{}, savedResume, savedCover,
+			))
 			_, _ = m.db.Exec(
 				`UPDATE jobs_pending_review
 				 SET attempt_count = attempt_count + 1,
 				     resume_path = CASE WHEN ? != '' THEN ? ELSE resume_path END,
-				     cover_letter_path = CASE WHEN ? != '' THEN ? ELSE cover_letter_path END
+				     cover_letter_path = CASE WHEN ? != '' THEN ? ELSE cover_letter_path END,
+				     resume_content_version_id = CASE WHEN ? != '' THEN ? ELSE resume_content_version_id END,
+				     cover_letter_content_version_id = CASE WHEN ? != '' THEN ? ELSE cover_letter_content_version_id END,
+				     document_refs_json = CASE WHEN ? != '' THEN ? ELSE document_refs_json END
 				 WHERE job_id = ? AND user_id = ?`,
-				savedResume, savedResume, savedCover, savedCover, req.JobID, userID,
+				savedResume, savedResume, savedCover, savedCover,
+				managerLazy.resumeVersionID, managerLazy.resumeVersionID,
+				managerLazy.coverVersionID, managerLazy.coverVersionID,
+				packJSON, packJSON,
+				req.JobID, userID,
 			)
 			return applyErr
 		}
 	}
 
-	resumePath, coverPath := managerLazy.get()
+	resumePath, coverPath := managerLazy.peek()
+	packJSON := managerLazy.refsJSON
+	if packJSON == "" {
+		packJSON = documents.WriteApplicationPackJSON(managerLazy.pack)
+	}
 	if _, err := m.db.Exec(
-		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,halal_verdict,applied_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.JobID, userID, req.Platform, req.Company, req.Role, location, req.Link, resumePath, coverPath,
+		managerLazy.resumeVersionID, managerLazy.coverVersionID, packJSON,
 		score, halalVerdict, time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to record applied job")

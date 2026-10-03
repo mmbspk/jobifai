@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -17,16 +18,20 @@ func (b *Bot) policies() domain.DocumentPolicies {
 }
 
 func (b *Bot) effectiveRenderContext() documents.RenderContext {
-	market := b.cfg.Settings.DefaultResumeMarket
-	if b.cfg.Settings.DocumentPolicies.RegionalDefaults != nil {
-		if m, ok := b.cfg.Settings.DocumentPolicies.RegionalDefaults[market]; ok && m != "" {
-			market = m
-		}
-	}
 	return documents.RenderContext{
-		Market:   market,
+		Market:   b.cfg.Settings.DefaultResumeMarket,
 		Language: "en",
 	}
+}
+
+func (b *Bot) effectiveResumeVersionID(def documents.DefaultsView) string {
+	market := strings.TrimSpace(b.cfg.Settings.DefaultResumeMarket)
+	if b.cfg.Settings.DocumentPolicies.RegionalDefaults != nil {
+		if vid := strings.TrimSpace(b.cfg.Settings.DocumentPolicies.RegionalDefaults[market]); vid != "" {
+			return vid
+		}
+	}
+	return def.ResumeVersionID
 }
 
 func (b *Bot) resolveApplicationDocs(overrides documents.ApplicationDocumentOverrides, caps documents.FormDocumentCapabilities) documents.ResolveResult {
@@ -39,18 +44,50 @@ func (b *Bot) resolveApplicationDocs(overrides documents.ApplicationDocumentOver
 		}
 	}
 	hasProfile := b.currentProfile() != nil
-	hasResumeDefault := def.ResumeVersionID != ""
+	hasResumeDefault := b.effectiveResumeVersionID(def) != "" || def.ResumeVersionID != ""
 	hasCoverDefault := def.CoverLetterVersionID != ""
 	return r.Resolve(documents.ResolveInput{
-		Policies:            policies,
-		Defaults:            def,
-		Overrides:           overrides,
-		Caps:                caps,
-		EffectiveMarket:     b.effectiveRenderContext().Market,
-		HasConfirmedProfile: hasProfile,
-		DefaultResumeExists: hasResumeDefault,
-		DefaultCoverExists:  hasCoverDefault,
+		Policies:                 policies,
+		Defaults:                 def,
+		EffectiveResumeVersionID: b.effectiveResumeVersionID(def),
+		Overrides:                overrides,
+		Caps:                     caps,
+		EffectiveMarket:          b.effectiveRenderContext().Market,
+		HasConfirmedProfile:      hasProfile,
+		DefaultResumeExists:      hasResumeDefault,
+		DefaultCoverExists:       hasCoverDefault,
 	})
+}
+
+func (l *lazyDocGen) restoreFrozenPack() {
+	if !l.frozen || l.packRestored {
+		return
+	}
+	pack := documents.ParseApplicationPackJSON(l.refsJSON)
+	if pack.HoldReason != "" {
+		l.holdReason = pack.HoldReason
+	}
+	if pack.Resume.Outcome == domain.DocumentOutcomeSiteHosted {
+		l.useSiteResume = true
+	}
+	if pack.Resume.LocalPath != "" {
+		l.resume = pack.Resume.LocalPath
+	} else if l.resumeOverride != "" {
+		l.resume = l.resumeOverride
+	}
+	if pack.Cover.LocalPath != "" {
+		l.cover = pack.Cover.LocalPath
+	} else if l.coverOverride != "" {
+		l.cover = l.coverOverride
+	}
+	if pack.Resume.ContentVersionID != "" {
+		l.resumeVersionID = pack.Resume.ContentVersionID
+	}
+	if pack.Cover.ContentVersionID != "" {
+		l.coverVersionID = pack.Cover.ContentVersionID
+	}
+	l.pack = pack
+	l.packRestored = true
 }
 
 func (l *lazyDocGen) materializeWithPolicies() {
@@ -58,28 +95,34 @@ func (l *lazyDocGen) materializeWithPolicies() {
 		l.resume, l.cover = l.b.generateDocs(l.ctx, l.job, l.jobDesc)
 		return
 	}
-	caps := l.formCaps
-	if caps.ResumeFileSlots == 0 {
-		caps.ResumeFileSlots = 2
+	if !l.formCaps.Detected {
+		l.holdReason = "form document requirements unknown — open apply form before preparing documents"
+		return
 	}
 	overrides := documents.ApplicationDocumentOverrides{
 		ResumeVersionID: l.resumeVersionOverride,
 		CoverVersionID:  l.coverVersionOverride,
 		Frozen:          l.frozen,
 	}
-	res := l.b.resolveApplicationDocs(overrides, caps)
+	res := l.b.resolveApplicationDocs(overrides, l.formCaps)
 	if res.Hold {
 		l.holdReason = res.HoldReason
-		log.Warn().Str("job", l.job.Title).Str("reason", res.HoldReason).Msg("documents: hold — will not substitute")
+		l.pack = documents.PackFromPrepared(l.holdReason, res.Resume, res.Cover, "", "")
+		l.refsJSON = documents.WriteApplicationPackJSON(l.pack)
+		log.Warn().Str("job", l.job.Title).Str("reason", res.HoldReason).Msg("documents: hold")
 		return
 	}
 	rc := l.b.effectiveRenderContext()
+	exportRoot := "."
+	if wd, err := os.Getwd(); err == nil {
+		exportRoot = wd
+	}
 	pack, err := l.b.cfg.Documents.MaterializeApplicationDocs(
-		l.ctx, l.b.cfg.UserID, l.job.Company, l.job.Title, l.jobDesc, res, rc, l.b.currentProfile(),
+		l.ctx, l.b.cfg.UserID, l.job.ID, l.job.Company, l.job.Title, l.jobDesc, res, l.b.policies(), rc, l.b.currentProfile(),
 		documents.MaterializeDeps{
 			TailorProfile: func(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (*domain.ResumeProfile, error) {
 				if l.b.cfg.Tailor == nil {
-					return profile, nil
+					return nil, context.Canceled
 				}
 				market := l.b.loadMarket()
 				promptCtx := jobDesc
@@ -90,7 +133,7 @@ func (l *lazyDocGen) materializeWithPolicies() {
 			},
 			WriteCover: func(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (string, error) {
 				if l.b.cfg.Tailor == nil {
-					return "", nil
+					return "", context.Canceled
 				}
 				market := l.b.loadMarket()
 				promptCtx := jobDesc
@@ -99,13 +142,8 @@ func (l *lazyDocGen) materializeWithPolicies() {
 				}
 				return l.b.cfg.Tailor.WriteCoverLetter(l.b.llmCtx(ctx, "cover letter", l.job.ID), profile, promptCtx)
 			},
-			WritePDF: func(company, title, kind string, pdf []byte) string {
-				path, err := documents.ExportPDFToJobDir(".", company, title, kind, pdf)
-				if err != nil {
-					log.Warn().Err(err).Msg("documents: export pdf for upload")
-					return ""
-				}
-				return path
+			ExportUpload: func(userID, jobID, versionID, kind string, payload documents.VersionUploadPayload) (string, error) {
+				return documents.ExportApplicationUploadFile(exportRoot, userID, jobID, versionID, kind, payload.Filename, payload.Data)
 			},
 		},
 	)
@@ -115,27 +153,50 @@ func (l *lazyDocGen) materializeWithPolicies() {
 		} else {
 			l.holdReason = err.Error()
 		}
+		l.pack = documents.PackFromPrepared(l.holdReason, res.Resume, res.Cover, "", "")
+		l.refsJSON = documents.WriteApplicationPackJSON(l.pack)
 		return
 	}
 	if pack.Hold {
 		l.holdReason = pack.HoldReason
+		l.pack = pack.Pack
+		l.refsJSON = documents.WriteApplicationPackJSON(l.pack)
 		return
 	}
 	l.resume = pack.ResumePath
 	l.cover = pack.CoverPath
 	l.resumeVersionID = pack.ResumeVersionID
 	l.coverVersionID = pack.CoverVersionID
-	l.refsJSON = documents.WriteRefsJSON(pack.Refs)
+	l.pack = pack.Pack
+	l.refsJSON = documents.WriteApplicationPackJSON(l.pack)
 	if res.Resume.UseSite {
 		l.useSiteResume = true
 	}
+}
+
+func (l *lazyDocGen) ensureMaterialized() {
+	if l.frozen {
+		l.restoreFrozenPack()
+		return
+	}
+	l.matMu.Lock()
+	defer l.matMu.Unlock()
+	if l.materialized {
+		return
+	}
+	l.materializeWithPolicies()
+	l.materialized = true
 }
 
 func (l *lazyDocGen) policyBlocked() bool {
 	return strings.TrimSpace(l.holdReason) != ""
 }
 
-func (l *lazyDocGen) prepareForReview() {
-	l.formCaps = documents.FormDocumentCapabilities{ResumeFileSlots: 2, CoverOptional: true}
-	l.once.Do(l.materializeWithPolicies)
+func (l *lazyDocGen) applyCaps(caps documents.FormDocumentCapabilities) {
+	mergeCaps(&l.formCaps, caps)
+	if l.formCaps.Detected && !l.materialized && !l.frozen {
+		l.matMu.Lock()
+		l.materialized = false
+		l.matMu.Unlock()
+	}
 }
