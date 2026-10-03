@@ -61,18 +61,6 @@ type lazyDocGen struct {
 	pack                  documents.ApplicationDocumentPack
 }
 
-func (l *lazyDocGen) pathForKind(kind string) string {
-	if l.frozen {
-		l.restoreFrozenPack()
-	}
-	switch kind {
-	case documents.KindCoverLetter:
-		return l.cover
-	default:
-		return l.resume
-	}
-}
-
 // get returns the generated resume and cover letter paths, generating them on
 // the first call. If override paths from a prior attempt are set, they are
 // returned directly without calling the LLM again.
