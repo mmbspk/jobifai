@@ -18,6 +18,14 @@ func TestParseApplicationPackJSON_PreservesSelectionAfterPickerChange(t *testing
 	require.Contains(t, got.HoldReason, "prepare again")
 }
 
+func TestMarkPrepared_ClearsStalePickerHold(t *testing.T) {
+	t.Parallel()
+	p := ApplicationDocumentPack{HoldReason: "Document selection changed — prepare again to preview"}
+	p.MarkPrepared()
+	require.True(t, p.Prepared)
+	require.Empty(t, p.HoldReason)
+}
+
 func TestBuildReviewDocumentOptions_EmptyListsJSONArrays(t *testing.T) {
 	t.Parallel()
 	opts := BuildReviewDocumentOptions(ListResponse{})

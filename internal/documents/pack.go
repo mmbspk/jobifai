@@ -132,9 +132,17 @@ func (p ApplicationDocumentPack) ReadyForSubmit() bool {
 func (p *ApplicationDocumentPack) MarkPrepared() {
 	p.Prepared = true
 	if strings.Contains(p.HoldReason, "prepare after you approve") ||
-		strings.Contains(p.HoldReason, "Use Prepare documents") {
+		strings.Contains(p.HoldReason, "Use Prepare documents") ||
+		StaleReviewHoldReason(p.HoldReason) {
 		p.HoldReason = ""
 	}
+}
+
+// StaleReviewHoldReason is a UX placeholder cleared once a new prepare attempt succeeds.
+func StaleReviewHoldReason(reason string) bool {
+	r := strings.TrimSpace(reason)
+	return strings.Contains(r, "prepare again to preview") ||
+		strings.Contains(r, "Document selection changed")
 }
 
 func PackFromPrepared(holdReason string, resume, cover ResolvedDocument, resumePath, coverPath string) ApplicationDocumentPack {

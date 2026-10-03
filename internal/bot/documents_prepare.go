@@ -93,7 +93,7 @@ func (l *lazyDocGen) applyStoredPackMetadata() {
 	}
 	l.resumeUseSiteOverride = pack.Selection.ResumeUseSite
 	l.coverSkipOverride = pack.Selection.CoverSkip
-	if !l.frozen && strings.TrimSpace(pack.HoldReason) != "" {
+	if !l.frozen && strings.TrimSpace(pack.HoldReason) != "" && !documents.StaleReviewHoldReason(pack.HoldReason) {
 		l.holdReason = pack.HoldReason
 	}
 	l.packMetaApplied = true
@@ -138,6 +138,9 @@ func (l *lazyDocGen) materializeWithPolicies() {
 	if !l.formCaps.Detected {
 		l.holdReason = "form document requirements unknown — open apply form before preparing documents"
 		return
+	}
+	if documents.StaleReviewHoldReason(l.holdReason) {
+		l.holdReason = ""
 	}
 	overrides := l.applicationDocumentOverrides()
 	res := l.b.resolveApplicationDocs(overrides, l.formCaps)
@@ -201,6 +204,7 @@ func (l *lazyDocGen) materializeWithPolicies() {
 		l.refsJSON = documents.WriteApplicationPackJSON(l.pack)
 		return
 	}
+	l.holdReason = ""
 	l.resume = pack.ResumePath
 	l.cover = pack.CoverPath
 	l.resumeVersionID = pack.ResumeVersionID
