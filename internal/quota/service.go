@@ -210,6 +210,19 @@ func (s *Service) Status(_ context.Context, userID string) (domain.QuotaStatus, 
 	return st, nil
 }
 
+// EstimateLLMCredits returns pre-call burn credits for a model using the same rules as BeforeLLM.
+func (s *Service) EstimateLLMCredits(model string, estInput, estOutput int) int64 {
+	def := loadDefaults(s.cfg)
+	est := EstimateBurnCredits(def, model, estInput, estOutput)
+	if s.catalog != nil {
+		est = EstimateBurnCreditsCatalog(def, s.catalog, model, estInput, estOutput)
+	}
+	if est <= 0 && estInput+estOutput > 0 {
+		return 1
+	}
+	return est
+}
+
 // BeforeLLM checks whether a call with the given estimated cost may proceed.
 func (s *Service) BeforeLLM(_ context.Context, userID, model string, estInput, estOutput int) error {
 	if s.isAdmin(userID) {

@@ -65,6 +65,43 @@ func TestPackAfterSelectionChange_ClearsPrepared(t *testing.T) {
 	require.False(t, pack.Prepared)
 }
 
+func TestResolveReviewPreflight_AIEstimateUsesEstimator(t *testing.T) {
+	t.Parallel()
+	in := documents.ResolveReviewInput{
+		Policies: domain.DocumentPolicies{
+			ResumeMode: domain.ResumeDocumentModeTailorJob,
+			CoverMode:  domain.CoverDocumentModeWhenRequired,
+			OnboardingComplete: true,
+		},
+		Caps: documents.FormDocumentCapabilities{Detected: true, ResumeFileSlots: 1, CoverRequired: true},
+		HasConfirmedProfile: true,
+		DefaultResumeExists: true,
+		CreditEstimator: func(task string) (int64, bool) {
+			if task == documents.AITaskTailorResume {
+				return 123, true
+			}
+			return 0, false
+		},
+	}
+	pf, _ := documents.ResolveReviewPreflight(in)
+	require.Equal(t, "tailor", pf.Resume.Action)
+	require.NotNil(t, pf.Resume.CreditsEstimate)
+	require.Equal(t, int64(123), *pf.Resume.CreditsEstimate)
+}
+
+func TestResolver_FrozenIgnoresPolicyChange(t *testing.T) {
+	t.Parallel()
+	var r documents.Resolver
+	res := r.Resolve(documents.ResolveInput{
+		Policies: domain.DocumentPolicies{ResumeMode: domain.ResumeDocumentModeTailorJob, CoverMode: domain.CoverDocumentModeWhenRequired},
+		Overrides: documents.ApplicationDocumentOverrides{Frozen: true, ResumeVersionID: "saved-v1", CoverVersionID: ""},
+		Caps: documents.FormDocumentCapabilities{Detected: true, ResumeFileSlots: 1, CoverRequired: true},
+		HasConfirmedProfile: true,
+	})
+	require.False(t, res.Resume.NeedTailor)
+	require.Equal(t, "saved-v1", res.Resume.VersionID)
+}
+
 func TestResolver_ApplicationOverrideSiteAndSkip(t *testing.T) {
 	t.Parallel()
 	var r documents.Resolver

@@ -113,10 +113,21 @@ func BuildReviewDocumentOptions(list ListResponse) ReviewDocumentOptions {
 	return out
 }
 
-// TypicalGenerationCredits is a conservative pre-prepare estimate when caps/requirements are unknown.
-const TypicalGenerationCredits int64 = 45
+const (
+	AITaskTailorResume  = "tailor_resume"
+	AITaskGenerateCover = "generate_cover"
+)
 
-func actionForResolved(r ResolvedDocument, capsKnown bool) ReviewDocumentAction {
+// ReviewCreditEstimator returns billing credits for an AI document task, or ok=false when unavailable.
+type ReviewCreditEstimator func(task string) (credits int64, ok bool)
+
+// DefaultAITokenEstimates match pre-call checks in the LLM client (chars/4 input, max_tokens output).
+var DefaultAITokenEstimates = map[string][2]int{
+	AITaskTailorResume:  {12000, 4096},
+	AITaskGenerateCover: {8000, 2048},
+}
+
+func actionForResolved(r ResolvedDocument, capsKnown bool, est ReviewCreditEstimator) ReviewDocumentAction {
 	a := ReviewDocumentAction{Kind: r.Kind, Mode: r.PolicyMode}
 	switch {
 	case r.Outcome == domain.DocumentOutcomeHoldReview:
@@ -133,16 +144,18 @@ func actionForResolved(r ResolvedDocument, capsKnown bool) ReviewDocumentAction 
 	case r.NeedTailor:
 		a.Action = "tailor"
 		a.UsesAI = true
-		if capsKnown {
-			c := TypicalGenerationCredits
-			a.CreditsEstimate = &c
+		if capsKnown && est != nil {
+			if c, ok := est(AITaskTailorResume); ok {
+				a.CreditsEstimate = &c
+			}
 		}
 	case r.NeedGenerateCover:
 		a.Action = "generate"
 		a.UsesAI = true
-		if capsKnown {
-			c := TypicalGenerationCredits
-			a.CreditsEstimate = &c
+		if capsKnown && est != nil {
+			if c, ok := est(AITaskGenerateCover); ok {
+				a.CreditsEstimate = &c
+			}
 		}
 	case r.NeedDefaultUpload || r.VersionID != "":
 		a.Action = "reuse"
@@ -162,6 +175,7 @@ func BuildReviewPreflight(
 	caps FormDocumentCapabilities,
 	pack ApplicationDocumentPack,
 	res ResolveResult,
+	est ReviewCreditEstimator,
 ) ReviewDocumentPreflight {
 	capsKnown := caps.Detected || pack.Prepared
 	pf := ReviewDocumentPreflight{
@@ -171,8 +185,8 @@ func BuildReviewPreflight(
 		Capabilities:      caps,
 		CapabilitiesKnown: capsKnown,
 		Prepared:          pack.Prepared,
-		Resume:            actionForResolved(res.Resume, capsKnown),
-		Cover:             actionForResolved(res.Cover, capsKnown),
+		Resume:            actionForResolved(res.Resume, capsKnown, est),
+		Cover:             actionForResolved(res.Cover, capsKnown, est),
 		PackHoldReason:    pack.HoldReason,
 	}
 	if !capsKnown {
@@ -229,6 +243,7 @@ type ResolveReviewInput struct {
 	HasConfirmedProfile      bool
 	DefaultResumeExists      bool
 	DefaultCoverExists       bool
+	CreditEstimator          ReviewCreditEstimator
 }
 
 // ResolveReviewPreflight resolves policies + selection for the review UI.
@@ -244,6 +259,6 @@ func ResolveReviewPreflight(in ResolveReviewInput) (ReviewDocumentPreflight, Res
 		DefaultResumeExists:      in.DefaultResumeExists,
 		DefaultCoverExists:       in.DefaultCoverExists,
 	})
-	pf := BuildReviewPreflight(in.Policies, in.Selection, in.Caps, in.Pack, res)
+	pf := BuildReviewPreflight(in.Policies, in.Selection, in.Caps, in.Pack, res, in.CreditEstimator)
 	return pf, res
 }

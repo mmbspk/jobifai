@@ -36,6 +36,7 @@ func newManagerLazy(b *Bot, ctx context.Context, req SubmitRequest) *lazyDocGen 
 		resumeVersionOverride: req.ResumeContentVersionID, coverVersionOverride: req.CoverContentVersionID,
 		frozen: req.FrozenDocuments, refsJSON: req.DocumentRefsJSON,
 	}
+	lazy.applyStoredPackMetadata()
 	lazy.restoreFrozenPack()
 	return lazy
 }

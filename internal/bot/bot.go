@@ -61,6 +61,7 @@ type lazyDocGen struct {
 	reviewPrepareOnly     bool
 	prepareScanComplete   bool
 	packRestored          bool
+	packMetaApplied       bool
 	pack                  documents.ApplicationDocumentPack
 }
 

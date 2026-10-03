@@ -75,11 +75,36 @@ func (b *Bot) resolveApplicationDocs(overrides documents.ApplicationDocumentOver
 	})
 }
 
+// applyStoredPackMetadata loads review picker state from document_refs_json for prepare/submit.
+func (l *lazyDocGen) applyStoredPackMetadata() {
+	if l.packMetaApplied {
+		return
+	}
+	pack := documents.ParseApplicationPackJSON(l.refsJSON)
+	l.pack = pack
+	if pack.FormCaps.Detected {
+		l.formCaps = pack.FormCaps
+	}
+	if pack.Selection.ResumeVersionID != "" && l.resumeVersionOverride == "" {
+		l.resumeVersionOverride = pack.Selection.ResumeVersionID
+	}
+	if pack.Selection.CoverVersionID != "" && l.coverVersionOverride == "" {
+		l.coverVersionOverride = pack.Selection.CoverVersionID
+	}
+	l.resumeUseSiteOverride = pack.Selection.ResumeUseSite
+	l.coverSkipOverride = pack.Selection.CoverSkip
+	if !l.frozen && strings.TrimSpace(pack.HoldReason) != "" {
+		l.holdReason = pack.HoldReason
+	}
+	l.packMetaApplied = true
+}
+
 func (l *lazyDocGen) restoreFrozenPack() {
 	if !l.frozen || l.packRestored {
 		return
 	}
-	pack := documents.ParseApplicationPackJSON(l.refsJSON)
+	l.applyStoredPackMetadata()
+	pack := l.pack
 	if pack.HoldReason != "" {
 		l.holdReason = pack.HoldReason
 	}
@@ -102,15 +127,6 @@ func (l *lazyDocGen) restoreFrozenPack() {
 	if pack.Cover.ContentVersionID != "" {
 		l.coverVersionID = pack.Cover.ContentVersionID
 	}
-	if pack.Selection.ResumeVersionID != "" && l.resumeVersionOverride == "" {
-		l.resumeVersionOverride = pack.Selection.ResumeVersionID
-	}
-	if pack.Selection.CoverVersionID != "" && l.coverVersionOverride == "" {
-		l.coverVersionOverride = pack.Selection.CoverVersionID
-	}
-	l.resumeUseSiteOverride = pack.Selection.ResumeUseSite
-	l.coverSkipOverride = pack.Selection.CoverSkip
-	l.pack = pack
 	l.packRestored = true
 }
 

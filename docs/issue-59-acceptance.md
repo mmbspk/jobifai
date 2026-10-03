@@ -2,7 +2,7 @@
 
 | Requirement | Evidence |
 |-------------|----------|
-| Per-application document picker (resume/cover, originals, site/skip) | `GET\|PUT /api/bot/review/{job_id}/documents`; `ReviewDocumentsPanel.tsx`; resolver `ResumeUseSite` / `CoverSkip` overrides |
+| Per-application document picker (resume/cover, originals, site/skip) | `GET\|PUT /api/bot/review/{job_id}/documents`; `ReviewDocumentsPanel.tsx`; `applyStoredPackMetadata` + `ParseApplicationPackJSON` metadata preservation; `TestReviewDocuments_SiteSkipPutGetRoundTrip` |
 | Server validates ownership + kind | `Store.ValidateVersionKind`, `Service.ValidateUserVersionKind`; `TestReviewPutDocuments_InvalidatesPrepareAndValidatesKind` |
 | Selection change invalidates preparation | `PackAfterSelectionChange`, `ReviewPutDocuments` clears paths + `prepared`; UI invalidates `review-pending` |
 | Preflight + AI credit UX | `ReviewDocumentPreflight` (`action`, `uses_ai`, `credits_estimate`); honest unknown caps before Prepare |

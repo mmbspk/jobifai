@@ -177,6 +177,7 @@ type QuotaService interface {
 	BeginSubscriberSession(userID string)
 	EndSubscriberSession(userID string)
 	LoadDefaults() domain.QuotaDefaults
+	EstimateLLMCredits(model string, estInput, estOutput int) int64
 	SaveDefaults(d domain.QuotaDefaults) error
 	SaveUserOverrides(userID string, o domain.QuotaUserOverrides) error
 	UserOverrides(userID string) domain.QuotaUserOverrides

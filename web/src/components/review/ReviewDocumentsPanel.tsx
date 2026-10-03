@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ApiError } from '../../api/client'
 import { botApi, type ReviewDocumentsResponse } from '../../api/bot'
 
 function actionLabel(action: string, usesAI: boolean): string {
@@ -24,10 +25,27 @@ function actionLabel(action: string, usesAI: boolean): string {
   }
 }
 
-function creditsLine(est: number | null | undefined): string | null {
-  if (est == null) return 'Credits: unknown until form is scanned'
+function creditsLine(est: number | null | undefined, usesAI: boolean, capsKnown: boolean): string | null {
+  if (!usesAI) {
+    if (est === 0) return 'Credits: 0 (no LLM)'
+    return 'Credits: 0 (no LLM)'
+  }
+  if (!capsKnown) return 'Credits: unavailable until form is scanned'
+  if (est == null) return 'Credits: estimate unavailable (check model billing settings)'
   if (est === 0) return 'Credits: 0 (no LLM)'
-  return `Credits: ~${est} estimated`
+  return `Credits: ~${est} estimated (billing)`
+}
+
+function fallbackSummary(fb: ReviewDocumentsResponse['preflight']['fallbacks']): string | null {
+  const parts: string[] = []
+  if (fb?.allow_site_resume_when_default_missing) {
+    parts.push('site resume when default missing')
+  }
+  if (fb?.allow_general_cover_when_generate_fails) {
+    parts.push('general cover when generation fails')
+  }
+  if (parts.length === 0) return null
+  return `Authorized fallbacks: ${parts.join('; ')}`
 }
 
 interface ReviewDocumentsPanelProps {
@@ -57,8 +75,15 @@ export function ReviewDocumentsPanel({ jobId }: ReviewDocumentsPanelProps) {
     return <p className="text-xs text-[var(--color-danger)]">Could not load document options.</p>
   }
 
+  const saveError = save.error instanceof ApiError ? save.error.message : save.error ? 'Could not save document selection.' : null
+
   return (
-    <ReviewDocumentsForm data={data} saving={save.isPending} onSave={(sel) => save.mutate(sel)} />
+    <ReviewDocumentsForm
+      data={data}
+      saving={save.isPending}
+      saveError={saveError}
+      onSave={(sel) => save.mutate(sel)}
+    />
   )
 }
 
@@ -72,10 +97,12 @@ type SelectionBody = {
 function ReviewDocumentsForm({
   data,
   saving,
+  saveError,
   onSave,
 }: {
   data: ReviewDocumentsResponse
   saving: boolean
+  saveError: string | null
   onSave: (body: SelectionBody) => void
 }) {
   const pf = data.preflight
@@ -99,6 +126,13 @@ function ReviewDocumentsForm({
         cover <span className="font-medium">{pf.policies.cover_mode || 'when_required'}</span>
         {!pf.capabilities_known && ' · Form requirements unknown until Prepare'}
       </p>
+      {fallbackSummary(pf.fallbacks) && (
+        <p className="text-[11px] text-[var(--color-text-dim)] leading-5">{fallbackSummary(pf.fallbacks)}</p>
+      )}
+
+      {saveError && (
+        <p className="text-[11px] text-[var(--color-danger)]" role="alert">{saveError}</p>
+      )}
 
       <label className="block text-xs text-[var(--color-text-muted)]">
         Resume
@@ -125,7 +159,7 @@ function ReviewDocumentsForm({
         </select>
       </label>
       <p className="text-[11px] text-[var(--color-text-dim)]">
-        {actionLabel(pf.resume.action, pf.resume.uses_ai)} · {creditsLine(pf.resume.credits_estimate ?? undefined)}
+        {actionLabel(pf.resume.action, pf.resume.uses_ai)} · {creditsLine(pf.resume.credits_estimate ?? undefined, pf.resume.uses_ai, pf.capabilities_known)}
       </p>
 
       <label className="block text-xs text-[var(--color-text-muted)]">
@@ -153,7 +187,7 @@ function ReviewDocumentsForm({
         </select>
       </label>
       <p className="text-[11px] text-[var(--color-text-dim)]">
-        {actionLabel(pf.cover.action, pf.cover.uses_ai)} · {creditsLine(pf.cover.credits_estimate ?? undefined)}
+        {actionLabel(pf.cover.action, pf.cover.uses_ai)} · {creditsLine(pf.cover.credits_estimate ?? undefined, pf.cover.uses_ai, pf.capabilities_known)}
       </p>
 
       {(pf.blocking_reasons?.length ?? 0) > 0 && (

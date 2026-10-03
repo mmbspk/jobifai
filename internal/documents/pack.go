@@ -56,19 +56,48 @@ func ParseApplicationPackJSON(raw string) ApplicationDocumentPack {
 		return ApplicationDocumentPack{}
 	}
 	if p.Resume.Outcome == "" || p.Cover.Outcome == "" {
+		if packHasStoredMetadata(p) {
+			return p
+		}
 		legacy := packFromLegacyRefs(p.Refs)
-		if p.HoldReason != "" {
-			legacy.HoldReason = p.HoldReason
-		}
-		if p.Resume.Outcome != "" {
-			legacy.Resume = p.Resume
-		}
-		if p.Cover.Outcome != "" {
-			legacy.Cover = p.Cover
-		}
+		mergePackMetadata(&legacy, p)
 		return legacy
 	}
 	return p
+}
+
+func packHasStoredMetadata(p ApplicationDocumentPack) bool {
+	if p.Prepared || p.FormCaps.Detected {
+		return true
+	}
+	if p.HoldReason != "" {
+		return true
+	}
+	if p.Selection != (ApplicationDocumentSelection{}) {
+		return true
+	}
+	return false
+}
+
+func mergePackMetadata(dst *ApplicationDocumentPack, src ApplicationDocumentPack) {
+	if src.HoldReason != "" {
+		dst.HoldReason = src.HoldReason
+	}
+	if src.Prepared {
+		dst.Prepared = true
+	}
+	if src.FormCaps.Detected {
+		dst.FormCaps = src.FormCaps
+	}
+	if src.Selection != (ApplicationDocumentSelection{}) {
+		dst.Selection = src.Selection
+	}
+	if src.Resume.Outcome != "" {
+		dst.Resume = src.Resume
+	}
+	if src.Cover.Outcome != "" {
+		dst.Cover = src.Cover
+	}
 }
 
 func packFromLegacyRefs(refs []domain.ApplicationDocumentRef) ApplicationDocumentPack {

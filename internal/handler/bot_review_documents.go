@@ -13,6 +13,27 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
+func (h *BotHandlers) reviewCreditEstimator(r *http.Request, userID string) documents.ReviewCreditEstimator {
+	if h.svc.Quota == nil {
+		return nil
+	}
+	var gs domain.GeneralSettings
+	if err := h.svc.Config.Get(userID, "general_settings", &gs); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return nil
+	}
+	model := strings.TrimSpace(gs.LLM.Model)
+	if model == "" {
+		model = "claude-sonnet-4-6"
+	}
+	return func(task string) (int64, bool) {
+		tok, ok := documents.DefaultAITokenEstimates[task]
+		if !ok {
+			return 0, false
+		}
+		return h.svc.Quota.EstimateLLMCredits(model, tok[0], tok[1]), true
+	}
+}
+
 type reviewDocumentsResponse struct {
 	Options   documents.ReviewDocumentOptions   `json:"options"`
 	Preflight documents.ReviewDocumentPreflight `json:"preflight"`
@@ -89,6 +110,7 @@ func (h *BotHandlers) reviewResolveContext(r *http.Request, userID string, resum
 		HasConfirmedProfile:      hasProfile,
 		DefaultResumeExists:      hasResumeDefault,
 		DefaultCoverExists:       hasCoverDefault,
+		CreditEstimator:          h.reviewCreditEstimator(r, userID),
 	}
 	return in, opts, nil
 }

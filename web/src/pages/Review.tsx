@@ -22,8 +22,9 @@ export function Review() {
 
   const prepare = useMutation({
     mutationFn: botApi.reviewPrepare,
-    onSuccess: () => {
+    onSuccess: (_data, jobId) => {
       qc.invalidateQueries({ queryKey: ['review-pending'] })
+      qc.invalidateQueries({ queryKey: ['review-documents', jobId] })
     },
   })
   const approve = useMutation({
@@ -103,6 +104,15 @@ export function Review() {
           Next
         </Button>
       </div>
+
+      {(prepare.isError || approve.isError || reject.isError) && (
+        <p className="max-w-[1024px] mx-auto text-sm text-[var(--color-danger)]" role="alert">
+          {(prepare.error as Error | undefined)?.message
+            ?? (approve.error as Error | undefined)?.message
+            ?? (reject.error as Error | undefined)?.message
+            ?? 'Something went wrong — try again.'}
+        </p>
+      )}
 
       <ReviewCard
         key={review.job_id}
