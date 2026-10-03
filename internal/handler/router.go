@@ -108,6 +108,8 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/resume", botH.Resume)
 			r.Get("/status", botH.Status)
 			r.Get("/review/pending", botH.ReviewListPending)
+			r.Get("/review/{job_id}/documents", botH.ReviewGetDocuments)
+			r.Put("/review/{job_id}/documents", botH.ReviewPutDocuments)
 			r.Post("/review/{job_id}/prepare", botH.ReviewPrepareDocuments)
 			r.Post("/review/{job_id}/approve", botH.ReviewApprove)
 			r.Post("/review/{job_id}/reject", botH.ReviewReject)

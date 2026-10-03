@@ -10,6 +10,14 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
+func TestApplicationDocumentOverrides_SiteAndSkipFlags(t *testing.T) {
+	t.Parallel()
+	l := &lazyDocGen{resumeUseSiteOverride: true, coverSkipOverride: true}
+	o := l.applicationDocumentOverrides()
+	require.True(t, o.ResumeUseSite)
+	require.True(t, o.CoverSkip)
+}
+
 func TestApplicationDocumentOverrides_ReusesCompletedResumeVersion(t *testing.T) {
 	t.Parallel()
 	l := &lazyDocGen{

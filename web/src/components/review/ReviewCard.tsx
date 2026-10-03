@@ -8,6 +8,7 @@ import { ScorePill } from '../ScorePill'
 import { Button } from '../ui/button'
 import { EthicsVerdict } from './EthicsVerdict'
 import { JobMatchReasoning } from './JobMatchReasoning'
+import { ReviewDocumentsPanel } from './ReviewDocumentsPanel'
 
 function reviewDocumentsReady(review: PendingReview): boolean {
   if (!review.document_refs_json) return false
@@ -177,6 +178,8 @@ export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, on
           {documentPreflight ?? 'Prepare documents to scan the apply form and preview your resume and cover letter before you approve. Rendering and reusing saved PDFs do not use AI credits.'}
         </p>
       )}
+
+      <ReviewDocumentsPanel jobId={review.job_id} />
 
       {review.link && (
         <a

@@ -46,6 +46,8 @@ type lazyDocGen struct {
 	coverOverride  string // pre-generated cover letter path from a prior attempt; skips LLM if set
 	resumeVersionOverride string
 	coverVersionOverride  string
+	resumeUseSiteOverride bool
+	coverSkipOverride     bool
 	frozen                bool
 	formCaps              documents.FormDocumentCapabilities
 	holdReason            string

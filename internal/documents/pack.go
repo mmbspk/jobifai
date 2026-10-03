@@ -11,6 +11,8 @@ import (
 type ApplicationDocumentPack struct {
 	Prepared   bool                          `json:"prepared,omitempty"`
 	HoldReason string                        `json:"hold_reason,omitempty"`
+	Selection  ApplicationDocumentSelection  `json:"selection,omitempty"`
+	FormCaps   FormDocumentCapabilities      `json:"form_caps,omitempty"`
 	Resume     domain.ApplicationDocumentRef `json:"resume,omitempty"`
 	Cover      domain.ApplicationDocumentRef `json:"cover,omitempty"`
 	Refs       []domain.ApplicationDocumentRef `json:"refs,omitempty"`
@@ -21,7 +23,8 @@ func (p ApplicationDocumentPack) CoverPath() string  { return p.Cover.LocalPath 
 
 // WriteApplicationPackJSON serializes a pack for jobs_pending_review / jobs_applied.
 func WriteApplicationPackJSON(p ApplicationDocumentPack) string {
-	if p.HoldReason == "" && p.Resume.Outcome == "" && p.Cover.Outcome == "" && len(p.Refs) == 0 {
+	if p.HoldReason == "" && !p.Prepared && p.Resume.Outcome == "" && p.Cover.Outcome == "" &&
+		len(p.Refs) == 0 && p.Selection == (ApplicationDocumentSelection{}) && !p.FormCaps.Detected {
 		return ""
 	}
 	if len(p.Refs) == 0 {

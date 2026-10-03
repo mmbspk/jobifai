@@ -102,6 +102,14 @@ func (l *lazyDocGen) restoreFrozenPack() {
 	if pack.Cover.ContentVersionID != "" {
 		l.coverVersionID = pack.Cover.ContentVersionID
 	}
+	if pack.Selection.ResumeVersionID != "" && l.resumeVersionOverride == "" {
+		l.resumeVersionOverride = pack.Selection.ResumeVersionID
+	}
+	if pack.Selection.CoverVersionID != "" && l.coverVersionOverride == "" {
+		l.coverVersionOverride = pack.Selection.CoverVersionID
+	}
+	l.resumeUseSiteOverride = pack.Selection.ResumeUseSite
+	l.coverSkipOverride = pack.Selection.CoverSkip
 	l.pack = pack
 	l.packRestored = true
 }
@@ -219,6 +227,8 @@ func (l *lazyDocGen) applicationDocumentOverrides() documents.ApplicationDocumen
 	o := documents.ApplicationDocumentOverrides{
 		ResumeVersionID: l.resumeVersionOverride,
 		CoverVersionID:  l.coverVersionOverride,
+		ResumeUseSite:   l.resumeUseSiteOverride,
+		CoverSkip:       l.coverSkipOverride,
 		Frozen:          l.frozen,
 	}
 	if o.ResumeVersionID == "" && l.resumeVersionID != "" {

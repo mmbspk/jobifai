@@ -137,6 +137,13 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID stri
 	} else {
 		pack.MarkPrepared()
 	}
+	pack.FormCaps = lazy.formCaps
+	pack.Selection = documents.ApplicationDocumentSelection{
+		ResumeVersionID: lazy.resumeVersionOverride,
+		CoverVersionID:  lazy.coverVersionOverride,
+		ResumeUseSite:   lazy.resumeUseSiteOverride,
+		CoverSkip:       lazy.coverSkipOverride,
+	}
 	resumePath, coverPath := lazy.peek()
 	pack.Resume.LocalPath = resumePath
 	pack.Cover.LocalPath = coverPath

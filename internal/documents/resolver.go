@@ -20,6 +20,8 @@ type FormDocumentCapabilities struct {
 type ApplicationDocumentOverrides struct {
 	ResumeVersionID string
 	CoverVersionID  string
+	ResumeUseSite   bool
+	CoverSkip       bool
 	Frozen          bool
 }
 
@@ -82,6 +84,15 @@ func resolveResume(in ResolveInput) ResolvedDocument {
 	if in.Overrides.Frozen {
 		return frozenKind(kind, in.Overrides.ResumeVersionID)
 	}
+	if in.Overrides.ResumeUseSite {
+		if in.Caps.SiteResumeAmbiguous {
+			return holdDoc(kind, "site resume selection is ambiguous — verify manually", "application_override")
+		}
+		if in.Caps.Detected && !in.Caps.SiteResumePresent {
+			return holdDoc(kind, "job-site resume mode but no site resume is attached", "application_override")
+		}
+		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeSiteHosted, UseSite: true, PolicyMode: "application_override"}
+	}
 	if vid := strings.TrimSpace(in.Overrides.ResumeVersionID); vid != "" {
 		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: vid, NeedDefaultUpload: true, PolicyMode: "application_override"}
 	}
@@ -130,6 +141,12 @@ func resolveCover(in ResolveInput) ResolvedDocument {
 	const kind = KindCoverLetter
 	if in.Overrides.Frozen {
 		return frozenKind(kind, in.Overrides.CoverVersionID)
+	}
+	if in.Overrides.CoverSkip {
+		if in.Caps.Detected && in.Caps.CoverRequired {
+			return holdDoc(kind, "cover letter required by form but application skips cover", "application_override")
+		}
+		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeSkipped, Skip: true, PolicyMode: "application_override"}
 	}
 	if vid := strings.TrimSpace(in.Overrides.CoverVersionID); vid != "" {
 		return ResolvedDocument{Kind: kind, Outcome: domain.DocumentOutcomeLocalFile, VersionID: vid, NeedDefaultUpload: true, PolicyMode: "application_override"}

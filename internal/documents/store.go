@@ -181,20 +181,49 @@ func (s *Store) ArtifactForVersion(ctx context.Context, userID, versionID string
 	return storageKey, sha, err
 }
 
-func (s *Store) SetDefault(ctx context.Context, userID, kind, versionID, profileHash, market string) error {
-	docID, _, p, err := s.GetVersionRow(ctx, userID, versionID)
+var ErrReviewVersionWrongKind = errors.New("document version kind mismatch")
+
+func (s *Store) ValidateVersionKind(ctx context.Context, userID, versionID, expectedKind string) error {
+	versionID = strings.TrimSpace(versionID)
+	if versionID == "" {
+		return nil
+	}
+	docID, _, _, err := s.GetVersionRow(ctx, userID, versionID)
 	if err != nil {
 		return err
 	}
 	var docKind string
 	if err := s.db.QueryRowContext(ctx, `SELECT kind FROM user_documents WHERE id = ? AND user_id = ?`, docID, userID).Scan(&docKind); err != nil {
+		return ErrNotFound
+	}
+	switch expectedKind {
+	case KindResume:
+		if docKind != KindResume && docKind != KindOriginalUpload {
+			return ErrReviewVersionWrongKind
+		}
+	case KindCoverLetter:
+		if docKind != KindCoverLetter {
+			return ErrReviewVersionWrongKind
+		}
+	default:
+		return fmt.Errorf("unknown kind %q", expectedKind)
+	}
+	return nil
+}
+
+func (s *Store) SetDefault(ctx context.Context, userID, kind, versionID, profileHash, market string) error {
+	_, _, p, err := s.GetVersionRow(ctx, userID, versionID)
+	if err != nil {
 		return err
 	}
-	if kind == KindResume && docKind != KindResume && docKind != KindOriginalUpload {
-		return fmt.Errorf("version is not a resume")
-	}
-	if kind == KindCoverLetter && docKind != KindCoverLetter {
-		return fmt.Errorf("version is not a cover letter")
+	if err := s.ValidateVersionKind(ctx, userID, versionID, kind); err != nil {
+		if errors.Is(err, ErrReviewVersionWrongKind) {
+			if kind == KindResume {
+				return fmt.Errorf("version is not a resume")
+			}
+			return fmt.Errorf("version is not a cover letter")
+		}
+		return err
 	}
 	_ = p
 	_, err = s.db.ExecContext(ctx, `

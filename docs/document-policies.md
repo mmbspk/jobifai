@@ -24,6 +24,7 @@ Migration is idempotent and does **not** set `onboarding_complete` or enable fal
 - **Materialize (LLM tailor/generate vs render-only reuse):** `internal/documents/prepare.go`
 - **Bot session:** `internal/bot/documents_prepare.go`, `lazyDocGen`
 - **Frozen approve:** `SubmitRequest.FrozenDocuments` + content version ids on `jobs_pending_review`
+- **Review picker / preflight:** `GET|PUT /api/bot/review/{job_id}/documents` — per-job resume/cover version, site resume, skip cover; `PUT` clears prepared paths and pack `prepared` until Prepare runs again
 
 ## Provenance
 
