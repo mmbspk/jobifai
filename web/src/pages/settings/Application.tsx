@@ -6,7 +6,8 @@ import { Button } from '../../components/Button'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { SettingsField, SettingsNumberInput, SettingsSection, SettingsSelect } from '../../components/settings/settings-ui'
 import { Switch } from '../../components/ui/switch'
-import type { GeneralSettings } from '../../types'
+import type { CoverDocumentMode, DocumentPolicies, GeneralSettings, ResumeDocumentMode } from '../../types'
+import { Link } from 'react-router-dom'
 
 const DEFAULT: GeneralSettings = {
   default_resume_market: '',
@@ -37,6 +38,16 @@ export function ApplicationSettingsPage() {
 
   function set<K extends keyof GeneralSettings>(key: K, value: GeneralSettings[K]) {
     setForm(f => ({ ...f, [key]: value }))
+  }
+
+  function setDocPolicy(patch: Partial<DocumentPolicies>) {
+    setForm(f => ({
+      ...f,
+      document_policies: { ...f.document_policies, ...patch, version: 1 },
+      generate_new_resume_docs: patch.resume_mode
+        ? patch.resume_mode === 'tailor'
+        : f.document_policies?.resume_mode === 'tailor' || f.generate_new_resume_docs,
+    }))
   }
 
   const threshold = form.job_suitability_score ?? 7
@@ -111,8 +122,15 @@ export function ApplicationSettingsPage() {
         />
       </SettingsSection>
 
-      <SettingsSection title="Resume and documents">
-        <SettingsField label="Default market" sub="When document generation is on, adjusts prompts and styling for your target region">
+      <SettingsSection
+        title="Resume and documents"
+        description="Manage defaults in Documents. PDF rendering and reusing saved versions do not use AI credits."
+      >
+        <p className="text-sm text-[var(--color-text-dim)]">
+          <Link to="/documents" className="text-[var(--color-accent)] underline">Documents</Link>
+          {' '}is where you create defaults, upload originals, and preview PDFs.
+        </p>
+        <SettingsField label="Default market" sub="Regional prompts and styling for generated or render-only PDFs">
           <SettingsSelect
             value={form.default_resume_market ?? ''}
             onChange={e => set('default_resume_market', e.target.value)}
@@ -121,15 +139,52 @@ export function ApplicationSettingsPage() {
             {markets.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
           </SettingsSelect>
         </SettingsField>
+        <SettingsField label="Resume policy" sub="How Jobifai chooses a resume for each application">
+          <SettingsSelect
+            value={form.document_policies?.resume_mode ?? 'default'}
+            onChange={e => setDocPolicy({ resume_mode: e.target.value as ResumeDocumentMode })}
+          >
+            <option value="default">Use my selected default</option>
+            <option value="tailor">Tailor for each job (uses AI credits)</option>
+            <option value="site">Use the job-site resume</option>
+          </SettingsSelect>
+        </SettingsField>
+        <SettingsField label="Cover letter policy" sub="Cover generation uses AI credits; optional skips respect your choice">
+          <SettingsSelect
+            value={form.document_policies?.cover_mode ?? 'when_required'}
+            onChange={e => setDocPolicy({ cover_mode: e.target.value as CoverDocumentMode })}
+          >
+            <option value="when_required">Generate when required</option>
+            <option value="when_accepted">Generate whenever the form accepts one</option>
+            <option value="general_default">Use my general default</option>
+            <option value="skip_optional">Skip optional cover letters</option>
+          </SettingsSelect>
+        </SettingsField>
         <Switch
-          label="Generate resume and cover letter for each application"
-          helper={
-            form.generate_new_resume_docs
-              ? 'Jobifai creates tailored files from your profile and each job description (cover letter when the form requires one).'
-              : 'Jobifai skips creating new files; it still uses your profile for form answers and relies on the resume already stored on the job site.'
+          label="Allow job-site resume if default is missing"
+          helper="Only when you explicitly enable this fallback. Otherwise applications hold for review."
+          checked={form.document_policies?.fallback?.allow_site_resume_when_default_missing ?? false}
+          onCheckedChange={v =>
+            setDocPolicy({
+              fallback: {
+                ...form.document_policies?.fallback,
+                allow_site_resume_when_default_missing: v,
+              },
+            })
           }
-          checked={form.generate_new_resume_docs ?? false}
-          onCheckedChange={v => set('generate_new_resume_docs', v)}
+        />
+        <Switch
+          label="Allow general cover default if generation fails"
+          helper="Optional cover failures otherwise follow your policy and may hold required applications."
+          checked={form.document_policies?.fallback?.allow_general_cover_when_generate_fails ?? false}
+          onCheckedChange={v =>
+            setDocPolicy({
+              fallback: {
+                ...form.document_policies?.fallback,
+                allow_general_cover_when_generate_fails: v,
+              },
+            })
+          }
         />
       </SettingsSection>
 

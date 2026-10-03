@@ -262,6 +262,22 @@ export interface GeneralSettings {
   max_jobs_per_keyword?: number
   halal_job_filter?: boolean
   generate_new_resume_docs?: boolean
+  document_policies?: DocumentPolicies
+}
+
+export type ResumeDocumentMode = 'default' | 'tailor' | 'site'
+export type CoverDocumentMode = 'when_required' | 'when_accepted' | 'general_default' | 'skip_optional'
+
+export interface DocumentPolicies {
+  version?: number
+  resume_mode?: ResumeDocumentMode
+  cover_mode?: CoverDocumentMode
+  onboarding_complete?: boolean
+  fallback?: {
+    allow_site_resume_when_default_missing?: boolean
+    allow_general_cover_when_generate_fails?: boolean
+  }
+  regional_defaults?: Record<string, string>
 }
 
 export interface QuestionAnswer {

@@ -875,21 +875,38 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		switch f.Type {
 
 		case "file":
+			if lazy.policyBlocked() {
+				return filled, true, fmt.Errorf("documents: %s", lazy.holdReason)
+			}
 			resumePath, coverPath := lazy.get() // generates on first call, cached after
 			path := resumePath
+			kind := "resume"
 			if fileUploadIdx > 0 {
 				path = coverPath // second file input → cover letter
+				kind = "cover letter"
 			}
 			if path == "" {
-				if f.HasFile {
-					// File already attached (LinkedIn pre-populated with existing resume).
-					// Accept it as-is so the step doesn't count as unfilled.
-					log.Debug().Int("index", f.Index).Msg("form: file input already has attachment, skipping upload")
+				if lazy.useSiteResume && fileUploadIdx == 0 {
+					if !f.HasFile {
+						return filled, true, fmt.Errorf("documents: job-site resume not attached")
+					}
+					log.Debug().Int("index", f.Index).Msg("form: using verified site-hosted resume")
 					filled = true
-				} else {
-					log.Warn().Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
-						Msg("form: no generated PDF path, skipping file upload (platform profile resume may be used)")
+					fileUploadIdx++
+					continue
 				}
+				if f.HasFile && b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted && fileUploadIdx == 0 {
+					log.Debug().Int("index", f.Index).Msg("form: site resume mode — keeping platform attachment")
+					filled = true
+					fileUploadIdx++
+					continue
+				}
+				if f.HasFile {
+					log.Warn().Int("index", f.Index).Str("kind", kind).Msg("form: required upload missing generated file — not substituting platform attachment")
+					return filled, true, fmt.Errorf("documents: required %s upload failed", kind)
+				}
+				log.Warn().Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
+					Msg("form: no PDF path for optional file field")
 				fileUploadIdx++
 				continue
 			}

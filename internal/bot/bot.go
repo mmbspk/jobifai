@@ -21,6 +21,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
 	appdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/quota"
@@ -43,6 +44,15 @@ type lazyDocGen struct {
 	formJSON       []byte
 	resumeOverride string // pre-generated resume path from a prior attempt; skips LLM if set
 	coverOverride  string // pre-generated cover letter path from a prior attempt; skips LLM if set
+	resumeVersionOverride string
+	coverVersionOverride  string
+	frozen                bool
+	formCaps              documents.FormDocumentCapabilities
+	holdReason            string
+	resumeVersionID       string
+	coverVersionID        string
+	refsJSON              string
+	useSiteResume         bool
 }
 
 // get returns the generated resume and cover letter paths, generating them on
@@ -51,6 +61,13 @@ type lazyDocGen struct {
 func (l *lazyDocGen) get() (resume, cover string) {
 	if l.resumeOverride != "" || l.coverOverride != "" {
 		return l.resumeOverride, l.coverOverride
+	}
+	if l.b.cfg.Documents != nil {
+		l.once.Do(l.materializeWithPolicies)
+		if l.policyBlocked() {
+			return "", ""
+		}
+		return l.resume, l.cover
 	}
 	if !l.b.cfg.Settings.GenerateNewResumeDocs {
 		return "", ""
@@ -137,6 +154,7 @@ type Config struct {
 	ApplicationID    string // set when applying to a specific application record
 	RequireReview    bool
 	MarketDir        string            // path to resume_markets/ directory
+	Documents        *documents.Service // versioned document foundation (#58/#59)
 	LLMTracker       *llm.UsageTracker // optional; tracks per-job token usage for success log
 	SeekEmail        string            // stored credentials for auto-login on session expiry
 	SeekPassword     string
@@ -153,9 +171,13 @@ type SubmitRequest struct {
 	Location             string
 	Platform             string
 	Link                 string
-	ResumePath           string
-	CoverPath            string
-	SuitabilityReasoning string
+	ResumePath                  string
+	CoverPath                   string
+	ResumeContentVersionID      string
+	CoverContentVersionID       string
+	DocumentRefsJSON            string
+	FrozenDocuments             bool
+	SuitabilityReasoning        string
 }
 
 // Bot runs the Easy Apply automation loop for a single platform session.
@@ -962,17 +984,21 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	// Docs are generated lazily at the file-upload step, only if the toggle is on
 	// and a file field is actually encountered during form filling.
 	lazy := &lazyDocGen{b: b, ctx: ctx, job: job, jobDesc: details.Description}
+	lazy.prepareForReview()
 
 	if b.cfg.RequireReview {
 		b.queueForReview(ctx, &domain.PendingReview{
-			JobID:                job.ID,
-			Company:              job.Company,
-			Role:                 job.Title,
-			Location:             job.Location,
-			Platform:             domain.PlatformLinkedIn,
-			Link:                 job.URL,
-			ResumePath:           "",
-			CoverLetterPath:      "",
+			JobID:                       job.ID,
+			Company:                     job.Company,
+			Role:                        job.Title,
+			Location:                    job.Location,
+			Platform:                    domain.PlatformLinkedIn,
+			Link:                        job.URL,
+			ResumePath:                  lazy.resume,
+			CoverLetterPath:             lazy.cover,
+			ResumeContentVersionID:      lazy.resumeVersionID,
+			CoverLetterContentVersionID: lazy.coverVersionID,
+			DocumentRefsJSON:            lazy.refsJSON,
 			SuitabilityScore:     score,
 			SuitabilityReasoning: reasoning,
 			DueDate:              details.DueDate,
@@ -1361,7 +1387,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	if err := b.easyApply(ctx, jobPage, lazy); err != nil {
 		if errors.Is(err, errAlreadyApplied) {
 			resume, cover := lazy.get()
-			b.recordApplied(job, resume, cover, score, halalVerdict)
+			b.recordApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
 			log.Info().Str("company", job.Company).Str("title", job.Title).Msg("linkedin: already applied, recorded ✓")
 			return true
 		}
@@ -1388,7 +1414,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 		return false
 	}
 	resume, cover := lazy.get()
-	b.recordApplied(job, resume, cover, score, halalVerdict)
+	b.recordApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
 	b.logApplied(job.Title, job.Company, domain.PlatformLinkedIn, llmBefore)
 	return true
 }
@@ -2371,15 +2397,15 @@ func (b *Bot) countAppliedToday() int {
 	return n
 }
 
-func (b *Bot) recordApplied(job linkedInJob, resumePath, coverPath string, score int, halalVerdict []byte) {
+func (b *Bot) recordApplied(job linkedInJob, resumePath, coverPath, resumeVer, coverVer, refsJSON string, score int, halalVerdict []byte) {
 	if b.cfg.DB == nil {
 		return
 	}
 	if _, err := appdb.ExecWithRetry(b.cfg.DB,
-		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,halal_verdict,applied_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, b.cfg.UserID, string(b.cfg.Platform), job.Company, job.Title,
-		job.Location, job.URL, resumePath, coverPath, score, halalVerdict,
+		job.Location, job.URL, resumePath, coverPath, resumeVer, coverVer, refsJSON, score, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID).Msg("failed to record applied job")
@@ -2416,10 +2442,11 @@ func (b *Bot) savePendingReview(ctx context.Context, p *domain.PendingReview) {
 		halalJSON = nil
 	}
 	if _, err := appdb.ExecContextWithRetry(ctx, b.cfg.DB,
-		`INSERT OR REPLACE INTO jobs_pending_review(job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,suitability_score,suitability_reasoning,due_date,posted_date,easy_apply,halal_verdict,created_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT OR REPLACE INTO jobs_pending_review(job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,suitability_reasoning,due_date,posted_date,easy_apply,halal_verdict,created_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.JobID, b.cfg.UserID, p.Company, p.Role, p.Location, string(p.Platform), p.Link,
-		p.ResumePath, p.CoverLetterPath, p.SuitabilityScore, p.SuitabilityReasoning, p.DueDate, p.PostedDate, p.EasyApply, halalJSON,
+		p.ResumePath, p.CoverLetterPath, p.ResumeContentVersionID, p.CoverLetterContentVersionID, p.DocumentRefsJSON,
+		p.SuitabilityScore, p.SuitabilityReasoning, p.DueDate, p.PostedDate, p.EasyApply, halalJSON,
 		p.CreatedAt.UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", p.JobID).Msg("failed to save pending review")

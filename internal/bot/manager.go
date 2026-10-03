@@ -17,6 +17,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/config"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/llmpolicy"
@@ -68,6 +69,7 @@ type Manager struct {
 	llmQuota         quota.LLMGuard // optional cost enforcement on bot LLM calls
 	llmPolicy        *llmpolicy.Store
 	llmCatalog       *pricing.Catalog
+	documents        *documents.Service
 	usageLedger      *usage.Ledger
 }
 
@@ -80,6 +82,11 @@ type SessionQuota interface {
 // SetSessionQuota attaches quota grace session callbacks (optional).
 func (m *Manager) SetSessionQuota(q SessionQuota) {
 	m.quotaSessions = q
+}
+
+// SetDocuments wires the versioned document service into bot apply sessions (#59).
+func (m *Manager) SetDocuments(svc *documents.Service) {
+	m.documents = svc
 }
 
 // SetLLMQuota attaches quota checks to bot-side LLM clients.
@@ -364,10 +371,26 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 				jobDesc = d.Description
 			}
 		}
-		managerLazy = &lazyDocGen{b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: jobDesc, resumeOverride: req.ResumePath, coverOverride: req.CoverPath}
+		managerLazy = &lazyDocGen{
+			b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: jobDesc,
+			resumeOverride: req.ResumePath, coverOverride: req.CoverPath,
+			resumeVersionOverride: req.ResumeContentVersionID, coverVersionOverride: req.CoverContentVersionID,
+			frozen: req.FrozenDocuments, refsJSON: req.DocumentRefsJSON,
+		}
 	} else {
 		managerDetails := b.fetchJob(m.ctx, linkedInJob{URL: req.Link, Company: req.Company, Title: req.Role})
-		managerLazy = &lazyDocGen{b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description, resumeOverride: req.ResumePath, coverOverride: req.CoverPath}
+		managerLazy = &lazyDocGen{
+			b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description,
+			resumeOverride: req.ResumePath, coverOverride: req.CoverPath,
+			resumeVersionOverride: req.ResumeContentVersionID, coverVersionOverride: req.CoverContentVersionID,
+			frozen: req.FrozenDocuments, refsJSON: req.DocumentRefsJSON,
+		}
+	}
+	if req.FrozenDocuments {
+		managerLazy.resume = req.ResumePath
+		managerLazy.cover = req.CoverPath
+		managerLazy.resumeVersionID = req.ResumeContentVersionID
+		managerLazy.coverVersionID = req.CoverContentVersionID
 	}
 
 	// Extract location from the job page; fall back to the value stored in pending_review.
@@ -728,6 +751,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		return nil, err
 	}
 
+	config.EnsureDocumentPolicies(&gs)
 	cfg := &Config{
 		Platform:    resolved,
 		Settings:    gs,
@@ -750,6 +774,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		AutomationRunID: runID,
 		RequireReview:   gs.RequireReview,
 		MarketDir:     m.marketDir,
+		Documents:     m.documents,
 		LLMTracker:    tracker,
 		Sessions:      m.sessions,
 	}

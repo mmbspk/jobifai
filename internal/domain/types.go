@@ -54,11 +54,14 @@ type AppliedJob struct {
 	Role             string        `json:"role"`
 	Location         string        `json:"location,omitempty"`
 	Link             string        `json:"link"`
-	ResumePath       string        `json:"resume_path,omitempty"`
-	CoverLetterPath  string        `json:"cover_letter_path,omitempty"`
-	SuitabilityScore int           `json:"suitability_score,omitempty"`
-	HalalVerdict     *HalalVerdict `json:"halal_verdict,omitempty"`
-	AppliedAt        time.Time     `json:"applied_at"`
+	ResumePath                  string        `json:"resume_path,omitempty"`
+	CoverLetterPath             string        `json:"cover_letter_path,omitempty"`
+	ResumeContentVersionID      string        `json:"resume_content_version_id,omitempty"`
+	CoverLetterContentVersionID string        `json:"cover_letter_content_version_id,omitempty"`
+	DocumentRefsJSON            string        `json:"document_refs_json,omitempty"`
+	SuitabilityScore            int           `json:"suitability_score,omitempty"`
+	HalalVerdict                *HalalVerdict `json:"halal_verdict,omitempty"`
+	AppliedAt                   time.Time     `json:"applied_at"`
 }
 
 // HalalVerdict holds the result of an Islamic employment ethics evaluation.
@@ -86,6 +89,9 @@ type SkippedJob struct {
 }
 
 type PendingReview struct {
+	ResumeContentVersionID      string `json:"resume_content_version_id,omitempty"`
+	CoverLetterContentVersionID string `json:"cover_letter_content_version_id,omitempty"`
+	DocumentRefsJSON            string `json:"document_refs_json,omitempty"` // frozen pack after prepare/approve
 	JobID                string        `json:"job_id"`
 	Company              string        `json:"company"`
 	Role                 string        `json:"role"`
@@ -299,6 +305,7 @@ type GeneralSettings struct {
 	MaxJobsPerKeyword          int                 `json:"max_jobs_per_keyword,omitempty"`
 	HalalJobFilter             bool                `json:"halal_job_filter,omitempty"`
 	GenerateNewResumeDocs      bool                `json:"generate_new_resume_docs,omitempty"`
+	DocumentPolicies           DocumentPolicies    `json:"document_policies,omitempty"`
 }
 
 // AnswerQuestionsRequest is the payload for POST /api/resume/answer-questions.

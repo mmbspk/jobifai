@@ -88,6 +88,11 @@ func applyUserApplicationFields(base, user domain.GeneralSettings, hasUser bool)
 	}
 	out.HalalJobFilter = user.HalalJobFilter
 	out.GenerateNewResumeDocs = user.GenerateNewResumeDocs
+	if hasUser {
+		out.DocumentPolicies = MigrateDocumentPolicies(user)
+	} else {
+		out.DocumentPolicies = RecommendedDocumentPolicies()
+	}
 	if user.HumanBehavior.DailyApplicationLimit > 0 {
 		out.HumanBehavior.DailyApplicationLimit = user.HumanBehavior.DailyApplicationLimit
 	}
@@ -159,6 +164,7 @@ func ResolveOperationalSettings(store ConfigGetter, userID string) domain.Genera
 	if err := store.Get(userID, KeyLLMOverrides, &overrides); err == nil {
 		out.LLM = MergeLLM(out.LLM, overrides)
 	}
+	EnsureDocumentPolicies(&out)
 	return out
 }
 

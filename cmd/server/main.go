@@ -214,6 +214,7 @@ func main() {
 		},
 	}
 	log.Info().Str("root", docStorageRoot).Msg("document storage (local; transitional — plan durable object storage for production scale)")
+	botMgr.SetDocuments(docSvc)
 
 	// ── Router ──────────────────────────────────────────────────────────
 	svc := &handler.Services{

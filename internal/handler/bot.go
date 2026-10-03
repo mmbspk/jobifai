@@ -126,7 +126,9 @@ func (h *BotHandlers) Status(w http.ResponseWriter, r *http.Request) {
 func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	rows, err := h.svc.DB.QueryContext(r.Context(),
-		`SELECT job_id,company,role,COALESCE(location,''),platform,link,resume_path,cover_letter_path,suitability_score,easy_apply,COALESCE(halal_verdict,''),created_at
+		`SELECT job_id,company,role,COALESCE(location,''),platform,link,resume_path,cover_letter_path,
+		        COALESCE(resume_content_version_id,''),COALESCE(cover_letter_content_version_id,''),COALESCE(document_refs_json,''),
+		        suitability_score,easy_apply,COALESCE(halal_verdict,''),created_at
 		 FROM jobs_pending_review WHERE user_id = ? AND easy_apply = 1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
@@ -139,7 +141,8 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 		var p domain.PendingReview
 		var createdStr, halalJSON string
 		if err := rows.Scan(&p.JobID, &p.Company, &p.Role, &p.Location, &p.Platform,
-			&p.Link, &p.ResumePath, &p.CoverLetterPath, &p.SuitabilityScore, &p.EasyApply, &halalJSON, &createdStr); err != nil {
+			&p.Link, &p.ResumePath, &p.CoverLetterPath, &p.ResumeContentVersionID, &p.CoverLetterContentVersionID, &p.DocumentRefsJSON,
+			&p.SuitabilityScore, &p.EasyApply, &halalJSON, &createdStr); err != nil {
 			log.Error().Err(err).Msg("review pending: scan row")
 			continue
 		}
@@ -171,9 +174,15 @@ func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 	var req bot.SubmitRequest
 	req.JobID = jobID
 	err := h.svc.DB.QueryRowContext(r.Context(),
-		`SELECT company,role,COALESCE(location,''),platform,link,COALESCE(resume_path,''),COALESCE(cover_letter_path,''),COALESCE(suitability_reasoning,'')
+		`SELECT company,role,COALESCE(location,''),platform,link,COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
+		        COALESCE(resume_content_version_id,''),COALESCE(cover_letter_content_version_id,''),COALESCE(document_refs_json,''),
+		        COALESCE(suitability_reasoning,'')
 		 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID,
-	).Scan(&req.Company, &req.Role, &req.Location, &req.Platform, &req.Link, &req.ResumePath, &req.CoverPath, &req.SuitabilityReasoning)
+	).Scan(&req.Company, &req.Role, &req.Location, &req.Platform, &req.Link, &req.ResumePath, &req.CoverPath,
+		&req.ResumeContentVersionID, &req.CoverContentVersionID, &req.DocumentRefsJSON, &req.SuitabilityReasoning)
+	if err == nil && (req.ResumeContentVersionID != "" || req.CoverContentVersionID != "" || req.DocumentRefsJSON != "") {
+		req.FrozenDocuments = true
+	}
 	if err != nil {
 		notFound(w, "no pending review for job_id "+jobID)
 		return

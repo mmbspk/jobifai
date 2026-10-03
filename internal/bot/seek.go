@@ -856,7 +856,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	}
 	// Card-level applied indicator.
 	if job.AlreadyApplied {
-		b.recordSeekApplied(job, "", "", 0, nil)
+		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
 		log.Info().Msgf("seek: skip, already applied badge on card: %q @ %s", job.Title, job.Company)
 		return false
 	}
@@ -873,7 +873,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	}
 	// Detail page may have updated AlreadyApplied (covers manual applications).
 	if job.AlreadyApplied {
-		b.recordSeekApplied(job, "", "", 0, nil)
+		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
 		log.Info().Msgf("seek: skip, already applied (page indicator): %q @ %s", job.Title, job.Company)
 		return false
 	}
@@ -884,16 +884,22 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 		return false
 	}
 
+	reviewLazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: job.Company, Title: job.Title}, jobDesc: details.Description}
+	reviewLazy.prepareForReview()
+
 	if b.cfg.RequireReview {
 		b.saveSeekPendingReview(ctx, &domain.PendingReview{
-			JobID:                job.ID,
-			Company:              job.Company,
-			Role:                 job.Title,
-			Location:             job.Location,
-			Platform:             domain.PlatformSeek,
-			Link:                 job.URL,
-			ResumePath:           "",
-			CoverLetterPath:      "",
+			JobID:                       job.ID,
+			Company:                     job.Company,
+			Role:                        job.Title,
+			Location:                    job.Location,
+			Platform:                    domain.PlatformSeek,
+			Link:                        job.URL,
+			ResumePath:                  reviewLazy.resume,
+			CoverLetterPath:             reviewLazy.cover,
+			ResumeContentVersionID:      reviewLazy.resumeVersionID,
+			CoverLetterContentVersionID: reviewLazy.coverVersionID,
+			DocumentRefsJSON:            reviewLazy.refsJSON,
 			SuitabilityScore:     score,
 			SuitabilityReasoning: reasoning,
 			DueDate:              details.DueDate,
@@ -1275,7 +1281,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 		return seekSubmitCannotApply
 	}
 	resume, cover := lazy.get()
-	b.recordSeekApplied(job, resume, cover, score, halalVerdict)
+	b.recordSeekApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
 	b.logApplied(job.Title, job.Company, domain.PlatformSeek, llmBefore)
 	return seekSubmitApplied
 }
@@ -2433,15 +2439,15 @@ func (b *Bot) seekUploadCoverLetter(page *rod.Page, filePath string) error {
 
 // ── DB helpers (Seek-specific wrappers) ───────────────────────────────────
 
-func (b *Bot) recordSeekApplied(job seekJob, resumePath, coverPath string, score int, halalVerdict []byte) {
+func (b *Bot) recordSeekApplied(job seekJob, resumePath, coverPath, resumeVer, coverVer, refsJSON string, score int, halalVerdict []byte) {
 	if b.cfg.DB == nil {
 		return
 	}
 	if _, err := appdb.ExecWithRetry(b.cfg.DB,
-		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,halal_verdict,applied_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, b.cfg.UserID, string(domain.PlatformSeek), job.Company, job.Title,
-		job.Location, job.URL, resumePath, coverPath, score, halalVerdict,
+		job.Location, job.URL, resumePath, coverPath, resumeVer, coverVer, refsJSON, score, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record applied job")
