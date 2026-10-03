@@ -163,10 +163,13 @@ export function Documents() {
               onChange={e => {
                 const next = e.target.value
                 setStyle(next)
-                void Promise.all([
-                  documentsApi.setPreferredStyle('resume', next),
-                  documentsApi.setPreferredStyle('cover_letter', next),
-                ]).then(() => qc.invalidateQueries({ queryKey: ['documents'] }))
+                void documentsApi
+                  .setPreferredStyle(next)
+                  .then(() => {
+                    setActionErr(null)
+                    return qc.invalidateQueries({ queryKey: ['documents'] })
+                  })
+                  .catch(err => setActionErr(actionError(err)))
               }}
             >
               <option value="">Default</option>

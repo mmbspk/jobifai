@@ -163,7 +163,6 @@ type setDefaultReq struct {
 }
 
 type preferredStyleReq struct {
-	Kind  string `json:"kind"`
 	Style string `json:"style"`
 }
 
@@ -175,11 +174,7 @@ func (h *DocumentHandlers) SetPreferredStyle(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid json"})
 		return
 	}
-	if req.Kind != documents.KindResume && req.Kind != documents.KindCoverLetter {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "kind must be resume or cover_letter"})
-		return
-	}
-	h.svc.Documents.NotePreferredStyleChange(userID, req.Kind, req.Style)
+	h.svc.Documents.NotePreferredStyle(userID, req.Style)
 	okMsg(w, "preferred style noted")
 }
 

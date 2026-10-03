@@ -249,9 +249,9 @@ func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string
 	return nil
 }
 
-// NotePreferredStyleChange records that the user changed their preferred document design (style picker).
-// It does not run when creating alternative document versions. Empty style means Default.
-func (s *Service) NotePreferredStyleChange(userID, kind, styleName string) {
+// NotePreferredStyle records that the user changed their preferred document design (shared style picker).
+// Resume and cover drift flags are updated in a single meta write. Empty style means Default.
+func (s *Service) NotePreferredStyle(userID, styleName string) {
 	if s.SaveDefaultsMeta == nil {
 		return
 	}
@@ -265,30 +265,19 @@ func (s *Service) NotePreferredStyleChange(userID, kind, styleName string) {
 	preferred := NormalizeStyleName(styleName)
 	const reason = "preferred document style changed — review your default documents"
 
-	switch kind {
-	case KindResume:
-		if def.ResumeVersionID == "" {
-			return
-		}
-		if styleNamesEqual(meta.ResumeStyle, preferred) {
-			return
-		}
+	changed := false
+	if def.ResumeVersionID != "" && !styleNamesEqual(meta.ResumeStyle, preferred) {
 		meta.ResumeOutdated = true
-		meta.OutdatedReason = reason
-	case KindCoverLetter:
-		if def.CoverLetterVersionID == "" {
-			return
-		}
-		if styleNamesEqual(meta.CoverStyle, preferred) {
-			return
-		}
+		changed = true
+	}
+	if def.CoverLetterVersionID != "" && !styleNamesEqual(meta.CoverStyle, preferred) {
 		meta.CoverOutdated = true
-		if meta.OutdatedReason == "" {
-			meta.OutdatedReason = reason
-		}
-	default:
+		changed = true
+	}
+	if !changed {
 		return
 	}
+	meta.OutdatedReason = reason
 	_ = s.SaveDefaultsMeta(userID, meta)
 }
 

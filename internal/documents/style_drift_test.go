@@ -23,7 +23,7 @@ func testMetaStore(t *testing.T) (*documents.Service, string, func(documents.Def
 	return svc, userID, func(m documents.DefaultsMeta) { saved = m }
 }
 
-func TestNotePreferredStyleChange_DefaultToNamedFlagsResumeOnly(t *testing.T) {
+func TestNotePreferredStyle_DefaultToNamedFlagsResumeOnly(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	svc, userID, setMeta := testMetaStore(t)
@@ -33,10 +33,31 @@ func TestNotePreferredStyleChange_DefaultToNamedFlagsResumeOnly(t *testing.T) {
 	require.NoError(t, svc.SetDefault(ctx, userID, documents.KindResume, vResume))
 	setMeta(documents.DefaultsMeta{ResumeStyle: ""})
 
-	svc.NotePreferredStyleChange(userID, documents.KindResume, "us")
+	svc.NotePreferredStyle(userID, "us")
 	meta, _ := svc.DefaultsMeta(userID)
 	require.True(t, meta.ResumeOutdated)
 	require.False(t, meta.CoverOutdated)
+}
+
+func TestNotePreferredStyle_BothDefaultsBothFlagsSetAtomically(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, userID, setMeta := testMetaStore(t)
+
+	vResume, err := svc.CreateResumeFromProfile(ctx, userID, "r", documents.RenderContext{Language: "en"})
+	require.NoError(t, err)
+	require.NoError(t, svc.SetDefault(ctx, userID, documents.KindResume, vResume))
+
+	vCover, err := svc.SaveCoverLetter(ctx, userID, "c", "body", documents.RenderContext{Language: "en"})
+	require.NoError(t, err)
+	require.NoError(t, svc.SetDefault(ctx, userID, documents.KindCoverLetter, vCover))
+	setMeta(documents.DefaultsMeta{ResumeStyle: "", CoverStyle: "", ResumeOutdated: false, CoverOutdated: false})
+
+	svc.NotePreferredStyle(userID, "us")
+	meta, _ := svc.DefaultsMeta(userID)
+	require.True(t, meta.ResumeOutdated, "resume default should be outdated when preferred style changes")
+	require.True(t, meta.CoverOutdated, "cover default should be outdated when preferred style changes")
+	require.NotEmpty(t, meta.OutdatedReason)
 }
 
 func TestSetDefaultCover_DoesNotOverwriteResumeStyle(t *testing.T) {
