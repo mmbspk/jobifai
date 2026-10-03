@@ -62,6 +62,13 @@ type Client struct {
 	userID      string
 	taskRuntime TaskRuntime
 	costCeiling *costCeiling
+	reuse       *ReuseCoordinator
+}
+
+// WithReuse attaches exact-generation reuse (content-scoped, visual identity separate).
+func (c *Client) WithReuse(r *ReuseCoordinator) *Client {
+	c.reuse = r
+	return c
 }
 
 // New creates an LLM client from the current settings.
@@ -173,6 +180,15 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 	if err := c.checkQuota(ctx, inChars, c.cfg.MaxTokens); err != nil {
 		return "", err
 	}
+	var reuseFP, reuseTask string
+	var reuseEnabled bool
+	if br, fp, task, ok := c.reuseBegin(ctx, msgs); ok {
+		reuseEnabled = true
+		reuseFP, reuseTask = fp, task
+		if br.CacheHit {
+			return br.Response, nil
+		}
+	}
 	const maxAttempts = 3
 	var err error
 	ctx = c.prepareCallContext(ctx)
@@ -196,6 +212,9 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 			return "", fmt.Errorf("unknown LLM provider: %q", c.cfg.Provider)
 		}
 		if err == nil {
+			if reuseEnabled {
+				c.reuseComplete(ctx, reuseTask, reuseFP, result)
+			}
 			return result, nil
 		}
 		if errors.Is(err, ErrBillingPersistFailed) {
@@ -208,6 +227,9 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 	}
 	if err != nil && !errors.Is(err, ErrBillingPersistFailed) {
 		c.recordTerminalFailure(ctx, classifyChatError(err))
+		if reuseEnabled {
+			c.reuseFailedUncertain(ctx, reuseTask, reuseFP)
+		}
 	}
 	return "", err
 }

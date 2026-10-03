@@ -20,6 +20,7 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
+	"github.com/user/jobifai/internal/retention"
 )
 
 // ResumeExtractor is the interface the upload handler uses to parse resume files.
@@ -85,6 +86,8 @@ type Services struct {
 	MarketCSSFileLookup func(marketDir, name string) string
 	// Documents manages versioned resumes, cover letters, and PDF artifacts (Epic #40 / #58).
 	Documents *documents.Service
+	// Retention evicts submitted-application PDFs beyond admin policy (#60).
+	Retention *retention.Service
 }
 
 // GoogleOAuthHandler handles the Google OAuth2 redirect + callback.

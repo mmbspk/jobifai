@@ -71,6 +71,11 @@ type Manager struct {
 	llmCatalog       *pricing.Catalog
 	documents        *documents.Service
 	usageLedger      *usage.Ledger
+	retention        retentionAfterSubmit
+}
+
+type retentionAfterSubmit interface {
+	AfterSuccessfulSubmit(ctx context.Context, userID string)
 }
 
 // SessionQuota coordinates subscriber grace sessions (see internal/quota).
@@ -82,6 +87,11 @@ type SessionQuota interface {
 // SetSessionQuota attaches quota grace session callbacks (optional).
 func (m *Manager) SetSessionQuota(q SessionQuota) {
 	m.quotaSessions = q
+}
+
+// SetRetention wires post-submit PDF eviction (#60).
+func (m *Manager) SetRetention(r retentionAfterSubmit) {
+	m.retention = r
 }
 
 // SetDocuments wires the versioned document service into bot apply sessions (#59).
@@ -491,6 +501,9 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		log.Error().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to delete from approved queue")
 	}
 	log.Info().Str("company", req.Company).Str("job", req.Role).Msg("approve: submitted ✓")
+	if m.retention != nil {
+		m.retention.AfterSuccessfulSubmit(m.ctx, userID)
+	}
 	return nil
 }
 
