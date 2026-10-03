@@ -115,11 +115,7 @@ func (l *lazyDocGen) materializeWithPolicies() {
 		l.holdReason = "form document requirements unknown — open apply form before preparing documents"
 		return
 	}
-	overrides := documents.ApplicationDocumentOverrides{
-		ResumeVersionID: l.resumeVersionOverride,
-		CoverVersionID:  l.coverVersionOverride,
-		Frozen:          l.frozen,
-	}
+	overrides := l.applicationDocumentOverrides()
 	res := l.b.resolveApplicationDocs(overrides, l.formCaps)
 	if res.Hold {
 		l.holdReason = res.HoldReason
@@ -169,7 +165,8 @@ func (l *lazyDocGen) materializeWithPolicies() {
 		} else {
 			l.holdReason = err.Error()
 		}
-		l.pack = documents.PackFromPrepared(l.holdReason, res.Resume, res.Cover, l.resume, l.cover)
+		l.absorbPartialMaterialization(pack, res)
+		l.pack = documents.PackFromPrepared(l.holdReason, pack.Resume, pack.Cover, l.resume, l.cover)
 		l.mergeMaterializedPackPaths()
 		l.refsJSON = documents.WriteApplicationPackJSON(l.pack)
 		return
@@ -216,6 +213,40 @@ func (l *lazyDocGen) ensureMaterialized() {
 
 func (l *lazyDocGen) policyBlocked() bool {
 	return strings.TrimSpace(l.holdReason) != ""
+}
+
+func (l *lazyDocGen) applicationDocumentOverrides() documents.ApplicationDocumentOverrides {
+	o := documents.ApplicationDocumentOverrides{
+		ResumeVersionID: l.resumeVersionOverride,
+		CoverVersionID:  l.coverVersionOverride,
+		Frozen:          l.frozen,
+	}
+	if o.ResumeVersionID == "" && l.resumeVersionID != "" {
+		o.ResumeVersionID = l.resumeVersionID
+	}
+	if o.CoverVersionID == "" && l.coverVersionID != "" {
+		o.CoverVersionID = l.coverVersionID
+	}
+	return o
+}
+
+func (l *lazyDocGen) absorbPartialMaterialization(pack documents.PreparedApplicationDocs, res documents.ResolveResult) {
+	if pack.ResumePath != "" {
+		l.resume = pack.ResumePath
+	}
+	if pack.ResumeVersionID != "" {
+		l.resumeVersionID = pack.ResumeVersionID
+	} else if pack.Resume.VersionID != "" {
+		l.resumeVersionID = pack.Resume.VersionID
+	}
+	if pack.CoverPath != "" {
+		l.cover = pack.CoverPath
+	}
+	if pack.CoverVersionID != "" {
+		l.coverVersionID = pack.CoverVersionID
+	} else if pack.Cover.VersionID != "" {
+		l.coverVersionID = pack.Cover.VersionID
+	}
 }
 
 func (l *lazyDocGen) mergeMaterializedPackPaths() {

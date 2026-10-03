@@ -21,10 +21,6 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 			return ctx.Err()
 		default:
 		}
-		if b.linkedInPrepareAtReview(page) {
-			lazy.prepareScanComplete = true
-			break
-		}
 		_, _, fillErr := b.fillFormStep(ctx, page, lazy)
 		if fillErr != nil && isFormFillFatalLLM(fillErr) {
 			return fillErr
@@ -38,7 +34,8 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 		if peekErr != nil {
 			return fmt.Errorf("prepare: scan incomplete — could not read apply buttons: %w", peekErr)
 		}
-		if applyPrimaryIsSubmit(kind) {
+		atFinalReview := b.linkedInPrepareAtFinalReview(page)
+		if linkedInPrepareScanComplete(kind, atFinalReview) {
 			lazy.prepareScanComplete = true
 			break
 		}

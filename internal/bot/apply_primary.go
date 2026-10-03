@@ -183,12 +183,69 @@ const jsClickApplyNavigation = `() => {
 	return { ok: false, label: 'no navigation CTA' };
 }`
 
-func (b *Bot) linkedInPrepareAtReview(page *rod.Page) bool {
-	res, err := page.Eval(`() => {
-		const t = (document.body && document.body.innerText || '').toLowerCase();
-		return t.includes('review your application');
-	}`)
-	return err == nil && res.Value.Bool()
+const jsLinkedInPrepareAtFinalReview = `() => {
+	function isVisible(el) {
+		try {
+			const rect = el.getBoundingClientRect();
+			if (rect.width < 2 && rect.height < 2) return false;
+			let node = el;
+			while (node && node !== document.documentElement) {
+				const s = window.getComputedStyle(node);
+				if (s.display === 'none' || s.visibility === 'hidden') return false;
+				node = node.parentElement;
+			}
+			return true;
+		} catch (e) { return false; }
+	}
+	function isSubmitBtn(btn) {
+		const t = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.textContent || '')).toLowerCase();
+		if (btn.hasAttribute('data-live-test-easy-apply-submit-button') || btn.hasAttribute('data-easy-apply-submit-button')) return true;
+		return t.includes('submit application') || t === 'submit' || t.startsWith('submit ');
+	}
+	const shells = [...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-easy-apply-modal]')];
+	for (const shell of shells) {
+		if (!isVisible(shell)) continue;
+		const headings = [...shell.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"]')].filter(isVisible);
+		const hasReviewHeading = headings.some(h => {
+			const t = (h.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
+			return t.includes('review') && t.includes('application');
+		});
+		const submitBtn = [...shell.querySelectorAll('button,[role="button"]')].find(b => isVisible(b) && isSubmitBtn(b));
+		if (hasReviewHeading && submitBtn) return true;
+	}
+	return false;
+}`
+
+func linkedInPrepareScanComplete(primaryKind string, atFinalReview bool) bool {
+	if applyPrimaryIsSubmit(primaryKind) {
+		return true
+	}
+	return atFinalReview
+}
+
+func (b *Bot) linkedInPrepareAtFinalReview(page *rod.Page) bool {
+	tryEval := func(p *rod.Page) (bool, error) {
+		res, evalErr := p.Timeout(5 * time.Second).Eval(jsLinkedInPrepareAtFinalReview)
+		if evalErr != nil {
+			return false, evalErr
+		}
+		return res.Value.Bool(), nil
+	}
+	ok, err := tryEval(page)
+	if err == nil && ok {
+		return true
+	}
+	frames, _ := page.Elements("iframe, frame")
+	for _, fr := range frames {
+		fp, ferr := fr.Frame()
+		if ferr != nil || fp == nil {
+			continue
+		}
+		if fok, ferr := tryEval(fp); ferr == nil && fok {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Bot) peekEasyApplyPrimary(page *rod.Page) (label, kind string, found, enabled bool, err error) {
