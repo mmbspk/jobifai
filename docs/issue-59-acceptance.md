@@ -15,4 +15,6 @@
 | Uploads match approved pack | `PackFromPrepared`, form kind-based upload, `form_scan_test.go` DOM fixtures |
 | Frozen approve gate | `ReadyForSubmit`, `ReviewApprove` 409, `reviewDocumentsReady()` |
 
-Out of scope: Epic #40 retention/cache (PR #60).
+| Final smoke (fixture) | `TestReviewSmoke_SelectionChangePrepareApproveFixture` — PUT → prepare fixture → preview paths → approve frozen pack; post-prepare selection change → 409 |
+
+Out of scope: Epic #40 retention/cache (PR #60). Live LinkedIn/Seek submit remains manual validation.
