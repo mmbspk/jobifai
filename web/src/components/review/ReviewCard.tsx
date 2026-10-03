@@ -8,24 +8,42 @@ import { ScorePill } from '../ScorePill'
 import { Button } from '../ui/button'
 import { EthicsVerdict } from './EthicsVerdict'
 import { JobMatchReasoning } from './JobMatchReasoning'
+import { ReviewDocumentsPanel } from './ReviewDocumentsPanel'
+
+function reviewDocumentsReady(review: PendingReview): boolean {
+  if (!review.document_refs_json) return false
+  try {
+    const parsed = JSON.parse(review.document_refs_json) as { prepared?: boolean; hold_reason?: string }
+    if (parsed.prepared !== true) return false
+    if (typeof parsed.hold_reason === 'string' && parsed.hold_reason.trim() !== '') return false
+    return true
+  } catch {
+    return false
+  }
+}
 
 interface ReviewCardProps {
   readonly review: PendingReview
   readonly halalEnabled: boolean
+  readonly onPrepare?: () => void
+  readonly prepareLoading?: boolean
   readonly onApprove: () => void
   readonly onReject: () => void
   readonly className?: string
 }
 
-export function ReviewCard({ review, halalEnabled, onApprove, onReject, className }: ReviewCardProps) {
+export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, onApprove, onReject, className }: ReviewCardProps) {
   const touchStartX = useRef<number | null>(null)
   const [swipeDir, setSwipeDir] = useState<'approve' | 'reject' | null>(null)
   const [dismissed, setDismissed] = useState(false)
 
+  const documentsReadyForApprove = reviewDocumentsReady(review)
+
   const triggerApprove = useCallback(() => {
+    if (!documentsReadyForApprove) return
     setDismissed(true)
     setTimeout(onApprove, 200)
-  }, [onApprove])
+  }, [documentsReadyForApprove, onApprove])
 
   const triggerReject = useCallback(() => {
     setDismissed(true)
@@ -54,7 +72,7 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
     else setSwipeDir(null)
   }
   function onTouchEnd() {
-    if (swipeDir === 'approve') triggerApprove()
+    if (swipeDir === 'approve' && documentsReadyForApprove) triggerApprove()
     else if (swipeDir === 'reject') triggerReject()
     setSwipeDir(null)
     touchStartX.current = null
@@ -68,6 +86,17 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
   const dueDate = review.due_date
     ? new Date(review.due_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
     : null
+
+  let documentPreflight: string | null = null
+  const documentsPrepared = documentsReadyForApprove
+  if (review.document_refs_json) {
+    try {
+      const parsed = JSON.parse(review.document_refs_json) as { hold_reason?: string }
+      if (parsed.hold_reason) documentPreflight = parsed.hold_reason
+    } catch {
+      /* ignore */
+    }
+  }
 
   return (
     <article
@@ -145,8 +174,12 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
           )}
         </div>
       ) : (
-        <p className="text-xs leading-5 text-[var(--color-text-dim)]">No tailored documents were generated for this application.</p>
+        <p className="text-xs leading-5 text-[var(--color-text-dim)]">
+          {documentPreflight ?? 'Prepare documents to scan the apply form and preview your resume and cover letter before you approve. Rendering and reusing saved PDFs do not use AI credits.'}
+        </p>
       )}
+
+      <ReviewDocumentsPanel jobId={review.job_id} />
 
       {review.link && (
         <a
@@ -175,7 +208,18 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
           <Button variant="danger" className="flex-1 sm:flex-none" leftIcon={<X size={14} />} onClick={triggerReject}>
             Reject
           </Button>
-          <Button variant="primary" className="flex-1 sm:flex-none" leftIcon={<Check size={14} />} onClick={triggerApprove}>
+          {!documentsPrepared && onPrepare ? (
+            <Button variant="secondary" className="flex-1 sm:flex-none" loading={prepareLoading} onClick={onPrepare}>
+              Prepare documents
+            </Button>
+          ) : null}
+          <Button
+            variant="primary"
+            className="flex-1 sm:flex-none"
+            leftIcon={<Check size={14} />}
+            disabled={!documentsPrepared}
+            onClick={triggerApprove}
+          >
             Approve application
           </Button>
         </div>

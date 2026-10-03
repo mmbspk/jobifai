@@ -84,6 +84,7 @@ func (stubBotCtrl) Status(_ string) domain.BotStatus {
 	return domain.BotStatus{State: domain.BotStateIdle}
 }
 func (stubBotCtrl) SubmitNow(_ string, _ bot.SubmitRequest)                           {}
+func (stubBotCtrl) PrepareReviewDocuments(_ context.Context, _, _ string) error { return nil }
 func (stubBotCtrl) SubmitSync(_ context.Context, _ string, _ bot.SubmitRequest) error { return nil }
 func (stubBotCtrl) ApplyFromURL(_ context.Context, _, _, _ string, _ bool) (bot.ApplyFromURLResult, error) {
 	return bot.ApplyFromURLResult{}, nil

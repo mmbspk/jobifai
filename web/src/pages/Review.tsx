@@ -20,6 +20,13 @@ export function Review() {
   const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
   const halalEnabled = generalSettings?.halal_job_filter === true
 
+  const prepare = useMutation({
+    mutationFn: botApi.reviewPrepare,
+    onSuccess: (_data, jobId) => {
+      qc.invalidateQueries({ queryKey: ['review-pending'] })
+      qc.invalidateQueries({ queryKey: ['review-documents', jobId] })
+    },
+  })
   const approve = useMutation({
     mutationFn: botApi.reviewApprove,
     onSuccess: () => {
@@ -98,10 +105,21 @@ export function Review() {
         </Button>
       </div>
 
+      {(prepare.isError || approve.isError || reject.isError) && (
+        <p className="max-w-[1024px] mx-auto text-sm text-[var(--color-danger)]" role="alert">
+          {(prepare.error as Error | undefined)?.message
+            ?? (approve.error as Error | undefined)?.message
+            ?? (reject.error as Error | undefined)?.message
+            ?? 'Something went wrong — try again.'}
+        </p>
+      )}
+
       <ReviewCard
         key={review.job_id}
         review={review}
         halalEnabled={halalEnabled}
+        onPrepare={() => prepare.mutate(review.job_id)}
+        prepareLoading={prepare.isPending}
         onApprove={() => approve.mutate(review.job_id)}
         onReject={() => reject.mutate(review.job_id)}
       />

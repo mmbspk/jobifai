@@ -180,6 +180,7 @@ func userFacingGeneral(s domain.GeneralSettings) domain.GeneralSettings {
 		MaxJobsPerKeyword:     s.MaxJobsPerKeyword,
 		HalalJobFilter:        s.HalalJobFilter,
 		GenerateNewResumeDocs: s.GenerateNewResumeDocs,
+		DocumentPolicies:      s.DocumentPolicies,
 	}
 	if s.HumanBehavior.DailyApplicationLimit > 0 {
 		out.HumanBehavior = domain.HumanBehaviorConfig{
@@ -197,6 +198,10 @@ func mergeUserGeneralUpdate(stored, incoming domain.GeneralSettings) domain.Gene
 	out.MaxJobsPerKeyword = incoming.MaxJobsPerKeyword
 	out.HalalJobFilter = incoming.HalalJobFilter
 	out.GenerateNewResumeDocs = incoming.GenerateNewResumeDocs
+	if incoming.DocumentPolicies.ResumeMode != "" || incoming.DocumentPolicies.CoverMode != "" {
+		out.DocumentPolicies = incoming.DocumentPolicies
+		out.DocumentPolicies.Version = domain.DocumentPolicyMigrationVersion
+	}
 	if incoming.HumanBehavior.DailyApplicationLimit > 0 {
 		out.HumanBehavior.DailyApplicationLimit = clampDailyApplicationLimit(incoming.HumanBehavior.DailyApplicationLimit)
 	}
@@ -219,12 +224,21 @@ func (h *SettingsHandlers) GeneralGet(w http.ResponseWriter, r *http.Request) {
 	var s domain.GeneralSettings
 	if err := h.svc.Config.Get(userID, keyGeneralSettings, &s); errors.Is(err, domain.ErrNotFound) {
 		s = defaultGeneralSettings
+		config.ApplyPoliciesForNewUser(&s)
+		writeJSON(w, http.StatusOK, userFacingGeneral(s))
+		return
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
+	before := s.DocumentPolicies.Version
+	config.EnsureDocumentPolicies(&s)
+	if s.DocumentPolicies.Version != before {
+		_ = h.svc.Config.Set(userID, keyGeneralSettings, s)
+	}
 	if !h.isAdmin(r) {
 		s = config.ApplyUnsetUserApplicationFields(s)
+		config.EnsureDocumentPolicies(&s)
 		writeJSON(w, http.StatusOK, userFacingGeneral(s))
 		return
 	}

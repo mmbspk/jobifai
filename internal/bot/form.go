@@ -18,6 +18,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog/log"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 )
 
@@ -36,9 +37,11 @@ type formField struct {
 	ID        string            `json:"id"`          // select / text element id
 	Question  string            `json:"question"`    // visible label text
 	Options   []formFieldOption `json:"options"`     // radio / select choices
-	HasFile   bool              `json:"hasFile"`     // file already attached
-	InputType string            `json:"inputType"`   // text | number | textarea
-	Typeahead bool              `json:"isTypeahead"` // combobox requiring dropdown selection
+	HasFile      bool              `json:"hasFile"`      // file already attached
+	DocumentKind string            `json:"documentKind"` // resume | cover_letter | unknown
+	Required     bool              `json:"required"`     // file field marked required on form
+	InputType    string            `json:"inputType"`    // text | number | textarea
+	Typeahead    bool              `json:"isTypeahead"`  // combobox requiring dropdown selection
 }
 
 func (f formField) optionLabels() []string {
@@ -53,7 +56,7 @@ func (f formField) optionLabels() []string {
 
 // jsScanFields returns an array of unanswered form fields on the current step.
 // Compatible with LinkedIn's Artdeco modal (shadow DOM) and Seek's plain-HTML form.
-const jsScanFields = `() => {
+const jsScanFieldsInner = `
 	// Walk shadow DOM recursively to find elements matching a CSS selector.
 	function allInDOM(root, selector) {
 		const r = [];
@@ -155,13 +158,9 @@ const jsScanFields = `() => {
 	if (allInDOM(document, '.jobs-easy-apply-repeatable-groupings__groupings').some(isVisible)) {
 		return JSON.stringify([]);
 	}
-	// LinkedIn "Review your application" final page: contact/resume are read-only
-	// summaries — not unanswered fields. Return empty so Submit is not blocked.
-	{
-		const pageText = (document.body && document.body.innerText || '').toLowerCase();
-		if (pageText.includes('review your application')) {
-			return JSON.stringify([]);
-		}
+	// LinkedIn final review page (heading + Submit): read-only summaries — skip field scan.
+	if (linkedInAtFinalReviewPage()) {
+		return JSON.stringify([]);
 	}
 
 	const fields = [];
@@ -174,7 +173,24 @@ const jsScanFields = `() => {
 		const typeOk = !a || a.includes('pdf') || a.includes('doc') || a.includes('txt') || a.includes('rtf');
 		return typeOk && isContainerVisible(el);
 	}).forEach((el, i) => {
-		fields.push({ type: 'file', index: i, hasFile: !!(el.files && el.files.length > 0) });
+		function classifyDocumentKind(text) {
+			const q = (text || '').toLowerCase();
+			if (q.includes('cover')) return 'cover_letter';
+			if (q.includes('resume') || q.includes('résumé') || q.includes('cv')) return 'resume';
+			return 'unknown';
+		}
+		const formEl = el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset, label');
+		const lbl = labelFor(el.id)
+			|| (formEl && formEl.querySelector('label, legend, .fb-form-element-label, span[data-test-form-element-label]'))
+			|| el.closest('label');
+		const question = lbl
+			? lbl.textContent.trim().replace(/\s+/g, ' ')
+			: (el.getAttribute('aria-label') || el.getAttribute('name') || '');
+		const required = el.required || el.getAttribute('aria-required') === 'true';
+		fields.push({
+			type: 'file', index: i, hasFile: !!(el.files && el.files.length > 0),
+			question, documentKind: classifyDocumentKind(question), required,
+		});
 	});
 
 	// ── Radio groups, unanswered ones whose CONTAINER is visible ────────────
@@ -353,7 +369,41 @@ const jsScanFields = `() => {
 	});
 
 	return JSON.stringify(fields);
+`
+
+const jsHasVisibleFormContentInner = `
+			function isVisible(el) {
+				try {
+					const rect = el.getBoundingClientRect();
+					if (rect.width === 0 && rect.height === 0) return false;
+					if (rect.right <= 0 || rect.left >= window.innerWidth) return false;
+					if (rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
+					let node = el;
+					while (node && node !== document.documentElement) {
+						const s = window.getComputedStyle(node);
+						if (s.display === 'none' || s.visibility === 'hidden') return false;
+						node = node.parentElement;
+					}
+					return true;
+				} catch(e) { return false; }
+			}
+			if (linkedInAtFinalReviewPage()) return 0;
+			const root = document.querySelector('[role="dialog"], form') || document.body;
+			return [...root.querySelectorAll('input:not([type="hidden"]), select, textarea')]
+				.filter(el => isVisible(el) && (!el.value.trim() || el.getAttribute('aria-invalid') === 'true')).length;
+`
+
+var jsScanFields string
+var jsHasVisibleFormContent string
+
+func init() {
+	jsScanFields = `() => {
+` + jsLinkedInAtFinalReviewFunction + jsScanFieldsInner + `
 }`
+	jsHasVisibleFormContent = `() => {
+` + jsLinkedInAtFinalReviewFunction + jsHasVisibleFormContentInner + `
+}`
+}
 
 // jsFillRadio clicks a radio button by group name and matching option value/label.
 // Uses shadow DOM walking to find elements inside LinkedIn's artdeco modal.
@@ -823,29 +873,6 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 	if len(fields) == 0 {
 		log.Debug().Msg("form: scan found no fields")
 		// Probe for visible inputs to distinguish "genuinely empty step" from "selector break".
-		const jsHasVisibleFormContent = `() => {
-			function isVisible(el) {
-				try {
-					const rect = el.getBoundingClientRect();
-					if (rect.width === 0 && rect.height === 0) return false;
-					if (rect.right <= 0 || rect.left >= window.innerWidth) return false;
-					if (rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
-					let node = el;
-					while (node && node !== document.documentElement) {
-						const s = window.getComputedStyle(node);
-						if (s.display === 'none' || s.visibility === 'hidden') return false;
-						node = node.parentElement;
-					}
-					return true;
-				} catch(e) { return false; }
-			}
-			const pageText = (document.body && document.body.innerText || '').toLowerCase();
-			// Review page is intentionally field-empty for our scanner.
-			if (pageText.includes('review your application')) return 0;
-			const root = document.querySelector('[role="dialog"], form') || document.body;
-			return [...root.querySelectorAll('input:not([type="hidden"]), select, textarea')]
-				.filter(el => isVisible(el) && (!el.value.trim() || el.getAttribute('aria-invalid') === 'true')).length;
-		}`
 		hasVisibleButUnscanned := false
 		for _, p := range pages {
 			if probe, err := p.Timeout(10 * time.Second).Eval(jsHasVisibleFormContent); err == nil {
@@ -868,43 +895,86 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 	}
 	log.Info().Int("count", len(fields)).Msg("form: fields to fill")
 
-	fileUploadIdx := 0 // track how many file inputs we've processed
+	lazy.applyCaps(capsFromFormFields(fields))
+	siteMode := b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted
+	for _, f := range fields {
+		if f.Type != "file" {
+			continue
+		}
+		if present, amb := detectSiteResumeOnField(f, siteMode); present {
+			lazy.formCaps.SiteResumePresent = true
+			if amb {
+				lazy.formCaps.SiteResumeAmbiguous = true
+			}
+		}
+	}
 
 	for _, f := range fields {
 		b.shortPause() // human-like pause before each field interaction
 		switch f.Type {
 
 		case "file":
-			resumePath, coverPath := lazy.get() // generates on first call, cached after
-			path := resumePath
-			if fileUploadIdx > 0 {
-				path = coverPath // second file input → cover letter
-			}
-			if path == "" {
-				if f.HasFile {
-					// File already attached (LinkedIn pre-populated with existing resume).
-					// Accept it as-is so the step doesn't count as unfilled.
-					log.Debug().Int("index", f.Index).Msg("form: file input already has attachment, skipping upload")
-					filled = true
-				} else {
-					log.Warn().Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
-						Msg("form: no generated PDF path, skipping file upload (platform profile resume may be used)")
-				}
-				fileUploadIdx++
+			if lazy.reviewPrepareOnly {
 				continue
 			}
-			// Always upload our generated file, replace LinkedIn's default resume.
-			if err := b.formUploadFile(page, path, f.Index); err != nil {
-				log.Warn().Err(err).Int("index", f.Index).Msg("form: file upload failed")
-			} else {
-				kind := "resume"
-				if fileUploadIdx > 0 {
-					kind = "cover letter"
-				}
-				log.Info().Str("path", path).Str("kind", kind).Msg("form: file uploaded")
-				filled = true
+			resumePath, coverPath := lazy.get()
+			if lazy.policyBlocked() {
+				return filled, true, fmt.Errorf("documents: %s", lazy.holdReason)
 			}
-			fileUploadIdx++
+			docKind := f.DocumentKind
+			if docKind == "" || docKind == "unknown" {
+				docKind = documents.KindResume
+			}
+			path := resumePath
+			if docKind == documents.KindCoverLetter {
+				path = coverPath
+			}
+			kindLabel := docKind
+			if docKind == documents.KindCoverLetter {
+				kindLabel = "cover letter"
+			}
+			if path == "" {
+				if lazy.useSiteResume && docKind == documents.KindResume {
+					if !f.HasFile {
+						return filled, true, fmt.Errorf("documents: job-site resume not attached")
+					}
+					log.Debug().Int("index", f.Index).Msg("form: using verified site-hosted resume")
+					filled = true
+					continue
+				}
+				if f.HasFile && b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted && docKind == documents.KindResume {
+					log.Debug().Int("index", f.Index).Msg("form: site resume mode — keeping platform attachment")
+					filled = true
+					continue
+				}
+				if f.HasFile && f.Required {
+					log.Warn().Int("index", f.Index).Str("kind", kindLabel).Msg("form: required upload missing generated file — not substituting platform attachment")
+					return filled, true, fmt.Errorf("documents: required %s upload failed", kindLabel)
+				}
+				if f.HasFile {
+					log.Debug().Int("index", f.Index).Str("kind", kindLabel).Msg("form: optional field already has platform attachment")
+					continue
+				}
+				log.Warn().Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
+					Msg("form: no PDF path for optional file field")
+				continue
+			}
+			var uploadErr error
+			if b.cfg.Platform == domain.PlatformSeek {
+				switch docKind {
+				case documents.KindCoverLetter:
+					uploadErr = b.seekUploadCoverLetter(page, path)
+				default:
+					uploadErr = b.seekUploadResume(page, path)
+				}
+			} else {
+				uploadErr = b.formUploadFile(page, path, f.Index)
+			}
+			if uploadErr != nil {
+				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kindLabel, uploadErr)
+			}
+			log.Info().Str("path", path).Str("kind", kindLabel).Msg("form: file uploaded")
+			filled = true
 
 		case "radio":
 			fallback := ""

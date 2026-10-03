@@ -17,6 +17,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/config"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/llmpolicy"
@@ -68,6 +69,7 @@ type Manager struct {
 	llmQuota         quota.LLMGuard // optional cost enforcement on bot LLM calls
 	llmPolicy        *llmpolicy.Store
 	llmCatalog       *pricing.Catalog
+	documents        *documents.Service
 	usageLedger      *usage.Ledger
 }
 
@@ -80,6 +82,11 @@ type SessionQuota interface {
 // SetSessionQuota attaches quota grace session callbacks (optional).
 func (m *Manager) SetSessionQuota(q SessionQuota) {
 	m.quotaSessions = q
+}
+
+// SetDocuments wires the versioned document service into bot apply sessions (#59).
+func (m *Manager) SetDocuments(svc *documents.Service) {
+	m.documents = svc
 }
 
 // SetLLMQuota attaches quota checks to bot-side LLM clients.
@@ -352,23 +359,11 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		log.Warn().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to fetch score from pending review")
 	}
 
-	var managerLazy *lazyDocGen
 	if req.Platform == "seek" {
-		// Read description directly from the already-open jobPage tab — avoids
-		// opening a second tab at the same URL just to extract text.
 		_ = jobPage.Timeout(30 * time.Second).WaitLoad()
 		_ = jobPage.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
-		jobDesc := req.Role + " at " + req.Company
-		if rawHTML, err := jobPage.HTML(); err == nil {
-			if d := scraper.ParseHTML(rawHTML); len(strings.TrimSpace(d.Description)) >= 100 {
-				jobDesc = d.Description
-			}
-		}
-		managerLazy = &lazyDocGen{b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: jobDesc, resumeOverride: req.ResumePath, coverOverride: req.CoverPath}
-	} else {
-		managerDetails := b.fetchJob(m.ctx, linkedInJob{URL: req.Link, Company: req.Company, Title: req.Role})
-		managerLazy = &lazyDocGen{b: b, ctx: m.ctx, job: linkedInJob{Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description, resumeOverride: req.ResumePath, coverOverride: req.CoverPath}
 	}
+	managerLazy := managerLazyForSubmit(b, m.ctx, req, jobPage)
 
 	// Extract location from the job page; fall back to the value stored in pending_review.
 	location := extractJobLocation(jobPage, domain.Platform(req.Platform))
@@ -402,13 +397,24 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 				if savedCover == "" {
 					savedCover = req.CoverPath
 				}
+				packJSON := managerLazy.packJSONForPersist()
+				if packJSON == "" {
+					packJSON = req.DocumentRefsJSON
+				}
+				if packJSON == "" {
+					packJSON = documents.WriteApplicationPackJSON(documents.PackFromPrepared(
+						"", documents.ResolvedDocument{}, documents.ResolvedDocument{}, savedResume, savedCover,
+					))
+				}
 				_, _ = m.db.Exec(
 					`INSERT OR REPLACE INTO jobs_pending_review
 					 (job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,
+					  resume_content_version_id,cover_letter_content_version_id,document_refs_json,
 					  suitability_score,suitability_reasoning,easy_apply,created_at)
-					 VALUES(?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'))`,
+					 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'))`,
 					req.JobID, userID, req.Company, req.Role, location, req.Platform, req.Link,
-					savedResume, savedCover, score, req.SuitabilityReasoning,
+					savedResume, savedCover, managerLazy.resumeVersionID, managerLazy.coverVersionID, packJSON,
+					score, req.SuitabilityReasoning,
 				)
 				_, _ = m.db.Exec(
 					`UPDATE jobs_pending_review
@@ -436,23 +442,44 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			if savedCover == "" {
 				savedCover = req.CoverPath
 			}
+			packJSON := managerLazy.packJSONForPersist()
+			if packJSON == "" {
+				packJSON = req.DocumentRefsJSON
+			}
+			if packJSON == "" {
+				packJSON = documents.WriteApplicationPackJSON(documents.PackFromPrepared(
+					"", documents.ResolvedDocument{}, documents.ResolvedDocument{}, savedResume, savedCover,
+				))
+			}
 			_, _ = m.db.Exec(
 				`UPDATE jobs_pending_review
 				 SET attempt_count = attempt_count + 1,
 				     resume_path = CASE WHEN ? != '' THEN ? ELSE resume_path END,
-				     cover_letter_path = CASE WHEN ? != '' THEN ? ELSE cover_letter_path END
+				     cover_letter_path = CASE WHEN ? != '' THEN ? ELSE cover_letter_path END,
+				     resume_content_version_id = CASE WHEN ? != '' THEN ? ELSE resume_content_version_id END,
+				     cover_letter_content_version_id = CASE WHEN ? != '' THEN ? ELSE cover_letter_content_version_id END,
+				     document_refs_json = CASE WHEN ? != '' THEN ? ELSE document_refs_json END
 				 WHERE job_id = ? AND user_id = ?`,
-				savedResume, savedResume, savedCover, savedCover, req.JobID, userID,
+				savedResume, savedResume, savedCover, savedCover,
+				managerLazy.resumeVersionID, managerLazy.resumeVersionID,
+				managerLazy.coverVersionID, managerLazy.coverVersionID,
+				packJSON, packJSON,
+				req.JobID, userID,
 			)
 			return applyErr
 		}
 	}
 
-	resumePath, coverPath := managerLazy.get()
+	resumePath, coverPath := managerLazy.peek()
+	packJSON := managerLazy.refsJSON
+	if packJSON == "" {
+		packJSON = documents.WriteApplicationPackJSON(managerLazy.pack)
+	}
 	if _, err := m.db.Exec(
-		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,halal_verdict,applied_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		req.JobID, userID, req.Platform, req.Company, req.Role, location, req.Link, resumePath, coverPath,
+		managerLazy.resumeVersionID, managerLazy.coverVersionID, packJSON,
 		score, halalVerdict, time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to record applied job")
@@ -728,6 +755,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		return nil, err
 	}
 
+	config.EnsureDocumentPolicies(&gs)
 	cfg := &Config{
 		Platform:    resolved,
 		Settings:    gs,
@@ -750,6 +778,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		AutomationRunID: runID,
 		RequireReview:   gs.RequireReview,
 		MarketDir:     m.marketDir,
+		Documents:     m.documents,
 		LLMTracker:    tracker,
 		Sessions:      m.sessions,
 	}

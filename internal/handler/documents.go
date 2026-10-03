@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 )
@@ -197,7 +198,23 @@ func (h *DocumentHandlers) SetDefault(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
 		return
 	}
+	if req.Kind == documents.KindResume {
+		h.markResumeDefaultOnboarding(userID)
+	}
 	okMsg(w, "default updated")
+}
+
+func (h *DocumentHandlers) markResumeDefaultOnboarding(userID string) {
+	var gs domain.GeneralSettings
+	if err := h.svc.Config.Get(userID, keyGeneralSettings, &gs); err != nil {
+		return
+	}
+	config.EnsureDocumentPolicies(&gs)
+	if gs.DocumentPolicies.OnboardingComplete {
+		return
+	}
+	gs.DocumentPolicies.OnboardingComplete = true
+	_ = h.svc.Config.Set(userID, keyGeneralSettings, gs)
 }
 
 // GET /api/documents/versions/{version_id}/original

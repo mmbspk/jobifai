@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
 	appdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/scraper"
@@ -856,7 +857,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	}
 	// Card-level applied indicator.
 	if job.AlreadyApplied {
-		b.recordSeekApplied(job, "", "", 0, nil)
+		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
 		log.Info().Msgf("seek: skip, already applied badge on card: %q @ %s", job.Title, job.Company)
 		return false
 	}
@@ -873,7 +874,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	}
 	// Detail page may have updated AlreadyApplied (covers manual applications).
 	if job.AlreadyApplied {
-		b.recordSeekApplied(job, "", "", 0, nil)
+		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
 		log.Info().Msgf("seek: skip, already applied (page indicator): %q @ %s", job.Title, job.Company)
 		return false
 	}
@@ -885,15 +886,17 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	}
 
 	if b.cfg.RequireReview {
+		packJSON := documents.WriteApplicationPackJSON(documents.ApplicationDocumentPack{
+			HoldReason: "Use Prepare documents to scan the apply form and build your application pack before approving",
+		})
 		b.saveSeekPendingReview(ctx, &domain.PendingReview{
-			JobID:                job.ID,
-			Company:              job.Company,
-			Role:                 job.Title,
-			Location:             job.Location,
-			Platform:             domain.PlatformSeek,
-			Link:                 job.URL,
-			ResumePath:           "",
-			CoverLetterPath:      "",
+			JobID:            job.ID,
+			Company:          job.Company,
+			Role:             job.Title,
+			Location:         job.Location,
+			Platform:         domain.PlatformSeek,
+			Link:             job.URL,
+			DocumentRefsJSON: packJSON,
 			SuitabilityScore:     score,
 			SuitabilityReasoning: reasoning,
 			DueDate:              details.DueDate,
@@ -928,7 +931,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	}
 
 	// Docs generated lazily at the file-upload step, only when toggle is on.
-	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: job.Company, Title: job.Title}, jobDesc: details.Description}
+	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: job.ID, Company: job.Company, Title: job.Title}, jobDesc: details.Description}
 	return b.submitSeekApplication(ctx, br, job, lazy, score, reasoning, halalVerdict, llmBefore) == seekSubmitApplied
 }
 
@@ -1275,7 +1278,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 		return seekSubmitCannotApply
 	}
 	resume, cover := lazy.get()
-	b.recordSeekApplied(job, resume, cover, score, halalVerdict)
+	b.recordSeekApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
 	b.logApplied(job.Title, job.Company, domain.PlatformSeek, llmBefore)
 	return seekSubmitApplied
 }
@@ -1334,18 +1337,10 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 	}
 
-	// Generate docs NOW, while we're still on the stable job detail page and
-	// BEFORE clicking Quick Apply. The LLM call can take 60–90 s; if we click
-	// first and block on lazy.get() afterwards, Seek's SPA destroys the apply
-	// form (idle navigation, auth0 token rotation, etc.) and the upload step
-	// runs against the wrong DOM. Blocking here means by the time we click
-	// Quick Apply, the docs are ready and the upload runs on a fresh form.
-	resumePath, coverPath := lazy.get()
-
-	if err := b.seekClickQuickApply(page); err != nil {
+	if err := b.seekOpenQuickApplyForm(page, b.policiesRequireVerifiedDocuments()); err != nil {
 		return err
 	}
-	log.Info().Msg("seek: Quick Apply button clicked, waiting for form")
+	log.Info().Msg("seek: Quick Apply opened, waiting for form")
 	b.humanPause()
 
 	if onLogin, err := b.seekWaitPastLogin(page); err != nil {
@@ -1361,7 +1356,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			_ = page.Timeout(30 * time.Second).WaitLoad()
 			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 		}
-		if clickErr := b.seekClickQuickApply(page); clickErr != nil {
+		if clickErr := b.seekOpenQuickApplyForm(page, b.policiesRequireVerifiedDocuments()); clickErr != nil {
 			return fmt.Errorf("seek session expired — Quick Apply redirected to login, re-add your Seek session in Settings → Secrets: %w", clickErr)
 		}
 		b.humanPause()
@@ -1379,6 +1374,9 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	// Require the job detail page to also show an Applied indicator — weak
 	// success-page signals alone caused false "Applied ✓" in the UI.
 	if b.seekIsPostApplySuccess(page) {
+		if b.cfg.Documents != nil && b.policiesRequireVerifiedDocuments() {
+			return fmt.Errorf("seek Quick Apply submitted before document requirements were scanned — use Prepare documents or apply manually on Seek")
+		}
 		log.Info().Msg("seek: possible silent Quick Apply success page — verifying on job page")
 		if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err != nil {
 			log.Warn().Err(err).Msg("seek: success-page signal without job-page Applied confirmation")
@@ -1392,18 +1390,10 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		return err
 	}
 
-	// Upload resume: activate the "Upload a resumé" radio then set file.
-	if resumePath != "" {
-		if err := b.seekUploadResume(page, resumePath); err != nil {
-			log.Warn().Err(err).Msg("seek: resume upload failed, Seek profile resume will be used")
-		}
-	}
-
-	// Upload cover letter: activate the "Upload a cover letter" radio then set file.
-	if coverPath != "" {
-		if err := b.seekUploadCoverLetter(page, coverPath); err != nil {
-			log.Warn().Err(err).Msg("seek: cover letter upload failed, continuing without it")
-		}
+	lazy.applyCaps(probeApplyFormCaps(page))
+	lazy.ensureMaterialized()
+	if lazy.policyBlocked() {
+		return fmt.Errorf("documents: %s", lazy.holdReason)
 	}
 
 	b.humanPause()
@@ -2059,6 +2049,40 @@ func (b *Bot) seekPersistSession(page *rod.Page) {
 	}
 }
 
+// seekOpenQuickApplyForm opens Seek Quick Apply without one-click submit when blockSilentSubmit is set.
+func (b *Bot) seekOpenQuickApplyForm(page *rod.Page, blockSilentSubmit bool) error {
+	applyBtn, err := page.Timeout(8 * time.Second).Element("[data-automation='job-detail-apply']")
+	if err != nil {
+		applyBtn, err = page.Timeout(8 * time.Second).Element("a[href*='/apply'], button[data-automation*='apply']")
+		if err != nil {
+			return fmt.Errorf("apply button not found: %w", err)
+		}
+	}
+	if href, e := applyBtn.Attribute("href"); e == nil && href != nil {
+		raw := strings.TrimSpace(*href)
+		if isExternalApplyHref(raw) {
+			return fmt.Errorf("external application")
+		}
+		resolved := resolveSeekHrefOnPage(raw, page)
+		if isSeekHostedApplyHref(resolved) {
+			log.Info().Str("url", resolved).Msg("seek: opening apply via button href")
+			if err := page.Navigate(resolved); err != nil {
+				return fmt.Errorf("navigate apply href: %w", err)
+			}
+			_ = page.Timeout(30 * time.Second).WaitLoad()
+			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+			if blockSilentSubmit && b.seekIsPostApplySuccess(page) {
+				return fmt.Errorf("seek Quick Apply submitted before the apply form could be scanned — apply manually on Seek")
+			}
+			return nil
+		}
+	}
+	if blockSilentSubmit {
+		return fmt.Errorf("seek Quick Apply may submit immediately without document upload — open the apply form on Seek manually, or switch resume policy to site-hosted when appropriate")
+	}
+	return b.seekClickQuickApply(page)
+}
+
 // seekClickQuickApply finds the Quick Apply button, checks it's not external,
 // and clicks it. Extracted so seekApply can call it twice (initial + post-login retry).
 func (b *Bot) seekClickQuickApply(page *rod.Page) error {
@@ -2433,15 +2457,15 @@ func (b *Bot) seekUploadCoverLetter(page *rod.Page, filePath string) error {
 
 // ── DB helpers (Seek-specific wrappers) ───────────────────────────────────
 
-func (b *Bot) recordSeekApplied(job seekJob, resumePath, coverPath string, score int, halalVerdict []byte) {
+func (b *Bot) recordSeekApplied(job seekJob, resumePath, coverPath, resumeVer, coverVer, refsJSON string, score int, halalVerdict []byte) {
 	if b.cfg.DB == nil {
 		return
 	}
 	if _, err := appdb.ExecWithRetry(b.cfg.DB,
-		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,halal_verdict,applied_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, b.cfg.UserID, string(domain.PlatformSeek), job.Company, job.Title,
-		job.Location, job.URL, resumePath, coverPath, score, halalVerdict,
+		job.Location, job.URL, resumePath, coverPath, resumeVer, coverVer, refsJSON, score, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record applied job")
