@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
@@ -12,43 +11,83 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
-type easyApplyPrimaryClick func() (label string, ok bool, err error)
-
 // scanApplyStepsForPrepare walks apply steps without uploading files or submitting.
-func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy *lazyDocGen, clickPrimary easyApplyPrimaryClick) error {
-	prevHash := ""
+func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy *lazyDocGen) error {
+	prevStepHash := ""
+	stuckSteps := 0
 	for step := 0; step < 12; step++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		_, _, fillErr := b.fillFormStep(ctx, page, lazy)
-		if fillErr != nil && !isFormFillFatalLLM(fillErr) {
-			log.Warn().Err(fillErr).Int("step", step).Msg("prepare: form scan step warning")
+		if b.linkedInPrepareAtReview(page) {
+			lazy.prepareScanComplete = true
+			break
 		}
+		_, _, fillErr := b.fillFormStep(ctx, page, lazy)
 		if fillErr != nil && isFormFillFatalLLM(fillErr) {
 			return fillErr
 		}
+		if fillErr != nil {
+			log.Warn().Err(fillErr).Int("step", step).Msg("prepare: form scan step warning")
+		}
 		lazy.ensureMaterialized()
-		if hashRes, err := page.Timeout(5*time.Second).Eval(`() => (document.body && document.body.innerText || '').substring(0, 200)`); err == nil {
-			h := hashRes.Value.String()
-			if h == prevHash && step > 0 {
-				break
+
+		label, kind, found, enabled, peekErr := b.peekEasyApplyPrimary(page)
+		if peekErr != nil {
+			return fmt.Errorf("prepare: scan incomplete — could not read apply buttons: %w", peekErr)
+		}
+		if applyPrimaryIsSubmit(kind) {
+			lazy.prepareScanComplete = true
+			break
+		}
+		if !found {
+			return fmt.Errorf("prepare: scan incomplete — no apply navigation at step %d", step+1)
+		}
+		if !enabled {
+			return fmt.Errorf("prepare: scan incomplete — apply button disabled (%s)", label)
+		}
+		if !applyPrimaryAllowsPrepareNav(kind) {
+			return fmt.Errorf("prepare: unsupported apply action %q during document prepare", label)
+		}
+
+		stepHash := b.linkedInApplyStepHash(page)
+		if stepHash != "" && stepHash == prevStepHash {
+			stuckSteps++
+			if stuckSteps >= 2 {
+				return fmt.Errorf("prepare: scan incomplete — form did not advance at step %d", step+1)
 			}
-			prevHash = h
+		} else {
+			stuckSteps = 0
+			prevStepHash = stepHash
 		}
-		label, ok, err := clickPrimary()
-		if err != nil {
-			log.Warn().Err(err).Int("step", step).Msg("prepare: primary button eval failed")
-			break
+
+		navLabel, clicked, clickErr := b.clickEasyApplyNavigation(page)
+		if clickErr != nil {
+			return fmt.Errorf("prepare: scan incomplete — navigation click failed: %w", clickErr)
 		}
-		if !ok || label == "Submit application" || label == "Submit" {
-			break
+		if !clicked {
+			return fmt.Errorf("prepare: scan incomplete — could not advance (%s)", navLabel)
 		}
+		log.Debug().Str("label", navLabel).Int("step", step).Msg("prepare: advanced apply step")
 	}
 	lazy.ensureMaterialized()
+	if !lazy.prepareScanComplete {
+		return fmt.Errorf("prepare: scan incomplete — review step not reached")
+	}
 	return nil
+}
+
+func (b *Bot) linkedInApplyStepHash(page *rod.Page) string {
+	res, err := page.Eval(`() => {
+		const t = (document.body && document.body.innerText || '').substring(0, 400);
+		return t.replace(/\s+/g, ' ').trim();
+	}`)
+	if err != nil {
+		return ""
+	}
+	return res.Value.String()
 }
 
 // PrepareReviewDocuments opens the apply form, scans capabilities, and materializes documents.
@@ -91,6 +130,9 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID stri
 	if prepErr != nil {
 		return prepErr
 	}
+	if !lazy.prepareScanComplete {
+		return fmt.Errorf("prepare: scan incomplete — review step not reached")
+	}
 
 	pack := documents.ParseApplicationPackJSON(lazy.packJSONForPersist())
 	if lazy.policyBlocked() {
@@ -117,7 +159,7 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID stri
 }
 
 func (m *Manager) prepareSeekReviewDocuments(ctx context.Context, b *Bot, page *rod.Page, lazy *lazyDocGen, jobURL string) error {
-	if err := b.seekClickQuickApply(page); err != nil {
+	if err := b.seekOpenQuickApplyForm(page, true); err != nil {
 		return err
 	}
 	if onLogin, err := b.seekWaitPastLogin(page); err != nil {
@@ -126,7 +168,7 @@ func (m *Manager) prepareSeekReviewDocuments(ctx context.Context, b *Bot, page *
 		return fmt.Errorf("seek session expired — re-login via Settings → Secrets")
 	}
 	if b.seekIsPostApplySuccess(page) {
-		return fmt.Errorf("seek Quick Apply completed before the form could be scanned — apply manually or adjust document policies")
+		return fmt.Errorf("seek Quick Apply submitted before the form could be scanned — apply manually on Seek")
 	}
 	if err := b.ensureSeekApplyFormVisible(page, jobURL); err != nil {
 		return err
@@ -138,13 +180,20 @@ func (m *Manager) prepareSeekReviewDocuments(ctx context.Context, b *Bot, page *
 		}
 		lazy.applyCaps(probeApplyFormCaps(page))
 		actionBtn, isSubmit := b.seekFindActionButton(page)
-		if actionBtn == nil || isSubmit {
+		if actionBtn == nil {
+			return fmt.Errorf("prepare: scan incomplete — no continue button at step %d", step+1)
+		}
+		if isSubmit {
+			lazy.prepareScanComplete = true
 			break
 		}
 		if err := actionBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
-			break
+			return fmt.Errorf("prepare: scan incomplete — could not advance at step %d: %w", step+1, err)
 		}
 	}
 	lazy.ensureMaterialized()
+	if !lazy.prepareScanComplete {
+		return fmt.Errorf("prepare: scan incomplete — review step not reached")
+	}
 	return nil
 }

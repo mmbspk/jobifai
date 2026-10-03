@@ -169,7 +169,8 @@ func (l *lazyDocGen) materializeWithPolicies() {
 		} else {
 			l.holdReason = err.Error()
 		}
-		l.pack = documents.PackFromPrepared(l.holdReason, res.Resume, res.Cover, "", "")
+		l.pack = documents.PackFromPrepared(l.holdReason, res.Resume, res.Cover, l.resume, l.cover)
+		l.mergeMaterializedPackPaths()
 		l.refsJSON = documents.WriteApplicationPackJSON(l.pack)
 		return
 	}
@@ -217,21 +218,49 @@ func (l *lazyDocGen) policyBlocked() bool {
 	return strings.TrimSpace(l.holdReason) != ""
 }
 
-func (l *lazyDocGen) invalidateMaterialization() {
+func (l *lazyDocGen) mergeMaterializedPackPaths() {
+	if l.resume != "" {
+		l.pack.Resume.LocalPath = l.resume
+		if l.resumeVersionID != "" {
+			l.pack.Resume.ContentVersionID = l.resumeVersionID
+		}
+	}
+	if l.cover != "" {
+		l.pack.Cover.LocalPath = l.cover
+		if l.coverVersionID != "" {
+			l.pack.Cover.ContentVersionID = l.coverVersionID
+		}
+	}
+}
+
+func (l *lazyDocGen) invalidateMaterialization(prevCaps documents.FormDocumentCapabilities) {
 	l.matMu.Lock()
 	defer l.matMu.Unlock()
 	l.materialized = false
-	l.holdReason = ""
-	l.resume = ""
-	l.cover = ""
-	l.resumeVersionID = ""
-	l.coverVersionID = ""
-	l.useSiteResume = false
-	l.pack = documents.ApplicationDocumentPack{}
-	l.refsJSON = ""
+	if strings.Contains(l.holdReason, "unknown") || strings.Contains(l.holdReason, "open apply form before preparing") {
+		l.holdReason = ""
+		l.resume = ""
+		l.cover = ""
+		l.resumeVersionID = ""
+		l.coverVersionID = ""
+		l.useSiteResume = false
+		l.pack = documents.ApplicationDocumentPack{}
+		l.refsJSON = ""
+		return
+	}
+	coverNewlyRequired := !prevCaps.CoverRequired && !prevCaps.CoverOptional &&
+		(l.formCaps.CoverRequired || l.formCaps.CoverOptional)
+	if coverNewlyRequired {
+		l.cover = ""
+		l.coverVersionID = ""
+		if l.pack.Cover.LocalPath != "" || l.pack.Cover.ContentVersionID != "" {
+			l.pack.Cover = domain.ApplicationDocumentRef{Kind: documents.KindCoverLetter}
+		}
+	}
 }
 
 func (l *lazyDocGen) applyCaps(caps documents.FormDocumentCapabilities) {
+	prevCaps := l.formCaps
 	prev := capsFingerprint(l.formCaps)
 	wasDetected := l.formCaps.Detected
 	mergeCaps(&l.formCaps, caps)
@@ -245,7 +274,7 @@ func (l *lazyDocGen) applyCaps(caps documents.FormDocumentCapabilities) {
 		(!wasDetected && l.formCaps.Detected) ||
 		strings.Contains(l.holdReason, "unknown"))
 	if shouldReset {
-		l.invalidateMaterialization()
+		l.invalidateMaterialization(prevCaps)
 	}
 	l.capsFingerprint = next
 }

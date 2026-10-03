@@ -57,6 +57,7 @@ type lazyDocGen struct {
 	materialized          bool
 	capsFingerprint       string
 	reviewPrepareOnly     bool
+	prepareScanComplete   bool
 	packRestored          bool
 	pack                  documents.ApplicationDocumentPack
 }
@@ -2031,7 +2032,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 	prevStepHash := ""
 
 	if lazy != nil && lazy.reviewPrepareOnly {
-		return b.scanApplyStepsForPrepare(ctx, page, lazy, clickEasyApplyPrimary)
+		return b.scanApplyStepsForPrepare(ctx, page, lazy)
 	}
 
 	for i := 0; i < 40; i++ {

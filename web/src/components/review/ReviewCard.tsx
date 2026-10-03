@@ -9,6 +9,18 @@ import { Button } from '../ui/button'
 import { EthicsVerdict } from './EthicsVerdict'
 import { JobMatchReasoning } from './JobMatchReasoning'
 
+function reviewDocumentsReady(review: PendingReview): boolean {
+  if (!review.document_refs_json) return false
+  try {
+    const parsed = JSON.parse(review.document_refs_json) as { prepared?: boolean; hold_reason?: string }
+    if (parsed.prepared !== true) return false
+    if (typeof parsed.hold_reason === 'string' && parsed.hold_reason.trim() !== '') return false
+    return true
+  } catch {
+    return false
+  }
+}
+
 interface ReviewCardProps {
   readonly review: PendingReview
   readonly halalEnabled: boolean
@@ -24,10 +36,13 @@ export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, on
   const [swipeDir, setSwipeDir] = useState<'approve' | 'reject' | null>(null)
   const [dismissed, setDismissed] = useState(false)
 
+  const documentsReadyForApprove = reviewDocumentsReady(review)
+
   const triggerApprove = useCallback(() => {
+    if (!documentsReadyForApprove) return
     setDismissed(true)
     setTimeout(onApprove, 200)
-  }, [onApprove])
+  }, [documentsReadyForApprove, onApprove])
 
   const triggerReject = useCallback(() => {
     setDismissed(true)
@@ -56,7 +71,7 @@ export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, on
     else setSwipeDir(null)
   }
   function onTouchEnd() {
-    if (swipeDir === 'approve') triggerApprove()
+    if (swipeDir === 'approve' && documentsReadyForApprove) triggerApprove()
     else if (swipeDir === 'reject') triggerReject()
     setSwipeDir(null)
     touchStartX.current = null
@@ -72,18 +87,14 @@ export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, on
     : null
 
   let documentPreflight: string | null = null
-  let documentsPrepared = false
+  const documentsPrepared = documentsReadyForApprove
   if (review.document_refs_json) {
     try {
-      const parsed = JSON.parse(review.document_refs_json) as { hold_reason?: string; prepared?: boolean }
+      const parsed = JSON.parse(review.document_refs_json) as { hold_reason?: string }
       if (parsed.hold_reason) documentPreflight = parsed.hold_reason
-      documentsPrepared = parsed.prepared === true
     } catch {
       /* ignore */
     }
-  }
-  if (review.resume_path || review.cover_letter_path) {
-    documentsPrepared = true
   }
 
   return (

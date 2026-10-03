@@ -1337,10 +1337,10 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 	}
 
-	if err := b.seekClickQuickApply(page); err != nil {
+	if err := b.seekOpenQuickApplyForm(page, b.policiesRequireVerifiedDocuments()); err != nil {
 		return err
 	}
-	log.Info().Msg("seek: Quick Apply button clicked, waiting for form")
+	log.Info().Msg("seek: Quick Apply opened, waiting for form")
 	b.humanPause()
 
 	if onLogin, err := b.seekWaitPastLogin(page); err != nil {
@@ -1356,7 +1356,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			_ = page.Timeout(30 * time.Second).WaitLoad()
 			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 		}
-		if clickErr := b.seekClickQuickApply(page); clickErr != nil {
+		if clickErr := b.seekOpenQuickApplyForm(page, b.policiesRequireVerifiedDocuments()); clickErr != nil {
 			return fmt.Errorf("seek session expired — Quick Apply redirected to login, re-add your Seek session in Settings → Secrets: %w", clickErr)
 		}
 		b.humanPause()
@@ -2047,6 +2047,40 @@ func (b *Bot) seekPersistSession(page *rod.Page) {
 	} else {
 		log.Debug().Msg("seek: session cookies refreshed after job detail page auth0 re-auth")
 	}
+}
+
+// seekOpenQuickApplyForm opens Seek Quick Apply without one-click submit when blockSilentSubmit is set.
+func (b *Bot) seekOpenQuickApplyForm(page *rod.Page, blockSilentSubmit bool) error {
+	applyBtn, err := page.Timeout(8 * time.Second).Element("[data-automation='job-detail-apply']")
+	if err != nil {
+		applyBtn, err = page.Timeout(8 * time.Second).Element("a[href*='/apply'], button[data-automation*='apply']")
+		if err != nil {
+			return fmt.Errorf("apply button not found: %w", err)
+		}
+	}
+	if href, e := applyBtn.Attribute("href"); e == nil && href != nil {
+		raw := strings.TrimSpace(*href)
+		if isExternalApplyHref(raw) {
+			return fmt.Errorf("external application")
+		}
+		resolved := resolveSeekHrefOnPage(raw, page)
+		if isSeekHostedApplyHref(resolved) {
+			log.Info().Str("url", resolved).Msg("seek: opening apply via button href")
+			if err := page.Navigate(resolved); err != nil {
+				return fmt.Errorf("navigate apply href: %w", err)
+			}
+			_ = page.Timeout(30 * time.Second).WaitLoad()
+			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+			if blockSilentSubmit && b.seekIsPostApplySuccess(page) {
+				return fmt.Errorf("seek Quick Apply submitted before the apply form could be scanned — apply manually on Seek")
+			}
+			return nil
+		}
+	}
+	if blockSilentSubmit {
+		return fmt.Errorf("seek Quick Apply may submit immediately without document upload — open the apply form on Seek manually, or switch resume policy to site-hosted when appropriate")
+	}
+	return b.seekClickQuickApply(page)
 }
 
 // seekClickQuickApply finds the Quick Apply button, checks it's not external,

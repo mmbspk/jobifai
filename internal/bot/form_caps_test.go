@@ -47,3 +47,22 @@ func TestLazyApplyCaps_UnknownThenDetectedResetsMaterialization(t *testing.T) {
 	require.False(t, l.materialized)
 	require.Empty(t, l.resume)
 }
+
+func TestLazyApplyCaps_CoverStepPreservesResume(t *testing.T) {
+	t.Parallel()
+	l := &lazyDocGen{
+		formCaps: documents.FormDocumentCapabilities{Detected: true, ResumeFileSlots: 1},
+	}
+	l.materialized = true
+	l.resume = "/tmp/resume.pdf"
+	l.resumeVersionID = "ver-resume"
+	l.cover = ""
+
+	l.applyCaps(documents.FormDocumentCapabilities{
+		Detected: true, ResumeFileSlots: 1, CoverRequired: true,
+	})
+	require.False(t, l.materialized)
+	require.Equal(t, "/tmp/resume.pdf", l.resume)
+	require.Equal(t, "ver-resume", l.resumeVersionID)
+	require.Empty(t, l.cover)
+}
