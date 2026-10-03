@@ -56,7 +56,7 @@ func (f formField) optionLabels() []string {
 
 // jsScanFields returns an array of unanswered form fields on the current step.
 // Compatible with LinkedIn's Artdeco modal (shadow DOM) and Seek's plain-HTML form.
-const jsScanFields = `() => {
+const jsScanFieldsInner = `
 	// Walk shadow DOM recursively to find elements matching a CSS selector.
 	function allInDOM(root, selector) {
 		const r = [];
@@ -158,13 +158,9 @@ const jsScanFields = `() => {
 	if (allInDOM(document, '.jobs-easy-apply-repeatable-groupings__groupings').some(isVisible)) {
 		return JSON.stringify([]);
 	}
-	// LinkedIn "Review your application" final page: contact/resume are read-only
-	// summaries — not unanswered fields. Return empty so Submit is not blocked.
-	{
-		const pageText = (document.body && document.body.innerText || '').toLowerCase();
-		if (pageText.includes('review your application')) {
-			return JSON.stringify([]);
-		}
+	// LinkedIn final review page (heading + Submit): read-only summaries — skip field scan.
+	if (linkedInAtFinalReviewPage()) {
+		return JSON.stringify([]);
 	}
 
 	const fields = [];
@@ -373,7 +369,41 @@ const jsScanFields = `() => {
 	});
 
 	return JSON.stringify(fields);
+`
+
+const jsHasVisibleFormContentInner = `
+			function isVisible(el) {
+				try {
+					const rect = el.getBoundingClientRect();
+					if (rect.width === 0 && rect.height === 0) return false;
+					if (rect.right <= 0 || rect.left >= window.innerWidth) return false;
+					if (rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
+					let node = el;
+					while (node && node !== document.documentElement) {
+						const s = window.getComputedStyle(node);
+						if (s.display === 'none' || s.visibility === 'hidden') return false;
+						node = node.parentElement;
+					}
+					return true;
+				} catch(e) { return false; }
+			}
+			if (linkedInAtFinalReviewPage()) return 0;
+			const root = document.querySelector('[role="dialog"], form') || document.body;
+			return [...root.querySelectorAll('input:not([type="hidden"]), select, textarea')]
+				.filter(el => isVisible(el) && (!el.value.trim() || el.getAttribute('aria-invalid') === 'true')).length;
+`
+
+var jsScanFields string
+var jsHasVisibleFormContent string
+
+func init() {
+	jsScanFields = `() => {
+` + jsLinkedInAtFinalReviewFunction + jsScanFieldsInner + `
 }`
+	jsHasVisibleFormContent = `() => {
+` + jsLinkedInAtFinalReviewFunction + jsHasVisibleFormContentInner + `
+}`
+}
 
 // jsFillRadio clicks a radio button by group name and matching option value/label.
 // Uses shadow DOM walking to find elements inside LinkedIn's artdeco modal.
@@ -843,29 +873,6 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 	if len(fields) == 0 {
 		log.Debug().Msg("form: scan found no fields")
 		// Probe for visible inputs to distinguish "genuinely empty step" from "selector break".
-		const jsHasVisibleFormContent = `() => {
-			function isVisible(el) {
-				try {
-					const rect = el.getBoundingClientRect();
-					if (rect.width === 0 && rect.height === 0) return false;
-					if (rect.right <= 0 || rect.left >= window.innerWidth) return false;
-					if (rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
-					let node = el;
-					while (node && node !== document.documentElement) {
-						const s = window.getComputedStyle(node);
-						if (s.display === 'none' || s.visibility === 'hidden') return false;
-						node = node.parentElement;
-					}
-					return true;
-				} catch(e) { return false; }
-			}
-			const pageText = (document.body && document.body.innerText || '').toLowerCase();
-			// Review page is intentionally field-empty for our scanner.
-			if (pageText.includes('review your application')) return 0;
-			const root = document.querySelector('[role="dialog"], form') || document.body;
-			return [...root.querySelectorAll('input:not([type="hidden"]), select, textarea')]
-				.filter(el => isVisible(el) && (!el.value.trim() || el.getAttribute('aria-invalid') === 'true')).length;
-		}`
 		hasVisibleButUnscanned := false
 		for _, p := range pages {
 			if probe, err := p.Timeout(10 * time.Second).Eval(jsHasVisibleFormContent); err == nil {

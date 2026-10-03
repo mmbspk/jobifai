@@ -183,7 +183,8 @@ const jsClickApplyNavigation = `() => {
 	return { ok: false, label: 'no navigation CTA' };
 }`
 
-const jsLinkedInPrepareAtFinalReview = `() => {
+// jsLinkedInAtFinalReviewFunction is shared by prepare completion, jsScanFields, and the visible-input probe.
+const jsLinkedInAtFinalReviewFunction = `function linkedInAtFinalReviewPage() {
 	function isVisible(el) {
 		try {
 			const rect = el.getBoundingClientRect();
@@ -216,6 +217,11 @@ const jsLinkedInPrepareAtFinalReview = `() => {
 	return false;
 }`
 
+const jsLinkedInAtFinalReview = `() => {
+` + jsLinkedInAtFinalReviewFunction + `
+	return linkedInAtFinalReviewPage();
+}`
+
 func linkedInPrepareScanComplete(primaryKind string, atFinalReview bool) bool {
 	if applyPrimaryIsSubmit(primaryKind) {
 		return true
@@ -225,7 +231,7 @@ func linkedInPrepareScanComplete(primaryKind string, atFinalReview bool) bool {
 
 func (b *Bot) linkedInPrepareAtFinalReview(page *rod.Page) bool {
 	tryEval := func(p *rod.Page) (bool, error) {
-		res, evalErr := p.Timeout(5 * time.Second).Eval(jsLinkedInPrepareAtFinalReview)
+		res, evalErr := p.Timeout(5 * time.Second).Eval(jsLinkedInAtFinalReview)
 		if evalErr != nil {
 			return false, evalErr
 		}
