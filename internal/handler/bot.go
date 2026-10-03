@@ -167,6 +167,17 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, out)
 }
 
+// POST /api/bot/review/{job_id}/prepare
+func (h *BotHandlers) ReviewPrepareDocuments(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	jobID := chi.URLParam(r, "job_id")
+	if err := h.svc.Bot.PrepareReviewDocuments(r.Context(), userID, jobID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	okMsg(w, "documents prepared")
+}
+
 // POST /api/bot/review/{job_id}/approve
 func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
@@ -181,13 +192,20 @@ func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 		 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID,
 	).Scan(&req.Company, &req.Role, &req.Location, &req.Platform, &req.Link, &req.ResumePath, &req.CoverPath,
 		&req.ResumeContentVersionID, &req.CoverContentVersionID, &req.DocumentRefsJSON, &req.SuitabilityReasoning)
-	if err == nil {
-		req.FrozenDocuments = documents.ParseApplicationPackJSON(req.DocumentRefsJSON).ReadyForSubmit()
-	}
 	if err != nil {
 		notFound(w, "no pending review for job_id "+jobID)
 		return
 	}
+	pack := documents.ParseApplicationPackJSON(req.DocumentRefsJSON)
+	if !pack.ReadyForSubmit() {
+		msg := "prepare documents before approving this application"
+		if pack.HoldReason != "" {
+			msg = pack.HoldReason
+		}
+		writeJSON(w, http.StatusConflict, map[string]string{"message": msg})
+		return
+	}
+	req.FrozenDocuments = true
 
 	if err := h.svc.Bot.SubmitSync(r.Context(), userID, req); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})

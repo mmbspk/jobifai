@@ -20,6 +20,12 @@ export function Review() {
   const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
   const halalEnabled = generalSettings?.halal_job_filter === true
 
+  const prepare = useMutation({
+    mutationFn: botApi.reviewPrepare,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['review-pending'] })
+    },
+  })
   const approve = useMutation({
     mutationFn: botApi.reviewApprove,
     onSuccess: () => {
@@ -102,6 +108,8 @@ export function Review() {
         key={review.job_id}
         review={review}
         halalEnabled={halalEnabled}
+        onPrepare={() => prepare.mutate(review.job_id)}
+        prepareLoading={prepare.isPending}
         onApprove={() => approve.mutate(review.job_id)}
         onReject={() => reject.mutate(review.job_id)}
       />

@@ -11,6 +11,22 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
+func (b *Bot) policiesRequireVerifiedDocuments() bool {
+	if b.cfg.Documents == nil {
+		return false
+	}
+	p := b.policies()
+	if p.ResumeMode != domain.ResumeDocumentModeSiteHosted {
+		return true
+	}
+	switch p.CoverMode {
+	case domain.CoverDocumentModeWhenRequired, domain.CoverDocumentModeWhenAccepted, domain.CoverDocumentModeGeneralDefault:
+		return true
+	default:
+		return false
+	}
+}
+
 func (b *Bot) policies() domain.DocumentPolicies {
 	gs := b.cfg.Settings
 	config.EnsureDocumentPolicies(&gs)
@@ -179,12 +195,21 @@ func (l *lazyDocGen) ensureMaterialized() {
 		l.restoreFrozenPack()
 		return
 	}
+	if !l.formCaps.Detected {
+		return
+	}
 	l.matMu.Lock()
 	defer l.matMu.Unlock()
 	if l.materialized {
 		return
 	}
 	l.materializeWithPolicies()
+	if !l.formCaps.Detected {
+		return
+	}
+	if strings.Contains(l.holdReason, "open apply form before preparing") {
+		return
+	}
 	l.materialized = true
 }
 
@@ -192,11 +217,42 @@ func (l *lazyDocGen) policyBlocked() bool {
 	return strings.TrimSpace(l.holdReason) != ""
 }
 
+func (l *lazyDocGen) invalidateMaterialization() {
+	l.matMu.Lock()
+	defer l.matMu.Unlock()
+	l.materialized = false
+	l.holdReason = ""
+	l.resume = ""
+	l.cover = ""
+	l.resumeVersionID = ""
+	l.coverVersionID = ""
+	l.useSiteResume = false
+	l.pack = documents.ApplicationDocumentPack{}
+	l.refsJSON = ""
+}
+
 func (l *lazyDocGen) applyCaps(caps documents.FormDocumentCapabilities) {
+	prev := capsFingerprint(l.formCaps)
+	wasDetected := l.formCaps.Detected
 	mergeCaps(&l.formCaps, caps)
-	if l.formCaps.Detected && !l.materialized && !l.frozen {
-		l.matMu.Lock()
-		l.materialized = false
-		l.matMu.Unlock()
+	next := capsFingerprint(l.formCaps)
+	if l.frozen {
+		l.capsFingerprint = next
+		return
 	}
+	shouldReset := l.materialized && l.formCaps.Detected && (
+		(prev != "" && prev != next) ||
+		(!wasDetected && l.formCaps.Detected) ||
+		strings.Contains(l.holdReason, "unknown"))
+	if shouldReset {
+		l.invalidateMaterialization()
+	}
+	l.capsFingerprint = next
+}
+
+func (l *lazyDocGen) packJSONForPersist() string {
+	if l.refsJSON != "" {
+		return l.refsJSON
+	}
+	return documents.WriteApplicationPackJSON(l.pack)
 }

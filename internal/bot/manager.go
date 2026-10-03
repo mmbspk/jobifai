@@ -359,34 +359,11 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		log.Warn().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to fetch score from pending review")
 	}
 
-	var managerLazy *lazyDocGen
 	if req.Platform == "seek" {
-		// Read description directly from the already-open jobPage tab — avoids
-		// opening a second tab at the same URL just to extract text.
 		_ = jobPage.Timeout(30 * time.Second).WaitLoad()
 		_ = jobPage.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
-		jobDesc := req.Role + " at " + req.Company
-		if rawHTML, err := jobPage.HTML(); err == nil {
-			if d := scraper.ParseHTML(rawHTML); len(strings.TrimSpace(d.Description)) >= 100 {
-				jobDesc = d.Description
-			}
-		}
-		managerLazy = &lazyDocGen{
-			b: b, ctx: m.ctx, job: linkedInJob{ID: req.JobID, Company: req.Company, Title: req.Role}, jobDesc: jobDesc,
-			resumeOverride: req.ResumePath, coverOverride: req.CoverPath,
-			resumeVersionOverride: req.ResumeContentVersionID, coverVersionOverride: req.CoverContentVersionID,
-			frozen: req.FrozenDocuments, refsJSON: req.DocumentRefsJSON,
-		}
-	} else {
-		managerDetails := b.fetchJob(m.ctx, linkedInJob{URL: req.Link, Company: req.Company, Title: req.Role})
-		managerLazy = &lazyDocGen{
-			b: b, ctx: m.ctx, job: linkedInJob{ID: req.JobID, Company: req.Company, Title: req.Role}, jobDesc: managerDetails.Description,
-			resumeOverride: req.ResumePath, coverOverride: req.CoverPath,
-			resumeVersionOverride: req.ResumeContentVersionID, coverVersionOverride: req.CoverContentVersionID,
-			frozen: req.FrozenDocuments, refsJSON: req.DocumentRefsJSON,
-		}
 	}
-	managerLazy.restoreFrozenPack()
+	managerLazy := managerLazyForSubmit(b, m.ctx, req, jobPage)
 
 	// Extract location from the job page; fall back to the value stored in pending_review.
 	location := extractJobLocation(jobPage, domain.Platform(req.Platform))
@@ -420,9 +397,15 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 				if savedCover == "" {
 					savedCover = req.CoverPath
 				}
-				packJSON := documents.WriteApplicationPackJSON(documents.PackFromPrepared(
-					"", documents.ResolvedDocument{}, documents.ResolvedDocument{}, savedResume, savedCover,
-				))
+				packJSON := managerLazy.packJSONForPersist()
+				if packJSON == "" {
+					packJSON = req.DocumentRefsJSON
+				}
+				if packJSON == "" {
+					packJSON = documents.WriteApplicationPackJSON(documents.PackFromPrepared(
+						"", documents.ResolvedDocument{}, documents.ResolvedDocument{}, savedResume, savedCover,
+					))
+				}
 				_, _ = m.db.Exec(
 					`INSERT OR REPLACE INTO jobs_pending_review
 					 (job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,
@@ -459,9 +442,15 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			if savedCover == "" {
 				savedCover = req.CoverPath
 			}
-			packJSON := documents.WriteApplicationPackJSON(documents.PackFromPrepared(
-				"", documents.ResolvedDocument{}, documents.ResolvedDocument{}, savedResume, savedCover,
-			))
+			packJSON := managerLazy.packJSONForPersist()
+			if packJSON == "" {
+				packJSON = req.DocumentRefsJSON
+			}
+			if packJSON == "" {
+				packJSON = documents.WriteApplicationPackJSON(documents.PackFromPrepared(
+					"", documents.ResolvedDocument{}, documents.ResolvedDocument{}, savedResume, savedCover,
+				))
+			}
 			_, _ = m.db.Exec(
 				`UPDATE jobs_pending_review
 				 SET attempt_count = attempt_count + 1,

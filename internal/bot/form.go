@@ -18,6 +18,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog/log"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 )
 
@@ -36,9 +37,11 @@ type formField struct {
 	ID        string            `json:"id"`          // select / text element id
 	Question  string            `json:"question"`    // visible label text
 	Options   []formFieldOption `json:"options"`     // radio / select choices
-	HasFile   bool              `json:"hasFile"`     // file already attached
-	InputType string            `json:"inputType"`   // text | number | textarea
-	Typeahead bool              `json:"isTypeahead"` // combobox requiring dropdown selection
+	HasFile      bool              `json:"hasFile"`      // file already attached
+	DocumentKind string            `json:"documentKind"` // resume | cover_letter | unknown
+	Required     bool              `json:"required"`     // file field marked required on form
+	InputType    string            `json:"inputType"`    // text | number | textarea
+	Typeahead    bool              `json:"isTypeahead"`  // combobox requiring dropdown selection
 }
 
 func (f formField) optionLabels() []string {
@@ -174,7 +177,24 @@ const jsScanFields = `() => {
 		const typeOk = !a || a.includes('pdf') || a.includes('doc') || a.includes('txt') || a.includes('rtf');
 		return typeOk && isContainerVisible(el);
 	}).forEach((el, i) => {
-		fields.push({ type: 'file', index: i, hasFile: !!(el.files && el.files.length > 0) });
+		function classifyDocumentKind(text) {
+			const q = (text || '').toLowerCase();
+			if (q.includes('cover')) return 'cover_letter';
+			if (q.includes('resume') || q.includes('résumé') || q.includes('cv')) return 'resume';
+			return 'unknown';
+		}
+		const formEl = el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset, label');
+		const lbl = labelFor(el.id)
+			|| (formEl && formEl.querySelector('label, legend, .fb-form-element-label, span[data-test-form-element-label]'))
+			|| el.closest('label');
+		const question = lbl
+			? lbl.textContent.trim().replace(/\s+/g, ' ')
+			: (el.getAttribute('aria-label') || el.getAttribute('name') || '');
+		const required = el.required || el.getAttribute('aria-required') === 'true';
+		fields.push({
+			type: 'file', index: i, hasFile: !!(el.files && el.files.length > 0),
+			question, documentKind: classifyDocumentKind(question), required,
+		});
 	});
 
 	// ── Radio groups, unanswered ones whose CONTAINER is visible ────────────
@@ -882,64 +902,72 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		}
 	}
 
-	fileUploadIdx := 0 // track how many file inputs we've processed
-
 	for _, f := range fields {
 		b.shortPause() // human-like pause before each field interaction
 		switch f.Type {
 
 		case "file":
+			if lazy.reviewPrepareOnly {
+				continue
+			}
+			resumePath, coverPath := lazy.get()
 			if lazy.policyBlocked() {
 				return filled, true, fmt.Errorf("documents: %s", lazy.holdReason)
 			}
-			resumePath, coverPath := lazy.get() // generates on first call, cached after
+			docKind := f.DocumentKind
+			if docKind == "" || docKind == "unknown" {
+				docKind = documents.KindResume
+			}
 			path := resumePath
-			kind := "resume"
-			if fileUploadIdx > 0 {
-				path = coverPath // second file input → cover letter
-				kind = "cover letter"
+			if docKind == documents.KindCoverLetter {
+				path = coverPath
+			}
+			kindLabel := docKind
+			if docKind == documents.KindCoverLetter {
+				kindLabel = "cover letter"
 			}
 			if path == "" {
-				if lazy.useSiteResume && fileUploadIdx == 0 {
+				if lazy.useSiteResume && docKind == documents.KindResume {
 					if !f.HasFile {
 						return filled, true, fmt.Errorf("documents: job-site resume not attached")
 					}
 					log.Debug().Int("index", f.Index).Msg("form: using verified site-hosted resume")
 					filled = true
-					fileUploadIdx++
 					continue
 				}
-				if f.HasFile && b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted && fileUploadIdx == 0 {
+				if f.HasFile && b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted && docKind == documents.KindResume {
 					log.Debug().Int("index", f.Index).Msg("form: site resume mode — keeping platform attachment")
 					filled = true
-					fileUploadIdx++
 					continue
 				}
+				if f.HasFile && f.Required {
+					log.Warn().Int("index", f.Index).Str("kind", kindLabel).Msg("form: required upload missing generated file — not substituting platform attachment")
+					return filled, true, fmt.Errorf("documents: required %s upload failed", kindLabel)
+				}
 				if f.HasFile {
-					log.Warn().Int("index", f.Index).Str("kind", kind).Msg("form: required upload missing generated file — not substituting platform attachment")
-					return filled, true, fmt.Errorf("documents: required %s upload failed", kind)
+					log.Debug().Int("index", f.Index).Str("kind", kindLabel).Msg("form: optional field already has platform attachment")
+					continue
 				}
 				log.Warn().Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
 					Msg("form: no PDF path for optional file field")
-				fileUploadIdx++
 				continue
 			}
-			// Always upload our generated file, replace LinkedIn's default resume.
 			var uploadErr error
 			if b.cfg.Platform == domain.PlatformSeek {
-				uploadErr = b.seekUploadResume(page, path)
-				if fileUploadIdx > 0 {
+				switch docKind {
+				case documents.KindCoverLetter:
 					uploadErr = b.seekUploadCoverLetter(page, path)
+				default:
+					uploadErr = b.seekUploadResume(page, path)
 				}
 			} else {
 				uploadErr = b.formUploadFile(page, path, f.Index)
 			}
 			if uploadErr != nil {
-				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kind, uploadErr)
+				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kindLabel, uploadErr)
 			}
-			log.Info().Str("path", path).Str("kind", kind).Msg("form: file uploaded")
+			log.Info().Str("path", path).Str("kind", kindLabel).Msg("form: file uploaded")
 			filled = true
-			fileUploadIdx++
 
 		case "radio":
 			fallback := ""

@@ -887,7 +887,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 
 	if b.cfg.RequireReview {
 		packJSON := documents.WriteApplicationPackJSON(documents.ApplicationDocumentPack{
-			HoldReason: "Documents prepare after you approve and the apply form is scanned",
+			HoldReason: "Use Prepare documents to scan the apply form and build your application pack before approving",
 		})
 		b.saveSeekPendingReview(ctx, &domain.PendingReview{
 			JobID:            job.ID,
@@ -1374,6 +1374,9 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	// Require the job detail page to also show an Applied indicator — weak
 	// success-page signals alone caused false "Applied ✓" in the UI.
 	if b.seekIsPostApplySuccess(page) {
+		if b.cfg.Documents != nil && b.policiesRequireVerifiedDocuments() {
+			return fmt.Errorf("seek Quick Apply submitted before document requirements were scanned — use Prepare documents or apply manually on Seek")
+		}
 		log.Info().Msg("seek: possible silent Quick Apply success page — verifying on job page")
 		if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err != nil {
 			log.Warn().Err(err).Msg("seek: success-page signal without job-page Applied confirmation")
@@ -1387,7 +1390,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		return err
 	}
 
-	lazy.applyCaps(probeLinkedInApplyCaps(page))
+	lazy.applyCaps(probeApplyFormCaps(page))
 	lazy.ensureMaterialized()
 	if lazy.policyBlocked() {
 		return fmt.Errorf("documents: %s", lazy.holdReason)

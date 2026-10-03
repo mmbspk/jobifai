@@ -18,7 +18,8 @@ export const botApi = {
   pause: () => apiPost<void>('/bot/pause'),
   resume: () => apiPost<void>('/bot/resume'),
   reviewPending: () => apiGet<PendingReview[]>('/bot/review/pending'),
-  reviewApprove: (jobId: string) => apiPost<void>(`/bot/review/${jobId}/approve`),
+  reviewPrepare: (jobId: string) => apiPost<void>(`/bot/review/${jobId}/prepare`, undefined, { timeoutMs: 4.5 * 60 * 1000 }),
+  reviewApprove: (jobId: string) => apiPost<void>(`/bot/review/${jobId}/approve`, undefined, { timeoutMs: 4.5 * 60 * 1000 }),
   reviewReject: (jobId: string) => apiPost<void>(`/bot/review/${jobId}/reject`),
   applyFromURL: (url: string, market: string, force = false, opts?: Pick<ApiRequestOpts, 'signal'>) =>
     apiPost<ApplyURLResponse>('/bot/apply-url', { url, market, force }, {

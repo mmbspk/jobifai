@@ -9,6 +9,7 @@ import (
 
 // ApplicationDocumentPack is the frozen application document state (paths, outcomes, provenance).
 type ApplicationDocumentPack struct {
+	Prepared   bool                          `json:"prepared,omitempty"`
 	HoldReason string                        `json:"hold_reason,omitempty"`
 	Resume     domain.ApplicationDocumentRef `json:"resume,omitempty"`
 	Cover      domain.ApplicationDocumentRef `json:"cover,omitempty"`
@@ -80,15 +81,28 @@ func packFromLegacyRefs(refs []domain.ApplicationDocumentRef) ApplicationDocumen
 	return p
 }
 
-// ReadyForSubmit reports whether a stored pack can be reused without re-resolution.
+// ReadyForSubmit reports whether a stored pack was prepared and can be frozen for submit.
 func (p ApplicationDocumentPack) ReadyForSubmit() bool {
 	if strings.Contains(p.HoldReason, "prepare after you approve") {
 		return false
 	}
-	if p.Resume.Outcome != "" || p.Cover.Outcome != "" {
-		return true
+	if !p.Prepared {
+		return false
 	}
-	return p.HoldReason != "" && p.Resume.LocalPath != ""
+	if strings.TrimSpace(p.HoldReason) != "" {
+		return false
+	}
+	return p.Resume.Outcome != "" || p.Cover.Outcome != "" ||
+		p.Resume.LocalPath != "" || p.Cover.LocalPath != ""
+}
+
+// MarkPrepared clears discovery placeholders and marks the pack ready for approval gating.
+func (p *ApplicationDocumentPack) MarkPrepared() {
+	p.Prepared = true
+	if strings.Contains(p.HoldReason, "prepare after you approve") ||
+		strings.Contains(p.HoldReason, "Use Prepare documents") {
+		p.HoldReason = ""
+	}
 }
 
 func PackFromPrepared(holdReason string, resume, cover ResolvedDocument, resumePath, coverPath string) ApplicationDocumentPack {

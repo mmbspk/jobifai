@@ -12,12 +12,14 @@ import { JobMatchReasoning } from './JobMatchReasoning'
 interface ReviewCardProps {
   readonly review: PendingReview
   readonly halalEnabled: boolean
+  readonly onPrepare?: () => void
+  readonly prepareLoading?: boolean
   readonly onApprove: () => void
   readonly onReject: () => void
   readonly className?: string
 }
 
-export function ReviewCard({ review, halalEnabled, onApprove, onReject, className }: ReviewCardProps) {
+export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, onApprove, onReject, className }: ReviewCardProps) {
   const touchStartX = useRef<number | null>(null)
   const [swipeDir, setSwipeDir] = useState<'approve' | 'reject' | null>(null)
   const [dismissed, setDismissed] = useState(false)
@@ -70,13 +72,18 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
     : null
 
   let documentPreflight: string | null = null
+  let documentsPrepared = false
   if (review.document_refs_json) {
     try {
-      const parsed = JSON.parse(review.document_refs_json) as { hold_reason?: string }
+      const parsed = JSON.parse(review.document_refs_json) as { hold_reason?: string; prepared?: boolean }
       if (parsed.hold_reason) documentPreflight = parsed.hold_reason
+      documentsPrepared = parsed.prepared === true
     } catch {
       /* ignore */
     }
+  }
+  if (review.resume_path || review.cover_letter_path) {
+    documentsPrepared = true
   }
 
   return (
@@ -156,7 +163,7 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
         </div>
       ) : (
         <p className="text-xs leading-5 text-[var(--color-text-dim)]">
-          {documentPreflight ?? 'Documents are prepared when you approve and the apply form is scanned. Rendering and reusing saved PDFs do not use AI credits.'}
+          {documentPreflight ?? 'Prepare documents to scan the apply form and preview your resume and cover letter before you approve. Rendering and reusing saved PDFs do not use AI credits.'}
         </p>
       )}
 
@@ -187,7 +194,18 @@ export function ReviewCard({ review, halalEnabled, onApprove, onReject, classNam
           <Button variant="danger" className="flex-1 sm:flex-none" leftIcon={<X size={14} />} onClick={triggerReject}>
             Reject
           </Button>
-          <Button variant="primary" className="flex-1 sm:flex-none" leftIcon={<Check size={14} />} onClick={triggerApprove}>
+          {!documentsPrepared && onPrepare ? (
+            <Button variant="secondary" className="flex-1 sm:flex-none" loading={prepareLoading} onClick={onPrepare}>
+              Prepare documents
+            </Button>
+          ) : null}
+          <Button
+            variant="primary"
+            className="flex-1 sm:flex-none"
+            leftIcon={<Check size={14} />}
+            disabled={!documentsPrepared}
+            onClick={triggerApprove}
+          >
             Approve application
           </Button>
         </div>

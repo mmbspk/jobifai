@@ -55,8 +55,22 @@ type lazyDocGen struct {
 	useSiteResume         bool
 	matMu                 sync.Mutex
 	materialized          bool
+	capsFingerprint       string
+	reviewPrepareOnly     bool
 	packRestored          bool
 	pack                  documents.ApplicationDocumentPack
+}
+
+func (l *lazyDocGen) pathForKind(kind string) string {
+	if l.frozen {
+		l.restoreFrozenPack()
+	}
+	switch kind {
+	case documents.KindCoverLetter:
+		return l.cover
+	default:
+		return l.resume
+	}
 }
 
 // get returns the generated resume and cover letter paths, generating them on
@@ -107,12 +121,6 @@ func (l *lazyDocGen) peek() (resume, cover string) {
 		cover = l.cover
 	}
 	return resume, cover
-}
-
-// preload kicks off doc generation in the background so the LLM calls run
-// concurrently with form loading rather than sequentially after it.
-func (l *lazyDocGen) preload() {
-	go l.get()
 }
 
 // It is computed once per job session and cached.
@@ -1008,7 +1016,7 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 
 	if b.cfg.RequireReview {
 		packJSON := documents.WriteApplicationPackJSON(documents.ApplicationDocumentPack{
-			HoldReason: "Documents prepare after you approve and the apply form is scanned",
+			HoldReason: "Use Prepare documents to scan the apply form and build your application pack before approving",
 		})
 		b.queueForReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
@@ -1451,12 +1459,6 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 
 	if info, err := page.Eval(`() => window.location.href`); err == nil {
 		log.Info().Str("url", info.Value.String()).Msg("easy apply: page URL after load")
-	}
-
-	// Kick off resume/cover generation in parallel with the form so uploads are ready
-	// before the review/submit step (otherwise LLM finishes after "submitted").
-	if lazy != nil {
-		lazy.preload()
 	}
 
 	// Poll for up to 30s for either an Easy Apply button OR an "already applied" state.
@@ -2039,6 +2041,10 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 	// noAdvanceCount tracks when the step hash doesn't change after a click.
 	noAdvanceCount := 0
 	prevStepHash := ""
+
+	if lazy != nil && lazy.reviewPrepareOnly {
+		return b.scanApplyStepsForPrepare(ctx, page, lazy, clickEasyApplyPrimary)
+	}
 
 	for i := 0; i < 40; i++ {
 		select {
