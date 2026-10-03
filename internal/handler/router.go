@@ -28,6 +28,7 @@ func NewRouter(svc *Services) *chi.Mux {
 	botH := NewBotHandlers(svc)
 	jobs := NewJobHandlers(svc)
 	resume := NewResumeHandlers(svc)
+	documentsH := NewDocumentHandlers(svc)
 	settings := NewSettingsHandlers(svc)
 	ws := NewWSHandlers(svc)
 	users := NewUserHandlers(svc, svc.Users, svc.TokenManager, svc.DB)
@@ -129,6 +130,23 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/pending-review/{job_id}/blacklist", jobs.BlacklistCompany)
 			r.Get("/stats", jobs.Stats)
 			r.Get("/{job_id}", jobs.GetJob)
+		})
+
+		// ── Versioned documents (defaults foundation; bot unchanged in PR1) ─
+		r.Route("/api/documents", func(r chi.Router) {
+			r.Get("/", documentsH.List)
+			r.Get("/versions/{version_id}", documentsH.GetVersion)
+			r.Post("/resume/from-profile", documentsH.CreateResumeFromProfile)
+			r.Post("/resume/ai-improve", documentsH.AIImproveResume)
+			r.Post("/cover-letter", documentsH.SaveCoverLetter)
+			r.Post("/cover-letter/ai-generate", documentsH.AIGenerateCoverLetter)
+			r.Post("/originals", documentsH.UploadOriginal)
+			r.Put("/defaults", documentsH.SetDefault)
+			r.Put("/preferred-style", documentsH.SetPreferredStyle)
+			r.Post("/{document_id}/resume-versions", documentsH.AppendResumeVersion)
+			r.Post("/{document_id}/cover-versions", documentsH.AppendCoverVersion)
+			r.Get("/versions/{version_id}/pdf", documentsH.DownloadPDF)
+			r.Get("/versions/{version_id}/original", documentsH.DownloadOriginal)
 		})
 
 		// ── Resume generation ─────────────────────────────────────────

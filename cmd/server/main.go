@@ -19,6 +19,7 @@ import (
 	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 	"github.com/user/jobifai/internal/llm"
@@ -175,6 +176,45 @@ func main() {
 		log.Info().Str("dir", marketDir).Int("markets", n).Msg("resume markets loaded from disk")
 	}
 
+	docStorageRoot := os.Getenv("JOBIFAI_DOCUMENTS_STORAGE")
+	if docStorageRoot == "" {
+		docStorageRoot = filepath.Join("data", "user_documents")
+	}
+	docBlobs, err := documents.NewLocalBlobStore(docStorageRoot)
+	if err != nil {
+		log.Fatal().Err(err).Str("root", docStorageRoot).Msg("document blob storage")
+	}
+	docStore := documents.NewStore(database)
+	docSvc := &documents.Service{
+		Store:     docStore,
+		Blobs:     docBlobs,
+		Renderer:  renderer,
+		MarketDir: marketDir,
+		StylesDir: documents.StylesDirRelative,
+		LoadProfile: func(userID string) (*domain.ResumeProfile, error) {
+			var p domain.ResumeProfile
+			if err := cfgStore.Get(userID, "resume_profile", &p); errors.Is(err, domain.ErrNotFound) {
+				return nil, nil
+			} else if err != nil {
+				return nil, err
+			}
+			return &p, nil
+		},
+		DefaultsMeta: func(userID string) (documents.DefaultsMeta, error) {
+			var m documents.DefaultsMeta
+			if err := cfgStore.Get(userID, "document_defaults_meta", &m); errors.Is(err, domain.ErrNotFound) {
+				return documents.DefaultsMeta{}, nil
+			} else if err != nil {
+				return documents.DefaultsMeta{}, err
+			}
+			return documents.CoalesceDefaultsMeta(m), nil
+		},
+		SaveDefaultsMeta: func(userID string, m documents.DefaultsMeta) error {
+			return cfgStore.Set(userID, "document_defaults_meta", m)
+		},
+	}
+	log.Info().Str("root", docStorageRoot).Msg("document storage (local; transitional — plan durable object storage for production scale)")
+
 	// ── Router ──────────────────────────────────────────────────────────
 	svc := &handler.Services{
 		StartedAt:    time.Now(),
@@ -189,7 +229,7 @@ func main() {
 		Logs:         logBroadcaster,
 		Bot:          botMgr,
 		MarketDir:    marketDir,
-		StylesDir:    "resume_style",
+		StylesDir:    documents.StylesDirRelative,
 		FileToText:   resume.TextFromReader,
 		FetchJobPage: resume.FetchJobPage,
 		MarketLoader: func(path, yamlFile string) (*domain.ResumeMarket, error) {
@@ -259,6 +299,7 @@ func main() {
 			}
 			return resume.NewHalalChecker(halalC)
 		},
+		Documents: docSvc,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
 			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog)
 			if client == nil {

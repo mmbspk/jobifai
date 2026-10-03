@@ -530,6 +530,50 @@ Use the saved profile to answer a list of application or interview questions.
 
 ---
 
+## Documents (versioned defaults foundation)
+
+Owner-scoped document identities with immutable content versions, optional PDF render artifacts, and explicit default resume/cover version pointers. Re-rendering from saved content + CSS snapshot does not call the LLM.
+
+- **Storage**: local filesystem under `data/user_documents/` (override with `JOBIFAI_DOCUMENTS_STORAGE`). Transitional for single-server installs; does not solve disk growth alone.
+
+### GET /api/documents
+
+List documents, versions, and default pointers (includes outdated flags when profile/market changed after defaults were set).
+
+### POST /api/documents/resume/from-profile
+
+Create a resume PDF from the confirmed profile **without AI**. Does not set a default automatically.
+
+### POST /api/documents/resume/ai-improve
+
+Metered AI improvement; saves a new version only (never overwrites confirmed profile).
+
+### POST /api/documents/cover-letter
+
+Save a user-authored general cover letter and render PDF locally.
+
+### POST /api/documents/cover-letter/ai-generate
+
+Metered general cover letter writing; saves a new version.
+
+### POST /api/documents/originals
+
+Multipart upload (`file` field) retaining exact bytes as a non-reconstructible original version.
+
+### PUT /api/documents/defaults
+
+Body: `{ "kind": "resume"|"cover_letter", "content_version_id": "..." }` — explicit default selection only.
+
+### GET /api/documents/versions/{version_id}/pdf
+
+Download or inline-preview PDF (`?inline=1`). Reconstructs from saved content when artifact missing.
+
+### GET /api/documents/versions/{version_id}/original
+
+Download stored original bytes for an original-upload version.
+
+---
+
 ## Settings
 
 ### GET /api/settings/resume
