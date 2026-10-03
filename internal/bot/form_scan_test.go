@@ -28,6 +28,26 @@ const htmlFinalReviewPage = `<!DOCTYPE html><html><body>
 </div>
 </body></html>`
 
+func rodTestPage(t *testing.T, html string) *rod.Page {
+	t.Helper()
+	url, err := launcher.New().
+		Headless(true).
+		Leakless(false).
+		NoSandbox(true).
+		Launch()
+	if err != nil {
+		t.Skipf("chrome unavailable for DOM fixture test: %v", err)
+	}
+	browser := rod.New().ControlURL(url)
+	if err := browser.Connect(); err != nil {
+		t.Skipf("chrome connect failed: %v", err)
+	}
+	t.Cleanup(func() { _ = browser.Close() })
+	page := browser.MustPage("")
+	require.NoError(t, page.SetDocumentContent(html))
+	return page
+}
+
 func evalScanFields(t *testing.T, page *rod.Page) []formField {
 	t.Helper()
 	res, err := page.Eval(jsScanFields)
@@ -38,12 +58,7 @@ func evalScanFields(t *testing.T, page *rod.Page) []formField {
 }
 
 func TestJsScanFields_ReviewCTAWithRequiredCoverStillScans(t *testing.T) {
-	t.Parallel()
-	url := launcher.New().Headless(true).MustLaunch()
-	browser := rod.New().ControlURL(url).MustConnect()
-	t.Cleanup(func() { _ = browser.Close() })
-	page := browser.MustPage("")
-	require.NoError(t, page.SetDocumentContent(htmlReviewCTAWithCoverFile))
+	page := rodTestPage(t, htmlReviewCTAWithCoverFile)
 
 	fields := evalScanFields(t, page)
 	require.NotEmpty(t, fields)
@@ -64,12 +79,7 @@ func TestJsScanFields_ReviewCTAWithRequiredCoverStillScans(t *testing.T) {
 }
 
 func TestJsScanFields_FinalReviewPageSkipsFields(t *testing.T) {
-	t.Parallel()
-	url := launcher.New().Headless(true).MustLaunch()
-	browser := rod.New().ControlURL(url).MustConnect()
-	t.Cleanup(func() { _ = browser.Close() })
-	page := browser.MustPage("")
-	require.NoError(t, page.SetDocumentContent(htmlFinalReviewPage))
+	page := rodTestPage(t, htmlFinalReviewPage)
 
 	fields := evalScanFields(t, page)
 	require.Empty(t, fields)
