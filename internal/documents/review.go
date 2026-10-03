@@ -91,7 +91,10 @@ func (s *Service) ValidateUserVersionKind(ctx context.Context, userID, versionID
 
 // BuildReviewDocumentOptions flattens list response into picker choices.
 func BuildReviewDocumentOptions(list ListResponse) ReviewDocumentOptions {
-	var out ReviewDocumentOptions
+	out := ReviewDocumentOptions{
+		Resume: []ReviewDocumentChoice{},
+		Cover:  []ReviewDocumentChoice{},
+	}
 	for _, doc := range list.Documents {
 		for _, v := range doc.Versions {
 			ch := ReviewDocumentChoice{

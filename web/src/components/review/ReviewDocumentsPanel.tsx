@@ -117,7 +117,7 @@ function ReviewDocumentsForm({
         >
           <option value="">Policy default</option>
           <option value="__site__">Use job-site resume</option>
-          {data.options.resume.map((c) => (
+          {(data.options.resume ?? []).map((c) => (
             <option key={c.version_id} value={c.version_id}>
               {c.title}{c.is_original ? ' (original upload)' : ''}
             </option>
@@ -145,7 +145,7 @@ function ReviewDocumentsForm({
         >
           <option value="">Policy default</option>
           <option value="__skip__">Skip cover letter</option>
-          {data.options.cover.map((c) => (
+          {(data.options.cover ?? []).map((c) => (
             <option key={c.version_id} value={c.version_id}>
               {c.title}
             </option>

@@ -69,7 +69,10 @@ func (h *BotHandlers) reviewResolveContext(r *http.Request, userID string, resum
 	hasResumeDefault := effectiveResume != "" || def.ResumeVersionID != ""
 	hasCoverDefault := def.CoverLetterVersionID != ""
 
-	opts := documents.ReviewDocumentOptions{}
+	opts := documents.ReviewDocumentOptions{
+		Resume: []documents.ReviewDocumentChoice{},
+		Cover:  []documents.ReviewDocumentChoice{},
+	}
 	if h.svc.Documents != nil {
 		if list, err := h.svc.Documents.List(r.Context(), userID); err == nil {
 			opts = documents.BuildReviewDocumentOptions(list)
