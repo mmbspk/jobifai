@@ -30,4 +30,6 @@ func TestService_PDFBytes_ReconstructWhenBlobMissing(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, pdf)
 	require.Equal(t, int32(1), cr.calls.Load())
+	_, err = os.Stat(abs)
+	require.True(t, os.IsNotExist(err))
 }

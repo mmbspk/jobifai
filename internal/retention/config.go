@@ -32,17 +32,20 @@ func SaveDefaults(store ConfigStore, d domain.DocumentRetentionDefaults) error {
 	return store.Set(domain.SystemUserID, keyDocumentRetentionDefaults, d.Normalized())
 }
 
-// SaveDefaultsAudited persists policy and records admin audit row.
+// SaveDefaultsAudited validates, records audit when the limit changes, then persists policy.
 func SaveDefaultsAudited(ctx context.Context, store ConfigStore, db DB, adminUserID string, incoming domain.DocumentRetentionDefaults) (domain.DocumentRetentionDefaults, error) {
 	prev := LoadDefaults(store)
-	next := incoming.Normalized()
-	if err := SaveDefaults(store, next); err != nil {
+	if err := incoming.Validate(); err != nil {
 		return prev, err
 	}
+	next := incoming.Normalized()
 	if db != nil && prev.LatestSubmittedApplications != next.LatestSubmittedApplications {
 		if err := insertAudit(ctx, db, adminUserID, prev.LatestSubmittedApplications, next.LatestSubmittedApplications); err != nil {
 			return prev, err
 		}
+	}
+	if err := SaveDefaults(store, next); err != nil {
+		return prev, err
 	}
 	return next, nil
 }

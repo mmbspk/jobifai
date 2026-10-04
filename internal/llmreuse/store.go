@@ -43,12 +43,18 @@ type Store struct {
 	DB DB
 }
 
-// ContentFingerprint hashes user, task, and canonical message bodies (not visual/style).
-func ContentFingerprint(userID, task string, msgs []MessagePart) string {
+// ContentFingerprint hashes user, task, effective generation config, and message bodies.
+func ContentFingerprint(userID, task, provider, model string, maxTokens int, msgs []MessagePart) string {
 	h := sha256.New()
 	h.Write([]byte(strings.TrimSpace(userID)))
 	h.Write([]byte{0})
 	h.Write([]byte(strings.TrimSpace(task)))
+	h.Write([]byte{0})
+	h.Write([]byte(strings.TrimSpace(provider)))
+	h.Write([]byte{0})
+	h.Write([]byte(strings.TrimSpace(model)))
+	h.Write([]byte{0})
+	h.Write([]byte(strings.TrimSpace(itoa(maxTokens))))
 	h.Write([]byte{0})
 	for _, m := range msgs {
 		h.Write([]byte(strings.TrimSpace(m.Role)))
@@ -57,6 +63,20 @@ func ContentFingerprint(userID, task string, msgs []MessagePart) string {
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
 }
 
 // VisualIdentityHash separates presentation inputs from generation reuse scope.
@@ -75,6 +95,8 @@ type BeginResult struct {
 	Response      string
 	LeaseAcquired bool
 	RowID         string
+	OperationID   string
+	LeaseOwner    string
 }
 
 // Begin coordinates concurrent reuse for one logical generation.
@@ -113,7 +135,7 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 	if err == nil {
 		switch existing.state {
 		case StateCompleted:
-			return BeginResult{CacheHit: true, Response: existing.response, RowID: existing.id}, nil
+			return BeginResult{CacheHit: true, Response: existing.response, RowID: existing.id, OperationID: operationID}, nil
 		case StateInProgress:
 			resp, waitErr := s.waitForCompletion(ctx, userID, task, contentFP)
 			if waitErr != nil {
@@ -122,21 +144,20 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 			if resp == "" {
 				return BeginResult{}, ErrBeginContention
 			}
-			return BeginResult{CacheHit: true, Response: resp, RowID: existing.id}, nil
+			return BeginResult{CacheHit: true, Response: resp, RowID: existing.id, OperationID: operationID}, nil
 		case StateFailedUncertain:
 			// Provider outcome unknown after crash — caller may invoke provider; do not reuse stale body.
-			leaseUntil := time.Now().UTC().Add(defaultLeaseDuration).Format(time.RFC3339)
 			res, uerr := s.DB.ExecContext(ctx, `
-				UPDATE llm_generation_cache SET state = ?, operation_id = ?, lease_owner = ?, lease_until = ?,
+				UPDATE llm_generation_cache SET state = ?, operation_id = ?, lease_owner = ?, lease_until = datetime('now', '+3 minutes'),
 					provider_uncertain = 0, updated_at = datetime('now')
 				WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND state = ?`,
-				StateInProgress, operationID, operationID, leaseUntil,
+				StateInProgress, operationID, operationID,
 				userID, task, contentFP, StateFailedUncertain)
 			if uerr != nil {
 				return BeginResult{}, uerr
 			}
 			if n, _ := res.RowsAffected(); n == 1 {
-				return BeginResult{LeaseAcquired: true, RowID: existing.id}, nil
+				return BeginResult{LeaseAcquired: true, RowID: existing.id, OperationID: operationID, LeaseOwner: operationID}, nil
 			}
 			return BeginResult{}, ErrBeginContention
 		}
@@ -144,22 +165,21 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 		return BeginResult{}, err
 	}
 
-	leaseUntil := time.Now().UTC().Add(defaultLeaseDuration).Format(time.RFC3339)
 	rowID := uuid.NewString()
 	res, err := s.DB.ExecContext(ctx, `
 		INSERT INTO llm_generation_cache (
 			id, user_id, task, content_fingerprint, visual_identity_hash, state,
 			operation_id, lease_owner, lease_until, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+3 minutes'), datetime('now'))
 		ON CONFLICT(user_id, task, content_fingerprint) DO NOTHING`,
-		rowID, userID, task, contentFP, visualHash, StateInProgress, operationID, operationID, leaseUntil)
+		rowID, userID, task, contentFP, visualHash, StateInProgress, operationID, operationID)
 	if err != nil {
 		return BeginResult{}, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return BeginResult{}, ErrBeginContention
 	}
-	return BeginResult{LeaseAcquired: true, RowID: rowID}, nil
+	return BeginResult{LeaseAcquired: true, RowID: rowID, OperationID: operationID, LeaseOwner: operationID}, nil
 }
 
 func (s *Store) waitForCompletion(ctx context.Context, userID, task, contentFP string) (string, error) {
@@ -188,26 +208,26 @@ func (s *Store) waitForCompletion(ctx context.Context, userID, task, contentFP s
 	return "", ErrWaitTimeout
 }
 
-func (s *Store) Complete(ctx context.Context, userID, task, contentFP, response string) error {
+func (s *Store) Complete(ctx context.Context, userID, task, contentFP, leaseOwner, response string) error {
 	if s == nil || s.DB == nil {
 		return ErrNotConfigured
 	}
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE llm_generation_cache SET state = ?, response_text = ?, lease_until = NULL,
 			provider_uncertain = 0, updated_at = datetime('now')
-		WHERE user_id = ? AND task = ? AND content_fingerprint = ?`,
-		StateCompleted, response, userID, task, contentFP)
+		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND lease_owner = ?`,
+		StateCompleted, response, userID, task, contentFP, leaseOwner)
 	return err
 }
 
-func (s *Store) MarkFailedUncertain(ctx context.Context, userID, task, contentFP string) error {
+func (s *Store) MarkFailedUncertain(ctx context.Context, userID, task, contentFP, leaseOwner string) error {
 	if s == nil || s.DB == nil {
 		return ErrNotConfigured
 	}
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE llm_generation_cache SET state = ?, provider_uncertain = 1, updated_at = datetime('now')
-		WHERE user_id = ? AND task = ? AND content_fingerprint = ?`,
-		StateFailedUncertain, userID, task, contentFP)
+		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND lease_owner = ?`,
+		StateFailedUncertain, userID, task, contentFP, leaseOwner)
 	return err
 }
 

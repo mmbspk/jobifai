@@ -217,9 +217,18 @@ func main() {
 		},
 	}
 	log.Info().Str("root", docStorageRoot).Msg("document storage (local; transitional — plan durable object storage for production scale)")
+	retentionCoord := &retention.ActivityCoordinator{}
+	docSvc.WorkGuard = retentionCoord
 	botMgr.SetDocuments(docSvc)
-	retentionSvc := &retention.Service{DB: database, Config: cfgStore, Root: "."}
+	retentionSvc := &retention.Service{
+		DB:       database,
+		Config:   cfgStore,
+		Root:     ".",
+		Blobs:    docBlobs,
+		Activity: retentionCoord,
+	}
 	botMgr.SetRetention(retentionSvc)
+	botMgr.SetLLMReuse(llmReuseStore)
 
 	// ── Router ──────────────────────────────────────────────────────────
 	svc := &handler.Services{

@@ -14,6 +14,7 @@ import { AdminDefaultsPage } from './pages/admin/Defaults'
 import { AdminAutomationPage } from './pages/admin/Automation'
 import { AdminUsersPage } from './pages/admin/Users'
 import { AdminQuotaPage } from './pages/admin/Quota'
+import { AdminRetentionPage } from './pages/admin/Retention'
 import { AdminEconomicsPage } from './pages/admin/Economics'
 import { AdminModelsPage } from './pages/admin/Models'
 import { AdminLlmUsagePage } from './pages/admin/LlmUsage'
@@ -82,6 +83,7 @@ function AdminLayout() {
             <Route path="automation" element={<AdminAutomationPage />} />
             <Route path="users"      element={<AdminUsersPage />} />
             <Route path="quota"      element={<AdminQuotaPage />} />
+            <Route path="retention"  element={<AdminRetentionPage />} />
             <Route path="economics"  element={<AdminEconomicsPage />} />
             <Route path="models"     element={<AdminModelsPage />} />
             <Route path="llm-usage"  element={<AdminLlmUsagePage />} />

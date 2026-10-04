@@ -20,6 +20,7 @@ import (
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/llmreuse"
 	"github.com/user/jobifai/internal/llmpolicy"
 	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
@@ -72,6 +73,7 @@ type Manager struct {
 	documents        *documents.Service
 	usageLedger      *usage.Ledger
 	retention        retentionAfterSubmit
+	llmReuse         *llmreuse.Store
 }
 
 type retentionAfterSubmit interface {
@@ -92,6 +94,11 @@ func (m *Manager) SetSessionQuota(q SessionQuota) {
 // SetRetention wires post-submit PDF eviction (#60).
 func (m *Manager) SetRetention(r retentionAfterSubmit) {
 	m.retention = r
+}
+
+// SetLLMReuse wires exact-generation cache into bot-scoped LLM clients (#60).
+func (m *Manager) SetLLMReuse(store *llmreuse.Store) {
+	m.llmReuse = store
 }
 
 // SetDocuments wires the versioned document service into bot apply sessions (#59).
@@ -883,6 +890,9 @@ func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.C
 	if m.llmQuota != nil {
 		client = client.WithQuota(m.llmQuota, userID)
 	}
+	if m.llmReuse != nil {
+		client = client.WithReuse(&llm.ReuseCoordinator{Store: m.llmReuse})
+	}
 	return client
 }
 
@@ -1127,6 +1137,8 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 				time.Now().UTC().Format(time.RFC3339),
 			); err != nil {
 				log.Error().Err(err).Str("url", jobURL).Msg("ai apply: failed to record manually-applied job")
+			} else if m.retention != nil {
+				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
 			}
 			if _, err := m.db.Exec(`DELETE FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL); err != nil {
 				log.Error().Err(err).Str("url", jobURL).Msg("ai apply: failed to delete pending review for manually-applied job")
@@ -1321,6 +1333,8 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert applied failed")
+	} else if m.retention != nil {
+		m.retention.AfterSuccessfulSubmit(m.ctx, userID)
 	}
 	if _, err := m.db.ExecContext(ctx, `DELETE FROM jobs_pending_review WHERE user_id = ? AND link = ?`, userID, jobURL); err != nil {
 		log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: delete pending review failed")

@@ -19,6 +19,7 @@ const groups = [
   ] },
   { label: 'Configuration', items: [
     { to: '/admin/defaults', label: 'Defaults', icon: Settings2 },
+    { to: '/admin/retention', label: 'Document retention', icon: ScrollText },
   ] },
 ] as const
 

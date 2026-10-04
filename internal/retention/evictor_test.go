@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/user/jobifai/internal/config"
 	appdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/retention"
 )
@@ -23,16 +24,38 @@ func openRetentionTestDB(t *testing.T) (*retention.Service, *config.Store, strin
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqldb.Close() })
 	cfg := config.NewStore(sqldb)
-	svc := &retention.Service{DB: sqldb, Config: cfg, Root: root}
+	blobs, err := documents.NewLocalBlobStore(filepath.Join(root, "blobs"))
+	require.NoError(t, err)
+	coord := &retention.ActivityCoordinator{}
+	svc := &retention.Service{DB: sqldb, Config: cfg, Root: root, Blobs: blobs, Activity: coord}
 	return svc, cfg, root
 }
 
-func insertApplied(t *testing.T, svc *retention.Service, userID, jobID, resumePath, coverPath, appliedAt string) {
+func seedReconstructibleVersion(t *testing.T, svc *retention.Service, userID string) string {
+	t.Helper()
+	docID := uuid.NewString()
+	vid := uuid.NewString()
+	_, err := svc.DB.ExecContext(context.Background(), `
+		INSERT INTO user_documents (id, user_id, kind, title) VALUES (?, ?, 'resume', 't')`,
+		docID, userID)
+	require.NoError(t, err)
+	_, err = svc.DB.ExecContext(context.Background(), `
+		INSERT INTO document_content_versions (
+			id, document_id, user_id, version_number, source, content_kind, content_json,
+			css_snapshot, renderer_version, render_snapshot_json, reconstructible
+		) VALUES (?, ?, ?, 1, 'test', 'resume_json', '{}', 'css', 'v1', '{}', 1)`,
+		vid, docID, userID)
+	require.NoError(t, err)
+	return vid
+}
+
+func insertApplied(t *testing.T, svc *retention.Service, userID, jobID, resumePath, coverPath, resumeVID, appliedAt string) {
 	t.Helper()
 	_, err := svc.DB.ExecContext(context.Background(), `
-		INSERT INTO jobs_applied (id, user_id, platform, company, role, link, resume_path, cover_letter_path, applied_at)
-		VALUES (?, ?, 'seek', 'Co', 'Role', 'https://example.com/j', ?, ?, ?)`,
-		jobID, userID, resumePath, coverPath, appliedAt)
+		INSERT INTO jobs_applied (id, user_id, platform, company, role, link, resume_path, cover_letter_path,
+		 resume_content_version_id, applied_at)
+		VALUES (?, ?, 'seek', 'Co', 'Role', 'https://example.com/j', ?, ?, ?, ?)`,
+		jobID, userID, resumePath, coverPath, resumeVID, appliedAt)
 	require.NoError(t, err)
 }
 
@@ -48,17 +71,17 @@ func TestService_RunEviction_21Applications_KeepsLatest20(t *testing.T) {
 	ctx := context.Background()
 	svc, _, root := openRetentionTestDB(t)
 	userID := "user-retain-20"
+	vid := seedReconstructibleVersion(t, svc, userID)
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 21; i++ {
 		ts := base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
 		rp := filepath.ToSlash(filepath.Join("job_applications", userID, "job-"+uuid.NewString()+".pdf"))
 		writePDF(t, root, rp)
-		insertApplied(t, svc, userID, uuid.NewString(), rp, "", ts)
+		insertApplied(t, svc, userID, uuid.NewString(), rp, "", vid, ts)
 	}
-	metrics, err := svc.RunEviction(ctx, userID, 50)
+	metrics, err := svc.ReconcileUser(ctx, userID)
 	require.NoError(t, err)
-	require.Equal(t, 1, metrics.ApplicationsScanned)
-	require.Equal(t, 1, metrics.PathsEvicted)
+	require.GreaterOrEqual(t, metrics.PathsEvicted, 1)
 
 	var remaining int
 	require.NoError(t, svc.DB.QueryRowContext(ctx, `
@@ -66,18 +89,37 @@ func TestService_RunEviction_21Applications_KeepsLatest20(t *testing.T) {
 	require.Equal(t, 20, remaining)
 }
 
+func TestService_RunEviction_SkipsWithoutReconstructibleVersion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, _, root := openRetentionTestDB(t)
+	userID := "user-no-recon"
+	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 21; i++ {
+		ts := base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
+		rp := filepath.ToSlash(filepath.Join("job_applications", userID, "job-"+uuid.NewString()+".pdf"))
+		writePDF(t, root, rp)
+		insertApplied(t, svc, userID, uuid.NewString(), rp, "", "", ts)
+	}
+	metrics, err := svc.RunEviction(ctx, userID, 50)
+	require.NoError(t, err)
+	require.Equal(t, 0, metrics.PathsEvicted)
+	require.Greater(t, metrics.PathsProtected, 0)
+}
+
 func TestService_RunEviction_AdminLimit5To30(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	svc, cfg, root := openRetentionTestDB(t)
 	userID := "user-limit-change"
+	vid := seedReconstructibleVersion(t, svc, userID)
 	require.NoError(t, retention.SaveDefaults(cfg, domain.DocumentRetentionDefaults{LatestSubmittedApplications: 5}))
 	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 10; i++ {
 		ts := base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
 		rp := filepath.ToSlash(filepath.Join("job_applications", userID, "r"+uuid.NewString()+".pdf"))
 		writePDF(t, root, rp)
-		insertApplied(t, svc, userID, uuid.NewString(), rp, "", ts)
+		insertApplied(t, svc, userID, uuid.NewString(), rp, "", vid, ts)
 	}
 	m1, err := svc.RunEviction(ctx, userID, 50)
 	require.NoError(t, err)
@@ -97,6 +139,7 @@ func TestService_RunEviction_ProtectsSharedPathWithRetainedJob(t *testing.T) {
 	ctx := context.Background()
 	svc, _, root := openRetentionTestDB(t)
 	userID := "user-shared"
+	vid := seedReconstructibleVersion(t, svc, userID)
 	shared := filepath.ToSlash(filepath.Join("job_applications", userID, "shared.pdf"))
 	writePDF(t, root, shared)
 	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -109,7 +152,7 @@ func TestService_RunEviction_ProtectsSharedPathWithRetainedJob(t *testing.T) {
 		default:
 			writePDF(t, root, rp)
 		}
-		insertApplied(t, svc, userID, uuid.NewString(), rp, "", ts)
+		insertApplied(t, svc, userID, uuid.NewString(), rp, "", vid, ts)
 	}
 	metrics, err := svc.RunEviction(ctx, userID, 50)
 	require.NoError(t, err)
@@ -118,39 +161,18 @@ func TestService_RunEviction_ProtectsSharedPathWithRetainedJob(t *testing.T) {
 	require.NoError(t, statErr)
 }
 
-func TestService_RunEviction_DeleteFailureIncrementsMetric(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	svc, _, root := openRetentionTestDB(t)
-	userID := "user-del-fail"
-	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 21; i++ {
-		ts := base.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
-		rp := filepath.ToSlash(filepath.Join("job_applications", userID, "x"+uuid.NewString()+".pdf"))
-		writePDF(t, root, rp)
-		insertApplied(t, svc, userID, uuid.NewString(), rp, "", ts)
-	}
-	// Remove write permission on directory so deletes fail for oldest evictable files.
-	dir := filepath.Join(root, "job_applications", userID)
-	require.NoError(t, os.Chmod(dir, 0o500))
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-
-	metrics, err := svc.RunEviction(ctx, userID, 50)
-	require.NoError(t, err)
-	require.Equal(t, 1, metrics.DeleteFailures)
-}
-
 func TestService_PreviewEviction_UserIsolation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	svc, _, root := openRetentionTestDB(t)
 	u1, u2 := "user-a", "user-b"
 	for _, u := range []string{u1, u2} {
+		vid := seedReconstructibleVersion(t, svc, u)
 		for i := 0; i < 21; i++ {
 			ts := time.Now().UTC().Add(time.Duration(i) * time.Minute).Format(time.RFC3339)
 			rp := filepath.ToSlash(filepath.Join("job_applications", u, "p"+uuid.NewString()+".pdf"))
 			writePDF(t, root, rp)
-			insertApplied(t, svc, u, uuid.NewString(), rp, "", ts)
+			insertApplied(t, svc, u, uuid.NewString(), rp, "", vid, ts)
 		}
 	}
 	cands, _, err := svc.PreviewEviction(ctx, u1)

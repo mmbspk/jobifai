@@ -177,21 +177,34 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 	if err := c.checkCostCeiling(inChars, maxOut); err != nil {
 		return "", err
 	}
-	if err := c.checkQuota(ctx, inChars, c.cfg.MaxTokens); err != nil {
-		return "", err
-	}
-	var reuseFP, reuseTask string
+	ctx = c.prepareCallContext(ctx)
+	var reuseFP, reuseTask, reuseLease string
 	var reuseEnabled bool
-	if br, fp, task, ok := c.reuseBegin(ctx, msgs); ok {
+	br, fp, task, reuseErr := c.reuseBegin(ctx, msgs)
+	if reuseErr != nil {
+		return "", reuseErr
+	}
+	if task != "" {
 		reuseEnabled = true
 		reuseFP, reuseTask = fp, task
+		reuseLease = br.LeaseOwner
+		call := CallContextFrom(ctx)
+		if br.OperationID != "" {
+			call.OperationID = br.OperationID
+			ctx = WithCallContext(ctx, call)
+		}
 		if br.CacheHit {
 			return br.Response, nil
 		}
 	}
+	if err := c.checkQuota(ctx, inChars, c.cfg.MaxTokens); err != nil {
+		if reuseEnabled && reuseLease != "" {
+			c.reuseFailedUncertain(ctx, reuseTask, reuseFP, reuseLease)
+		}
+		return "", err
+	}
 	const maxAttempts = 3
 	var err error
-	ctx = c.prepareCallContext(ctx)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		call := CallContextFrom(ctx)
 		call.Attempt = attempt
@@ -212,8 +225,8 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 			return "", fmt.Errorf("unknown LLM provider: %q", c.cfg.Provider)
 		}
 		if err == nil {
-			if reuseEnabled {
-				c.reuseComplete(ctx, reuseTask, reuseFP, result)
+			if reuseEnabled && reuseLease != "" {
+				c.reuseComplete(ctx, reuseTask, reuseFP, reuseLease, result)
 			}
 			return result, nil
 		}
@@ -227,8 +240,8 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 	}
 	if err != nil && !errors.Is(err, ErrBillingPersistFailed) {
 		c.recordTerminalFailure(ctx, classifyChatError(err))
-		if reuseEnabled {
-			c.reuseFailedUncertain(ctx, reuseTask, reuseFP)
+		if reuseEnabled && reuseLease != "" {
+			c.reuseFailedUncertain(ctx, reuseTask, reuseFP, reuseLease)
 		}
 	}
 	return "", err

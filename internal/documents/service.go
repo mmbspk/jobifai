@@ -25,6 +25,12 @@ type PDFRenderer interface {
 	RenderCoverLetter(ctx context.Context, body string, styleName, cssOverride string) ([]byte, error)
 }
 
+// UserWorkGuard coordinates reads with retention eviction (#60).
+type UserWorkGuard interface {
+	BeginWork(userID string)
+	EndWork(userID string)
+}
+
 type Service struct {
 	Store            *Store
 	Blobs            BlobStore
@@ -34,6 +40,7 @@ type Service struct {
 	LoadProfile      ProfileLoader
 	DefaultsMeta     func(userID string) (DefaultsMeta, error)
 	SaveDefaultsMeta func(userID string, m DefaultsMeta) error
+	WorkGuard        UserWorkGuard
 }
 
 type RenderContext struct {
@@ -301,6 +308,10 @@ func (s *Service) OriginalBytes(ctx context.Context, userID, versionID string) (
 }
 
 func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) ([]byte, string, error) {
+	if s.WorkGuard != nil {
+		s.WorkGuard.BeginWork(userID)
+		defer s.WorkGuard.EndWork(userID)
+	}
 	key, _, err := s.Store.ArtifactForVersion(ctx, userID, versionID)
 	if err == nil {
 		data, readErr := s.Blobs.Read(key)
@@ -353,9 +364,6 @@ func (s *Service) ReconstructPDF(ctx context.Context, userID, versionID string) 
 		if err != nil {
 			return nil, "", err
 		}
-		if err := s.persistArtifact(ctx, userID, versionID, pdf, p.CSSSnapshot); err != nil {
-			return pdf, "application/pdf", nil
-		}
 		return pdf, "application/pdf", nil
 	case ContentCoverText:
 		var cc CoverContent
@@ -365,9 +373,6 @@ func (s *Service) ReconstructPDF(ctx context.Context, userID, versionID string) 
 		pdf, err := s.renderCoverWithSnapshot(ctx, cc.Body, p.StyleName, p.CSSSnapshot)
 		if err != nil {
 			return nil, "", err
-		}
-		if err := s.persistArtifact(ctx, userID, versionID, pdf, p.CSSSnapshot); err != nil {
-			return pdf, "application/pdf", nil
 		}
 		return pdf, "application/pdf", nil
 	default:

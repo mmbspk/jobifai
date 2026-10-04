@@ -30,10 +30,13 @@ func TestAdmin_RetentionDefaults_AuditAndClamp(t *testing.T) {
 	require.NoError(t, json.NewDecoder(wPut.Body).Decode(&defaults))
 	assert.Equal(t, 5, defaults.LatestSubmittedApplications)
 
-	wPut30 := authPut(t, router, "/api/admin/retention/defaults", adminToken, domain.DocumentRetentionDefaults{LatestSubmittedApplications: 99})
+	wPutBad := authPut(t, router, "/api/admin/retention/defaults", adminToken, domain.DocumentRetentionDefaults{LatestSubmittedApplications: 99})
+	require.Equal(t, http.StatusBadRequest, wPutBad.Code)
+
+	wPut30 := authPut(t, router, "/api/admin/retention/defaults", adminToken, domain.DocumentRetentionDefaults{LatestSubmittedApplications: 30})
 	require.Equal(t, http.StatusOK, wPut30.Code)
 	require.NoError(t, json.NewDecoder(wPut30.Body).Decode(&defaults))
-	assert.Equal(t, domain.DocumentRetentionMax, defaults.LatestSubmittedApplications)
+	assert.Equal(t, 30, defaults.LatestSubmittedApplications)
 
 	wAudit := authGet(t, router, "/api/admin/retention/audit?limit=10", adminToken)
 	require.Equal(t, http.StatusOK, wAudit.Code)

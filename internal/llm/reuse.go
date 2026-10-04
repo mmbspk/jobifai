@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/user/jobifai/internal/llmreuse"
 )
@@ -19,34 +20,37 @@ func messageParts(msgs []Message) []llmreuse.MessagePart {
 	return out
 }
 
-func (c *Client) reuseBegin(ctx context.Context, msgs []Message) (llmreuse.BeginResult, string, string, bool) {
+func (c *Client) reuseBegin(ctx context.Context, msgs []Message) (llmreuse.BeginResult, string, string, error) {
 	if c.reuse == nil || c.reuse.Store == nil || c.userID == "" {
-		return llmreuse.BeginResult{}, "", "", false
+		return llmreuse.BeginResult{}, "", "", nil
 	}
 	call := CallContextFrom(ctx)
+	if call.BypassReuse {
+		return llmreuse.BeginResult{}, "", "", nil
+	}
 	task := call.Task
 	if task == "" {
-		return llmreuse.BeginResult{}, "", "", false
+		return llmreuse.BeginResult{}, "", "", nil
 	}
-	fp := llmreuse.ContentFingerprint(c.userID, task, messageParts(msgs))
+	fp := llmreuse.ContentFingerprint(c.userID, task, c.cfg.Provider, c.cfg.Model, c.cfg.MaxTokens, messageParts(msgs))
 	vis := llmreuse.VisualIdentityHash("", "", "")
 	br, err := c.reuse.Store.Begin(ctx, c.userID, task, fp, vis, call.OperationID)
 	if err != nil {
-		return llmreuse.BeginResult{}, fp, task, false
+		return llmreuse.BeginResult{}, fp, task, fmt.Errorf("llm reuse begin: %w", err)
 	}
-	return br, fp, task, true
+	return br, fp, task, nil
 }
 
-func (c *Client) reuseComplete(ctx context.Context, task, fp, response string) {
-	if c.reuse == nil || c.reuse.Store == nil {
+func (c *Client) reuseComplete(ctx context.Context, task, fp, leaseOwner, response string) {
+	if c.reuse == nil || c.reuse.Store == nil || leaseOwner == "" {
 		return
 	}
-	_ = c.reuse.Store.Complete(ctx, c.userID, task, fp, response)
+	_ = c.reuse.Store.Complete(ctx, c.userID, task, fp, leaseOwner, response)
 }
 
-func (c *Client) reuseFailedUncertain(ctx context.Context, task, fp string) {
-	if c.reuse == nil || c.reuse.Store == nil {
+func (c *Client) reuseFailedUncertain(ctx context.Context, task, fp, leaseOwner string) {
+	if c.reuse == nil || c.reuse.Store == nil || leaseOwner == "" {
 		return
 	}
-	_ = c.reuse.Store.MarkFailedUncertain(ctx, c.userID, task, fp)
+	_ = c.reuse.Store.MarkFailedUncertain(ctx, c.userID, task, fp, leaseOwner)
 }

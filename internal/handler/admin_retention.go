@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -32,10 +33,18 @@ func (h *AdminHandlers) RetentionDefaultsSet(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	adminID := auth.UserIDFromCtx(r.Context())
+	prev := retention.LoadDefaults(h.svc.Config)
 	next, err := retention.SaveDefaultsAudited(r.Context(), h.svc.Config, h.svc.DB, adminID, incoming)
 	if err != nil {
+		if errors.Is(err, domain.ErrInvalidDocumentRetention) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
+	}
+	if h.svc.Retention != nil && prev.LatestSubmittedApplications != next.LatestSubmittedApplications {
+		h.svc.Retention.ScheduleReconcileAllUsers()
 	}
 	writeJSON(w, http.StatusOK, next)
 }
