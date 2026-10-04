@@ -105,7 +105,7 @@ func (s *Service) RunEviction(ctx context.Context, userID string, batchSize int)
 			candidates = candidates[:batchSize]
 		}
 		for _, c := range candidates {
-			ev, fail, err := s.evictApplication(ctx, userID, c, idx, meta)
+			ev, fail, err := s.evictApplication(ctx, userID, c, meta)
 			metrics.PathsEvicted += ev
 			metrics.DeleteFailures += fail
 			if err != nil {
@@ -217,8 +217,11 @@ func (s *Service) collectCandidates(ctx context.Context, userID string, retainN 
 	return out, metrics, nil
 }
 
-func (s *Service) evictApplication(ctx context.Context, userID string, c EvictionCandidate, idx ProtectionIndex, meta map[string]versionMeta) (evicted, failures int, err error) {
-	idx, _ = buildProtectionIndex(ctx, s.DB, userID, s.Limit())
+func (s *Service) evictApplication(ctx context.Context, userID string, c EvictionCandidate, meta map[string]versionMeta) (evicted, failures int, err error) {
+	idx, err := buildProtectionIndex(ctx, s.DB, userID, s.Limit())
+	if err != nil {
+		return 0, 0, err
+	}
 	resumeVID := versionIDForExport(c.PackJSON, c.ResumeVersionID, c.ResumePath, documents.KindResume)
 	coverVID := versionIDForExport(c.PackJSON, c.CoverVersionID, c.CoverPath, documents.KindCoverLetter)
 
@@ -297,7 +300,8 @@ func cleanTempFiles(root, userID string, minAge time.Duration) int {
 			return nil
 		}
 		name := d.Name()
-		if !strings.HasSuffix(name, ".tmp") && !(strings.HasPrefix(name, ".") && strings.Contains(name, ".tmp")) {
+		isTmp := strings.HasSuffix(name, ".tmp") || (strings.HasPrefix(name, ".") && strings.Contains(name, ".tmp"))
+		if !isTmp {
 			return nil
 		}
 		info, statErr := d.Info()
@@ -334,10 +338,6 @@ func (s *Service) AfterSuccessfulSubmit(ctx context.Context, userID string) {
 		defer cancel()
 		_, _ = s.ReconcileUser(ctx, userID)
 	}()
-}
-
-func (s *Service) notifyAppliedRecorded(ctx context.Context, userID string) {
-	s.AfterSuccessfulSubmit(ctx, userID)
 }
 
 var _ = domain.DocumentRetentionDefault
