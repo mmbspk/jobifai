@@ -40,7 +40,7 @@ export function AdminRetentionPage() {
         description="How many successfully submitted applications keep on-disk export PDFs per user. Older exports are removed when content versions are reconstructible."
       />
       <SettingsSection title="Submitted application exports">
-        <SettingsField label="Latest submitted applications" hint="Minimum 5, maximum 30. Resume and cover letter count as one application.">
+        <SettingsField label="Latest submitted applications" sub="Minimum 5, maximum 30. Resume and cover letter count as one application.">
           <SettingsNumberInput
             min={5}
             max={30}
