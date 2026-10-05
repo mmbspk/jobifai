@@ -2,7 +2,6 @@ package handler_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -100,7 +99,7 @@ func TestAdmin_DocumentsArtifactMetrics_DBQueryError(t *testing.T) {
 	t.Parallel()
 	svc, db := newTestServices(t)
 	router := handler.NewRouter(svc)
-	adminToken := adminTokenFor(t, router, db, fmt.Sprintf("admin-metrics-err@example.com"))
+	adminToken := adminTokenFor(t, router, db, "admin-metrics-err@example.com")
 
 	// Drop the artifact table to force a SQL error in the retained-artifact query.
 	// The users table is untouched so auth middleware succeeds.
