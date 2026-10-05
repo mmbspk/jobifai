@@ -3,21 +3,12 @@ package retention
 import (
 	"context"
 	"database/sql"
-
-	"github.com/google/uuid"
 )
 
 type DB interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}
-
-func insertAudit(ctx context.Context, db DB, adminUserID string, prev, next int) error {
-	_, err := db.ExecContext(ctx,
-		`INSERT INTO document_retention_audit (id, admin_user_id, previous_limit, new_limit) VALUES (?, ?, ?, ?)`,
-		uuid.NewString(), adminUserID, prev, next)
-	return err
 }
 
 type AuditRow struct {

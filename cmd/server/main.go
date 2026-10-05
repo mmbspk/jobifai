@@ -220,6 +220,7 @@ func main() {
 	retentionCoord := &retention.ActivityCoordinator{}
 	docSvc.WorkGuard = retentionCoord
 	botMgr.SetDocuments(docSvc)
+	botMgr.SetSubmitWorkGuard(retentionCoord)
 	retentionSvc := &retention.Service{
 		DB:       database,
 		Config:   cfgStore,

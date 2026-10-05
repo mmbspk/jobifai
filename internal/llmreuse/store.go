@@ -18,20 +18,19 @@ type MessagePart struct {
 }
 
 const (
-	StatePending          = "pending"
-	StateInProgress       = "in_progress"
-	StateCompleted        = "completed"
-	StateFailedUncertain  = "failed_uncertain"
-	defaultLeaseDuration  = 3 * time.Minute
-	waitPollInterval      = 200 * time.Millisecond
-	maxWaitForInProgress  = 90 * time.Second
+	StatePending         = "pending"
+	StateInProgress      = "in_progress"
+	StateCompleted       = "completed"
+	StateFailedUncertain = "failed_uncertain"
+	waitPollInterval     = 200 * time.Millisecond
+	maxWaitForInProgress = 90 * time.Second
 )
 
 var (
-	ErrNotConfigured     = errors.New("llm reuse store not configured")
-	ErrWaitTimeout       = errors.New("llm reuse: timed out waiting for in-progress generation")
-	ErrBeginContention   = errors.New("llm reuse: too many concurrent begin attempts")
-	maxBeginContention   = 12
+	ErrNotConfigured   = errors.New("llm reuse store not configured")
+	ErrWaitTimeout     = errors.New("llm reuse: timed out waiting for in-progress generation")
+	ErrBeginContention = errors.New("llm reuse: too many concurrent begin attempts")
+	maxBeginContention = 12
 )
 
 type DB interface {
@@ -44,7 +43,7 @@ type Store struct {
 }
 
 // ContentFingerprint hashes user, task, effective generation config, and message bodies.
-func ContentFingerprint(userID, task, provider, model string, maxTokens int, msgs []MessagePart) string {
+func ContentFingerprint(userID, task, provider, model, effort string, maxTokens int, msgs []MessagePart) string {
 	h := sha256.New()
 	h.Write([]byte(strings.TrimSpace(userID)))
 	h.Write([]byte{0})
@@ -53,6 +52,8 @@ func ContentFingerprint(userID, task, provider, model string, maxTokens int, msg
 	h.Write([]byte(strings.TrimSpace(provider)))
 	h.Write([]byte{0})
 	h.Write([]byte(strings.TrimSpace(model)))
+	h.Write([]byte{0})
+	h.Write([]byte(strings.TrimSpace(effort)))
 	h.Write([]byte{0})
 	h.Write([]byte(strings.TrimSpace(itoa(maxTokens))))
 	h.Write([]byte{0})
@@ -79,7 +80,6 @@ func itoa(n int) string {
 	return string(b[i:])
 }
 
-// VisualIdentityHash separates presentation inputs from generation reuse scope.
 func VisualIdentityHash(styleName, market, cssSnapshot string) string {
 	h := sha256.New()
 	h.Write([]byte(strings.TrimSpace(styleName)))
@@ -99,7 +99,10 @@ type BeginResult struct {
 	LeaseOwner    string
 }
 
-// Begin coordinates concurrent reuse for one logical generation.
+func newLeaseToken() string {
+	return uuid.NewString()
+}
+
 func (s *Store) Begin(ctx context.Context, userID, task, contentFP, visualHash, operationID string) (BeginResult, error) {
 	if s == nil || s.DB == nil {
 		return BeginResult{}, ErrNotConfigured
@@ -126,16 +129,20 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 	_ = s.recoverStaleLeases(ctx)
 
 	var existing struct {
-		id, state, response string
+		id, state, response, storedOp string
 	}
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT id, state, response_text FROM llm_generation_cache
+		SELECT id, state, response_text, operation_id FROM llm_generation_cache
 		WHERE user_id = ? AND task = ? AND content_fingerprint = ?`,
-		userID, task, contentFP).Scan(&existing.id, &existing.state, &existing.response)
+		userID, task, contentFP).Scan(&existing.id, &existing.state, &existing.response, &existing.storedOp)
 	if err == nil {
+		opID := strings.TrimSpace(existing.storedOp)
+		if opID == "" {
+			opID = operationID
+		}
 		switch existing.state {
 		case StateCompleted:
-			return BeginResult{CacheHit: true, Response: existing.response, RowID: existing.id, OperationID: operationID}, nil
+			return BeginResult{CacheHit: true, Response: existing.response, RowID: existing.id, OperationID: opID}, nil
 		case StateInProgress:
 			resp, waitErr := s.waitForCompletion(ctx, userID, task, contentFP)
 			if waitErr != nil {
@@ -144,20 +151,19 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 			if resp == "" {
 				return BeginResult{}, ErrBeginContention
 			}
-			return BeginResult{CacheHit: true, Response: resp, RowID: existing.id, OperationID: operationID}, nil
+			return BeginResult{CacheHit: true, Response: resp, RowID: existing.id, OperationID: opID}, nil
 		case StateFailedUncertain:
-			// Provider outcome unknown after crash — caller may invoke provider; do not reuse stale body.
+			lease := newLeaseToken()
 			res, uerr := s.DB.ExecContext(ctx, `
-				UPDATE llm_generation_cache SET state = ?, operation_id = ?, lease_owner = ?, lease_until = datetime('now', '+3 minutes'),
+				UPDATE llm_generation_cache SET state = ?, lease_owner = ?, lease_until = datetime('now', '+3 minutes'),
 					provider_uncertain = 0, updated_at = datetime('now')
 				WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND state = ?`,
-				StateInProgress, operationID, operationID,
-				userID, task, contentFP, StateFailedUncertain)
+				StateInProgress, lease, userID, task, contentFP, StateFailedUncertain)
 			if uerr != nil {
 				return BeginResult{}, uerr
 			}
 			if n, _ := res.RowsAffected(); n == 1 {
-				return BeginResult{LeaseAcquired: true, RowID: existing.id, OperationID: operationID, LeaseOwner: operationID}, nil
+				return BeginResult{LeaseAcquired: true, RowID: existing.id, OperationID: opID, LeaseOwner: lease}, nil
 			}
 			return BeginResult{}, ErrBeginContention
 		}
@@ -165,6 +171,7 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 		return BeginResult{}, err
 	}
 
+	lease := newLeaseToken()
 	rowID := uuid.NewString()
 	res, err := s.DB.ExecContext(ctx, `
 		INSERT INTO llm_generation_cache (
@@ -172,14 +179,14 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 			operation_id, lease_owner, lease_until, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+3 minutes'), datetime('now'))
 		ON CONFLICT(user_id, task, content_fingerprint) DO NOTHING`,
-		rowID, userID, task, contentFP, visualHash, StateInProgress, operationID, operationID)
+		rowID, userID, task, contentFP, visualHash, StateInProgress, operationID, lease)
 	if err != nil {
 		return BeginResult{}, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return BeginResult{}, ErrBeginContention
 	}
-	return BeginResult{LeaseAcquired: true, RowID: rowID, OperationID: operationID, LeaseOwner: operationID}, nil
+	return BeginResult{LeaseAcquired: true, RowID: rowID, OperationID: operationID, LeaseOwner: lease}, nil
 }
 
 func (s *Store) waitForCompletion(ctx context.Context, userID, task, contentFP string) (string, error) {
@@ -208,6 +215,17 @@ func (s *Store) waitForCompletion(ctx context.Context, userID, task, contentFP s
 	return "", ErrWaitTimeout
 }
 
+func (s *Store) RenewLease(ctx context.Context, userID, task, contentFP, leaseOwner string) error {
+	if s == nil || s.DB == nil {
+		return ErrNotConfigured
+	}
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE llm_generation_cache SET lease_until = datetime('now', '+3 minutes'), updated_at = datetime('now')
+		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND lease_owner = ? AND state = ?`,
+		userID, task, contentFP, leaseOwner, StateInProgress)
+	return err
+}
+
 func (s *Store) Complete(ctx context.Context, userID, task, contentFP, leaseOwner, response string) error {
 	if s == nil || s.DB == nil {
 		return ErrNotConfigured
@@ -224,10 +242,20 @@ func (s *Store) MarkFailedUncertain(ctx context.Context, userID, task, contentFP
 	if s == nil || s.DB == nil {
 		return ErrNotConfigured
 	}
-	_, err := s.DB.ExecContext(ctx, `
+	res, err := s.DB.ExecContext(ctx, `
 		UPDATE llm_generation_cache SET state = ?, provider_uncertain = 1, updated_at = datetime('now')
 		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND lease_owner = ?`,
 		StateFailedUncertain, userID, task, contentFP, leaseOwner)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	_, err = s.DB.ExecContext(ctx, `
+		UPDATE llm_generation_cache SET state = ?, provider_uncertain = 1, updated_at = datetime('now')
+		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND state = ?`,
+		StateFailedUncertain, userID, task, contentFP, StateInProgress)
 	return err
 }
 

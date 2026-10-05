@@ -3,6 +3,7 @@
 package config
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -36,6 +37,23 @@ func (s *Store) Get(userID, key string, dst any) error {
 	}
 	if err := json.Unmarshal([]byte(raw), dst); err != nil {
 		return fmt.Errorf("config unmarshal %q: %w", key, err)
+	}
+	return nil
+}
+
+// SetTx upserts a setting within an existing transaction.
+func (s *Store) SetTx(ctx context.Context, tx *sql.Tx, userID, key string, src any) error {
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return fmt.Errorf("config marshal %q: %w", key, err)
+	}
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO settings(user_id, key, value) VALUES(?,?,?)
+		 ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value`,
+		userID, key, string(raw),
+	)
+	if err != nil {
+		return fmt.Errorf("config set %q: %w", key, err)
 	}
 	return nil
 }

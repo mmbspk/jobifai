@@ -112,15 +112,21 @@ func (s *Service) RunEviction(ctx context.Context, userID string, batchSize int)
 				log.Warn().Err(err).Str("user_id", userID).Str("job_id", c.JobID).Msg("retention: eviction failed")
 			}
 		}
-		idx, _ = buildProtectionIndex(ctx, s.DB, userID, limit)
-		artRemoved, _ := s.evictOrphanArtifactBlobs(ctx, userID, limit, idx, meta)
+		idx, err = buildProtectionIndex(ctx, s.DB, userID, limit)
+		if err != nil {
+			return err
+		}
+		artRemoved, err := s.evictOrphanArtifactBlobs(ctx, userID, limit, idx, meta, batchSize)
+		if err != nil {
+			return err
+		}
 		metrics.ArtifactBlobsEvicted += artRemoved
 		metrics.TempFilesRemoved = cleanTempFiles(s.Root, userID, tempMinAge)
 		return nil
 	}
 	var err error
 	if s.Activity != nil {
-		err = s.Activity.WithEviction(userID, run)
+		err = s.Activity.WithEviction(ctx, userID, run)
 	} else {
 		err = run()
 	}

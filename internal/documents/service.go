@@ -25,9 +25,9 @@ type PDFRenderer interface {
 	RenderCoverLetter(ctx context.Context, body string, styleName, cssOverride string) ([]byte, error)
 }
 
-// UserWorkGuard coordinates reads with retention eviction (#60).
+// UserWorkGuard coordinates reads/exports with retention eviction (#60).
 type UserWorkGuard interface {
-	BeginWork(userID string)
+	BeginWork(ctx context.Context, userID string) error
 	EndWork(userID string)
 }
 
@@ -309,7 +309,9 @@ func (s *Service) OriginalBytes(ctx context.Context, userID, versionID string) (
 
 func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) ([]byte, string, error) {
 	if s.WorkGuard != nil {
-		s.WorkGuard.BeginWork(userID)
+		if err := s.WorkGuard.BeginWork(ctx, userID); err != nil {
+			return nil, "", err
+		}
 		defer s.WorkGuard.EndWork(userID)
 	}
 	key, _, err := s.Store.ArtifactForVersion(ctx, userID, versionID)

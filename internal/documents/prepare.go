@@ -41,6 +41,12 @@ func (s *Service) MaterializeApplicationDocs(
 	baseProfile *domain.ResumeProfile,
 	deps MaterializeDeps,
 ) (PreparedApplicationDocs, error) {
+	if s.WorkGuard != nil {
+		if err := s.WorkGuard.BeginWork(ctx, userID); err != nil {
+			return PreparedApplicationDocs{}, err
+		}
+		defer s.WorkGuard.EndWork(userID)
+	}
 	out := PreparedApplicationDocs{Resume: res.Resume, Cover: res.Cover}
 	if res.Hold {
 		out.Hold = true

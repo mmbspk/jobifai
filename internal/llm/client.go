@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -62,7 +63,13 @@ type Client struct {
 	userID      string
 	taskRuntime TaskRuntime
 	costCeiling *costCeiling
-	reuse       *ReuseCoordinator
+	reuse         *ReuseCoordinator
+	reusePending  *reusePendingSlot
+}
+
+type reusePendingSlot struct {
+	mu sync.Mutex
+	p  *pendingReuse
 }
 
 // WithReuse attaches exact-generation reuse (content-scoped, visual identity separate).
@@ -87,6 +94,7 @@ func New(cfg domain.LLMConfig, apiKey string) *Client {
 		httpCli: &http.Client{
 			Timeout: 120 * time.Second,
 		},
+		reusePending: &reusePendingSlot{},
 	}
 }
 
@@ -203,8 +211,33 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 		}
 		return "", err
 	}
+	stopRenew := make(chan struct{})
+	if reuseEnabled && reuseLease != "" {
+		go func() {
+			ticker := time.NewTicker(45 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopRenew:
+					return
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					c.reuseRenew(ctx, reuseTask, reuseFP, reuseLease)
+				}
+			}
+		}()
+	}
+	defer close(stopRenew)
+
 	const maxAttempts = 3
 	var err error
+	defer func() {
+		if err != nil {
+			c.AbortReuse(ctx)
+		}
+	}()
+	deferValidation := reuseEnabled && reuseDefersValidation(reuseTask)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		call := CallContextFrom(ctx)
 		call.Attempt = attempt
@@ -212,6 +245,9 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 		if attempt > 1 {
 			log.Warn().Msgf("llm: retry %d/%d after error: %v", attempt, maxAttempts, err)
 			time.Sleep(2 * time.Second)
+			if reuseEnabled && reuseLease != "" {
+				c.reuseRenew(ctx, reuseTask, reuseFP, reuseLease)
+			}
 		}
 		var result string
 		switch c.cfg.Provider {
@@ -226,7 +262,13 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 		}
 		if err == nil {
 			if reuseEnabled && reuseLease != "" {
-				c.reuseComplete(ctx, reuseTask, reuseFP, reuseLease, result)
+				if deferValidation {
+					c.reusePending.mu.Lock()
+					c.reusePending.p = &pendingReuse{task: reuseTask, fp: reuseFP, lease: reuseLease}
+					c.reusePending.mu.Unlock()
+				} else {
+					c.reuseComplete(ctx, reuseTask, reuseFP, reuseLease, result)
+				}
 			}
 			return result, nil
 		}

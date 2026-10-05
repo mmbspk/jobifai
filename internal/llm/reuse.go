@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llmreuse"
 )
 
-// ReuseCoordinator wraps generation cache lookup for Chat.
 type ReuseCoordinator struct {
 	Store *llmreuse.Store
+}
+
+type pendingReuse struct {
+	task, fp, lease string
 }
 
 func messageParts(msgs []Message) []llmreuse.MessagePart {
@@ -18,6 +22,15 @@ func messageParts(msgs []Message) []llmreuse.MessagePart {
 		out[i] = llmreuse.MessagePart{Role: m.Role, Content: m.Content}
 	}
 	return out
+}
+
+func reuseDefersValidation(task string) bool {
+	switch task {
+	case domain.TaskResumeTailoring, domain.TaskCoverLetter:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) reuseBegin(ctx context.Context, msgs []Message) (llmreuse.BeginResult, string, string, error) {
@@ -32,7 +45,8 @@ func (c *Client) reuseBegin(ctx context.Context, msgs []Message) (llmreuse.Begin
 	if task == "" {
 		return llmreuse.BeginResult{}, "", "", nil
 	}
-	fp := llmreuse.ContentFingerprint(c.userID, task, c.cfg.Provider, c.cfg.Model, c.cfg.MaxTokens, messageParts(msgs))
+	effort := c.taskRuntime.Effort
+	fp := llmreuse.ContentFingerprint(c.userID, task, c.cfg.Provider, c.cfg.Model, effort, c.cfg.MaxTokens, messageParts(msgs))
 	vis := llmreuse.VisualIdentityHash("", "", "")
 	br, err := c.reuse.Store.Begin(ctx, c.userID, task, fp, vis, call.OperationID)
 	if err != nil {
@@ -53,4 +67,35 @@ func (c *Client) reuseFailedUncertain(ctx context.Context, task, fp, leaseOwner 
 		return
 	}
 	_ = c.reuse.Store.MarkFailedUncertain(ctx, c.userID, task, fp, leaseOwner)
+}
+
+func (c *Client) reuseRenew(ctx context.Context, task, fp, leaseOwner string) {
+	if c.reuse == nil || c.reuse.Store == nil || leaseOwner == "" {
+		return
+	}
+	_ = c.reuse.Store.RenewLease(ctx, c.userID, task, fp, leaseOwner)
+}
+
+// CommitValidatedReuse completes cache after downstream validation (document tasks).
+func (c *Client) CommitValidatedReuse(ctx context.Context, validatedResponse string) error {
+	c.reusePending.mu.Lock()
+	p := c.reusePending.p
+	c.reusePending.p = nil
+	c.reusePending.mu.Unlock()
+	if p == nil || c.reuse == nil || c.reuse.Store == nil {
+		return nil
+	}
+	return c.reuse.Store.Complete(ctx, c.userID, p.task, p.fp, p.lease, validatedResponse)
+}
+
+// AbortReuse releases a pending generation lease so callers can retry.
+func (c *Client) AbortReuse(ctx context.Context) {
+	c.reusePending.mu.Lock()
+	p := c.reusePending.p
+	c.reusePending.p = nil
+	c.reusePending.mu.Unlock()
+	if p == nil {
+		return
+	}
+	c.reuseFailedUncertain(ctx, p.task, p.fp, p.lease)
 }

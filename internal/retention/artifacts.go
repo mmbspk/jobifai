@@ -2,6 +2,7 @@ package retention
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/user/jobifai/internal/documents"
@@ -12,15 +13,35 @@ type BlobRemover interface {
 	Remove(key string) error
 }
 
-func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, retainN int, idx ProtectionIndex, meta map[string]versionMeta) (int, error) {
+func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, retainN int, idx ProtectionIndex, meta map[string]versionMeta, batchLimit int) (int, error) {
 	if s == nil || s.Blobs == nil {
 		return 0, nil
+	}
+	if batchLimit <= 0 {
+		batchLimit = defaultBatchSize
 	}
 	protectedVersions, err := s.versionIDsReferencedByActiveApplications(ctx, userID, retainN)
 	if err != nil {
 		return 0, err
 	}
-	removed := 0
+	defRows, err := s.DB.QueryContext(ctx, `
+		SELECT content_version_id FROM user_document_defaults WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, err
+	}
+	for defRows.Next() {
+		var id string
+		if err := defRows.Scan(&id); err != nil {
+			_ = defRows.Close()
+			return 0, err
+		}
+		if id = strings.TrimSpace(id); id != "" {
+			protectedVersions[id] = struct{}{}
+		}
+	}
+	_ = defRows.Close()
+
+	var candidates []string
 	for id, m := range meta {
 		if !m.reconstructible || m.artifactKey == "" {
 			continue
@@ -31,10 +52,24 @@ func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, r
 		if idx.blobProtected(m.artifactKey) {
 			continue
 		}
-		if err := s.Blobs.Remove(m.artifactKey); err != nil {
+		candidates = append(candidates, m.artifactKey)
+	}
+	if len(candidates) > batchLimit {
+		candidates = candidates[:batchLimit]
+	}
+	removed := 0
+	var firstErr error
+	for _, key := range candidates {
+		if err := s.Blobs.Remove(key); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("remove artifact %q: %w", key, err)
+			}
 			continue
 		}
 		removed++
+	}
+	if firstErr != nil {
+		return removed, firstErr
 	}
 	return removed, nil
 }

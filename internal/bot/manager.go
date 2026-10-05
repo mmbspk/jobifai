@@ -74,6 +74,7 @@ type Manager struct {
 	usageLedger      *usage.Ledger
 	retention        retentionAfterSubmit
 	llmReuse         *llmreuse.Store
+	submitWorkGuard  documents.UserWorkGuard
 }
 
 type retentionAfterSubmit interface {
@@ -99,6 +100,11 @@ func (m *Manager) SetRetention(r retentionAfterSubmit) {
 // SetLLMReuse wires exact-generation cache into bot-scoped LLM clients (#60).
 func (m *Manager) SetLLMReuse(store *llmreuse.Store) {
 	m.llmReuse = store
+}
+
+// SetSubmitWorkGuard serializes retention eviction with apply/export publication (#60).
+func (m *Manager) SetSubmitWorkGuard(g documents.UserWorkGuard) {
+	m.submitWorkGuard = g
 }
 
 // SetDocuments wires the versioned document service into bot apply sessions (#59).
@@ -289,6 +295,12 @@ func (m *Manager) SubmitSync(ctx context.Context, userID string, req SubmitReque
 // runSubmit executes the full apply flow for a queued job and records the result.
 // Called directly by SubmitSync and inside a goroutine by SubmitNow.
 func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitRequest) error {
+	if m.submitWorkGuard != nil {
+		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
+			return err
+		}
+		defer m.submitWorkGuard.EndWork(userID)
+	}
 	b, gs, err := m.setupBot(userID, domain.Platform(req.Platform), "")
 	if err != nil {
 		log.Error().Err(err).Str("job", req.Role).Msg("approve: setup bot")
