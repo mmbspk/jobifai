@@ -48,6 +48,11 @@ func newReuseFixture(t *testing.T) *reuseFixture {
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
+	// Migration 039 adds FK user_id → users on llm_generation_cache.
+	// Seed the synthetic user so cache operations don't fail the FK check.
+	_, err = db.Exec(`INSERT INTO users (id, email, password_hash, is_admin, created_at)
+		VALUES ('u', 'u@reuse.test', 'hash', 0, datetime('now'))`)
+	require.NoError(t, err)
 	f := &reuseFixture{db: db, quota: &reuseQuota{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.calls.Add(1)

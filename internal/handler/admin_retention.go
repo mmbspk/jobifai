@@ -97,3 +97,17 @@ func (h *AdminHandlers) RetentionRunUser(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, metrics)
 }
+
+// GET /api/admin/documents/artifact-metrics
+// Returns reuse-hit and reconstruction counters accumulated since the last server start.
+// Values are zero if the documents service is not wired or no requests have been served.
+func (h *AdminHandlers) DocumentsArtifactMetrics(w http.ResponseWriter, r *http.Request) {
+	if h.svc.Documents == nil || h.svc.Documents.Metrics == nil {
+		writeJSON(w, http.StatusOK, map[string]int64{
+			"reuse_hits": 0, "reuse_bytes_total": 0,
+			"reconstructions": 0, "reconstruction_bytes_total": 0,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, h.svc.Documents.Metrics.Snapshot())
+}

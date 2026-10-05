@@ -219,6 +219,7 @@ func main() {
 	log.Info().Str("root", docStorageRoot).Msg("document storage (local; transitional — plan durable object storage for production scale)")
 	retentionCoord := &retention.ActivityCoordinator{}
 	docSvc.WorkGuard = retentionCoord
+	docSvc.Metrics = &documents.ServiceMetrics{}
 	botMgr.SetDocuments(docSvc)
 	botMgr.SetSubmitWorkGuard(retentionCoord)
 	retentionSvc := &retention.Service{

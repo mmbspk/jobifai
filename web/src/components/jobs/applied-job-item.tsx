@@ -20,8 +20,8 @@ export function AppliedJobItem({ job, onDelete, deletePending }: Props) {
   const [open, setOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
-  const hasResume = Boolean(job.resume_content_version_id)
-  const hasCover = Boolean(job.cover_letter_content_version_id)
+  const hasResume = Boolean(job.resume_content_version_id || job.resume_path)
+  const hasCover = Boolean(job.cover_letter_content_version_id || job.cover_letter_path)
   const resumeEvicted = hasResume && job.resume_artifact_evicted === true
   const coverEvicted = hasCover && job.cover_letter_artifact_evicted === true
 

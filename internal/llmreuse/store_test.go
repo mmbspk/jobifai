@@ -18,6 +18,11 @@ func openReuseDB(t *testing.T) *llmreuse.Store {
 	sqldb, err := appdb.Open(dbPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqldb.Close() })
+	// Migration 039 adds FK user_id → users on llm_generation_cache.
+	// Seed the synthetic user so all tests can insert cache rows freely.
+	_, err = sqldb.Exec(`INSERT INTO users (id, email, password_hash, is_admin, created_at)
+		VALUES ('u1', 'u1@test.local', 'hash', 0, datetime('now'))`)
+	require.NoError(t, err, "seed test user")
 	return &llmreuse.Store{DB: sqldb}
 }
 

@@ -41,6 +41,8 @@ type Service struct {
 	DefaultsMeta     func(userID string) (DefaultsMeta, error)
 	SaveDefaultsMeta func(userID string, m DefaultsMeta) error
 	WorkGuard        UserWorkGuard
+	// Metrics accumulates reuse/reconstruction counters.  Nil disables tracking.
+	Metrics *ServiceMetrics
 }
 
 type RenderContext struct {
@@ -353,10 +355,18 @@ func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) (data 
 	if keyErr == nil {
 		d, readErr := s.Blobs.Read(key)
 		if readErr == nil {
+			if s.Metrics != nil {
+				s.Metrics.ReuseHits.Add(1)
+				s.Metrics.ReuseBytesTotal.Add(int64(len(d)))
+			}
 			return d, "application/pdf", false, nil
 		}
 		if errors.Is(readErr, ErrBlobNotFound) {
 			d, ct, err := s.ReconstructPDF(ctx, userID, versionID)
+			if err == nil && s.Metrics != nil {
+				s.Metrics.Reconstructions.Add(1)
+				s.Metrics.ReconstructionBytesTotal.Add(int64(len(d)))
+			}
 			return d, ct, true, err
 		}
 		return nil, "", false, readErr
@@ -365,6 +375,10 @@ func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) (data 
 		return nil, "", false, keyErr
 	}
 	d, ct, err := s.ReconstructPDF(ctx, userID, versionID)
+	if err == nil && s.Metrics != nil {
+		s.Metrics.Reconstructions.Add(1)
+		s.Metrics.ReconstructionBytesTotal.Add(int64(len(d)))
+	}
 	return d, ct, true, err
 }
 
