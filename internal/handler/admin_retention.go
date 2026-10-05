@@ -113,10 +113,13 @@ func (h *AdminHandlers) DocumentsArtifactMetrics(w http.ResponseWriter, r *http.
 	}
 	if h.svc.DB != nil {
 		var count, bytes int64
-		_ = h.svc.DB.QueryRowContext(r.Context(),
+		if err := h.svc.DB.QueryRowContext(r.Context(),
 			`SELECT COUNT(*), COALESCE(SUM(byte_size),0) FROM document_render_artifacts
 			 WHERE evicted_at IS NULL AND state = 'ready'`,
-		).Scan(&count, &bytes)
+		).Scan(&count, &bytes); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "failed to query retained artifact stats: " + err.Error()})
+			return
+		}
 		snap.RetainedArtifacts = count
 		snap.RetainedArtifactBytes = bytes
 	}

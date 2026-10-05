@@ -37,6 +37,7 @@ Epic #40 stays open. Byte caps, queue caps, and cloud provisioning are outside t
 | Concurrent reuse bills once | Real Client → SQLite cache → usage ledger → quota test, `TestReuse_ConcurrentSamePromptBillsOnce` |
 | Validation failure/recovery does not rebill the logical operation | `TestReuse_ValidationFailureRetryAndCrashRecoveryDeduplicateBilling`; persistent operation retained across reclaim |
 | Canceled work releases its lease | Cancellation regression; bounded cleanup uses a context independent of request cancellation |
+| Billing + reuse integration | `TestReuse_ReverseValidationKeepsResponsesWithRequests` and `TestReuse_ConcurrentSamePromptBillsOnce` exercise `Client.ChatValidated` → cache → ledger together |
 
 ## Validation scope
 
@@ -48,6 +49,4 @@ All 33 Go packages pass with `-race -count=1`. Go lint passes. Frontend tests (1
 
 ## Known follow-ups (not claiming done)
 
-| Gap | Notes |
-|-----|--------|
-| End-to-end billing + reuse integration test | Ledger idempotency test does not exercise `Client.Chat` + cache + ledger together |
+None remaining for #60 scope.
