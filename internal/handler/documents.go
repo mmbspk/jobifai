@@ -246,7 +246,7 @@ func (h *DocumentHandlers) DownloadOriginal(w http.ResponseWriter, r *http.Reque
 func (h *DocumentHandlers) DownloadPDF(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	versionID := chi.URLParam(r, "version_id")
-	data, ctype, err := h.svc.Documents.PDFBytes(r.Context(), userID, versionID)
+	data, ctype, _, err := h.svc.Documents.PDFBytes(r.Context(), userID, versionID)
 	if err != nil {
 		if errors.Is(err, documents.ErrForbidden) || errors.Is(err, documents.ErrNotFound) {
 			notFound(w, "document not found")

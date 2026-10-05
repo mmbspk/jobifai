@@ -25,6 +25,8 @@ export interface AppliedJob {
   suitability_score?: number
   halal_verdict?: HalalVerdict
   applied_at: string
+  resume_artifact_evicted?: boolean
+  cover_letter_artifact_evicted?: boolean
 }
 
 // ── Halal Types ──────────────────────────────────────────────────────

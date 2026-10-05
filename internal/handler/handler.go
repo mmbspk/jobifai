@@ -226,6 +226,26 @@ func unprocessable(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": msg})
 }
 
+// tokenAuth authenticates a request by checking ?token= first, then the
+// Authorization: Bearer header.  Returns the userID and true on success, or
+// writes a 401 and returns "" and false.  Used by endpoints that must also
+// be reachable as browser <a href="…?token=…"> download links.
+func tokenAuth(w http.ResponseWriter, r *http.Request, tm *auth.TokenManager) (string, bool) {
+	if tm == nil {
+		return "anonymous", true
+	}
+	tok := r.URL.Query().Get("token")
+	if tok == "" {
+		tok = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	claims, err := tm.Verify(tok)
+	if err != nil {
+		http.Error(w, `{"message":"unauthorized"}`, http.StatusUnauthorized)
+		return "", false
+	}
+	return claims.UserID, true
+}
+
 // wsOptions returns WebSocket accept options that validate the Origin header
 // against the request host. Set WS_ALLOWED_ORIGINS (comma-separated) to
 // override when the app runs behind a reverse proxy.

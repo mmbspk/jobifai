@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 )
 
@@ -54,20 +56,30 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 	platform := r.URL.Query().Get("platform")
 	todayOnly := r.URL.Query().Get("today") == "true"
 
-	q := `SELECT id,platform,company,role,COALESCE(location,''),link,
-	             COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
-	             COALESCE(resume_content_version_id,''),COALESCE(cover_letter_content_version_id,''),
-	             COALESCE(suitability_score,0),applied_at
-	      FROM jobs_applied WHERE user_id = ?`
+	// LEFT JOIN artifact tables so we can report whether the stored artifact is
+	// evicted — the frontend uses this to determine the "(rebuilt)" badge without
+	// waiting for an actual download.
+	q := `SELECT ja.id, ja.platform, ja.company, ja.role, COALESCE(ja.location,''), ja.link,
+	             COALESCE(ja.resume_path,''), COALESCE(ja.cover_letter_path,''),
+	             COALESCE(ja.resume_content_version_id,''), COALESCE(ja.cover_letter_content_version_id,''),
+	             COALESCE(ja.suitability_score,0), ja.applied_at,
+	             CASE WHEN ra.evicted_at IS NOT NULL AND ra.evicted_at != '' THEN 1 ELSE 0 END,
+	             CASE WHEN ca.evicted_at IS NOT NULL AND ca.evicted_at != '' THEN 1 ELSE 0 END
+	      FROM jobs_applied ja
+	      LEFT JOIN document_version_artifact_refs rvr ON rvr.content_version_id = ja.resume_content_version_id
+	      LEFT JOIN document_render_artifacts ra ON ra.id = rvr.artifact_id
+	      LEFT JOIN document_version_artifact_refs cvr ON cvr.content_version_id = ja.cover_letter_content_version_id
+	      LEFT JOIN document_render_artifacts ca ON ca.id = cvr.artifact_id
+	      WHERE ja.user_id = ?`
 	args := []any{userID}
 	if platform != "" {
-		q += " AND platform = ?"
+		q += " AND ja.platform = ?"
 		args = append(args, platform)
 	}
 	if todayOnly {
-		q += " AND date(applied_at) = date('now')"
+		q += " AND date(ja.applied_at) = date('now')"
 	}
-	q += " ORDER BY applied_at DESC LIMIT ? OFFSET ?"
+	q += " ORDER BY ja.applied_at DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
 	rows, err := h.svc.DB.QueryContext(r.Context(), q, args...)
@@ -81,14 +93,17 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var j domain.AppliedJob
 		var appliedStr string
+		var resumeEvicted, coverEvicted int
 		if err := rows.Scan(&j.ID, &j.Platform, &j.Company, &j.Role, &j.Location,
 			&j.Link, &j.ResumePath, &j.CoverLetterPath,
 			&j.ResumeContentVersionID, &j.CoverLetterContentVersionID,
-			&j.SuitabilityScore, &appliedStr); err != nil {
+			&j.SuitabilityScore, &appliedStr, &resumeEvicted, &coverEvicted); err != nil {
 			log.Error().Err(err).Msg("applied jobs: scan row")
 			continue
 		}
 		j.AppliedAt = logParseTime(appliedStr, "applied_at")
+		j.ResumeArtifactEvicted = resumeEvicted != 0
+		j.CoverLetterArtifactEvicted = coverEvicted != 0
 		out = append(out, j)
 	}
 	if err := rows.Err(); err != nil {
@@ -101,12 +116,18 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/jobs/applied/{job_id}/pdf/{kind}
 // Serves the submitted resume or cover letter for a specific application.
-// If the on-disk export was evicted by retention, the document service
-// reconstructs it from the stored content version.  A non-empty
-// X-Jobifai-Reconstructed: true header signals to the client that the
-// bytes were regenerated rather than served from the original export file.
+// The route lives outside the RequireAuth group (see router.go) and performs
+// its own token check so that browser <a href="…?token=…"> links work.
+// For versions backed by an artifact blob that was evicted by retention,
+// the document service reconstructs the PDF on demand and the response
+// carries X-Jobifai-Reconstructed: true.
 func (h *JobHandlers) DownloadAppliedPDF(w http.ResponseWriter, r *http.Request) {
-	userID := auth.UserIDFromCtx(r.Context())
+	// Auth: accept ?token= query param (browser link) or Authorization header.
+	userID, ok := tokenAuth(w, r, h.svc.TokenManager)
+	if !ok {
+		return
+	}
+
 	jobID := chi.URLParam(r, "job_id")
 	kind := chi.URLParam(r, "kind")
 	if kind != "resume" && kind != "cover_letter" {
@@ -136,9 +157,10 @@ func (h *JobHandlers) DownloadAppliedPDF(w http.ResponseWriter, r *http.Request)
 	case "cover_letter":
 		versionID, filePath = coverVID, coverPath
 	}
-	if versionID == "" {
-		notFound(w, "no document version recorded for this application")
-		return
+
+	disp := "attachment"
+	if r.URL.Query().Get("inline") == "1" {
+		disp = "inline"
 	}
 
 	if h.svc.Documents == nil {
@@ -146,24 +168,60 @@ func (h *JobHandlers) DownloadAppliedPDF(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	data, ctype, err := h.svc.Documents.PDFBytes(r.Context(), userID, versionID)
-	if err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
+	// Legacy application: export file recorded but no content version stored.
+	// Serve the file from disk if it still exists.
+	if versionID == "" {
+		if filePath == "" {
+			notFound(w, "no document version recorded for this application")
+			return
+		}
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			notFound(w, "export file not found")
+			return
+		}
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", disp+`; filename="document.pdf"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
 		return
 	}
 
-	reconstructed := filePath == ""
-	w.Header().Set("Content-Type", ctype)
-	if reconstructed {
-		w.Header().Set("X-Jobifai-Reconstructed", "true")
+	// Version recorded: check content kind to route to the correct service call.
+	vd, vErr := h.svc.Documents.GetVersion(r.Context(), userID, versionID)
+	if vErr != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": vErr.Error()})
+		return
 	}
-	disp := "attachment"
-	if r.URL.Query().Get("inline") == "1" {
-		disp = "inline"
+
+	switch vd.ContentKind {
+	case documents.ContentOriginalFileRef:
+		data, filename, mediaType, oErr := h.svc.Documents.OriginalBytes(r.Context(), userID, versionID)
+		if oErr != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": oErr.Error()})
+			return
+		}
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", mediaType)
+		w.Header().Set("Content-Disposition", disp+`; filename="`+filename+`"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	default:
+		data, ctype, reconstructed, rErr := h.svc.Documents.PDFBytes(r.Context(), userID, versionID)
+		if rErr != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": rErr.Error()})
+			return
+		}
+		w.Header().Set("Content-Type", ctype)
+		if reconstructed {
+			w.Header().Set("X-Jobifai-Reconstructed", "true")
+		}
+		w.Header().Set("Content-Disposition", disp+`; filename="document.pdf"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
 	}
-	w.Header().Set("Content-Disposition", disp+`; filename="document.pdf"`)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
 }
 
 // GET /api/jobs/skipped

@@ -22,11 +22,15 @@ var userDataTables = []string{
 	"usage_totals",
 	// LLM cache: must come before document tables so pending goroutines fail fast.
 	"llm_generation_cache",
-	// Document tables in FK-safe order: defaults → artifacts → versions → documents.
+	// Document tables in FK-safe order:
+	//   defaults → original_files → content_versions → artifacts → documents
+	// document_version_artifact_refs has no user_id column; deleting
+	// document_content_versions with FK_enforcement=on cascades and removes it,
+	// so it is safe to delete document_render_artifacts afterwards.
 	"user_document_defaults",
-	"document_render_artifacts",
 	"document_original_files",
 	"document_content_versions",
+	"document_render_artifacts",
 	"user_documents",
 }
 
@@ -52,13 +56,6 @@ func (s *UserStore) DeleteUser(userID string) error {
 		if _, err := tx.Exec(fmt.Sprintf("DELETE FROM %s WHERE user_id = ?", table), userID); err != nil {
 			return fmt.Errorf("delete from %s: %w", table, err)
 		}
-	}
-
-	// document_version_artifact_refs has no user_id column; clean up via subquery
-	// before document_content_versions is deleted (the row exists here because we
-	// deleted content_versions in userDataTables above via user_id).
-	if _, err := tx.Exec(`DELETE FROM document_version_artifact_refs WHERE content_version_id NOT IN (SELECT id FROM document_content_versions)`); err != nil {
-		return fmt.Errorf("delete from document_version_artifact_refs: %w", err)
 	}
 
 	res, err := tx.Exec(`DELETE FROM users WHERE id = ?`, userID)

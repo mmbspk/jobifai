@@ -22,8 +22,8 @@ export function AppliedJobItem({ job, onDelete, deletePending }: Props) {
 
   const hasResume = Boolean(job.resume_content_version_id)
   const hasCover = Boolean(job.cover_letter_content_version_id)
-  const resumeEvicted = hasResume && !job.resume_path
-  const coverEvicted = hasCover && !job.cover_letter_path
+  const resumeEvicted = hasResume && job.resume_artifact_evicted === true
+  const coverEvicted = hasCover && job.cover_letter_artifact_evicted === true
 
   return (
     <div className="border-b border-[var(--color-border-subtle)] last:border-0">

@@ -339,28 +339,33 @@ func (s *Service) OriginalBytes(ctx context.Context, userID, versionID string) (
 	return data, filename, mediaType, err
 }
 
-func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) ([]byte, string, error) {
+// PDFBytes returns the PDF for versionID.  The third return value is true when
+// the bytes were produced by on-demand reconstruction (artifact evicted or
+// never persisted) so callers can set the X-Jobifai-Reconstructed header.
+func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) (data []byte, contentType string, reconstructed bool, err error) {
 	if s.WorkGuard != nil {
 		if err := s.WorkGuard.BeginWork(ctx, userID); err != nil {
-			return nil, "", err
+			return nil, "", false, err
 		}
 		defer s.WorkGuard.EndWork(userID)
 	}
-	key, _, err := s.Store.ArtifactForVersion(ctx, userID, versionID)
-	if err == nil {
-		data, readErr := s.Blobs.Read(key)
+	key, _, keyErr := s.Store.ArtifactForVersion(ctx, userID, versionID)
+	if keyErr == nil {
+		d, readErr := s.Blobs.Read(key)
 		if readErr == nil {
-			return data, "application/pdf", nil
+			return d, "application/pdf", false, nil
 		}
 		if errors.Is(readErr, ErrBlobNotFound) {
-			return s.ReconstructPDF(ctx, userID, versionID)
+			d, ct, err := s.ReconstructPDF(ctx, userID, versionID)
+			return d, ct, true, err
 		}
-		return nil, "", readErr
+		return nil, "", false, readErr
 	}
-	if !errors.Is(err, ErrNotFound) {
-		return nil, "", err
+	if !errors.Is(keyErr, ErrNotFound) {
+		return nil, "", false, keyErr
 	}
-	return s.ReconstructPDF(ctx, userID, versionID)
+	d, ct, err := s.ReconstructPDF(ctx, userID, versionID)
+	return d, ct, true, err
 }
 
 func (s *Service) ReconstructPDF(ctx context.Context, userID, versionID string) ([]byte, string, error) {
