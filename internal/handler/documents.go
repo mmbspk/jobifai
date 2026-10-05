@@ -11,6 +11,7 @@ import (
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/llm"
 )
 
 type DocumentHandlers struct{ svc *Services }
@@ -118,7 +119,8 @@ func (h *DocumentHandlers) AIGenerateCoverLetter(w http.ResponseWriter, r *http.
 		return
 	}
 	prefix := h.docMarketPrefix(req.Market, "cover")
-	body, err := tailor.WriteCoverLetter(r.Context(), profile, prefix+"Write a general cover letter suitable for open applications. No job description.\n")
+	ctx := llm.WithCallContext(r.Context(), domain.LLMCallContext{BypassReuse: true})
+	body, err := tailor.WriteCoverLetter(ctx, profile, prefix+"Write a general cover letter suitable for open applications. No job description.\n")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
@@ -147,7 +149,8 @@ func (h *DocumentHandlers) AIImproveResume(w http.ResponseWriter, r *http.Reques
 		unprocessable(w, msgNoProfile)
 		return
 	}
-	improved, err := tailor.TailorProfile(r.Context(), profile, h.docMarketPrefix(req.Market, "tailored")+"Improve wording for clarity and impact. No specific job description.\n")
+	ctx := llm.WithCallContext(r.Context(), domain.LLMCallContext{BypassReuse: true})
+	improved, err := tailor.TailorProfile(ctx, profile, h.docMarketPrefix(req.Market, "tailored")+"Improve wording for clarity and impact. No specific job description.\n")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
@@ -243,7 +246,7 @@ func (h *DocumentHandlers) DownloadOriginal(w http.ResponseWriter, r *http.Reque
 func (h *DocumentHandlers) DownloadPDF(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	versionID := chi.URLParam(r, "version_id")
-	data, ctype, err := h.svc.Documents.PDFBytes(r.Context(), userID, versionID)
+	data, ctype, _, err := h.svc.Documents.PDFBytes(r.Context(), userID, versionID)
 	if err != nil {
 		if errors.Is(err, documents.ErrForbidden) || errors.Is(err, documents.ErrNotFound) {
 			notFound(w, "document not found")

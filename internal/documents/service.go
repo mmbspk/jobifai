@@ -25,6 +25,12 @@ type PDFRenderer interface {
 	RenderCoverLetter(ctx context.Context, body string, styleName, cssOverride string) ([]byte, error)
 }
 
+// UserWorkGuard coordinates reads/exports with retention eviction (#60).
+type UserWorkGuard interface {
+	BeginWork(ctx context.Context, userID string) error
+	EndWork(userID string)
+}
+
 type Service struct {
 	Store            *Store
 	Blobs            BlobStore
@@ -34,6 +40,9 @@ type Service struct {
 	LoadProfile      ProfileLoader
 	DefaultsMeta     func(userID string) (DefaultsMeta, error)
 	SaveDefaultsMeta func(userID string, m DefaultsMeta) error
+	WorkGuard        UserWorkGuard
+	// Metrics accumulates reuse/reconstruction counters.  Nil disables tracking.
+	Metrics *ServiceMetrics
 }
 
 type RenderContext struct {
@@ -81,6 +90,13 @@ func (s *Service) SaveResumeVersion(ctx context.Context, userID, documentID, tit
 }
 
 func (s *Service) saveResumeVersion(ctx context.Context, userID, documentID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (versionID string, err error) {
+	return versionID, s.withWork(ctx, userID, func() error {
+		versionID, err = s.saveResumeVersionLocked(ctx, userID, documentID, title, source, profile, rc)
+		return err
+	})
+}
+
+func (s *Service) saveResumeVersionLocked(ctx context.Context, userID, documentID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (string, error) {
 	docID, err := s.ensureDocument(ctx, userID, documentID, KindResume, defaultTitle(title, "Default resume"))
 	if err != nil {
 		return "", err
@@ -98,7 +114,7 @@ func (s *Service) saveResumeVersion(ctx context.Context, userID, documentID, tit
 	if err != nil {
 		return "", err
 	}
-	versionID, _, err = s.Store.InsertVersion(ctx, InsertVersionParams{
+	versionID, _, err := s.Store.InsertVersion(ctx, InsertVersionParams{
 		DocumentID: docID, UserID: userID, Source: source,
 		ContentKind: ContentResumeJSON, ContentJSON: string(content),
 		ProfileSnapshotJSON: string(snapJSON), ProfileSnapshotHash: ProfileSnapshotHash(profile),
@@ -131,6 +147,13 @@ func (s *Service) AppendCoverVersion(ctx context.Context, userID, documentID, ti
 }
 
 func (s *Service) SaveCoverLetterWithSourceOnDocument(ctx context.Context, userID, documentID, title, body, source string, rc RenderContext) (versionID string, err error) {
+	return versionID, s.withWork(ctx, userID, func() error {
+		versionID, err = s.saveCoverLetterLocked(ctx, userID, documentID, title, body, source, rc)
+		return err
+	})
+}
+
+func (s *Service) saveCoverLetterLocked(ctx context.Context, userID, documentID, title, body, source string, rc RenderContext) (string, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return "", fmt.Errorf("cover letter body is required")
@@ -158,7 +181,7 @@ func (s *Service) SaveCoverLetterWithSourceOnDocument(ctx context.Context, userI
 	if err != nil {
 		return "", err
 	}
-	versionID, _, err = s.Store.InsertVersion(ctx, InsertVersionParams{
+	versionID, _, err := s.Store.InsertVersion(ctx, InsertVersionParams{
 		DocumentID: docID, UserID: userID, Source: source,
 		ContentKind: ContentCoverText, ContentJSON: string(content),
 		ProfileSnapshotJSON: snapJSON, ProfileSnapshotHash: hash,
@@ -212,6 +235,12 @@ func (s *Service) StoreOriginalUpload(ctx context.Context, userID, filename, med
 }
 
 func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string) error {
+	return s.withWork(ctx, userID, func() error {
+		return s.setDefaultLocked(ctx, userID, kind, versionID)
+	})
+}
+
+func (s *Service) setDefaultLocked(ctx context.Context, userID, kind, versionID string) error {
 	profile, _ := s.LoadProfile(userID)
 	hash := ProfileSnapshotHash(profile)
 	market := ""
@@ -247,6 +276,18 @@ func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string
 		_ = s.SaveDefaultsMeta(userID, meta)
 	}
 	return nil
+}
+
+// withWork acquires the activity guard (if wired) so document writes block
+// eviction and are blocked while eviction runs.
+func (s *Service) withWork(ctx context.Context, userID string, fn func() error) error {
+	if s.WorkGuard != nil {
+		if err := s.WorkGuard.BeginWork(ctx, userID); err != nil {
+			return err
+		}
+		defer s.WorkGuard.EndWork(userID)
+	}
+	return fn()
 }
 
 // NotePreferredStyle records that the user changed their preferred document design (shared style picker).
@@ -300,22 +341,45 @@ func (s *Service) OriginalBytes(ctx context.Context, userID, versionID string) (
 	return data, filename, mediaType, err
 }
 
-func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) ([]byte, string, error) {
-	key, _, err := s.Store.ArtifactForVersion(ctx, userID, versionID)
-	if err == nil {
-		data, readErr := s.Blobs.Read(key)
+// PDFBytes returns the PDF for versionID.  The third return value is true when
+// the bytes were produced by on-demand reconstruction (artifact evicted or
+// never persisted) so callers can set the X-Jobifai-Reconstructed header.
+func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) (data []byte, contentType string, reconstructed bool, err error) {
+	if s.WorkGuard != nil {
+		if err := s.WorkGuard.BeginWork(ctx, userID); err != nil {
+			return nil, "", false, err
+		}
+		defer s.WorkGuard.EndWork(userID)
+	}
+	key, _, keyErr := s.Store.ArtifactForVersion(ctx, userID, versionID)
+	if keyErr == nil {
+		d, readErr := s.Blobs.Read(key)
 		if readErr == nil {
-			return data, "application/pdf", nil
+			if s.Metrics != nil {
+				s.Metrics.ArtifactServeHits.Add(1)
+				s.Metrics.ArtifactServeBytesTotal.Add(int64(len(d)))
+			}
+			return d, "application/pdf", false, nil
 		}
 		if errors.Is(readErr, ErrBlobNotFound) {
-			return s.ReconstructPDF(ctx, userID, versionID)
+			d, ct, err := s.ReconstructPDF(ctx, userID, versionID)
+			if err == nil && s.Metrics != nil {
+				s.Metrics.Reconstructions.Add(1)
+				s.Metrics.ReconstructionBytesTotal.Add(int64(len(d)))
+			}
+			return d, ct, true, err
 		}
-		return nil, "", readErr
+		return nil, "", false, readErr
 	}
-	if !errors.Is(err, ErrNotFound) {
-		return nil, "", err
+	if !errors.Is(keyErr, ErrNotFound) {
+		return nil, "", false, keyErr
 	}
-	return s.ReconstructPDF(ctx, userID, versionID)
+	d, ct, err := s.ReconstructPDF(ctx, userID, versionID)
+	if err == nil && s.Metrics != nil {
+		s.Metrics.Reconstructions.Add(1)
+		s.Metrics.ReconstructionBytesTotal.Add(int64(len(d)))
+	}
+	return d, ct, true, err
 }
 
 func (s *Service) ReconstructPDF(ctx context.Context, userID, versionID string) ([]byte, string, error) {
@@ -353,9 +417,6 @@ func (s *Service) ReconstructPDF(ctx context.Context, userID, versionID string) 
 		if err != nil {
 			return nil, "", err
 		}
-		if err := s.persistArtifact(ctx, userID, versionID, pdf, p.CSSSnapshot); err != nil {
-			return pdf, "application/pdf", nil
-		}
 		return pdf, "application/pdf", nil
 	case ContentCoverText:
 		var cc CoverContent
@@ -365,9 +426,6 @@ func (s *Service) ReconstructPDF(ctx context.Context, userID, versionID string) 
 		pdf, err := s.renderCoverWithSnapshot(ctx, cc.Body, p.StyleName, p.CSSSnapshot)
 		if err != nil {
 			return nil, "", err
-		}
-		if err := s.persistArtifact(ctx, userID, versionID, pdf, p.CSSSnapshot); err != nil {
-			return pdf, "application/pdf", nil
 		}
 		return pdf, "application/pdf", nil
 	default:

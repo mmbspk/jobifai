@@ -108,3 +108,42 @@ func TestLedger_PropagatesRunAndJobIDs(t *testing.T) {
 	require.Equal(t, "job-99", jobID)
 	require.Equal(t, "run-abc", runID)
 }
+
+func TestLedger_IdempotentOperationID(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqldb, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	q := &stubQuota{}
+	ledger := &usage.Ledger{
+		DB:      sqldb,
+		Catalog: pricing.DefaultCatalog(),
+		Quota:   q,
+		Defaults: func() domain.QuotaDefaults {
+			return domain.QuotaDefaults{CreditsPerUSD: 1000, ServiceMarkup: 0.5, PerCallFeeUSD: 0.002}
+		},
+	}
+	in := usage.RecordInput{
+		Call: domain.LLMCallContext{
+			Task:        domain.TaskJobScoring,
+			UserID:      "user-1",
+			OperationID: "op-dedupe",
+		},
+		Provider:  "claude",
+		Requested: "claude-sonnet-4-6",
+		Actual:    "claude-sonnet-4-6",
+		Tokens:    pricing.TokenUsage{InputTokens: 100, OutputTokens: 10},
+		Success:   true,
+		LogicalOp: true,
+	}
+	require.NoError(t, ledger.Record(context.Background(), in))
+	creditsAfterFirst := q.credits
+	require.NoError(t, ledger.Record(context.Background(), in))
+	require.Equal(t, creditsAfterFirst, q.credits)
+
+	var n int
+	require.NoError(t, sqldb.QueryRow(`SELECT COUNT(*) FROM llm_usage_events WHERE user_id='user-1'`).Scan(&n))
+	require.Equal(t, 1, n)
+}

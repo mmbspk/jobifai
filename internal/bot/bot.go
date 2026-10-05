@@ -159,6 +159,7 @@ type JobHalalChecker interface {
 
 // Config bundles everything the bot needs to run.
 type Config struct {
+	OnApplied        func() // successful application persistence schedules retention reconciliation
 	Platform         domain.Platform
 	Settings         domain.GeneralSettings
 	Preferences      domain.WorkPreferences
@@ -1396,6 +1397,12 @@ func (b *Bot) queueForReview(ctx context.Context, p *domain.PendingReview) {
 }
 
 func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
+	release, err := b.beginDocumentWork(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("linkedin: document work guard")
+		return false
+	}
+	defer release()
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
 		log.Error().Err(err).Msg("linkedin: open job page")
@@ -2426,6 +2433,8 @@ func (b *Bot) recordApplied(job linkedInJob, resumePath, coverPath, resumeVer, c
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID).Msg("failed to record applied job")
+	} else if b.cfg.OnApplied != nil {
+		b.cfg.OnApplied()
 	}
 	if b.seenCache != nil {
 		b.seenCache.mark(job.ID, seenApplied)

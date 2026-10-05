@@ -54,6 +54,10 @@ func TestRecordBillingTx_QuotaFailureRollsBackEvent(t *testing.T) {
 	t.Cleanup(func() { _ = sqldb.Close() })
 
 	_, err = sqldb.Exec(`
+		INSERT INTO users (id, email, password_hash, is_admin, created_at)
+		VALUES ('u1', 'u1@billing.test', 'hash', 0, datetime('now'))`)
+	require.NoError(t, err)
+	_, err = sqldb.Exec(`
 		INSERT INTO user_quota (user_id, plan, enforcement_enabled, trial_remaining_micro, updated_at)
 		VALUES ('u1', 'trial', 1, 1000, CURRENT_TIMESTAMP)`)
 	require.NoError(t, err)

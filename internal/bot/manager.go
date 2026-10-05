@@ -21,11 +21,12 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/llmpolicy"
+	"github.com/user/jobifai/internal/llmreuse"
 	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
-	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/scraper"
+	"github.com/user/jobifai/internal/usage"
 )
 
 // ConfigReader is the subset of config.Store the Manager needs.
@@ -71,6 +72,13 @@ type Manager struct {
 	llmCatalog       *pricing.Catalog
 	documents        *documents.Service
 	usageLedger      *usage.Ledger
+	retention        retentionAfterSubmit
+	llmReuse         *llmreuse.Store
+	submitWorkGuard  documents.UserWorkGuard
+}
+
+type retentionAfterSubmit interface {
+	AfterSuccessfulSubmit(ctx context.Context, userID string)
 }
 
 // SessionQuota coordinates subscriber grace sessions (see internal/quota).
@@ -82,6 +90,21 @@ type SessionQuota interface {
 // SetSessionQuota attaches quota grace session callbacks (optional).
 func (m *Manager) SetSessionQuota(q SessionQuota) {
 	m.quotaSessions = q
+}
+
+// SetRetention wires post-submit PDF eviction (#60).
+func (m *Manager) SetRetention(r retentionAfterSubmit) {
+	m.retention = r
+}
+
+// SetLLMReuse wires exact-generation cache into bot-scoped LLM clients (#60).
+func (m *Manager) SetLLMReuse(store *llmreuse.Store) {
+	m.llmReuse = store
+}
+
+// SetSubmitWorkGuard serializes retention eviction with apply/export publication (#60).
+func (m *Manager) SetSubmitWorkGuard(g documents.UserWorkGuard) {
+	m.submitWorkGuard = g
 }
 
 // SetDocuments wires the versioned document service into bot apply sessions (#59).
@@ -272,6 +295,12 @@ func (m *Manager) SubmitSync(ctx context.Context, userID string, req SubmitReque
 // runSubmit executes the full apply flow for a queued job and records the result.
 // Called directly by SubmitSync and inside a goroutine by SubmitNow.
 func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitRequest) error {
+	if m.submitWorkGuard != nil {
+		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
+			return err
+		}
+		defer m.submitWorkGuard.EndWork(userID)
+	}
 	b, gs, err := m.setupBot(userID, domain.Platform(req.Platform), "")
 	if err != nil {
 		log.Error().Err(err).Str("job", req.Role).Msg("approve: setup bot")
@@ -491,6 +520,9 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		log.Error().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to delete from approved queue")
 	}
 	log.Info().Str("company", req.Company).Str("job", req.Role).Msg("approve: submitted ✓")
+	if m.retention != nil {
+		m.retention.AfterSuccessfulSubmit(m.ctx, userID)
+	}
 	return nil
 }
 
@@ -779,6 +811,11 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		RequireReview:   gs.RequireReview,
 		MarketDir:     m.marketDir,
 		Documents:     m.documents,
+		OnApplied: func() {
+			if m.retention != nil {
+				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
+			}
+		},
 		LLMTracker:    tracker,
 		Sessions:      m.sessions,
 	}
@@ -870,6 +907,9 @@ func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.C
 	if m.llmQuota != nil {
 		client = client.WithQuota(m.llmQuota, userID)
 	}
+	if m.llmReuse != nil {
+		client = client.WithReuse(&llm.ReuseCoordinator{Store: m.llmReuse})
+	}
 	return client
 }
 
@@ -956,6 +996,12 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 // ApplyFromURL opens a browser at jobURL, scores the job, checks for Easy/Quick Apply,
 // and either applies immediately (background goroutine) or routes to the appropriate queue.
 func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market string, force bool) (ApplyFromURLResult, error) {
+	if m.submitWorkGuard != nil {
+		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
+			return ApplyFromURLResult{}, err
+		}
+		defer m.submitWorkGuard.EndWork(userID)
+	}
 	// Prevent concurrent AI Apply calls for the same user — a second call arriving
 	// while the first is still in-flight (browser open, LLMs running) would open a
 	// second browser session and apply twice to the same job.
@@ -1114,6 +1160,8 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 				time.Now().UTC().Format(time.RFC3339),
 			); err != nil {
 				log.Error().Err(err).Str("url", jobURL).Msg("ai apply: failed to record manually-applied job")
+			} else if m.retention != nil {
+				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
 			}
 			if _, err := m.db.Exec(`DELETE FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL); err != nil {
 				log.Error().Err(err).Str("url", jobURL).Msg("ai apply: failed to delete pending review for manually-applied job")
@@ -1302,12 +1350,14 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 
 	resumePath, coverPath := lazy.get()
 	if _, err := m.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		jobID, userID, string(platform), company, role, location, jobURL, resumePath, coverPath, score, "",
+		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,halal_verdict,applied_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		jobID, userID, string(platform), company, role, location, jobURL, resumePath, coverPath, lazy.resumeVersionID, lazy.coverVersionID, lazy.packJSONForPersist(), score, "",
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert applied failed")
+	} else if m.retention != nil {
+		m.retention.AfterSuccessfulSubmit(m.ctx, userID)
 	}
 	if _, err := m.db.ExecContext(ctx, `DELETE FROM jobs_pending_review WHERE user_id = ? AND link = ?`, userID, jobURL); err != nil {
 		log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: delete pending review failed")
@@ -1363,8 +1413,6 @@ func extractJobLocation(page *rod.Page, platform domain.Platform) string {
 	}
 	return strings.TrimSpace(res.Value.String())
 }
-
-
 
 // extractJobMeta pulls company and role from the job page.
 // Seek uses DOM data-automation selectors. LinkedIn and others use a JS extractor

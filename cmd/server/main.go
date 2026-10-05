@@ -23,7 +23,9 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/llmreuse"
 	"github.com/user/jobifai/internal/llmpolicy"
+	"github.com/user/jobifai/internal/retention"
 	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/usage"
@@ -140,9 +142,10 @@ func main() {
 	}
 	usageStore := llm.NewUserUsageStore()
 	quotaSvc.SetPricingCatalog(catalog)
+	llmReuseStore := &llmreuse.Store{DB: database}
 
 	// ── LLM deps (nil if no API key stored yet) ─────────────────────────
-	extractor, tailor, renderer, llmClient := buildLLMDeps("__default__", cfgStore, secretsStore, usageStore.For("__default__"), quotaSvc, usageLedger, policyStore, catalog)
+	extractor, tailor, renderer, llmClient := buildLLMDeps("__default__", cfgStore, secretsStore, usageStore.For("__default__"), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 
 	// ── Bot manager ──────────────────────────────────────────────────────
 	var botTailor bot.ResumeTailor
@@ -214,7 +217,20 @@ func main() {
 		},
 	}
 	log.Info().Str("root", docStorageRoot).Msg("document storage (local; transitional — plan durable object storage for production scale)")
+	retentionCoord := &retention.ActivityCoordinator{}
+	docSvc.WorkGuard = retentionCoord
+	docSvc.Metrics = &documents.ServiceMetrics{}
 	botMgr.SetDocuments(docSvc)
+	botMgr.SetSubmitWorkGuard(retentionCoord)
+	retentionSvc := &retention.Service{
+		DB:       database,
+		Config:   cfgStore,
+		Root:     ".",
+		Blobs:    docBlobs,
+		Activity: retentionCoord,
+	}
+	botMgr.SetRetention(retentionSvc)
+	botMgr.SetLLMReuse(llmReuseStore)
 
 	// ── Router ──────────────────────────────────────────────────────────
 	svc := &handler.Services{
@@ -273,11 +289,11 @@ func main() {
 		Quota:        quotaSvc,
 		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
 		LLMFactory: func(userID string) (handler.ResumeExtractor, handler.ResumeTailor) {
-			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog)
+			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			return e, t
 		},
 		EvaluatorFactory: func(userID string) handler.JobEvaluator {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog)
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
 				return nil
 			}
@@ -289,7 +305,7 @@ func main() {
 			return resume.NewScorer(scoreC)
 		},
 		HalalCheckerFactory: func(userID string) handler.JobHalalChecker {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog)
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
 				return nil
 			}
@@ -301,8 +317,10 @@ func main() {
 			return resume.NewHalalChecker(halalC)
 		},
 		Documents: docSvc,
+		Retention: retentionSvc,
+		LLMReuseMetrics: llmReuseStore,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog)
+			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
 				return nil
 			}
@@ -352,7 +370,7 @@ func main() {
 // userID scopes the config/secrets lookup; pass "__default__" for startup bootstrapping.
 // Extractor/Tailor/Client are nil if no API key is saved yet.
 // tracker is optional; if non-nil the returned client will accumulate token usage into it.
-func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard, ledger *usage.Ledger, policyStore *llmpolicy.Store, catalog *pricing.Catalog) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
+func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard, ledger *usage.Ledger, policyStore *llmpolicy.Store, catalog *pricing.Catalog, reuseStore *llmreuse.Store) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
 	renderer := resume.NewPDFRenderer("resume_style")
 
 	gs := config.ResolveOperationalSettings(cfgStore, userID)
@@ -370,6 +388,9 @@ func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.Secrets
 	}
 	if ledger != nil {
 		client = client.WithBilling(llm.BillingHooks{Ledger: ledger})
+	}
+	if reuseStore != nil {
+		client = client.WithReuse(&llm.ReuseCoordinator{Store: reuseStore})
 	}
 	extractC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskResumeExtract, userID)
 	tailorC := taskApplyWithFallback(client, gs, policyStore, catalog, "tailoring", userID)

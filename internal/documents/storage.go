@@ -20,6 +20,7 @@ type BlobStore interface {
 	PutAtomic(key string, r io.Reader) (sha256Hex string, size int64, err error)
 	Read(key string) ([]byte, error)
 	Open(key string) (io.ReadCloser, error)
+	Remove(key string) error
 }
 
 type LocalBlobStore struct {
@@ -103,6 +104,18 @@ func (s *LocalBlobStore) Read(key string) ([]byte, error) {
 		return nil, err
 	}
 	return data, nil
+}
+
+func (s *LocalBlobStore) Remove(key string) error {
+	target, err := s.abs(key)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(target)
+	if err != nil && os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func (s *LocalBlobStore) Open(key string) (io.ReadCloser, error) {

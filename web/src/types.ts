@@ -20,9 +20,13 @@ export interface AppliedJob {
   link: string
   resume_path?: string
   cover_letter_path?: string
+  resume_content_version_id?: string
+  cover_letter_content_version_id?: string
   suitability_score?: number
   halal_verdict?: HalalVerdict
   applied_at: string
+  resume_artifact_evicted?: boolean
+  cover_letter_artifact_evicted?: boolean
 }
 
 // ── Halal Types ──────────────────────────────────────────────────────

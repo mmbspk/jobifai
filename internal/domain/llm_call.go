@@ -10,6 +10,8 @@ type LLMCallContext struct {
 	CorrelationID    string
 	OperationID      string // stable idempotency key for one logical LLM operation
 	Attempt          int
+	// BypassReuse skips generation cache lookup (explicit fresh provider call).
+	BypassReuse bool
 }
 
 // TaskModelPolicyState for production model workflow.

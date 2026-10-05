@@ -30,7 +30,7 @@ func (s *Service) UploadPayloadForVersion(ctx context.Context, userID, versionID
 		}
 		return VersionUploadPayload{Data: raw, Filename: filename, MediaType: mediaType}, nil
 	case ContentResumeJSON, ContentCoverText:
-		pdf, _, err := s.PDFBytes(ctx, userID, versionID)
+		pdf, _, _, err := s.PDFBytes(ctx, userID, versionID)
 		if err != nil {
 			return VersionUploadPayload{}, err
 		}
