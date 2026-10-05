@@ -16,9 +16,9 @@ test.describe('Setup guide', () => {
 
   test('shows all required step titles', async ({ page }) => {
     await expect(page.getByText('Prepare before you start automation')).toBeVisible()
-    await expect(page.getByText('Add your profile')).toBeVisible()
-    await expect(page.getByText('Define what to search for')).toBeVisible()
-    await expect(page.getByText('Sign in to a job board')).toBeVisible()
+    await expect(page.getByText('Add your profile', { exact: true })).toBeVisible()
+    await expect(page.getByText('Define what to search for', { exact: true })).toBeVisible()
+    await expect(page.getByText('Sign in to a job board', { exact: true })).toBeVisible()
   })
 
   test('first incomplete step is expanded with Up next badge and CTA', async ({ page }) => {
