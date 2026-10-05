@@ -20,13 +20,13 @@ import (
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
-	"github.com/user/jobifai/internal/llmreuse"
 	"github.com/user/jobifai/internal/llmpolicy"
+	"github.com/user/jobifai/internal/llmreuse"
 	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
-	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/scraper"
+	"github.com/user/jobifai/internal/usage"
 )
 
 // ConfigReader is the subset of config.Store the Manager needs.
@@ -811,6 +811,11 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		RequireReview:   gs.RequireReview,
 		MarketDir:     m.marketDir,
 		Documents:     m.documents,
+		OnApplied: func() {
+			if m.retention != nil {
+				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
+			}
+		},
 		LLMTracker:    tracker,
 		Sessions:      m.sessions,
 	}
@@ -991,6 +996,12 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 // ApplyFromURL opens a browser at jobURL, scores the job, checks for Easy/Quick Apply,
 // and either applies immediately (background goroutine) or routes to the appropriate queue.
 func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market string, force bool) (ApplyFromURLResult, error) {
+	if m.submitWorkGuard != nil {
+		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
+			return ApplyFromURLResult{}, err
+		}
+		defer m.submitWorkGuard.EndWork(userID)
+	}
 	// Prevent concurrent AI Apply calls for the same user — a second call arriving
 	// while the first is still in-flight (browser open, LLMs running) would open a
 	// second browser session and apply twice to the same job.
@@ -1339,9 +1350,9 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 
 	resumePath, coverPath := lazy.get()
 	if _, err := m.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		jobID, userID, string(platform), company, role, location, jobURL, resumePath, coverPath, score, "",
+		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,halal_verdict,applied_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		jobID, userID, string(platform), company, role, location, jobURL, resumePath, coverPath, lazy.resumeVersionID, lazy.coverVersionID, lazy.packJSONForPersist(), score, "",
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert applied failed")
@@ -1402,8 +1413,6 @@ func extractJobLocation(page *rod.Page, platform domain.Platform) string {
 	}
 	return strings.TrimSpace(res.Value.String())
 }
-
-
 
 // extractJobMeta pulls company and role from the job page.
 // Seek uses DOM data-automation selectors. LinkedIn and others use a JS extractor

@@ -24,12 +24,12 @@ const (
 
 // Metrics summarizes a cleanup pass without resume PII.
 type Metrics struct {
-	ApplicationsScanned int `json:"applications_scanned"`
-	PathsEligible       int `json:"paths_eligible"`
-	PathsEvicted        int `json:"paths_evicted"`
-	PathsProtected      int `json:"paths_protected"`
-	DeleteFailures      int `json:"delete_failures"`
-	TempFilesRemoved    int `json:"temp_files_removed"`
+	ApplicationsScanned  int `json:"applications_scanned"`
+	PathsEligible        int `json:"paths_eligible"`
+	PathsEvicted         int `json:"paths_evicted"`
+	PathsProtected       int `json:"paths_protected"`
+	DeleteFailures       int `json:"delete_failures"`
+	TempFilesRemoved     int `json:"temp_files_removed"`
 	ArtifactBlobsEvicted int `json:"artifact_blobs_evicted"`
 }
 
@@ -169,7 +169,7 @@ func (s *Service) collectCandidates(ctx context.Context, userID string, retainN 
 		SELECT id, COALESCE(resume_path,''), COALESCE(cover_letter_path,''),
 		       COALESCE(resume_content_version_id,''), COALESCE(cover_letter_content_version_id,''),
 		       COALESCE(document_refs_json,''), COALESCE(retention_paths_cleared,'')
-		FROM jobs_applied WHERE user_id = ? ORDER BY applied_at DESC`, userID)
+		FROM jobs_applied WHERE user_id = ? ORDER BY applied_at DESC, id DESC`, userID)
 	if err != nil {
 		return nil, metrics, err
 	}

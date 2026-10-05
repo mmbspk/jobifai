@@ -1,104 +1,160 @@
-//go:build !race
-
 package llm_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/llmreuse"
+	"github.com/user/jobifai/internal/pricing"
+	"github.com/user/jobifai/internal/quota"
+	"github.com/user/jobifai/internal/usage"
 )
 
-func TestClient_DeferredValidation_AbortKeepsGenerationRetryable(t *testing.T) {
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	sqldb, err := appdb.Open(dbPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqldb.Close() })
-	store := &llmreuse.Store{DB: sqldb}
+type reuseQuota struct{ credits atomic.Int64 }
 
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		resp := map[string]any{
-			"content": []map[string]any{{"type": "text", "text": `{"summary":"tailored ok"}`}},
-			"usage":   map[string]any{"input_tokens": 5, "output_tokens": 5},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	t.Cleanup(srv.Close)
-
-	cfg := domain.LLMConfig{Provider: "claude", Model: "claude-mock", UseProxy: true, ProxyURL: srv.URL, MaxTokens: 1024}
-	client := llm.New(cfg, "key").WithUserID("user-1").WithReuse(&llm.ReuseCoordinator{Store: store})
-	callCtx := llm.WithTask(ctx, "tailor resume")
-	msgs := []llm.Message{{Role: "user", Content: "prompt body"}}
-
-	out1, err := client.Chat(callCtx, msgs)
-	require.NoError(t, err)
-	require.Contains(t, out1, "tailored ok")
-	require.Equal(t, int32(1), calls.Load())
-	var state string
-	require.NoError(t, sqldb.QueryRow(`SELECT state FROM llm_generation_cache WHERE user_id = ?`, "user-1").Scan(&state))
-	require.Equal(t, llmreuse.StateInProgress, state)
-	client.AbortReuse(ctx)
-	require.NoError(t, sqldb.QueryRow(`SELECT state FROM llm_generation_cache WHERE user_id = ?`, "user-1").Scan(&state))
-	require.Equal(t, llmreuse.StateFailedUncertain, state)
-
-	client2 := llm.New(cfg, "key").WithUserID("user-1").WithReuse(&llm.ReuseCoordinator{Store: store})
-	out2, err := client2.Chat(callCtx, msgs)
-	require.NoError(t, err)
-	require.Contains(t, out2, "tailored ok")
-	require.Equal(t, int32(2), calls.Load(), "aborted generation must not become a completed cache hit")
-	require.NoError(t, client2.CommitValidatedReuse(ctx, out2))
-
-	br, err := store.Begin(ctx, "user-1", domain.TaskResumeTailoring,
-		llmreuse.ContentFingerprint("user-1", domain.TaskResumeTailoring, "claude", "claude-mock", "", 1024,
-			[]llmreuse.MessagePart{{Role: "user", Content: "prompt body"}}), "", "op-check")
-	require.NoError(t, err)
-	require.True(t, br.CacheHit)
-	require.Contains(t, br.Response, "tailored ok")
+func (q *reuseQuota) RecordLLMBurn(_ context.Context, _ string, credits int64) error {
+	q.credits.Add(credits)
+	return nil
+}
+func (q *reuseQuota) PrepareTransactionalBurn(_ string, _ int64) (quota.BurnPrepare, error) {
+	return quota.BurnPrepare{}, nil
+}
+func (q *reuseQuota) CommitTransactionalBurn(_ *sql.Tx, _ string, credits int64, _ quota.BurnPrepare) error {
+	q.credits.Add(credits)
+	return nil
 }
 
-func TestClient_DeferredValidation_CommitBeforeCacheHit(t *testing.T) {
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	sqldb, err := appdb.Open(dbPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqldb.Close() })
-	store := &llmreuse.Store{DB: sqldb}
+type reuseFixture struct {
+	db     *sql.DB
+	client *llm.Client
+	calls  atomic.Int32
+	quota  *reuseQuota
+}
 
+func newReuseFixture(t *testing.T) *reuseFixture {
+	t.Helper()
+	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	f := &reuseFixture{db: db, quota: &reuseQuota{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]any{
-			"content": []map[string]any{{"type": "text", "text": "cover letter body"}},
-			"usage":   map[string]any{"input_tokens": 5, "output_tokens": 5},
+		f.calls.Add(1)
+		var req struct {
+			Messages []llm.Message `json:"messages"`
 		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		body := req.Messages[len(req.Messages)-1].Content
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(map[string]any{"model": "claude-sonnet-4-6", "content": []map[string]string{{"type": "text", "text": body}}, "usage": map[string]int{"input_tokens": 100, "output_tokens": 20}})
 	}))
 	t.Cleanup(srv.Close)
+	ledger := &usage.Ledger{DB: db, Catalog: pricing.DefaultCatalog(), Quota: f.quota, Defaults: func() domain.QuotaDefaults {
+		return domain.QuotaDefaults{CreditsPerUSD: 1000, ServiceMarkup: 0.5, PerCallFeeUSD: 0.002}
+	}}
+	f.client = llm.New(domain.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6", UseProxy: true, ProxyURL: srv.URL, MaxTokens: 1024}, "key").WithUserID("u").WithBilling(llm.BillingHooks{Ledger: ledger}).WithReuse(&llm.ReuseCoordinator{Store: &llmreuse.Store{DB: db}}).WithModel("claude-sonnet-4-6", 1024)
+	return f
+}
+func validProse(s string) (string, error) { return s, domain.ValidateCoverContent(s) }
+func coverCtx() context.Context           { return llm.WithTask(context.Background(), "cover letter") }
+func prompt(s string) []llm.Message       { return []llm.Message{{Role: "user", Content: s}} }
+func (f *reuseFixture) events(t *testing.T) int {
+	t.Helper()
+	var n int
+	require.NoError(t, f.db.QueryRow(`SELECT count(*) FROM llm_usage_events WHERE user_id='u' AND success=1`).Scan(&n))
+	return n
+}
 
-	cfg := domain.LLMConfig{Provider: "claude", Model: "claude-mock", UseProxy: true, ProxyURL: srv.URL, MaxTokens: 1024}
-	client := llm.New(cfg, "key").WithUserID("user-1").WithReuse(&llm.ReuseCoordinator{Store: store})
-	callCtx := llm.WithTask(ctx, "cover letter")
-	msgs := []llm.Message{{Role: "user", Content: "write cover"}}
+func TestReuse_ReverseValidationKeepsResponsesWithRequests(t *testing.T) {
+	f := newReuseFixture(t)
+	aReady, bReady, releaseA := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		_, err := f.client.ChatValidated(coverCtx(), prompt("Application A cover body"), func(s string) (string, error) { close(aReady); <-releaseA; return validProse(s) })
+		errs <- err
+	}()
+	<-aReady
+	go func() {
+		_, err := f.client.ChatValidated(coverCtx(), prompt("Application B cover body"), func(s string) (string, error) { close(bReady); return validProse(s) })
+		errs <- err
+	}()
+	<-bReady
+	require.NoError(t, <-errs)
+	close(releaseA)
+	require.NoError(t, <-errs)
+	for _, body := range []string{"Application A cover body", "Application B cover body"} {
+		out, err := f.client.ChatValidated(coverCtx(), prompt(body), validProse)
+		require.NoError(t, err)
+		require.Equal(t, body, out)
+	}
+	require.Equal(t, int32(2), f.calls.Load())
+	require.Equal(t, 2, f.events(t))
+}
 
-	out, err := client.Chat(callCtx, msgs)
+func TestReuse_ConcurrentSamePromptBillsOnce(t *testing.T) {
+	f := newReuseFixture(t)
+	ready, release := make(chan struct{}), make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		_, err := f.client.ChatValidated(coverCtx(), prompt("One shared cover letter"), func(s string) (string, error) { close(ready); <-release; return validProse(s) })
+		errs <- err
+	}()
+	<-ready
+	go func() {
+		_, err := f.client.ChatValidated(coverCtx(), prompt("One shared cover letter"), validProse)
+		errs <- err
+	}()
+	close(release)
+	require.NoError(t, <-errs)
+	require.NoError(t, <-errs)
+	require.Equal(t, int32(1), f.calls.Load())
+	require.Equal(t, 1, f.events(t))
+	require.Positive(t, f.quota.credits.Load())
+}
+
+func TestReuse_ValidationFailureRetryAndCrashRecoveryDeduplicateBilling(t *testing.T) {
+	f := newReuseFixture(t)
+	msgs := prompt("A usable cover letter")
+	_, err := f.client.ChatValidated(coverCtx(), msgs, func(string) (string, error) { return "", errors.New("invalid document") })
+	require.Error(t, err)
+	charged := f.quota.credits.Load()
+	require.Positive(t, charged)
+	_, err = f.client.ChatValidated(coverCtx(), msgs, validProse)
 	require.NoError(t, err)
-	require.Equal(t, "cover letter body", out)
-	require.NoError(t, client.CommitValidatedReuse(ctx, out))
-
-	client2 := llm.New(cfg, "key").WithUserID("user-1").WithReuse(&llm.ReuseCoordinator{Store: store})
-	out2, err := client2.Chat(callCtx, msgs)
+	require.Equal(t, int32(2), f.calls.Load())
+	require.Equal(t, 1, f.events(t))
+	require.Equal(t, charged, f.quota.credits.Load())
+	// Simulate a restart after billing committed, before cache publication committed.
+	_, err = f.db.Exec(`UPDATE llm_generation_cache SET state='in_progress',response_text='',lease_until=datetime('now','-1 minute')`)
 	require.NoError(t, err)
-	require.Equal(t, "cover letter body", out2)
+	_, err = f.client.ChatValidated(coverCtx(), msgs, validProse)
+	require.NoError(t, err)
+	require.Equal(t, int32(3), f.calls.Load())
+	require.Equal(t, 1, f.events(t))
+	require.Equal(t, charged, f.quota.credits.Load())
+}
+
+func TestReuse_CanceledValidationReleasesLease(t *testing.T) {
+	f := newReuseFixture(t)
+	ctx, cancel := context.WithCancel(coverCtx())
+	_, err := f.client.ChatValidated(ctx, prompt("A usable cover letter"), func(s string) (string, error) { cancel(); return s, nil })
+	require.ErrorIs(t, err, context.Canceled)
+	retryCtx, done := context.WithTimeout(coverCtx(), time.Second)
+	defer done()
+	_, err = f.client.ChatValidated(retryCtx, prompt("A usable cover letter"), validProse)
+	require.NoError(t, err)
 }

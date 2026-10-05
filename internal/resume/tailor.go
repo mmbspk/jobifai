@@ -139,20 +139,22 @@ func (t *Tailor) TailorProfile(ctx context.Context, profile *domain.ResumeProfil
 	if err != nil {
 		return nil, fmt.Errorf("tailor: render prompt: %w", err)
 	}
-	raw, err := t.tailorClient.Chat(llm.WithTask(ctx, "tailor resume"), msgs)
+	var tailored domain.ResumeProfile
+	_, err = t.tailorClient.ChatValidated(llm.WithTask(ctx, "tailor resume"), msgs, func(raw string) (string, error) {
+		raw = stripJSON(raw)
+		if err := json.Unmarshal([]byte(raw), &tailored); err != nil {
+			return "", fmt.Errorf("tailor: parse output: %w", err)
+		}
+		if err := domain.ValidateResumeContent(&tailored); err != nil {
+			return "", err
+		}
+		canonical, err := json.Marshal(tailored)
+		return string(canonical), err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("tailor: llm: %w", err)
 	}
 
-	raw = stripJSON(raw)
-	var tailored domain.ResumeProfile
-	if err := json.Unmarshal([]byte(raw), &tailored); err != nil {
-		t.tailorClient.AbortReuse(ctx)
-		return nil, fmt.Errorf("tailor: parse llm output: %w\nraw: %s", err, raw)
-	}
-	if err := t.tailorClient.CommitValidatedReuse(ctx, raw); err != nil {
-		return nil, fmt.Errorf("tailor: reuse commit: %w", err)
-	}
 	return &tailored, nil
 }
 
@@ -166,19 +168,13 @@ func (t *Tailor) WriteCoverLetter(ctx context.Context, profile *domain.ResumePro
 	if err != nil {
 		return "", fmt.Errorf("cover letter: render prompt: %w", err)
 	}
-	body, err := t.coverClient.Chat(llm.WithTask(ctx, "cover letter"), msgs)
-	if err != nil {
-		return "", fmt.Errorf("cover letter: llm: %w", err)
-	}
-	trimmed := strings.TrimFunc(body, unicode.IsSpace)
-	if trimmed == "" {
-		t.coverClient.AbortReuse(ctx)
-		return "", fmt.Errorf("cover letter: empty llm output")
-	}
-	if err := t.coverClient.CommitValidatedReuse(ctx, trimmed); err != nil {
-		return "", fmt.Errorf("cover letter: reuse commit: %w", err)
-	}
-	return trimmed, nil
+	return t.coverClient.ChatValidated(llm.WithTask(ctx, "cover letter"), msgs, func(body string) (string, error) {
+		body = strings.TrimSpace(body)
+		if err := domain.ValidateCoverContent(body); err != nil {
+			return "", err
+		}
+		return body, nil
+	})
 }
 
 // AnswerFormQuestion uses the LLM to pick the best answer for a job-application form field.

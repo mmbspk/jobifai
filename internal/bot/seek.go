@@ -202,8 +202,6 @@ func seekDetailPageExternalApply(html string) bool {
 	return false
 }
 
-
-
 // detectSeekPageApplied returns true when the Seek job page shows that the user
 // has already applied (applied label, applied-date message, or Apply button text).
 func detectSeekPageApplied(page *rod.Page) bool {
@@ -223,8 +221,6 @@ func detectSeekPageApplied(page *rod.Page) bool {
 	}`)
 	return err == nil && res.Value.Bool()
 }
-
-
 
 // isSeekLoginPage returns true when the URL indicates Seek has redirected the
 // browser to a login or OAuth page — meaning the saved session is expired.
@@ -1249,6 +1245,12 @@ func (b *Bot) routeSeekToTopMatches(ctx context.Context, job seekJob, score int,
 }
 
 func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job seekJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) seekSubmitOutcome {
+	release, err := b.beginDocumentWork(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("seek: document work guard")
+		return seekSubmitCannotApply
+	}
+	defer release()
 	if !job.EasyApply {
 		log.Warn().Str("job", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
 		b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
@@ -2469,6 +2471,8 @@ func (b *Bot) recordSeekApplied(job seekJob, resumePath, coverPath, resumeVer, c
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record applied job")
+	} else if b.cfg.OnApplied != nil {
+		b.cfg.OnApplied()
 	}
 	if b.seenCache != nil {
 		b.seenCache.mark(job.ID, seenApplied)

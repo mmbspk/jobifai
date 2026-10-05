@@ -98,3 +98,33 @@ func TestActivityCoordinator_BeginWorkRespectsContextCancel(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	close(block)
 }
+
+func TestActivityCoordinator_TwoEvictionsRemainExclusive(t *testing.T) {
+	coord := &retention.ActivityCoordinator{}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	first, second, releaseFirst, releaseSecond := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		errs <- coord.WithEviction(ctx, "u", func() error { close(first); <-releaseFirst; return nil })
+	}()
+	<-first
+	go func() {
+		errs <- coord.WithEviction(ctx, "u", func() error { close(second); <-releaseSecond; return nil })
+	}()
+	select {
+	case <-second:
+		t.Fatal("second eviction overlapped first")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(releaseFirst)
+	<-second
+	workCtx, stop := context.WithTimeout(ctx, 30*time.Millisecond)
+	defer stop()
+	require.ErrorIs(t, coord.BeginWork(workCtx, "u"), context.DeadlineExceeded)
+	close(releaseSecond)
+	require.NoError(t, <-errs)
+	require.NoError(t, <-errs)
+	require.NoError(t, coord.BeginWork(ctx, "u"))
+	coord.EndWork("u")
+}

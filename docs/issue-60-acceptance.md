@@ -1,40 +1,40 @@
-# Issue #60 acceptance matrix (PR #63 — document retention & LLM reuse)
+# Issue #60 acceptance matrix (PR #63)
 
-Epic #40 stays open. Byte caps, queue caps, and cloud provisioning remain out of scope.
+Epic #40 stays open. Byte caps, queue caps, and cloud provisioning are outside this PR.
 
-## Round 1 — retention safety & historical downloads
+## Retention and historical downloads
 
-| Requirement | Evidence |
-|-------------|----------|
-| Evict only reconstructible exports (version-scoped) | `exportEvictAllowed`, `loadVersionMeta`; `TestService_RunEviction_SkipsWithoutReconstructibleVersion` |
-| Protection via version/artifact refs, not path string equality across stores | `buildProtectionIndex` in `refs.go` (export paths + blob keys from versions, defaults, non-reconstructible) |
-| Artifact-level retention for orphan reconstructible blobs | `evictOrphanArtifactBlobs`; `BlobRemover` on `retention.Service` |
-| Historical PDF download without repersisting blobs | `ReconstructPDF` no longer calls `persistArtifact`; `TestService_PDFBytes_ReconstructWhenBlobMissing` asserts blob still absent |
-| Work/eviction coordination | `ActivityCoordinator` + `documents.Service.WorkGuard` on `PDFBytes`; eviction under `WithEviction` |
-| Abandoned `.tmp` cleanup only | `cleanTempFiles` with `tempMinAge` (5m) |
-| Per-artifact DB/pack reconcile on eviction | `evictOneExport` updates path + `document_refs_json` + `retention_paths_cleared` per artifact |
-| Admin validation, audit-before-policy, reconcile on change | `DocumentRetentionDefaults.Validate`; audit insert before `SaveDefaults`; `ScheduleReconcileAllUsers`; `TestAdmin_RetentionDefaults_AuditAndClamp` |
-| Backlog drain + auto-submit hooks | `ReconcileUser`; `AfterSuccessfulSubmit` on review approve + AI apply inserts |
-| Admin UI | `/admin/retention`, `AdminRetentionPage`, `adminApi.retention` |
+| Requirement | Implementation and regression evidence |
+|---|---|
+| Latest N submitted applications, default 20 | Deterministic `applied_at, id` ordering; `TestService_RunEviction_21Applications_KeepsLatest20` |
+| Originals, defaults, shared references, queues protected | Version-scoped protection index; query and cursor errors abort deletion; default/shared-path tests |
+| Reconstructibility proven before eviction | `ValidateReconstructionInputs` checks content, CSS, renderer and render snapshot; `TestService_MissingSnapshotProtectsExportAndBlob` |
+| Cleanup excludes active work and other cleanup | `ActivityCoordinator`; `TestActivityCoordinator_TwoEvictionsRemainExclusive` and cancellation/active-work tests |
+| Guard lasts through application publication | Guards cover review Prepare, review Submit, ApplyFromURL and automatic LinkedIn/Seek submission; nested materialization/download guards remain valid; manager/automatic guard-entry and publication-before-cleanup regressions |
+| Bounded, resumable artifact cleanup | Migration 038 records `evicted_at`; keys deduplicated and sorted before batching; `TestService_ArtifactBatchesDrainAndSecondReconcileIsEmpty` |
+| Accurate PDF availability after eviction | Artifact lookup and document listing exclude evicted artifacts; rendering/linking a new artifact clears its eviction marker |
+| Partial export cleanup | Per-artifact path/pack reconciliation, with retry after failed persistence |
+| Historical reconstruction has no permanent retention bypass | `TestService_PDFBytes_ReconstructWhenBlobMissing` verifies reconstructed download does not repersist the blob |
+| Admin policy and audit are atomic | Transactional audited save; validated limits, admin UI, reconciliation on policy change |
 
-## Round 2 — reuse coordination, identity, billing
+## Generation reuse and billing
 
-| Requirement | Evidence |
-|-------------|----------|
-| Reuse includes provider/model/max_tokens in fingerprint | `ContentFingerprint(..., provider, model, maxTokens, ...)` |
-| Coordination errors fail closed | `reuseBegin` returns error; `Chat` aborts on `reuseErr` |
-| Quota after cache lookup | `checkQuota` after cache hit branch in `Client.Chat` |
-| SQLite-comparable lease expiry | `datetime('now', '+3 minutes')` in cache lease SQL |
-| Lease-owner fenced complete/failure | `Complete` / `MarkFailedUncertain` `AND lease_owner = ?` |
-| Persistent operation id through begin | `BeginResult.OperationID` applied to call context before provider/quota |
-| Bot clients use reuse | `Manager.SetLLMReuse`, `userLLMClient` `WithReuse` |
-| Explicit fresh generation | `LLMCallContext.BypassReuse` |
-| Billing idempotency (logical op) | `TestLedger_IdempotentOperationID` (ledger); operation id on cache rows |
+| Requirement | Implementation and regression evidence |
+|---|---|
+| Exact generation identity | User, task, provider, model, effort, max tokens and messages; model-specific client copies retain reuse configuration |
+| Explicit AI action can generate afresh | Document AI handlers set `BypassReuse` |
+| Request-scoped validated publication | `ChatValidated` keeps response, validator and lease in one invocation; no shared pending slot; reverse-order concurrent-validation test |
+| Empty/invalid document output is retryable | Resume content and cover prose validators; `TestTailor_RejectsEmptyDocumentsBeforeCaching` |
+| Lease fencing | Fresh lease token separate from persistent operation ID; stale completion, failure and renewal all return `ErrLeaseLost` |
+| Renewal failure stops the provider | Immutable heartbeat context, bounded renewal, cancellation on database error/lost ownership; heartbeat regressions run under `-race` |
+| Concurrent reuse bills once | Real Client → SQLite cache → usage ledger → quota test, `TestReuse_ConcurrentSamePromptBillsOnce` |
+| Validation failure/recovery does not rebill the logical operation | `TestReuse_ValidationFailureRetryAndCrashRecoveryDeduplicateBilling`; persistent operation retained across reclaim |
+| Canceled work releases its lease | Cancellation regression; bounded cleanup uses a context independent of request cancellation |
 
-## Known follow-ups (not claiming done)
+## Validation scope
 
-| Gap | Notes |
-|-----|--------|
-| Cache only **validated** document JSON (not raw Chat) | Reuse still stores provider `Chat` output; document validation layer not wired to cache complete |
-| End-to-end billing + reuse integration test | Ledger idempotency test does not exercise `Client.Chat` + cache + ledger together |
-| Bot apply file writes hold `ActivityCoordinator` | `PDFBytes` guarded; platform export writes during apply may still overlap eviction (narrow window) |
+The concurrency, cache and billing tests use HTTP provider fixtures and a real SQLite database. The billing fixture verifies ledger event counts and quota burns. Crash recovery simulates a persisted charge followed by an expired unfinished cache entry. Provider-side charges cannot be guaranteed exactly once after an uncertain network outcome.
+
+Platform coverage remains fixture-based: no live employer submission is performed. Coordination is process-local, matching the current local filesystem deployment; multi-process storage coordination is outside this implementation.
+
+Local validation for this revision: all Go packages except the longer-running handler suite passed with `-race`; the handler suite is rerunning with a 15-minute timeout after the full run's four-minute per-package timeout. Go lint passes. Frontend tests (162), production build and lint pass, with one existing React hook warning. GitHub Actions must validate the pushed revision before merge.

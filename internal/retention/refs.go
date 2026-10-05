@@ -36,6 +36,7 @@ type versionMeta struct {
 	reconstructible bool
 	artifactKey     string
 	originalKey     string
+	artifactEvicted bool
 }
 
 func buildProtectionIndex(ctx context.Context, db DB, userID string, retainLatestN int) (ProtectionIndex, error) {
@@ -93,7 +94,7 @@ func buildProtectionIndex(ctx context.Context, db DB, userID string, retainLates
 		SELECT COALESCE(resume_path,''), COALESCE(cover_letter_path,''),
 		       COALESCE(resume_content_version_id,''), COALESCE(cover_letter_content_version_id,''),
 		       COALESCE(document_refs_json,'')
-		FROM jobs_applied WHERE user_id = ? ORDER BY applied_at DESC LIMIT ?`, userID, retainLatestN)
+		FROM jobs_applied WHERE user_id = ? ORDER BY applied_at DESC, id DESC LIMIT ?`, userID, retainLatestN)
 	if err != nil {
 		return out, err
 	}
@@ -104,6 +105,10 @@ func buildProtectionIndex(ctx context.Context, db DB, userID string, retainLates
 			return out, err
 		}
 		collectRow(rp, cp, rv, cv, pack)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return out, err
 	}
 	_ = rows.Close()
 
@@ -123,6 +128,10 @@ func buildProtectionIndex(ctx context.Context, db DB, userID string, retainLates
 		}
 		collectRow(rp, cp, rv, cv, pack)
 	}
+	if err := pending.Err(); err != nil {
+		_ = pending.Close()
+		return out, err
+	}
 	_ = pending.Close()
 
 	approved, err := db.QueryContext(ctx, `
@@ -138,6 +147,10 @@ func buildProtectionIndex(ctx context.Context, db DB, userID string, retainLates
 			return out, err
 		}
 		collectRow(rp, cp, "", "", "")
+	}
+	if err := approved.Err(); err != nil {
+		_ = approved.Close()
+		return out, err
 	}
 	_ = approved.Close()
 
@@ -155,6 +168,10 @@ func buildProtectionIndex(ctx context.Context, db DB, userID string, retainLates
 		if id = strings.TrimSpace(id); id != "" {
 			versionIDs[id] = struct{}{}
 		}
+	}
+	if err := defRows.Err(); err != nil {
+		_ = defRows.Close()
+		return out, err
 	}
 	_ = defRows.Close()
 
@@ -183,7 +200,9 @@ func loadVersionMeta(ctx context.Context, db DB, userID string) (map[string]vers
 	out := make(map[string]versionMeta)
 	rows, err := db.QueryContext(ctx, `
 		SELECT v.id, v.reconstructible,
-		       COALESCE(a.storage_key,''), COALESCE(o.storage_key,'')
+		       COALESCE(a.storage_key,''), COALESCE(o.storage_key,''),
+		       v.content_kind, v.content_json, COALESCE(v.css_snapshot,''), COALESCE(v.renderer_version,''),
+		       COALESCE(v.render_snapshot_json,''), COALESCE(a.evicted_at,'')
 		FROM document_content_versions v
 		LEFT JOIN document_version_artifact_refs r ON r.content_version_id = v.id
 		LEFT JOIN document_render_artifacts a ON a.id = r.artifact_id
@@ -197,11 +216,13 @@ func loadVersionMeta(ctx context.Context, db DB, userID string) (map[string]vers
 		var id string
 		var recon int
 		var art, orig sql.NullString
-		if err := rows.Scan(&id, &recon, &art, &orig); err != nil {
+		var kind, content, css, renderer, snapshot, evicted string
+		if err := rows.Scan(&id, &recon, &art, &orig, &kind, &content, &css, &renderer, &snapshot, &evicted); err != nil {
 			return nil, err
 		}
 		m := out[id]
-		m.reconstructible = recon != 0
+		m.reconstructible = recon != 0 && documents.ValidateReconstructionInputs(kind, content, css, renderer, snapshot) == nil
+		m.artifactEvicted = evicted != ""
 		if art.Valid {
 			m.artifactKey = art.String
 		}

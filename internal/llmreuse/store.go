@@ -27,6 +27,7 @@ const (
 )
 
 var (
+	ErrLeaseLost       = errors.New("llm reuse: lease ownership lost")
 	ErrNotConfigured   = errors.New("llm reuse store not configured")
 	ErrWaitTimeout     = errors.New("llm reuse: timed out waiting for in-progress generation")
 	ErrBeginContention = errors.New("llm reuse: too many concurrent begin attempts")
@@ -126,15 +127,15 @@ func (s *Store) Begin(ctx context.Context, userID, task, contentFP, visualHash, 
 }
 
 func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHash, operationID string) (BeginResult, error) {
-	_ = s.recoverStaleLeases(ctx)
 
 	var existing struct {
 		id, state, response, storedOp string
+		expired                       bool
 	}
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT id, state, response_text, operation_id FROM llm_generation_cache
+		SELECT id, state, response_text, operation_id, COALESCE(lease_until < datetime('now'), 0) FROM llm_generation_cache
 		WHERE user_id = ? AND task = ? AND content_fingerprint = ?`,
-		userID, task, contentFP).Scan(&existing.id, &existing.state, &existing.response, &existing.storedOp)
+		userID, task, contentFP).Scan(&existing.id, &existing.state, &existing.response, &existing.storedOp, &existing.expired)
 	if err == nil {
 		opID := strings.TrimSpace(existing.storedOp)
 		if opID == "" {
@@ -144,6 +145,12 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 		case StateCompleted:
 			return BeginResult{CacheHit: true, Response: existing.response, RowID: existing.id, OperationID: opID}, nil
 		case StateInProgress:
+			if existing.expired {
+				if err := s.recoverStaleLease(ctx, userID, task, contentFP); err != nil {
+					return BeginResult{}, err
+				}
+				return BeginResult{}, ErrBeginContention
+			}
 			resp, waitErr := s.waitForCompletion(ctx, userID, task, contentFP)
 			if waitErr != nil {
 				return BeginResult{}, waitErr
@@ -154,7 +161,7 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 			return BeginResult{CacheHit: true, Response: resp, RowID: existing.id, OperationID: opID}, nil
 		case StateFailedUncertain:
 			lease := newLeaseToken()
-			res, uerr := s.DB.ExecContext(ctx, `
+			res, uerr := s.execContext(ctx, `
 				UPDATE llm_generation_cache SET state = ?, lease_owner = ?, lease_until = datetime('now', '+3 minutes'),
 					provider_uncertain = 0, updated_at = datetime('now')
 				WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND state = ?`,
@@ -173,7 +180,7 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 
 	lease := newLeaseToken()
 	rowID := uuid.NewString()
-	res, err := s.DB.ExecContext(ctx, `
+	res, err := s.execContext(ctx, `
 		INSERT INTO llm_generation_cache (
 			id, user_id, task, content_fingerprint, visual_identity_hash, state,
 			operation_id, lease_owner, lease_until, updated_at
@@ -219,50 +226,71 @@ func (s *Store) RenewLease(ctx context.Context, userID, task, contentFP, leaseOw
 	if s == nil || s.DB == nil {
 		return ErrNotConfigured
 	}
-	_, err := s.DB.ExecContext(ctx, `
+	res, err := s.execContext(ctx, `
 		UPDATE llm_generation_cache SET lease_until = datetime('now', '+3 minutes'), updated_at = datetime('now')
 		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND lease_owner = ? AND state = ?`,
 		userID, task, contentFP, leaseOwner, StateInProgress)
-	return err
+	return requireLeaseUpdate(res, err)
 }
 
 func (s *Store) Complete(ctx context.Context, userID, task, contentFP, leaseOwner, response string) error {
 	if s == nil || s.DB == nil {
 		return ErrNotConfigured
 	}
-	_, err := s.DB.ExecContext(ctx, `
+	res, err := s.execContext(ctx, `
 		UPDATE llm_generation_cache SET state = ?, response_text = ?, lease_until = NULL,
 			provider_uncertain = 0, updated_at = datetime('now')
-		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND lease_owner = ?`,
-		StateCompleted, response, userID, task, contentFP, leaseOwner)
-	return err
+		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND lease_owner = ? AND state = ?`,
+		StateCompleted, response, userID, task, contentFP, leaseOwner, StateInProgress)
+	return requireLeaseUpdate(res, err)
 }
 
 func (s *Store) MarkFailedUncertain(ctx context.Context, userID, task, contentFP, leaseOwner string) error {
 	if s == nil || s.DB == nil {
 		return ErrNotConfigured
 	}
-	res, err := s.DB.ExecContext(ctx, `
+	res, err := s.execContext(ctx, `
 		UPDATE llm_generation_cache SET state = ?, provider_uncertain = 1, updated_at = datetime('now')
-		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND lease_owner = ?`,
-		StateFailedUncertain, userID, task, contentFP, leaseOwner)
+		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND lease_owner = ? AND state = ?`,
+		StateFailedUncertain, userID, task, contentFP, leaseOwner, StateInProgress)
+	return requireLeaseUpdate(res, err)
+}
+
+func requireLeaseUpdate(res sql.Result, err error) error {
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
 	}
-	_, err = s.DB.ExecContext(ctx, `
+	if n != 1 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
+func (s *Store) recoverStaleLease(ctx context.Context, userID, task, contentFP string) error {
+	_, err := s.execContext(ctx, `
 		UPDATE llm_generation_cache SET state = ?, provider_uncertain = 1, updated_at = datetime('now')
-		WHERE user_id = ? AND task = ? AND content_fingerprint = ? AND state = ?`,
-		StateFailedUncertain, userID, task, contentFP, StateInProgress)
+		WHERE state = ? AND lease_until IS NOT NULL AND lease_until < datetime('now') AND user_id = ? AND task = ? AND content_fingerprint = ?`,
+		StateFailedUncertain, StateInProgress, userID, task, contentFP)
 	return err
 }
 
-func (s *Store) recoverStaleLeases(ctx context.Context) error {
-	_, err := s.DB.ExecContext(ctx, `
-		UPDATE llm_generation_cache SET state = ?, provider_uncertain = 1, updated_at = datetime('now')
-		WHERE state = ? AND lease_until IS NOT NULL AND lease_until < datetime('now')`,
-		StateFailedUncertain, StateInProgress)
-	return err
+// Retry transient SQLite writer contention without starting another provider call.
+func (s *Store) execContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		result, err := s.DB.ExecContext(ctx, query, args...)
+		var coded interface{ Code() int }
+		if !errors.As(err, &coded) || (coded.Code()&255 != 5 && coded.Code()&255 != 6) || time.Now().After(deadline) {
+			return result, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }

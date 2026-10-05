@@ -142,7 +142,9 @@ func TestStore_StaleLeaseCompleteDoesNotPublishCache(t *testing.T) {
 	br2, err := store.Begin(ctx, "u1", "tailoring", fp, "", "op-new")
 	require.NoError(t, err)
 	require.True(t, br2.LeaseAcquired)
-	require.NoError(t, store.Complete(ctx, "u1", "tailoring", fp, br1.LeaseOwner, "stale-worker"))
+	require.ErrorIs(t, store.Complete(ctx, "u1", "tailoring", fp, br1.LeaseOwner, "stale-worker"), llmreuse.ErrLeaseLost)
+	require.ErrorIs(t, store.MarkFailedUncertain(ctx, "u1", "tailoring", fp, br1.LeaseOwner), llmreuse.ErrLeaseLost)
+	require.ErrorIs(t, store.RenewLease(ctx, "u1", "tailoring", fp, br1.LeaseOwner), llmreuse.ErrLeaseLost)
 	var state string
 	require.NoError(t, store.DB.QueryRowContext(ctx, `
 		SELECT state FROM llm_generation_cache WHERE user_id = ? AND content_fingerprint = ?`, "u1", fp).Scan(&state))

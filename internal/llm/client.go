@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,13 +62,7 @@ type Client struct {
 	userID      string
 	taskRuntime TaskRuntime
 	costCeiling *costCeiling
-	reuse         *ReuseCoordinator
-	reusePending  *reusePendingSlot
-}
-
-type reusePendingSlot struct {
-	mu sync.Mutex
-	p  *pendingReuse
+	reuse       *ReuseCoordinator
 }
 
 // WithReuse attaches exact-generation reuse (content-scoped, visual identity separate).
@@ -94,7 +87,6 @@ func New(cfg domain.LLMConfig, apiKey string) *Client {
 		httpCli: &http.Client{
 			Timeout: 120 * time.Second,
 		},
-		reusePending: &reusePendingSlot{},
 	}
 }
 
@@ -128,7 +120,7 @@ func (c *Client) WithModel(model string, maxTokens int) *Client {
 	return &Client{
 		cfg: cfg, apiKey: c.apiKey, httpCli: c.httpCli, tracker: c.tracker,
 		billing: c.billing, guard: c.guard, userID: c.userID,
-		taskRuntime: c.taskRuntime, costCeiling: c.costCeiling,
+		taskRuntime: c.taskRuntime, costCeiling: c.costCeiling, reuse: c.reuse,
 	}
 }
 
@@ -169,10 +161,54 @@ func (c *Client) checkQuota(ctx context.Context, estInputChars int, estOutputTok
 // Retries up to 3 times total (2 retries) with a 2 s pause between attempts.
 // Non-retryable HTTP 4xx errors (except 429 Too Many Requests) are returned immediately.
 func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
+	return c.chat(ctx, msgs, nil)
+}
+
+// ChatValidated keeps validation and cache publication scoped to this call.
+// The validator returns the canonical content to cache; failures remain retryable.
+func (c *Client) ChatValidated(ctx context.Context, msgs []Message, validate func(string) (string, error)) (string, error) {
+	if validate == nil {
+		return "", errors.New("document validator required")
+	}
+	return c.chat(ctx, msgs, validate)
+}
+
+func (c *Client) chat(ctx context.Context, msgs []Message, validate func(string) (string, error)) (response string, retErr error) {
 	if c.taskRuntime.TimeoutSec > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(c.taskRuntime.TimeoutSec)*time.Second)
 		defer cancel()
+	}
+	ctx = c.prepareCallContext(ctx)
+	if validate == nil && reuseDefersValidation(CallContextFrom(ctx).Task) && c.reuse != nil && !CallContextFrom(ctx).BypassReuse {
+		return "", errors.New("document generation requires ChatValidated")
+	}
+	br, fp, task, err := c.reuseBegin(ctx, msgs)
+	if err != nil {
+		return "", err
+	}
+	if br.CacheHit {
+		if validate != nil {
+			return validate(br.Response)
+		}
+		return br.Response, nil
+	}
+	call := CallContextFrom(ctx)
+	if br.OperationID != "" {
+		call.OperationID = br.OperationID
+		ctx = WithCallContext(ctx, call)
+	}
+	completed := false
+	if br.LeaseAcquired {
+		defer func() {
+			if !completed {
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				defer cancel()
+				if e := c.reuse.Store.MarkFailedUncertain(cleanupCtx, c.userID, task, fp, br.LeaseOwner); e != nil {
+					retErr = errors.Join(retErr, e)
+				}
+			}
+		}()
 	}
 	inChars := 0
 	for _, m := range msgs {
@@ -185,92 +221,58 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 	if err := c.checkCostCeiling(inChars, maxOut); err != nil {
 		return "", err
 	}
-	ctx = c.prepareCallContext(ctx)
-	var reuseFP, reuseTask, reuseLease string
-	var reuseEnabled bool
-	br, fp, task, reuseErr := c.reuseBegin(ctx, msgs)
-	if reuseErr != nil {
-		return "", reuseErr
-	}
-	if task != "" {
-		reuseEnabled = true
-		reuseFP, reuseTask = fp, task
-		reuseLease = br.LeaseOwner
-		call := CallContextFrom(ctx)
-		if br.OperationID != "" {
-			call.OperationID = br.OperationID
-			ctx = WithCallContext(ctx, call)
-		}
-		if br.CacheHit {
-			return br.Response, nil
-		}
-	}
 	if err := c.checkQuota(ctx, inChars, c.cfg.MaxTokens); err != nil {
-		if reuseEnabled && reuseLease != "" {
-			c.reuseFailedUncertain(ctx, reuseTask, reuseFP, reuseLease)
-		}
 		return "", err
 	}
-	stopRenew := make(chan struct{})
-	if reuseEnabled && reuseLease != "" {
-		go func() {
-			ticker := time.NewTicker(45 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-stopRenew:
-					return
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					c.reuseRenew(ctx, reuseTask, reuseFP, reuseLease)
-				}
-			}
-		}()
+	if br.LeaseAcquired {
+		var stop func()
+		ctx, stop = c.startReuseHeartbeat(ctx, task, fp, br.LeaseOwner)
+		defer stop()
 	}
-	defer close(stopRenew)
-
-	const maxAttempts = 3
-	var err error
-	defer func() {
-		if err != nil {
-			c.AbortReuse(ctx)
+	for attempt := 1; attempt <= 3; attempt++ {
+		if cause := context.Cause(ctx); cause != nil {
+			return "", cause
 		}
-	}()
-	deferValidation := reuseEnabled && reuseDefersValidation(reuseTask)
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return "", context.Cause(ctx)
+			case <-time.After(2 * time.Second):
+			}
+		}
 		call := CallContextFrom(ctx)
 		call.Attempt = attempt
-		ctx = WithCallContext(ctx, call)
-		if attempt > 1 {
-			log.Warn().Msgf("llm: retry %d/%d after error: %v", attempt, maxAttempts, err)
-			time.Sleep(2 * time.Second)
-			if reuseEnabled && reuseLease != "" {
-				c.reuseRenew(ctx, reuseTask, reuseFP, reuseLease)
-			}
-		}
-		var result string
+		attemptCtx := WithCallContext(ctx, call)
 		switch c.cfg.Provider {
 		case "claude":
-			result, err = c.claudeChat(ctx, msgs)
-		case "openai", "gemini": // gemini uses an OpenAI-compatible endpoint via proxy
-			result, err = c.openaiChat(ctx, msgs)
+			response, err = c.claudeChat(attemptCtx, msgs)
+		case "openai", "gemini":
+			response, err = c.openaiChat(attemptCtx, msgs)
 		case "ollama":
-			result, err = c.ollamaChat(ctx, msgs)
+			response, err = c.ollamaChat(attemptCtx, msgs)
 		default:
-			return "", fmt.Errorf("unknown LLM provider: %q", c.cfg.Provider)
+			return "", fmt.Errorf("unknown LLM provider %q", c.cfg.Provider)
+		}
+		if cause := context.Cause(ctx); cause != nil {
+			return "", cause
 		}
 		if err == nil {
-			if reuseEnabled && reuseLease != "" {
-				if deferValidation {
-					c.reusePending.mu.Lock()
-					c.reusePending.p = &pendingReuse{task: reuseTask, fp: reuseFP, lease: reuseLease}
-					c.reusePending.mu.Unlock()
-				} else {
-					c.reuseComplete(ctx, reuseTask, reuseFP, reuseLease, result)
+			if validate != nil {
+				response, err = validate(response)
+				if err != nil {
+					return "", err
 				}
 			}
-			return result, nil
+			if cause := context.Cause(ctx); cause != nil {
+				return "", cause
+			}
+			if br.LeaseAcquired {
+				if err := c.reuse.Store.Complete(ctx, c.userID, task, fp, br.LeaseOwner, response); err != nil {
+					return "", err
+				}
+			}
+			completed = true
+			return response, nil
 		}
 		if errors.Is(err, ErrBillingPersistFailed) {
 			return "", err
@@ -280,12 +282,7 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, error) {
 			return "", nre.Unwrap()
 		}
 	}
-	if err != nil && !errors.Is(err, ErrBillingPersistFailed) {
-		c.recordTerminalFailure(ctx, classifyChatError(err))
-		if reuseEnabled && reuseLease != "" {
-			c.reuseFailedUncertain(ctx, reuseTask, reuseFP, reuseLease)
-		}
-	}
+	c.recordTerminalFailure(ctx, classifyChatError(err))
 	return "", err
 }
 
@@ -334,9 +331,9 @@ type claudeMessage struct {
 }
 
 type claudeTextBlock struct {
-	Type         string                 `json:"type"`
-	Text         string                 `json:"text"`
-	CacheControl *claudeCacheControl    `json:"cache_control,omitempty"`
+	Type         string              `json:"type"`
+	Text         string              `json:"text"`
+	CacheControl *claudeCacheControl `json:"cache_control,omitempty"`
 }
 
 type claudeCacheControl struct {
@@ -679,8 +676,8 @@ type ollamaResponse struct {
 	Message struct {
 		Content string `json:"content"`
 	} `json:"message"`
-	PromptEvalCount int `json:"prompt_eval_count"`
-	EvalCount       int `json:"eval_count"`
+	PromptEvalCount int    `json:"prompt_eval_count"`
+	EvalCount       int    `json:"eval_count"`
 	Error           string `json:"error,omitempty"`
 }
 

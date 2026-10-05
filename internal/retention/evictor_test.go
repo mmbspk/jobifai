@@ -46,7 +46,7 @@ func seedReconstructibleVersion(t *testing.T, svc *retention.Service, userID str
 		INSERT INTO document_content_versions (
 			id, document_id, user_id, version_number, source, content_kind, content_json,
 			css_snapshot, renderer_version, render_snapshot_json, reconstructible
-		) VALUES (?, ?, ?, 1, 'test', 'resume_json', '{}', 'css', 'v1', '{}', 1)`,
+		) VALUES (?, ?, ?, 1, 'test', 'resume_json', '{"profile":{"summary":"Saved resume"}}', 'css', 'jobifai-pdf-v1', '{"renderer_version":"jobifai-pdf-v1"}', 1)`,
 		vid, docID, userID)
 	require.NoError(t, err)
 	return vid
@@ -188,15 +188,15 @@ func seedArtifactVersion(t *testing.T, svc *retention.Service, userID, artifactK
 	_, err = svc.DB.ExecContext(context.Background(), `
 		INSERT INTO document_content_versions (
 			id, document_id, user_id, version_number, source, content_kind, content_json,
-			css_snapshot, renderer_version, reconstructible
-		) VALUES (?, ?, ?, 1, 'test', 'resume_json', '{}', 'css', 'v1', 1)`,
+			css_snapshot, renderer_version, render_snapshot_json, reconstructible
+		) VALUES (?, ?, ?, 1, 'test', 'resume_json', '{"profile":{"summary":"Saved resume"}}', 'css', 'jobifai-pdf-v1', '{"renderer_version":"jobifai-pdf-v1"}', 1)`,
 		vid, docID, userID)
 	require.NoError(t, err)
 	_, err = svc.DB.ExecContext(context.Background(), `
 		INSERT INTO document_render_artifacts (
 			id, user_id, content_version_id, storage_key, sha256, byte_size, renderer_version, template_identity, state
-		) VALUES (?, ?, ?, ?, 'sha-test', 9, 'v1', 'tpl', 'ready')`,
-		artID, userID, vid, artifactKey)
+		) VALUES (?, ?, ?, ?, ?, 9, 'jobifai-pdf-v1', 'tpl', 'ready')`,
+		artID, userID, vid, artifactKey, uuid.NewString())
 	require.NoError(t, err)
 	_, err = svc.DB.ExecContext(context.Background(), `
 		INSERT INTO document_version_artifact_refs (content_version_id, artifact_id) VALUES (?, ?)`,
@@ -263,4 +263,51 @@ func TestService_PreviewEviction_UserIsolation(t *testing.T) {
 	cands, _, err := svc.PreviewEviction(ctx, u1)
 	require.NoError(t, err)
 	require.Len(t, cands, 1)
+}
+
+func TestService_MissingSnapshotProtectsExportAndBlob(t *testing.T) {
+	svc, _, root, _ := openRetentionTestDB(t)
+	ctx := context.Background()
+	user := "missing-snapshot"
+	key := "artifacts/missing.pdf"
+	vid := seedArtifactVersion(t, svc, user, key)
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "blobs", "artifacts"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "blobs", key), []byte("last copy"), 0600))
+	_, err := svc.DB.ExecContext(ctx, `UPDATE document_content_versions SET render_snapshot_json='' WHERE id=?`, vid)
+	require.NoError(t, err)
+	for i := 0; i < 21; i++ {
+		path := filepath.Join("job_applications", user, uuid.NewString()+".pdf")
+		writePDF(t, root, path)
+		insertApplied(t, svc, user, uuid.NewString(), path, "", vid, time.Now().Add(time.Duration(i)*time.Hour).Format(time.RFC3339))
+	}
+	m, err := svc.RunEviction(ctx, user, 100)
+	require.NoError(t, err)
+	require.Zero(t, m.PathsEvicted)
+	require.Zero(t, m.ArtifactBlobsEvicted)
+	_, err = os.Stat(filepath.Join(root, "blobs", key))
+	require.NoError(t, err)
+}
+
+func TestService_ArtifactBatchesDrainAndSecondReconcileIsEmpty(t *testing.T) {
+	svc, _, root, _ := openRetentionTestDB(t)
+	ctx := context.Background()
+	user := "batch-artifacts"
+	for i := 0; i < 7; i++ {
+		key := filepath.Join("artifacts", uuid.NewString()+".pdf")
+		seedArtifactVersion(t, svc, user, key)
+		require.NoError(t, os.MkdirAll(filepath.Join(root, "blobs", "artifacts"), 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, "blobs", key), []byte("pdf"), 0600))
+	}
+	m, err := svc.RunEviction(ctx, user, 2)
+	require.NoError(t, err)
+	require.Equal(t, 2, m.ArtifactBlobsEvicted)
+	m, err = svc.ReconcileUser(ctx, user)
+	require.NoError(t, err)
+	require.Equal(t, 5, m.ArtifactBlobsEvicted)
+	m, err = svc.ReconcileUser(ctx, user)
+	require.NoError(t, err)
+	require.Zero(t, m.ArtifactBlobsEvicted)
+	var n int
+	require.NoError(t, svc.DB.QueryRowContext(ctx, `SELECT count(*) FROM document_render_artifacts WHERE user_id=? AND evicted_at IS NOT NULL`, user).Scan(&n))
+	require.Equal(t, 7, n)
 }

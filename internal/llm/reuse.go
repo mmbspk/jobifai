@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llmreuse"
@@ -10,10 +11,6 @@ import (
 
 type ReuseCoordinator struct {
 	Store *llmreuse.Store
-}
-
-type pendingReuse struct {
-	task, fp, lease string
 }
 
 func messageParts(msgs []Message) []llmreuse.MessagePart {
@@ -55,47 +52,35 @@ func (c *Client) reuseBegin(ctx context.Context, msgs []Message) (llmreuse.Begin
 	return br, fp, task, nil
 }
 
-func (c *Client) reuseComplete(ctx context.Context, task, fp, leaseOwner, response string) {
-	if c.reuse == nil || c.reuse.Store == nil || leaseOwner == "" {
-		return
-	}
-	_ = c.reuse.Store.Complete(ctx, c.userID, task, fp, leaseOwner, response)
+// startReuseHeartbeat owns an immutable context and cancels the provider on lease loss.
+func (c *Client) startReuseHeartbeat(parent context.Context, task, fp, owner string) (context.Context, func()) {
+	return c.reuseHeartbeat(parent, task, fp, owner, 45*time.Second)
 }
 
-func (c *Client) reuseFailedUncertain(ctx context.Context, task, fp, leaseOwner string) {
-	if c.reuse == nil || c.reuse.Store == nil || leaseOwner == "" {
-		return
-	}
-	_ = c.reuse.Store.MarkFailedUncertain(ctx, c.userID, task, fp, leaseOwner)
-}
-
-func (c *Client) reuseRenew(ctx context.Context, task, fp, leaseOwner string) {
-	if c.reuse == nil || c.reuse.Store == nil || leaseOwner == "" {
-		return
-	}
-	_ = c.reuse.Store.RenewLease(ctx, c.userID, task, fp, leaseOwner)
-}
-
-// CommitValidatedReuse completes cache after downstream validation (document tasks).
-func (c *Client) CommitValidatedReuse(ctx context.Context, validatedResponse string) error {
-	c.reusePending.mu.Lock()
-	p := c.reusePending.p
-	c.reusePending.p = nil
-	c.reusePending.mu.Unlock()
-	if p == nil || c.reuse == nil || c.reuse.Store == nil {
-		return nil
-	}
-	return c.reuse.Store.Complete(ctx, c.userID, p.task, p.fp, p.lease, validatedResponse)
-}
-
-// AbortReuse releases a pending generation lease so callers can retry.
-func (c *Client) AbortReuse(ctx context.Context) {
-	c.reusePending.mu.Lock()
-	p := c.reusePending.p
-	c.reusePending.p = nil
-	c.reusePending.mu.Unlock()
-	if p == nil {
-		return
-	}
-	c.reuseFailedUncertain(ctx, p.task, p.fp, p.lease)
+func (c *Client) reuseHeartbeat(parent context.Context, task, fp, owner string, interval time.Duration) (context.Context, func()) {
+	ctx, cancel := context.WithCancelCause(parent)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renewCtx, release := context.WithTimeout(ctx, 10*time.Second)
+				err := c.reuse.Store.RenewLease(renewCtx, c.userID, task, fp, owner)
+				release()
+				if err != nil {
+					cancel(fmt.Errorf("renew generation lease: %w", err))
+					return
+				}
+			}
+		}
+	}()
+	return ctx, func() { close(stop); <-done; cancel(context.Canceled) }
 }

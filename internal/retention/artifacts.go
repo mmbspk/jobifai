@@ -3,6 +3,7 @@ package retention
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/user/jobifai/internal/documents"
@@ -39,11 +40,16 @@ func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, r
 			protectedVersions[id] = struct{}{}
 		}
 	}
+	if err := defRows.Err(); err != nil {
+		_ = defRows.Close()
+		return 0, err
+	}
 	_ = defRows.Close()
 
+	unique := make(map[string]struct{})
 	var candidates []string
 	for id, m := range meta {
-		if !m.reconstructible || m.artifactKey == "" {
+		if !m.reconstructible || m.artifactKey == "" || m.artifactEvicted {
 			continue
 		}
 		if _, active := protectedVersions[id]; active {
@@ -52,8 +58,12 @@ func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, r
 		if idx.blobProtected(m.artifactKey) {
 			continue
 		}
-		candidates = append(candidates, m.artifactKey)
+		if _, seen := unique[m.artifactKey]; !seen {
+			unique[m.artifactKey] = struct{}{}
+			candidates = append(candidates, m.artifactKey)
+		}
 	}
+	sort.Strings(candidates)
 	if len(candidates) > batchLimit {
 		candidates = candidates[:batchLimit]
 	}
@@ -65,6 +75,9 @@ func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, r
 				firstErr = fmt.Errorf("remove artifact %q: %w", key, err)
 			}
 			continue
+		}
+		if _, err := s.DB.ExecContext(ctx, `UPDATE document_render_artifacts SET evicted_at = datetime('now') WHERE user_id = ? AND storage_key = ? AND evicted_at IS NULL`, userID, key); err != nil {
+			return removed, err
 		}
 		removed++
 	}
@@ -95,7 +108,7 @@ func (s *Service) versionIDsReferencedByActiveApplications(ctx context.Context, 
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT COALESCE(resume_content_version_id,''), COALESCE(cover_letter_content_version_id,''),
 		       COALESCE(document_refs_json,'')
-		FROM jobs_applied WHERE user_id = ? ORDER BY applied_at DESC LIMIT ?`, userID, retainN)
+		FROM jobs_applied WHERE user_id = ? ORDER BY applied_at DESC, id DESC LIMIT ?`, userID, retainN)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +119,10 @@ func (s *Service) versionIDsReferencedByActiveApplications(ctx context.Context, 
 			return nil, err
 		}
 		scan(rv, cv, pack)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
 	}
 	_ = rows.Close()
 
@@ -122,6 +139,10 @@ func (s *Service) versionIDsReferencedByActiveApplications(ctx context.Context, 
 			return nil, err
 		}
 		scan(rv, cv, pack)
+	}
+	if err := pr.Err(); err != nil {
+		_ = pr.Close()
+		return nil, err
 	}
 	_ = pr.Close()
 	return out, nil

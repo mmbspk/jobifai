@@ -82,17 +82,18 @@ func (c *ActivityCoordinator) WithEviction(ctx context.Context, userID string, f
 		return fn()
 	}
 	st.mu.Lock()
-	if err := waitWhileLocked(ctx, st, func() bool { return st.activeWork > 0 }); err != nil {
+	if err := waitWhileLocked(ctx, st, func() bool { return st.activeWork > 0 || st.evicting }); err != nil {
 		st.mu.Unlock()
 		return err
 	}
 	st.evicting = true
 	st.mu.Unlock()
-	err := fn()
-	st.mu.Lock()
-	st.evicting = false
-	st.mu.Unlock()
-	return err
+	defer func() {
+		st.mu.Lock()
+		st.evicting = false
+		st.mu.Unlock()
+	}()
+	return fn()
 }
 
 // WithWork runs fn under an active-work marker (blocks eviction).

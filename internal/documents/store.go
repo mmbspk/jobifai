@@ -157,6 +157,11 @@ func (s *Store) LinkArtifact(ctx context.Context, userID, versionID, storageKey,
 		return err
 	}
 
+	// A newly rendered copy makes a previously evicted artifact available again.
+	if _, err := tx.ExecContext(ctx, `UPDATE document_render_artifacts SET storage_key = ?, evicted_at = NULL, state = ? WHERE id = ? AND user_id = ?`, storageKey, ArtifactReady, artifactID, userID); err != nil {
+		return err
+	}
+
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO document_version_artifact_refs (content_version_id, artifact_id) VALUES (?, ?)
 		ON CONFLICT(content_version_id) DO UPDATE SET artifact_id = excluded.artifact_id`,
@@ -173,7 +178,7 @@ func (s *Store) ArtifactForVersion(ctx context.Context, userID, versionID string
 		FROM document_version_artifact_refs r
 		JOIN document_render_artifacts a ON a.id = r.artifact_id
 		JOIN document_content_versions v ON v.id = r.content_version_id
-		WHERE r.content_version_id = ? AND v.user_id = ? AND a.state = ?`,
+		WHERE r.content_version_id = ? AND v.user_id = ? AND a.evicted_at IS NULL AND a.state = ?`,
 		versionID, userID, ArtifactReady).Scan(&storageKey, &sha)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", ErrNotFound
@@ -293,7 +298,7 @@ func (s *Store) GetDocument(ctx context.Context, userID, documentID string) (kin
 func (s *Store) listVersions(ctx context.Context, docID, userID string) ([]VersionSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT v.id, v.version_number, v.source, v.content_kind, COALESCE(v.market,''), v.reconstructible, v.created_at,
-			COALESCE((SELECT 1 FROM document_version_artifact_refs r WHERE r.content_version_id = v.id LIMIT 1), 0) AS has_pdf
+			COALESCE((SELECT 1 FROM document_version_artifact_refs r JOIN document_render_artifacts a ON a.id = r.artifact_id WHERE r.content_version_id = v.id AND a.evicted_at IS NULL AND a.state = 'ready' LIMIT 1), 0) AS has_pdf
 		FROM document_content_versions v
 		WHERE v.document_id = ? AND v.user_id = ?
 		ORDER BY v.version_number DESC`, docID, userID)
@@ -328,14 +333,14 @@ func (s *Store) loadDefaults(ctx context.Context, userID string) (DefaultsView, 
 }
 
 type DefaultsMeta struct {
-	ResumeOutdated  bool   `json:"resume_outdated"`
-	CoverOutdated   bool   `json:"cover_outdated"`
-	OutdatedReason  string `json:"outdated_reason,omitempty"`
-	ProfileHash     string `json:"profile_hash,omitempty"`
-	Market          string `json:"market,omitempty"`
-	ResumeStyle     string `json:"resume_style,omitempty"`
-	CoverStyle      string `json:"cover_style,omitempty"`
-	Style           string `json:"style,omitempty"` // legacy; coalesced on read
+	ResumeOutdated bool   `json:"resume_outdated"`
+	CoverOutdated  bool   `json:"cover_outdated"`
+	OutdatedReason string `json:"outdated_reason,omitempty"`
+	ProfileHash    string `json:"profile_hash,omitempty"`
+	Market         string `json:"market,omitempty"`
+	ResumeStyle    string `json:"resume_style,omitempty"`
+	CoverStyle     string `json:"cover_style,omitempty"`
+	Style          string `json:"style,omitempty"` // legacy; coalesced on read
 }
 
 func MergeDefaultsMeta(def DefaultsView, meta DefaultsMeta) DefaultsView {
