@@ -5,9 +5,9 @@ package retention_test
 //
 // Verifies:
 //   (1) production handler.NewRouter route handles ?token= JWT auth
-//   (2) reconstruction uses the stored content/CSS snapshot (not the live profile)
-//   (3) exactly one render call, and the profile/CSS passed to the renderer
-//       matches the snapshot — not the updated live inputs
+//   (2) reconstruction uses the stored content/CSS/labels snapshot (not the live inputs)
+//   (3) exactly one render call, and the profile name, CSS, and section labels passed to
+//       the renderer match the snapshot — not the updated live inputs
 //   (4) artifact blob is NOT written to blob storage after reconstruction
 //   (5) reuse and reconstruction metrics are incremented correctly
 
@@ -64,20 +64,26 @@ type capturingRenderer struct {
 }
 
 type capturedRenderCall struct {
-	profileName string // profile.PersonalInformation.Name
-	cssContent  string // content of the cssOverride temp-file
+	profileName   string            // profile.PersonalInformation.Name
+	cssContent    string            // content of the cssOverride temp-file
+	sectionLabels resume.SectionLabels // opts.SectionLabels
 }
 
-func (r *capturingRenderer) RenderResume(_ context.Context, profile *domain.ResumeProfile, _, cssOverride string, _ *resume.RenderOptions) ([]byte, error) {
+func (r *capturingRenderer) RenderResume(_ context.Context, profile *domain.ResumeProfile, _, cssOverride string, opts *resume.RenderOptions) ([]byte, error) {
 	r.count.Add(1)
 	var cssContent string
 	if data, err := os.ReadFile(cssOverride); err == nil {
 		cssContent = string(data)
 	}
+	var labels resume.SectionLabels
+	if opts != nil {
+		labels = opts.SectionLabels
+	}
 	r.mu.Lock()
 	r.resumeCalls = append(r.resumeCalls, capturedRenderCall{
-		profileName: profile.PersonalInformation.Name,
-		cssContent:  cssContent,
+		profileName:   profile.PersonalInformation.Name,
+		cssContent:    cssContent,
+		sectionLabels: labels,
 	})
 	r.mu.Unlock()
 	return []byte("%PDF-capture-" + profile.PersonalInformation.Name), nil
@@ -137,6 +143,11 @@ func registerUser(t *testing.T, router http.Handler, email, password string) (ac
 
 // TestDownloadAfterEviction_ReconstructsAndServesContent exercises the full
 // submit → evict → download flow via the production HTTP router.
+//
+// Snapshot isolation: the test creates a fixture CSS file and market YAML,
+// creates a document version (capturing the snapshot), then mutates the live
+// CSS file, market YAML, and profile name.  Reconstruction must use the stored
+// DB snapshots for all three — not the updated live inputs.
 func TestDownloadAfterEviction_ReconstructsAndServesContent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -152,12 +163,28 @@ func TestDownloadAfterEviction_ReconstructsAndServesContent(t *testing.T) {
 	blobs, err := documents.NewLocalBlobStore(blobRoot)
 	require.NoError(t, err)
 
+	// ── Fixture CSS and market directories ────────────────────────────────
+	// Create them before wiring docSvc so we can populate the market/CSS
+	// before the version is created.  We will mutate them afterwards to prove
+	// reconstruction reads from the DB snapshot, not the live files.
+	stylesDir := filepath.Join(root, "styles")
+	require.NoError(t, os.MkdirAll(stylesDir, 0o755))
+	cssFixturePath := filepath.Join(stylesDir, "style_custom.css")
+	cssSnapshotContent := "body { /* css-v1-snapshot */ }"
+	require.NoError(t, os.WriteFile(cssFixturePath, []byte(cssSnapshotContent), 0o644))
+
+	marketsDir := filepath.Join(root, "markets")
+	require.NoError(t, os.MkdirAll(marketsDir, 0o755))
+	marketFixturePath := filepath.Join(marketsDir, "fixture.yaml")
+	marketSnapshotYAML := "name: fixture\nsection_labels:\n  summary: \"Snapshot Summary Section\"\n"
+	require.NoError(t, os.WriteFile(marketFixturePath, []byte(marketSnapshotYAML), 0o644))
+
 	capturer := &capturingRenderer{}
 	coord := &retention.ActivityCoordinator{}
 	docMetrics := &documents.ServiceMetrics{}
 
 	// profile is the live profile pointer; the test mutates it after version creation
-	// to simulate a profile/template update that happens after submission.
+	// to simulate a profile update that happens after submission.
 	profile := &domain.ResumeProfile{
 		PersonalInformation: domain.PersonalInformation{
 			Name:  "Priya Snapshot",
@@ -169,8 +196,8 @@ func TestDownloadAfterEviction_ReconstructsAndServesContent(t *testing.T) {
 		Store:     documents.NewStore(sqldb),
 		Blobs:     blobs,
 		Renderer:  capturer,
-		MarketDir: filepath.Join("..", "..", "resume_markets"),
-		StylesDir: filepath.Join("..", "..", documents.StylesDirRelative),
+		MarketDir: marketsDir,
+		StylesDir: stylesDir,
 		LoadProfile: func(_ string) (*domain.ResumeProfile, error) {
 			return profile, nil
 		},
@@ -199,8 +226,9 @@ func TestDownloadAfterEviction_ReconstructsAndServesContent(t *testing.T) {
 	email := fmt.Sprintf("priya-%s@example.test", uuid.NewString()[:8])
 	token, userID := registerUser(t, router, email, "test-password-123")
 
-	// ── Step 2: Create a document version (captures CSS snapshot in DB) ───
-	vOld, err := docSvc.CreateResumeFromProfile(ctx, userID, "Resume v1", documents.RenderContext{Language: "en"})
+	// ── Step 2: Create a document version (captures CSS+labels snapshot in DB)
+	vOld, err := docSvc.CreateResumeFromProfile(ctx, userID, "Resume v1",
+		documents.RenderContext{Language: "en", Market: "fixture", StyleName: "custom"})
 	require.NoError(t, err)
 	require.Equal(t, int32(1), capturer.count.Load(), "initial render must call renderer once")
 
@@ -210,15 +238,24 @@ func TestDownloadAfterEviction_ReconstructsAndServesContent(t *testing.T) {
 	require.Equal(t, 1, blobCountAfterCreate, "one artifact blob must exist after version creation")
 
 	// Verify reuse counter is still zero (no PDFBytes call yet).
-	assert.Zero(t, docMetrics.ReuseHits.Load())
+	assert.Zero(t, docMetrics.ArtifactServeHits.Load())
 	assert.Zero(t, docMetrics.Reconstructions.Load())
 
-	// ── Step 3: Record the CSS snapshot stored in the DB ──────────────────
-	var cssSnapshot string
+	// ── Step 3: Record the stored snapshots from the DB ──────────────────
+	var cssSnapshot, renderSnapshotJSON string
 	require.NoError(t, sqldb.QueryRowContext(ctx,
-		`SELECT css_snapshot FROM document_content_versions WHERE id = ?`, vOld,
-	).Scan(&cssSnapshot))
+		`SELECT css_snapshot, render_snapshot_json FROM document_content_versions WHERE id = ?`, vOld,
+	).Scan(&cssSnapshot, &renderSnapshotJSON))
 	require.NotEmpty(t, cssSnapshot, "css_snapshot must be persisted with the version")
+	require.NotEmpty(t, renderSnapshotJSON, "render_snapshot_json must be persisted with the version")
+	assert.Equal(t, cssSnapshotContent, cssSnapshot, "DB css_snapshot must match the CSS file content at creation time")
+
+	var snap struct {
+		SectionLabels resume.SectionLabels `json:"section_labels"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(renderSnapshotJSON), &snap))
+	assert.Equal(t, "Snapshot Summary Section", snap.SectionLabels.Summary,
+		"DB render_snapshot_json must capture the section labels from the market YAML at creation time")
 
 	// ── Step 4: Insert a jobs_applied row and filler rows for eviction ────
 	oldExportRel := filepath.ToSlash(filepath.Join("job_applications", userID, "resume-old-"+uuid.NewString()+".pdf"))
@@ -265,9 +302,21 @@ func TestDownloadAfterEviction_ReconstructsAndServesContent(t *testing.T) {
 	require.Less(t, blobCountAfterEviction, blobCountAfterCreate,
 		"artifact blob must be evicted along with the export path")
 
-	// ── Step 6: Mutate live profile and CSS inputs ─────────────────────────
-	// If reconstruction used the live profile, the renderer would see this name.
+	// ── Step 6: Mutate ALL three live rendering inputs ─────────────────────
+	// If reconstruction uses the live inputs (instead of the stored snapshots),
+	// the renderer would receive the updated values.
+
+	// 6a — update live profile name
 	profile.PersonalInformation.Name = "Priya Live (updated)"
+
+	// 6b — overwrite the live CSS file with different content
+	cssLiveContent := "body { /* css-v2-live-updated */ }"
+	require.NoError(t, os.WriteFile(cssFixturePath, []byte(cssLiveContent), 0o644))
+
+	// 6c — overwrite the market YAML with different section labels
+	marketLiveYAML := "name: fixture\nsection_labels:\n  summary: \"Live Updated Summary\"\n"
+	require.NoError(t, os.WriteFile(marketFixturePath, []byte(marketLiveYAML), 0o644))
+
 	rendersBeforeDownload := capturer.count.Load()
 
 	// ── Step 7: Download via production route with ?token= ────────────────
@@ -289,16 +338,23 @@ func TestDownloadAfterEviction_ReconstructsAndServesContent(t *testing.T) {
 	call, ok := capturer.lastCall()
 	require.True(t, ok)
 
-	// The profile name in the renderer call must be the snapshot name, not the
-	// updated live name.
+	// 8a — profile name must be the snapshot name, not the updated live name
 	assert.Equal(t, "Priya Snapshot", call.profileName,
 		"reconstruction must use stored snapshot profile, not live profile")
 	assert.NotEqual(t, "Priya Live (updated)", call.profileName,
 		"live profile update must not leak into reconstruction")
 
-	// The CSS passed to the renderer must be the snapshot content.
+	// 8b — CSS content must be the snapshot CSS, not the updated live CSS
 	assert.Equal(t, cssSnapshot, call.cssContent,
 		"reconstruction must pass the stored CSS snapshot to the renderer")
+	assert.NotEqual(t, cssLiveContent, call.cssContent,
+		"live CSS file update must not leak into reconstruction")
+
+	// 8c — section labels must be the snapshot labels, not the updated live labels
+	assert.Equal(t, snap.SectionLabels.Summary, call.sectionLabels.Summary,
+		"reconstruction must use stored render_snapshot_json section labels")
+	assert.NotEqual(t, "Live Updated Summary", call.sectionLabels.Summary,
+		"live market YAML update must not leak into reconstruction")
 
 	// ── Step 9: Artifact blob must NOT be written back after reconstruction ─
 	blobCountAfterDownload, err := countBlobFiles(blobRoot)
@@ -307,16 +363,16 @@ func TestDownloadAfterEviction_ReconstructsAndServesContent(t *testing.T) {
 		"reconstruction must not persist a new artifact blob")
 
 	// ── Step 10: Metrics counters ──────────────────────────────────────────
-	assert.Zero(t, docMetrics.ReuseHits.Load(), "no reuse hit expected (artifact was evicted)")
+	assert.Zero(t, docMetrics.ArtifactServeHits.Load(), "no artifact-serve hit expected (artifact was evicted)")
 	assert.Equal(t, int64(1), docMetrics.Reconstructions.Load(), "one reconstruction expected")
 	assert.Positive(t, docMetrics.ReconstructionBytesTotal.Load(), "reconstruction bytes must be recorded")
 
 	// Serve again — this time the artifact is still absent (reconstruction does
-	// not persist), so it is another reconstruction, not a reuse hit.
+	// not persist), so it is another reconstruction, not an artifact-serve hit.
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, httptest.NewRequest(http.MethodGet,
 		"/api/jobs/applied/"+jobOldID+"/pdf/resume?token="+token, nil))
 	require.Equal(t, http.StatusOK, w2.Code)
-	assert.Equal(t, int64(0), docMetrics.ReuseHits.Load(), "still no reuse: blob not persisted by reconstruction")
+	assert.Equal(t, int64(0), docMetrics.ArtifactServeHits.Load(), "still no artifact-serve: blob not persisted by reconstruction")
 	assert.Equal(t, int64(2), docMetrics.Reconstructions.Load(), "second download is still a reconstruction")
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/retention"
 )
@@ -99,15 +100,25 @@ func (h *AdminHandlers) RetentionRunUser(w http.ResponseWriter, r *http.Request)
 }
 
 // GET /api/admin/documents/artifact-metrics
-// Returns reuse-hit and reconstruction counters accumulated since the last server start.
-// Values are zero if the documents service is not wired or no requests have been served.
+// Returns PDF-serve, LLM-cache-hit, and reconstruction counters accumulated since the
+// last server start, plus the current count and total bytes of retained artifact blobs
+// queried from the database.  All fields are zero when the documents service is not wired.
 func (h *AdminHandlers) DocumentsArtifactMetrics(w http.ResponseWriter, r *http.Request) {
-	if h.svc.Documents == nil || h.svc.Documents.Metrics == nil {
-		writeJSON(w, http.StatusOK, map[string]int64{
-			"reuse_hits": 0, "reuse_bytes_total": 0,
-			"reconstructions": 0, "reconstruction_bytes_total": 0,
-		})
-		return
+	snap := documents.DocumentsMetricsSnapshot{}
+	if h.svc.Documents != nil && h.svc.Documents.Metrics != nil {
+		snap = h.svc.Documents.Metrics.Snapshot()
 	}
-	writeJSON(w, http.StatusOK, h.svc.Documents.Metrics.Snapshot())
+	if h.svc.LLMReuseMetrics != nil {
+		snap.LLMCacheHits = h.svc.LLMReuseMetrics.LLMCacheHitCount()
+	}
+	if h.svc.DB != nil {
+		var count, bytes int64
+		_ = h.svc.DB.QueryRowContext(r.Context(),
+			`SELECT COUNT(*), COALESCE(SUM(byte_size),0) FROM document_render_artifacts
+			 WHERE evicted_at IS NULL AND state = 'ready'`,
+		).Scan(&count, &bytes)
+		snap.RetainedArtifacts = count
+		snap.RetainedArtifactBytes = bytes
+	}
+	writeJSON(w, http.StatusOK, snap)
 }

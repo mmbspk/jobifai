@@ -88,6 +88,9 @@ type Services struct {
 	Documents *documents.Service
 	// Retention evicts submitted-application PDFs beyond admin policy (#60).
 	Retention *retention.Service
+	// LLMReuseMetrics exposes the LLM content cache-hit counter for the admin metrics endpoint.
+	// Optional: when nil, the llm_cache_hits field in the snapshot is always zero.
+	LLMReuseMetrics LLMReuseMetricsReader
 }
 
 // GoogleOAuthHandler handles the Google OAuth2 redirect + callback.
@@ -198,6 +201,12 @@ type QuotaService interface {
 // UsageStore provides per-user LLM token usage snapshots.
 type UsageStore interface {
 	Session(userID string) domain.SessionUsage
+}
+
+// LLMReuseMetricsReader exposes the LLM content cache-hit counter that is
+// tracked inside llmreuse.Store.
+type LLMReuseMetricsReader interface {
+	LLMCacheHitCount() int64
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────

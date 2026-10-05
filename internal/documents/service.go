@@ -356,8 +356,8 @@ func (s *Service) PDFBytes(ctx context.Context, userID, versionID string) (data 
 		d, readErr := s.Blobs.Read(key)
 		if readErr == nil {
 			if s.Metrics != nil {
-				s.Metrics.ReuseHits.Add(1)
-				s.Metrics.ReuseBytesTotal.Add(int64(len(d)))
+				s.Metrics.ArtifactServeHits.Add(1)
+				s.Metrics.ArtifactServeBytesTotal.Add(int64(len(d)))
 			}
 			return d, "application/pdf", false, nil
 		}

@@ -318,6 +318,7 @@ func main() {
 		},
 		Documents: docSvc,
 		Retention: retentionSvc,
+		LLMReuseMetrics: llmReuseStore,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
 			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {

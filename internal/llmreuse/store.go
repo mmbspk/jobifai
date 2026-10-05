@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,6 +42,9 @@ type DB interface {
 
 type Store struct {
 	DB DB
+	// CacheHits counts Begin() calls that returned a cached response
+	// (no LLM provider call was made).  Reset to zero on process restart.
+	CacheHits atomic.Int64
 }
 
 // ContentFingerprint hashes user, task, effective generation config, and message bodies.
@@ -143,6 +147,7 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 		}
 		switch existing.state {
 		case StateCompleted:
+			s.CacheHits.Add(1)
 			return BeginResult{CacheHit: true, Response: existing.response, RowID: existing.id, OperationID: opID}, nil
 		case StateInProgress:
 			if existing.expired {
@@ -158,6 +163,7 @@ func (s *Store) beginOnce(ctx context.Context, userID, task, contentFP, visualHa
 			if resp == "" {
 				return BeginResult{}, ErrBeginContention
 			}
+			s.CacheHits.Add(1)
 			return BeginResult{CacheHit: true, Response: resp, RowID: existing.id, OperationID: opID}, nil
 		case StateFailedUncertain:
 			lease := newLeaseToken()
@@ -293,4 +299,13 @@ func (s *Store) execContext(ctx context.Context, query string, args ...any) (sql
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+}
+
+// LLMCacheHitCount returns the lifetime count of Begin() calls that returned a
+// cached response (no LLM provider call was made).  Satisfies handler.LLMReuseMetricsReader.
+func (s *Store) LLMCacheHitCount() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.CacheHits.Load()
 }

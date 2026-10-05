@@ -21,7 +21,7 @@ Epic #40 stays open. Byte caps, queue caps, and cloud provisioning are outside t
 | Policy read error propagates (fail-closed) | `LoadDefaults` returns `(value, error)`; non-`ErrNotFound` errors abort cleanup in `Limit()`, `evictApplication`, admin handlers |
 | User deletion cascades all document tables | `userDataTables` in `user_delete.go` includes `llm_generation_cache`, `user_document_defaults`, artifact/version tables in FK-safe order; in-progress cache entries cancelled before cascade |
 | Bulk reconcile closes cursor before nested cleanup | `ScheduleReconcileAllUsers` collects all user IDs first, closes cursor, then reconciles; `TestReconcileAll_ClosesCursorBeforeReconciling` with 4-connection pool |
-| Integration regression (submit → evict → download) | `TestDownloadAfterEviction_ReconstructsAndServesContent`: creates version, evicts export + artifact blob, updates profile, downloads from history — verifies reconstruction, one render call, no re-persisted PDF |
+| Integration regression (submit → evict → download) | `TestDownloadAfterEviction_ReconstructsAndServesContent`: creates version with fixture CSS + market YAML, evicts export + artifact blob, mutates live profile name, CSS file, and market labels, downloads from history — verifies snapshot isolation for all three inputs, one render call, no re-persisted PDF, and correct metrics counters |
 | Admin policy and audit are atomic | Transactional audited save; validated limits, admin UI, reconciliation on policy change |
 
 ## Generation reuse and billing
@@ -44,11 +44,10 @@ The concurrency, cache and billing tests use HTTP provider fixtures and a real S
 
 Platform coverage remains fixture-based: no live employer submission is performed. Coordination is process-local, matching the current local filesystem deployment; multi-process storage coordination is outside this implementation.
 
-All 30 Go packages pass with `-race -count=1`. Go lint passes. Frontend tests (162), production build and lint pass.
+All 33 Go packages pass with `-race -count=1`. Go lint passes. Frontend tests (162), production build and lint pass.
 
 ## Known follow-ups (not claiming done)
 
 | Gap | Notes |
 |-----|--------|
-| Cache only **validated** document JSON (not raw Chat) | Reuse still stores provider `Chat` output; document validation layer not wired to cache complete |
 | End-to-end billing + reuse integration test | Ledger idempotency test does not exercise `Client.Chat` + cache + ledger together |
