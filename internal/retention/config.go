@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/domain"
@@ -16,18 +17,27 @@ type ConfigStore interface {
 	Set(userID, key string, src any) error
 }
 
-func LoadDefaults(store ConfigStore) domain.DocumentRetentionDefaults {
-	var d domain.DocumentRetentionDefaults
+// defaultDefaults is the hard-coded fallback when no policy has been saved yet.
+func defaultDefaults() domain.DocumentRetentionDefaults {
+	return domain.DocumentRetentionDefaults{LatestSubmittedApplications: domain.DocumentRetentionDefault}.Normalized()
+}
+
+// LoadDefaults reads the retention policy from the config store.
+// ErrNotFound means the admin has not configured a policy yet — the built-in
+// default is returned with a nil error.  Any other error is returned as-is so
+// callers can abort cleanup rather than silently applying the wrong limit.
+func LoadDefaults(store ConfigStore) (domain.DocumentRetentionDefaults, error) {
 	if store == nil {
-		return domain.DocumentRetentionDefaults{LatestSubmittedApplications: domain.DocumentRetentionDefault}.Normalized()
+		return defaultDefaults(), nil
 	}
+	var d domain.DocumentRetentionDefaults
 	if err := store.Get(domain.SystemUserID, keyDocumentRetentionDefaults, &d); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
-			return domain.DocumentRetentionDefaults{LatestSubmittedApplications: domain.DocumentRetentionDefault}.Normalized()
+			return defaultDefaults(), nil
 		}
-		return domain.DocumentRetentionDefaults{LatestSubmittedApplications: domain.DocumentRetentionDefault}.Normalized()
+		return domain.DocumentRetentionDefaults{}, fmt.Errorf("retention: read policy: %w", err)
 	}
-	return d.Normalized()
+	return d.Normalized(), nil
 }
 
 func SaveDefaults(store ConfigStore, d domain.DocumentRetentionDefaults) error {
@@ -36,7 +46,10 @@ func SaveDefaults(store ConfigStore, d domain.DocumentRetentionDefaults) error {
 
 // SaveDefaultsAudited validates and atomically persists policy + audit when limit changes.
 func SaveDefaultsAudited(ctx context.Context, store ConfigStore, sqlDB *sql.DB, adminUserID string, incoming domain.DocumentRetentionDefaults) (domain.DocumentRetentionDefaults, error) {
-	prev := LoadDefaults(store)
+	prev, err := LoadDefaults(store)
+	if err != nil {
+		return domain.DocumentRetentionDefaults{}, fmt.Errorf("retention: read current policy: %w", err)
+	}
 	if err := incoming.Validate(); err != nil {
 		return prev, err
 	}

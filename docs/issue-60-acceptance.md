@@ -11,10 +11,17 @@ Epic #40 stays open. Byte caps, queue caps, and cloud provisioning are outside t
 | Reconstructibility proven before eviction | `ValidateReconstructionInputs` checks content, CSS, renderer and render snapshot; `TestService_MissingSnapshotProtectsExportAndBlob` |
 | Cleanup excludes active work and other cleanup | `ActivityCoordinator`; `TestActivityCoordinator_TwoEvictionsRemainExclusive` and cancellation/active-work tests |
 | Guard lasts through application publication | Guards cover review Prepare, review Submit, ApplyFromURL and automatic LinkedIn/Seek submission; nested materialization/download guards remain valid; manager/automatic guard-entry and publication-before-cleanup regressions |
+| Document writes guarded against concurrent eviction | `SetDefault`, `saveResumeVersion`, `SaveCoverLetterWithSourceOnDocument` wrapped in `withWork`; `TestSetDefault_BlocksDuringEviction` regression |
 | Bounded, resumable artifact cleanup | Migration 038 records `evicted_at`; keys deduplicated and sorted before batching; `TestService_ArtifactBatchesDrainAndSecondReconcileIsEmpty` |
+| Preview and run share candidate planning | `collectOrphanBlobKeys` extracted; both `PreviewEviction` (populates `ArtifactBlobsEligible`) and `RunEviction` use it; metrics aligned |
 | Accurate PDF availability after eviction | Artifact lookup and document listing exclude evicted artifacts; rendering/linking a new artifact clears its eviction marker |
+| Historical PDF download via authenticated endpoint | `GET /api/jobs/applied/{job_id}/pdf/{kind}` with JWT `?token=`; `DownloadAppliedPDF` handler; `X-Jobifai-Reconstructed: true` header on rebuilt PDFs; history UI shows "(rebuilt)" badge |
 | Partial export cleanup | Per-artifact path/pack reconciliation, with retry after failed persistence |
 | Historical reconstruction has no permanent retention bypass | `TestService_PDFBytes_ReconstructWhenBlobMissing` verifies reconstructed download does not repersist the blob |
+| Policy read error propagates (fail-closed) | `LoadDefaults` returns `(value, error)`; non-`ErrNotFound` errors abort cleanup in `Limit()`, `evictApplication`, admin handlers |
+| User deletion cascades all document tables | `userDataTables` in `user_delete.go` includes `llm_generation_cache`, `user_document_defaults`, artifact/version tables in FK-safe order; in-progress cache entries cancelled before cascade |
+| Bulk reconcile closes cursor before nested cleanup | `ScheduleReconcileAllUsers` collects all user IDs first, closes cursor, then reconciles; `TestReconcileAll_ClosesCursorBeforeReconciling` with 4-connection pool |
+| Integration regression (submit → evict → download) | `TestDownloadAfterEviction_ReconstructsAndServesContent`: creates version, evicts export + artifact blob, updates profile, downloads from history — verifies reconstruction, one render call, no re-persisted PDF |
 | Admin policy and audit are atomic | Transactional audited save; validated limits, admin UI, reconciliation on policy change |
 
 ## Generation reuse and billing
@@ -37,4 +44,11 @@ The concurrency, cache and billing tests use HTTP provider fixtures and a real S
 
 Platform coverage remains fixture-based: no live employer submission is performed. Coordination is process-local, matching the current local filesystem deployment; multi-process storage coordination is outside this implementation.
 
-Local validation for this revision: all Go packages except the longer-running handler suite passed with `-race`; the handler suite is rerunning with a 15-minute timeout after the full run's four-minute per-package timeout. Go lint passes. Frontend tests (162), production build and lint pass, with one existing React hook warning. GitHub Actions must validate the pushed revision before merge.
+All 30 Go packages pass with `-race -count=1`. Go lint passes. Frontend tests (162), production build and lint pass.
+
+## Known follow-ups (not claiming done)
+
+| Gap | Notes |
+|-----|--------|
+| Cache only **validated** document JSON (not raw Chat) | Reuse still stores provider `Chat` output; document validation layer not wired to cache complete |
+| End-to-end billing + reuse integration test | Ledger idempotency test does not exercise `Client.Chat` + cache + ledger together |

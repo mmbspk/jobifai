@@ -88,6 +88,13 @@ func (s *Service) SaveResumeVersion(ctx context.Context, userID, documentID, tit
 }
 
 func (s *Service) saveResumeVersion(ctx context.Context, userID, documentID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (versionID string, err error) {
+	return versionID, s.withWork(ctx, userID, func() error {
+		versionID, err = s.saveResumeVersionLocked(ctx, userID, documentID, title, source, profile, rc)
+		return err
+	})
+}
+
+func (s *Service) saveResumeVersionLocked(ctx context.Context, userID, documentID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (string, error) {
 	docID, err := s.ensureDocument(ctx, userID, documentID, KindResume, defaultTitle(title, "Default resume"))
 	if err != nil {
 		return "", err
@@ -105,7 +112,7 @@ func (s *Service) saveResumeVersion(ctx context.Context, userID, documentID, tit
 	if err != nil {
 		return "", err
 	}
-	versionID, _, err = s.Store.InsertVersion(ctx, InsertVersionParams{
+	versionID, _, err := s.Store.InsertVersion(ctx, InsertVersionParams{
 		DocumentID: docID, UserID: userID, Source: source,
 		ContentKind: ContentResumeJSON, ContentJSON: string(content),
 		ProfileSnapshotJSON: string(snapJSON), ProfileSnapshotHash: ProfileSnapshotHash(profile),
@@ -138,6 +145,13 @@ func (s *Service) AppendCoverVersion(ctx context.Context, userID, documentID, ti
 }
 
 func (s *Service) SaveCoverLetterWithSourceOnDocument(ctx context.Context, userID, documentID, title, body, source string, rc RenderContext) (versionID string, err error) {
+	return versionID, s.withWork(ctx, userID, func() error {
+		versionID, err = s.saveCoverLetterLocked(ctx, userID, documentID, title, body, source, rc)
+		return err
+	})
+}
+
+func (s *Service) saveCoverLetterLocked(ctx context.Context, userID, documentID, title, body, source string, rc RenderContext) (string, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return "", fmt.Errorf("cover letter body is required")
@@ -165,7 +179,7 @@ func (s *Service) SaveCoverLetterWithSourceOnDocument(ctx context.Context, userI
 	if err != nil {
 		return "", err
 	}
-	versionID, _, err = s.Store.InsertVersion(ctx, InsertVersionParams{
+	versionID, _, err := s.Store.InsertVersion(ctx, InsertVersionParams{
 		DocumentID: docID, UserID: userID, Source: source,
 		ContentKind: ContentCoverText, ContentJSON: string(content),
 		ProfileSnapshotJSON: snapJSON, ProfileSnapshotHash: hash,
@@ -219,6 +233,12 @@ func (s *Service) StoreOriginalUpload(ctx context.Context, userID, filename, med
 }
 
 func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string) error {
+	return s.withWork(ctx, userID, func() error {
+		return s.setDefaultLocked(ctx, userID, kind, versionID)
+	})
+}
+
+func (s *Service) setDefaultLocked(ctx context.Context, userID, kind, versionID string) error {
 	profile, _ := s.LoadProfile(userID)
 	hash := ProfileSnapshotHash(profile)
 	market := ""
@@ -254,6 +274,18 @@ func (s *Service) SetDefault(ctx context.Context, userID, kind, versionID string
 		_ = s.SaveDefaultsMeta(userID, meta)
 	}
 	return nil
+}
+
+// withWork acquires the activity guard (if wired) so document writes block
+// eviction and are blocked while eviction runs.
+func (s *Service) withWork(ctx context.Context, userID string, fn func() error) error {
+	if s.WorkGuard != nil {
+		if err := s.WorkGuard.BeginWork(ctx, userID); err != nil {
+			return err
+		}
+		defer s.WorkGuard.EndWork(userID)
+	}
+	return fn()
 }
 
 // NotePreferredStyle records that the user changed their preferred document design (shared style picker).

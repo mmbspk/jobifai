@@ -9,7 +9,8 @@ import (
 // ErrProtectedUser is returned when attempting to delete a reserved account.
 var ErrProtectedUser = errors.New("cannot delete protected user account")
 
-// userDataTables lists tables that store rows keyed by user_id (no FK cascade).
+// userDataTables lists tables with a user_id column that are cleaned up with a
+// simple WHERE user_id = ? delete, in dependency order.
 var userDataTables = []string{
 	"settings",
 	"secrets",
@@ -19,6 +20,14 @@ var userDataTables = []string{
 	"jobs_pending_review",
 	"jobs_approved_queue",
 	"usage_totals",
+	// LLM cache: must come before document tables so pending goroutines fail fast.
+	"llm_generation_cache",
+	// Document tables in FK-safe order: defaults → artifacts → versions → documents.
+	"user_document_defaults",
+	"document_render_artifacts",
+	"document_original_files",
+	"document_content_versions",
+	"user_documents",
 }
 
 // DeleteUser removes all data for userID and deletes the users row.
@@ -33,11 +42,25 @@ func (s *UserStore) DeleteUser(userID string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Transition in-progress LLM cache entries so waiting goroutines fail fast
+	// and do not race to insert new rows for a user that is being deleted.
+	if _, err := tx.Exec(`UPDATE llm_generation_cache SET state='failed_uncertain', lease_until=NULL WHERE user_id = ? AND state='in_progress'`, userID); err != nil {
+		return fmt.Errorf("cancel llm cache: %w", err)
+	}
+
 	for _, table := range userDataTables {
 		if _, err := tx.Exec(fmt.Sprintf("DELETE FROM %s WHERE user_id = ?", table), userID); err != nil {
 			return fmt.Errorf("delete from %s: %w", table, err)
 		}
 	}
+
+	// document_version_artifact_refs has no user_id column; clean up via subquery
+	// before document_content_versions is deleted (the row exists here because we
+	// deleted content_versions in userDataTables above via user_id).
+	if _, err := tx.Exec(`DELETE FROM document_version_artifact_refs WHERE content_version_id NOT IN (SELECT id FROM document_content_versions)`); err != nil {
+		return fmt.Errorf("delete from document_version_artifact_refs: %w", err)
+	}
+
 	res, err := tx.Exec(`DELETE FROM users WHERE id = ?`, userID)
 	if err != nil {
 		return err

@@ -14,27 +14,27 @@ type BlobRemover interface {
 	Remove(key string) error
 }
 
-func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, retainN int, idx ProtectionIndex, meta map[string]versionMeta, batchLimit int) (int, error) {
+// collectOrphanBlobKeys returns the storage keys for artifact blobs that are
+// eligible for eviction: reconstructible versions not referenced by any active
+// application or user default.  No deletions are performed.
+func (s *Service) collectOrphanBlobKeys(ctx context.Context, userID string, retainN int, idx ProtectionIndex, meta map[string]versionMeta) ([]string, error) {
 	if s == nil || s.Blobs == nil {
-		return 0, nil
-	}
-	if batchLimit <= 0 {
-		batchLimit = defaultBatchSize
+		return nil, nil
 	}
 	protectedVersions, err := s.versionIDsReferencedByActiveApplications(ctx, userID, retainN)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	defRows, err := s.DB.QueryContext(ctx, `
-		SELECT content_version_id FROM user_document_defaults WHERE user_id = ?`, userID)
+	defRows, err := s.DB.QueryContext(ctx,
+		`SELECT content_version_id FROM user_document_defaults WHERE user_id = ?`, userID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	for defRows.Next() {
 		var id string
 		if err := defRows.Scan(&id); err != nil {
 			_ = defRows.Close()
-			return 0, err
+			return nil, err
 		}
 		if id = strings.TrimSpace(id); id != "" {
 			protectedVersions[id] = struct{}{}
@@ -42,7 +42,7 @@ func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, r
 	}
 	if err := defRows.Err(); err != nil {
 		_ = defRows.Close()
-		return 0, err
+		return nil, err
 	}
 	_ = defRows.Close()
 
@@ -62,6 +62,24 @@ func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, r
 			unique[m.artifactKey] = struct{}{}
 			candidates = append(candidates, m.artifactKey)
 		}
+	}
+	return candidates, nil
+}
+
+// countOrphanBlobCandidates returns the number of artifact blobs eligible for
+// eviction without performing any deletions.
+func (s *Service) countOrphanBlobCandidates(ctx context.Context, userID string, retainN int, idx ProtectionIndex, meta map[string]versionMeta) (int, error) {
+	keys, err := s.collectOrphanBlobKeys(ctx, userID, retainN, idx, meta)
+	return len(keys), err
+}
+
+func (s *Service) evictOrphanArtifactBlobs(ctx context.Context, userID string, retainN int, idx ProtectionIndex, meta map[string]versionMeta, batchLimit int) (int, error) {
+	if batchLimit <= 0 {
+		batchLimit = defaultBatchSize
+	}
+	candidates, err := s.collectOrphanBlobKeys(ctx, userID, retainN, idx, meta)
+	if err != nil {
+		return 0, err
 	}
 	sort.Strings(candidates)
 	if len(candidates) > batchLimit {

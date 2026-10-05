@@ -120,6 +120,7 @@ func NewRouter(svc *Services) *chi.Mux {
 		r.Route("/api/jobs", func(r chi.Router) {
 			r.Get("/applied", jobs.Applied)
 			r.Delete("/applied/{job_id}", jobs.DeleteApplied)
+			r.Get("/applied/{job_id}/pdf/{kind}", jobs.DownloadAppliedPDF)
 			r.Get("/skipped", jobs.Skipped)
 			r.Delete("/skipped/{job_id}", jobs.DeleteSkipped)
 			r.Get("/cannot-apply", jobs.CannotApply)

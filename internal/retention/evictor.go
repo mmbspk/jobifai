@@ -31,6 +31,7 @@ type Metrics struct {
 	DeleteFailures       int `json:"delete_failures"`
 	TempFilesRemoved     int `json:"temp_files_removed"`
 	ArtifactBlobsEvicted int `json:"artifact_blobs_evicted"`
+	ArtifactBlobsEligible int `json:"artifact_blobs_eligible"`
 }
 
 type Service struct {
@@ -47,8 +48,12 @@ func (s *Service) userLock(userID string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-func (s *Service) Limit() int {
-	return LoadDefaults(s.Config).LatestSubmittedApplications
+func (s *Service) Limit() (int, error) {
+	d, err := LoadDefaults(s.Config)
+	if err != nil {
+		return 0, err
+	}
+	return d.LatestSubmittedApplications, nil
 }
 
 type EvictionCandidate struct {
@@ -63,7 +68,10 @@ type EvictionCandidate struct {
 }
 
 func (s *Service) PreviewEviction(ctx context.Context, userID string) ([]EvictionCandidate, Metrics, error) {
-	limit := s.Limit()
+	limit, err := s.Limit()
+	if err != nil {
+		return nil, Metrics{}, err
+	}
 	idx, err := buildProtectionIndex(ctx, s.DB, userID, limit)
 	if err != nil {
 		return nil, Metrics{}, err
@@ -72,7 +80,16 @@ func (s *Service) PreviewEviction(ctx context.Context, userID string) ([]Evictio
 	if err != nil {
 		return nil, Metrics{}, err
 	}
-	return s.collectCandidates(ctx, userID, limit, idx, meta)
+	candidates, m, err := s.collectCandidates(ctx, userID, limit, idx, meta)
+	if err != nil {
+		return nil, Metrics{}, err
+	}
+	blobEligible, err := s.countOrphanBlobCandidates(ctx, userID, limit, idx, meta)
+	if err != nil {
+		return nil, Metrics{}, err
+	}
+	m.ArtifactBlobsEligible = blobEligible
+	return candidates, m, nil
 }
 
 func (s *Service) RunEviction(ctx context.Context, userID string, batchSize int) (Metrics, error) {
@@ -87,7 +104,10 @@ func (s *Service) RunEviction(ctx context.Context, userID string, batchSize int)
 		mu := s.userLock(userID)
 		mu.Lock()
 		defer mu.Unlock()
-		limit := s.Limit()
+		limit, err := s.Limit()
+		if err != nil {
+			return err
+		}
 		idx, err := buildProtectionIndex(ctx, s.DB, userID, limit)
 		if err != nil {
 			return err
@@ -105,7 +125,7 @@ func (s *Service) RunEviction(ctx context.Context, userID string, batchSize int)
 			candidates = candidates[:batchSize]
 		}
 		for _, c := range candidates {
-			ev, fail, err := s.evictApplication(ctx, userID, c, meta)
+			ev, fail, err := s.evictApplication(ctx, userID, c, meta, limit)
 			metrics.PathsEvicted += ev
 			metrics.DeleteFailures += fail
 			if err != nil {
@@ -116,6 +136,11 @@ func (s *Service) RunEviction(ctx context.Context, userID string, batchSize int)
 		if err != nil {
 			return err
 		}
+		blobEligible, err := s.countOrphanBlobCandidates(ctx, userID, limit, idx, meta)
+		if err != nil {
+			return err
+		}
+		metrics.ArtifactBlobsEligible = blobEligible
 		artRemoved, err := s.evictOrphanArtifactBlobs(ctx, userID, limit, idx, meta, batchSize)
 		if err != nil {
 			return err
@@ -223,8 +248,8 @@ func (s *Service) collectCandidates(ctx context.Context, userID string, retainN 
 	return out, metrics, nil
 }
 
-func (s *Service) evictApplication(ctx context.Context, userID string, c EvictionCandidate, meta map[string]versionMeta) (evicted, failures int, err error) {
-	idx, err := buildProtectionIndex(ctx, s.DB, userID, s.Limit())
+func (s *Service) evictApplication(ctx context.Context, userID string, c EvictionCandidate, meta map[string]versionMeta, limit int) (evicted, failures int, err error) {
+	idx, err := buildProtectionIndex(ctx, s.DB, userID, limit)
 	if err != nil {
 		return 0, 0, err
 	}

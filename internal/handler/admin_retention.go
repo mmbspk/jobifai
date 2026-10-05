@@ -18,7 +18,12 @@ func (h *AdminHandlers) RetentionDefaultsGet(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, domain.DocumentRetentionDefaults{LatestSubmittedApplications: domain.DocumentRetentionDefault}.Normalized())
 		return
 	}
-	writeJSON(w, http.StatusOK, retention.LoadDefaults(h.svc.Config))
+	d, err := retention.LoadDefaults(h.svc.Config)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
 }
 
 // PUT /api/admin/retention/defaults
@@ -33,7 +38,11 @@ func (h *AdminHandlers) RetentionDefaultsSet(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	adminID := auth.UserIDFromCtx(r.Context())
-	prev := retention.LoadDefaults(h.svc.Config)
+	prev, err := retention.LoadDefaults(h.svc.Config)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
 	next, err := retention.SaveDefaultsAudited(r.Context(), h.svc.Config, h.svc.DB, adminID, incoming)
 	if err != nil {
 		if errors.Is(err, domain.ErrInvalidDocumentRetention) {

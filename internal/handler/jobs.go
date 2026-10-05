@@ -56,6 +56,7 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 
 	q := `SELECT id,platform,company,role,COALESCE(location,''),link,
 	             COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
+	             COALESCE(resume_content_version_id,''),COALESCE(cover_letter_content_version_id,''),
 	             COALESCE(suitability_score,0),applied_at
 	      FROM jobs_applied WHERE user_id = ?`
 	args := []any{userID}
@@ -81,7 +82,9 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 		var j domain.AppliedJob
 		var appliedStr string
 		if err := rows.Scan(&j.ID, &j.Platform, &j.Company, &j.Role, &j.Location,
-			&j.Link, &j.ResumePath, &j.CoverLetterPath, &j.SuitabilityScore, &appliedStr); err != nil {
+			&j.Link, &j.ResumePath, &j.CoverLetterPath,
+			&j.ResumeContentVersionID, &j.CoverLetterContentVersionID,
+			&j.SuitabilityScore, &appliedStr); err != nil {
 			log.Error().Err(err).Msg("applied jobs: scan row")
 			continue
 		}
@@ -94,6 +97,73 @@ func (h *JobHandlers) Applied(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// GET /api/jobs/applied/{job_id}/pdf/{kind}
+// Serves the submitted resume or cover letter for a specific application.
+// If the on-disk export was evicted by retention, the document service
+// reconstructs it from the stored content version.  A non-empty
+// X-Jobifai-Reconstructed: true header signals to the client that the
+// bytes were regenerated rather than served from the original export file.
+func (h *JobHandlers) DownloadAppliedPDF(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	jobID := chi.URLParam(r, "job_id")
+	kind := chi.URLParam(r, "kind")
+	if kind != "resume" && kind != "cover_letter" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "kind must be resume or cover_letter"})
+		return
+	}
+
+	var resumePath, coverPath, resumeVID, coverVID string
+	err := h.svc.DB.QueryRowContext(r.Context(),
+		`SELECT COALESCE(resume_path,''), COALESCE(cover_letter_path,''),
+		        COALESCE(resume_content_version_id,''), COALESCE(cover_letter_content_version_id,'')
+		 FROM jobs_applied WHERE id = ? AND user_id = ?`, jobID, userID,
+	).Scan(&resumePath, &coverPath, &resumeVID, &coverVID)
+	if errors.Is(err, sql.ErrNoRows) {
+		notFound(w, "application not found")
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+
+	var versionID, filePath string
+	switch kind {
+	case "resume":
+		versionID, filePath = resumeVID, resumePath
+	case "cover_letter":
+		versionID, filePath = coverVID, coverPath
+	}
+	if versionID == "" {
+		notFound(w, "no document version recorded for this application")
+		return
+	}
+
+	if h.svc.Documents == nil {
+		notFound(w, "document service not available")
+		return
+	}
+
+	data, ctype, err := h.svc.Documents.PDFBytes(r.Context(), userID, versionID)
+	if err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": err.Error()})
+		return
+	}
+
+	reconstructed := filePath == ""
+	w.Header().Set("Content-Type", ctype)
+	if reconstructed {
+		w.Header().Set("X-Jobifai-Reconstructed", "true")
+	}
+	disp := "attachment"
+	if r.URL.Query().Get("inline") == "1" {
+		disp = "inline"
+	}
+	w.Header().Set("Content-Disposition", disp+`; filename="document.pdf"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // GET /api/jobs/skipped

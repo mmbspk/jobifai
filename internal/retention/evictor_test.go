@@ -130,7 +130,9 @@ func TestService_RunEviction_AdminLimit5To30(t *testing.T) {
 
 	_, err = retention.SaveDefaultsAudited(ctx, cfg, sqldb, "admin-1", domain.DocumentRetentionDefaults{LatestSubmittedApplications: 30})
 	require.NoError(t, err)
-	require.Equal(t, 30, svc.Limit())
+	limit, err := svc.Limit()
+	require.NoError(t, err)
+	require.Equal(t, 30, limit)
 
 	m2, err := svc.RunEviction(ctx, userID, 50)
 	require.NoError(t, err)
