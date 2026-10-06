@@ -116,9 +116,11 @@ test.describe('Setup guide — account-switch cache isolation', () => {
     await page.getByTitle('Sign out').click()
     await page.waitForURL('/')
 
-    // Navigate to login and sign in as B
-    // AuthContext.login() calls queryClient.clear() — this is what the test verifies
-    await page.goto('/login')
+    // Navigate to the login page via the "Sign in" link in the landing nav — client-side
+    // navigation keeps the QueryClient singleton alive (no page reload).
+    // AuthContext.login() must call queryClient.clear() to prevent A's cache bleeding into B.
+    await page.getByRole('link', { name: 'Sign in', exact: true }).first().click()
+    await expect(page).toHaveURL('/login')
     await page.locator('input[type="email"]').fill(emailB)
     await page.locator('input[type="password"]').fill(passwordB)
     await page.getByRole('button', { name: 'Sign in' }).click()
