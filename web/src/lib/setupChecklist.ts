@@ -1,7 +1,6 @@
 import type { ResumeProfile, WorkPreferences } from '../types'
 
 export const SETUP_PLAN_REVIEW_KEY = 'jobifai:setup-plan-reviewed'
-export const SETUP_DOCS_KEY = 'jobifai:setup-docs-reviewed'
 
 export type SetupStepId = 'profile' | 'search' | 'platform' | 'documents' | 'plan' | 'application'
 
@@ -24,7 +23,7 @@ export const SETUP_STEP_DEFS: SetupStepDef[] = [
     summary: 'Jobifai uses your experience, skills, and contact details to score roles and fill application forms.',
     instructions: [
       'Open Settings → Profile and upload a file (PDF, DOCX, TXT, or YAML) or fill in the sections manually.',
-      'YAML files re-import directly without AI credits — use Export YAML to back up your profile and restore it later.',
+      'Exported Jobifai profile YAML re-imports directly without AI credits; other YAML files may fall back to metered extraction.',
       'Include at least a summary or work history so roles can be scored accurately.',
       'Save the profile — automation cannot start until it is stored on the server.',
     ],
@@ -67,8 +66,8 @@ export const SETUP_STEP_DEFS: SetupStepDef[] = [
     summary: 'Create a default resume so the bot has a ready-made document to attach to each application.',
     instructions: [
       'Go to Documents and click "Resume from profile" — it generates a formatted resume instantly with no AI credits.',
-      'Set it as your default resume; the bot will attach it automatically when applying.',
-      'You can also upload your own file or generate an AI-improved version at any time.',
+      'Set it as your default resume; the bot uses it when the application policy selects it.',
+      'To use your own file, upload it under Settings → Profile; it will then appear here to set as a default.',
     ],
     to: '/documents',
     cta: 'Open documents',
@@ -112,6 +111,8 @@ export interface SetupCheckInput {
   seekSession: boolean
   /** Admins and other unlimited accounts skip the plan review step. */
   quotaUnlimited?: boolean
+  /** True when the user has a saved default resume version. */
+  hasDefaultDocument?: boolean
 }
 
 export function isPlanReviewReady(input: Pick<SetupCheckInput, 'quotaUnlimited'>): boolean {
@@ -132,21 +133,8 @@ export function markPlanReviewed(): void {
   }
 }
 
-export function isDocsReady(): boolean {
-  try {
-    return localStorage.getItem(SETUP_DOCS_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-export function markDocsReviewed(): void {
-  try {
-    localStorage.setItem(SETUP_DOCS_KEY, '1')
-    window.dispatchEvent(new Event('jobifai:setup-docs-reviewed'))
-  } catch {
-    /* ignore */
-  }
+export function isDocsReady(input: Pick<SetupCheckInput, 'hasDefaultDocument'>): boolean {
+  return Boolean(input.hasDefaultDocument)
 }
 
 export interface EvaluatedSetupStep extends SetupStepDef {
@@ -189,7 +177,7 @@ export function evaluateSetupSteps(input: SetupCheckInput): EvaluatedSetupStep[]
     profile: isProfileReady(input.profile),
     search: isSearchReady(input.preferences),
     platform: isPlatformReady(input),
-    documents: isDocsReady(),
+    documents: isDocsReady(input),
     plan: isPlanReviewReady(input),
     application: false,
   }

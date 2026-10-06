@@ -16,7 +16,6 @@ import { downloadBlob } from '../lib'
 import { useQuota } from '../hooks/useQuota'
 import { QuotaLimitNotice } from '../components/quota/QuotaLimitNotice'
 import { ApiError } from '../api/client'
-import { markDocsReviewed } from '../lib/setupChecklist'
 import type { ResumeProfile } from '../types'
 
 function actionError(e: unknown): string {
@@ -53,10 +52,6 @@ export function Documents() {
   useEffect(() => () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl)
   }, [previewUrl])
-
-  useEffect(() => {
-    if (data) markDocsReviewed()
-  }, [data])
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['documents'] })
 
