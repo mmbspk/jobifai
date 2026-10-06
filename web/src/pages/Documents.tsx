@@ -137,10 +137,10 @@ export function Documents() {
       />
 
       {outdated && (
-        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 flex gap-3 text-sm">
-          <AlertTriangle className="shrink-0 text-amber-600" size={18} />
+        <div className="rounded-[var(--radius-lg)] border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/10 p-4 flex gap-3 text-sm">
+          <AlertTriangle className="shrink-0 text-[var(--color-warn)]" size={18} />
           <div>
-            <p className="font-medium text-amber-900 dark:text-amber-100">Defaults may need review</p>
+            <p className="font-medium text-[var(--color-text)]">Defaults may need review</p>
             <p className="text-[var(--color-text-muted)]">{defaults?.outdated_reason ?? 'Profile or market changed since you last confirmed defaults.'}</p>
           </div>
         </div>
@@ -149,7 +149,7 @@ export function Documents() {
       <QuotaLimitNotice />
 
       {actionErr && (
-        <p className="text-sm text-red-600" role="alert">{actionErr}</p>
+        <p className="text-sm text-[var(--color-danger)]" role="alert">{actionErr}</p>
       )}
 
       <section className="rounded-[var(--radius-lg)] border border-[var(--color-border)] p-4 space-y-3">
@@ -243,7 +243,7 @@ export function Documents() {
       )}
 
       {isLoading && <p className="text-[var(--color-text-dim)]">Loading…</p>}
-      {error && <p className="text-red-600">{actionError(error)}</p>}
+      {error && <p className="text-[var(--color-danger)]">{actionError(error)}</p>}
 
       {!isLoading && !error && documents.length === 0 && (
         <p className="text-[var(--color-text-muted)] text-sm">No saved documents yet. Create a resume from your profile or upload an original under Settings → Profile.</p>

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, ClipboardCheck, Send, CircleSlash2, Hand, Star, Sparkles, Settings,
-  Sun, Moon, LogOut, Zap, ChevronLeft, ChevronRight, Shield,
+  Sun, Moon, LogOut, Zap, ChevronLeft, ChevronRight, Shield, FileText,
 } from 'lucide-react'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { cn } from '../../lib'
@@ -19,6 +19,7 @@ const PRIMARY_NAV = [
   { to: '/review', icon: ClipboardCheck, label: 'Review', badge: true },
   { to: '/jobs/applied', icon: Send, label: 'Applied' },
   { to: '/jobs/top-matches', icon: Star, label: 'Top Matches' },
+  { to: '/documents', icon: FileText, label: 'Documents' },
   { to: '/generate', icon: Sparkles, label: 'Generate' },
 ] as const
 
