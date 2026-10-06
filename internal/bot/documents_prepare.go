@@ -179,7 +179,7 @@ func (l *lazyDocGen) materializeWithPolicies() {
 				if market != nil && market.CoverLetterPrompt != "" {
 					promptCtx = market.CoverLetterPrompt + "\n\nJob Description:\n" + jobDesc
 				}
-				return l.b.cfg.Tailor.WriteCoverLetter(l.b.llmCtx(ctx, "cover letter", l.job.ID), profile, promptCtx)
+				return l.b.cfg.Tailor.WriteCoverLetter(l.b.llmCtx(ctx, "cover letter", l.job.ID), profile, promptCtx, l.b.cfg.CoverLetterTone)
 			},
 			ExportUpload: func(userID, jobID, versionID, kind string, payload documents.VersionUploadPayload) (string, error) {
 				return documents.ExportApplicationUploadFile(exportRoot, userID, jobID, versionID, kind, payload.Filename, payload.Data)

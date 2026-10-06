@@ -120,7 +120,7 @@ type BotController interface {
 // ResumeTailor rewrites a profile for a job and writes cover letters.
 type ResumeTailor interface {
 	TailorProfile(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (*domain.ResumeProfile, error)
-	WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (string, error)
+	WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc, tone string) (string, error)
 }
 
 // JobHalalChecker evaluates whether a job is permissible under Islamic employment ethics.

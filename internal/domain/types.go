@@ -307,6 +307,7 @@ type GeneralSettings struct {
 	MaxJobsPerKeyword          int                 `json:"max_jobs_per_keyword,omitempty"`
 	HalalJobFilter             bool                `json:"halal_job_filter,omitempty"`
 	GenerateNewResumeDocs      bool                `json:"generate_new_resume_docs,omitempty"`
+	CoverLetterTone            string              `json:"cover_letter_tone,omitempty"`
 	DocumentPolicies           DocumentPolicies    `json:"document_policies,omitempty"`
 }
 

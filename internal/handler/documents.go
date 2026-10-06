@@ -119,8 +119,10 @@ func (h *DocumentHandlers) AIGenerateCoverLetter(w http.ResponseWriter, r *http.
 		return
 	}
 	prefix := h.docMarketPrefix(req.Market, "cover")
+	var gs domain.GeneralSettings
+	_ = h.svc.Config.Get(userID, keyGeneralSettings, &gs)
 	ctx := llm.WithCallContext(r.Context(), domain.LLMCallContext{BypassReuse: true})
-	body, err := tailor.WriteCoverLetter(ctx, profile, prefix+"Write a general cover letter suitable for open applications. No job description.\n")
+	body, err := tailor.WriteCoverLetter(ctx, profile, prefix+"Write a general cover letter suitable for open applications. No job description.\n", gs.CoverLetterTone)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return

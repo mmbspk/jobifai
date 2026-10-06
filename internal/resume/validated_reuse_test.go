@@ -46,7 +46,7 @@ func TestTailor_RejectsEmptyDocumentsBeforeCaching(t *testing.T) {
 			tailor := resume.NewTailor(c, c, c, c)
 			call := func() error {
 				if cover {
-					_, err := tailor.WriteCoverLetter(context.Background(), &domain.ResumeProfile{}, "role")
+					_, err := tailor.WriteCoverLetter(context.Background(), &domain.ResumeProfile{}, "role", "")
 					return err
 				}
 				_, err := tailor.TailorProfile(context.Background(), &domain.ResumeProfile{}, "role")

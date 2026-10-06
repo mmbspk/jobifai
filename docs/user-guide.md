@@ -28,7 +28,8 @@ Go to **Settings → General → LLM Configuration**. Choose your provider (Clau
 
 Go to **Settings → Profile**.
 
-- **Import from file**: click the upload area, choose a PDF, DOCX, or TXT resume, then click **Extract with AI**. The tool parses your file and populates all the fields below. Review the result and click **Save Profile**.
+- **Import from file**: click the upload area, choose a PDF, DOCX, TXT, or YAML resume, then click **Extract with AI**. The tool parses your file and populates all the fields below. Review the result and click **Save Profile**.
+  - **YAML re-import**: if you have a previously exported `resume_profile.yaml`, uploading it restores your profile directly without LLM extraction — the structured data is read as-is, and the fields are pre-filled for review.
 - **Manual entry**: fill in the sections directly (Personal Information, Experience, Education, Skills, etc.) and save.
 
 You can export your saved profile at any time as YAML using the **Export YAML** link.

@@ -269,6 +269,7 @@ export interface GeneralSettings {
   max_jobs_per_keyword?: number
   halal_job_filter?: boolean
   generate_new_resume_docs?: boolean
+  cover_letter_tone?: string
   document_policies?: DocumentPolicies
 }
 
