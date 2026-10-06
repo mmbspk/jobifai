@@ -86,7 +86,7 @@ test.describe('Setup guide — account-switch cache isolation', () => {
     const userA = await registerAndInjectTokens(page, request)
 
     // Give A a minimal profile so from-profile document creation works
-    expect((await request.put('/api/settings/resume', {
+    expect((await request.post('/api/settings/resume', {
       headers: { Authorization: `Bearer ${userA.accessToken}` },
       data: { summary: 'E2E test profile for cache isolation test' },
     })).ok()).toBeTruthy()
