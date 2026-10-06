@@ -56,6 +56,13 @@ export function useSetupReadiness() {
     return () => window.removeEventListener('jobifai:setup-plan-reviewed', bump)
   }, [])
 
+  const [docsReviewTick, setDocsReviewTick] = useState(0)
+  useEffect(() => {
+    const bump = () => setDocsReviewTick(n => n + 1)
+    window.addEventListener('jobifai:setup-docs-reviewed', bump)
+    return () => window.removeEventListener('jobifai:setup-docs-reviewed', bump)
+  }, [])
+
   const loading =
     profileQ.isLoading || prefsQ.isLoading || linkedInQ.isLoading || seekQ.isLoading || quotaQ.isLoading
 
@@ -75,6 +82,7 @@ export function useSetupReadiness() {
       seekQ.data?.has_session,
       quotaQ.data?.unlimited,
       planReviewTick,
+      docsReviewTick,
     ],
   )
 

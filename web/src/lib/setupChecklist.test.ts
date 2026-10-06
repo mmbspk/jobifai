@@ -21,12 +21,15 @@ vi.hoisted(() => {
 })
 import {
   SETUP_PLAN_REVIEW_KEY,
+  SETUP_DOCS_KEY,
   evaluateSetupSteps,
   isPlanReviewReady,
   isPlatformReady,
   isProfileReady,
   isSearchReady,
+  isDocsReady,
   markPlanReviewed,
+  markDocsReviewed,
   requiredSetupComplete,
   setupProgress,
 } from './setupChecklist'
@@ -64,6 +67,14 @@ describe('setupChecklist', () => {
     localStorage.removeItem(SETUP_PLAN_REVIEW_KEY)
   })
 
+  it('marks documents step complete after visiting the page', () => {
+    localStorage.removeItem(SETUP_DOCS_KEY)
+    expect(isDocsReady()).toBe(false)
+    markDocsReviewed()
+    expect(isDocsReady()).toBe(true)
+    localStorage.removeItem(SETUP_DOCS_KEY)
+  })
+
   it('computes required progress', () => {
     const steps = evaluateSetupSteps({
       profile: { summary: 'ok' },
@@ -76,5 +87,9 @@ describe('setupChecklist', () => {
     const planStep = steps.find(s => s.id === 'plan')
     expect(planStep?.required).toBe(false)
     expect(planStep?.to).toBe('/settings/plan')
+    const docsStep = steps.find(s => s.id === 'documents')
+    expect(docsStep?.required).toBe(false)
+    expect(docsStep?.to).toBe('/documents')
+    expect(docsStep?.complete).toBe(false)
   })
 })
