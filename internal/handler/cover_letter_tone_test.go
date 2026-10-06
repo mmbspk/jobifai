@@ -14,10 +14,11 @@ import (
 	"github.com/user/jobifai/internal/handler"
 )
 
-// capturingTailor records the last tone argument passed to WriteCoverLetter.
+// capturingTailor records calls and the last tone argument passed to WriteCoverLetter.
 type capturingTailor struct {
-	mu   sync.Mutex
-	tone string
+	mu    sync.Mutex
+	calls int
+	tone  string
 }
 
 func (c *capturingTailor) TailorProfile(_ context.Context, p *domain.ResumeProfile, _ string) (*domain.ResumeProfile, error) {
@@ -26,6 +27,7 @@ func (c *capturingTailor) TailorProfile(_ context.Context, p *domain.ResumeProfi
 
 func (c *capturingTailor) WriteCoverLetter(_ context.Context, _ *domain.ResumeProfile, _, tone string) (string, error) {
 	c.mu.Lock()
+	c.calls++
 	c.tone = tone
 	c.mu.Unlock()
 	return "Dear hiring team,\n", nil
@@ -35,6 +37,12 @@ func (c *capturingTailor) lastTone() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.tone
+}
+
+func (c *capturingTailor) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
 }
 
 // errConfigStore wraps a real ConfigStore and returns an error for chosen keys.
@@ -155,7 +163,7 @@ func TestResume_GenerateCoverLetter_SettingsReadError_Returns500(t *testing.T) {
 		"skip_url_fetch":  "true",
 	})
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Empty(t, ct.lastTone(), "WriteCoverLetter must not be called when settings read fails")
+	assert.Equal(t, 0, ct.callCount(), "WriteCoverLetter must not be called when settings read fails")
 }
 
 func TestDocuments_AIGenerateCoverLetter_SettingsReadError_Returns500(t *testing.T) {
@@ -176,5 +184,5 @@ func TestDocuments_AIGenerateCoverLetter_SettingsReadError_Returns500(t *testing
 		"title": "General cover letter",
 	})
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Empty(t, ct.lastTone(), "WriteCoverLetter must not be called when settings read fails")
+	assert.Equal(t, 0, ct.callCount(), "WriteCoverLetter must not be called when settings read fails")
 }
