@@ -316,10 +316,10 @@ export function Resume() {
             className="w-full flex flex-col items-center justify-center gap-2 py-6 rounded-lg border border-dashed border-[var(--color-border)] hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent-soft)] transition-all text-[var(--color-text-dim)] hover:text-[var(--color-text)]">
             <Upload size={20} className="opacity-60" />
             <span className="text-sm">Choose file or drag &amp; drop</span>
-            <span className="text-xs opacity-50">PDF, DOCX, TXT</span>
+            <span className="text-xs opacity-50">PDF, DOCX, TXT, YAML</span>
           </button>
         )}
-        <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.txt" className="hidden"
+        <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.txt,.yaml,.yml" className="hidden"
           onChange={e => { const f = e.target.files?.[0]; if (f) { setSelectedFile(f); setExtractError(null); setExtractSuccess(false) } }} />
         {selectedFile && !extracting && (
           <div className="space-y-3">
@@ -366,7 +366,7 @@ export function Resume() {
           <Field label="First Name"><Input value={p.name ?? ''} onChange={v => pi('name', v)} /></Field>
           <Field label="Last Name"><Input value={p.surname ?? ''} onChange={v => pi('surname', v)} /></Field>
           <div className="sm:col-span-2">
-            <Field label="Professional Headline / Title"><Input value={p.headline ?? ''} onChange={v => pi('headline', v)} placeholder="e.g. Senior DevOps Engineer · AWS Certified" /></Field>
+            <Field label="Professional Headline / Title"><Input value={p.headline ?? ''} onChange={v => pi('headline', v)} placeholder="e.g. Senior Accountant · CPA Certified" /></Field>
           </div>
           <Field label="Email"><Input value={p.email ?? ''} onChange={v => pi('email', v)} type="email" /></Field>
           <Field label="Phone"><Input value={p.phone ?? ''} onChange={v => pi('phone', v)} /></Field>
@@ -443,7 +443,7 @@ export function Resume() {
                 <Textarea
                   value={(e.key_responsibilities ?? []).join('\n')}
                   onChange={v => setExpBullets(i, v)}
-                  placeholder="Led a team of 5 engineers across 3 regions&#10;Reduced deployment time by 40%&#10;…"
+                  placeholder="Coordinated a cross-functional team across 3 offices&#10;Reduced turnaround time by 40%&#10;…"
                   rows={4}
                 />
               </Field>

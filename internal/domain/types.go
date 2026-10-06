@@ -58,6 +58,8 @@ type AppliedJob struct {
 	CoverLetterPath             string        `json:"cover_letter_path,omitempty"`
 	ResumeContentVersionID      string        `json:"resume_content_version_id,omitempty"`
 	CoverLetterContentVersionID string        `json:"cover_letter_content_version_id,omitempty"`
+	ResumeArtifactEvicted       bool          `json:"resume_artifact_evicted,omitempty"`
+	CoverLetterArtifactEvicted  bool          `json:"cover_letter_artifact_evicted,omitempty"`
 	DocumentRefsJSON            string        `json:"document_refs_json,omitempty"`
 	SuitabilityScore            int           `json:"suitability_score,omitempty"`
 	HalalVerdict                *HalalVerdict `json:"halal_verdict,omitempty"`
@@ -305,6 +307,7 @@ type GeneralSettings struct {
 	MaxJobsPerKeyword          int                 `json:"max_jobs_per_keyword,omitempty"`
 	HalalJobFilter             bool                `json:"halal_job_filter,omitempty"`
 	GenerateNewResumeDocs      bool                `json:"generate_new_resume_docs,omitempty"`
+	CoverLetterTone            string              `json:"cover_letter_tone,omitempty"`
 	DocumentPolicies           DocumentPolicies    `json:"document_policies,omitempty"`
 }
 

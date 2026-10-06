@@ -20,6 +20,7 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
+	"github.com/user/jobifai/internal/retention"
 )
 
 // ResumeExtractor is the interface the upload handler uses to parse resume files.
@@ -85,6 +86,11 @@ type Services struct {
 	MarketCSSFileLookup func(marketDir, name string) string
 	// Documents manages versioned resumes, cover letters, and PDF artifacts (Epic #40 / #58).
 	Documents *documents.Service
+	// Retention evicts submitted-application PDFs beyond admin policy (#60).
+	Retention *retention.Service
+	// LLMReuseMetrics exposes the LLM content cache-hit counter for the admin metrics endpoint.
+	// Optional: when nil, the llm_cache_hits field in the snapshot is always zero.
+	LLMReuseMetrics LLMReuseMetricsReader
 }
 
 // GoogleOAuthHandler handles the Google OAuth2 redirect + callback.
@@ -114,7 +120,7 @@ type BotController interface {
 // ResumeTailor rewrites a profile for a job and writes cover letters.
 type ResumeTailor interface {
 	TailorProfile(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (*domain.ResumeProfile, error)
-	WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (string, error)
+	WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc, tone string) (string, error)
 }
 
 // JobHalalChecker evaluates whether a job is permissible under Islamic employment ethics.
@@ -197,6 +203,12 @@ type UsageStore interface {
 	Session(userID string) domain.SessionUsage
 }
 
+// LLMReuseMetricsReader exposes the LLM content cache-hit counter that is
+// tracked inside llmreuse.Store.
+type LLMReuseMetricsReader interface {
+	LLMCacheHitCount() int64
+}
+
 // ─── helpers ───────────────────────────────────────────────────────────────
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -221,6 +233,26 @@ func conflict(w http.ResponseWriter, msg string) {
 
 func unprocessable(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": msg})
+}
+
+// tokenAuth authenticates a request by checking ?token= first, then the
+// Authorization: Bearer header.  Returns the userID and true on success, or
+// writes a 401 and returns "" and false.  Used by endpoints that must also
+// be reachable as browser <a href="…?token=…"> download links.
+func tokenAuth(w http.ResponseWriter, r *http.Request, tm *auth.TokenManager) (string, bool) {
+	if tm == nil {
+		return "anonymous", true
+	}
+	tok := r.URL.Query().Get("token")
+	if tok == "" {
+		tok = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	claims, err := tm.Verify(tok)
+	if err != nil {
+		http.Error(w, `{"message":"unauthorized"}`, http.StatusUnauthorized)
+		return "", false
+	}
+	return claims.UserID, true
 }
 
 // wsOptions returns WebSocket accept options that validate the Origin header

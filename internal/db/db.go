@@ -14,7 +14,9 @@ var migrations embed.FS
 
 // Open opens (or creates) the SQLite database at path and runs all pending migrations.
 func Open(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=15000&_synchronous=NORMAL")
+	// modernc.org/sqlite requires _pragma=PRAGMA(VALUE); the mattn-style _foreign_keys=on
+	// is silently ignored by this driver.  Use _pragma= for every per-connection setting.
+	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}

@@ -129,7 +129,7 @@ func (l *lazyDocGen) formProfileJSON() []byte {
 // ResumeTailor is the subset of resume.Tailor the bot uses.
 type ResumeTailor interface {
 	TailorProfile(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (*domain.ResumeProfile, error)
-	WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (string, error)
+	WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc, tone string) (string, error)
 	// AnswerFormQuestion picks the best answer for a job-application form field.
 	// profileJSON is a pre-serialized trimmed profile cached once per job session.
 	// options is non-nil for radio/select, the returned string must match one of the labels.
@@ -159,6 +159,7 @@ type JobHalalChecker interface {
 
 // Config bundles everything the bot needs to run.
 type Config struct {
+	OnApplied        func() // successful application persistence schedules retention reconciliation
 	Platform         domain.Platform
 	Settings         domain.GeneralSettings
 	Preferences      domain.WorkPreferences
@@ -168,6 +169,7 @@ type Config struct {
 	Tailor           ResumeTailor    // nil = no LLM tailoring
 	Scorer           JobScorer       // nil = let all jobs through
 	HalalChecker     JobHalalChecker // nil = halal filter disabled
+	CoverLetterTone  string          // "" = default; see domain.GeneralSettings.CoverLetterTone
 	Renderer         ResumeRenderer
 	DB               *sql.DB
 	UserID           string // owner of this bot session
@@ -1375,7 +1377,7 @@ func (b *Bot) generateCoverLetter(ctx context.Context, profile *domain.ResumePro
 	if market != nil && market.CoverLetterPrompt != "" {
 		promptCtx = market.CoverLetterPrompt + "\n\nJob Description:\n" + jobDesc
 	}
-	body, err := b.cfg.Tailor.WriteCoverLetter(b.llmCtx(ctx, "cover letter", job.ID), profile, promptCtx)
+	body, err := b.cfg.Tailor.WriteCoverLetter(b.llmCtx(ctx, "cover letter", job.ID), profile, promptCtx, b.cfg.CoverLetterTone)
 	if err != nil {
 		return ""
 	}
@@ -1396,6 +1398,12 @@ func (b *Bot) queueForReview(ctx context.Context, p *domain.PendingReview) {
 }
 
 func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
+	release, err := b.beginDocumentWork(ctx)
+	if err != nil {
+		log.Warn().Err(err).Msg("linkedin: document work guard")
+		return false
+	}
+	defer release()
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
 		log.Error().Err(err).Msg("linkedin: open job page")
@@ -2426,6 +2434,8 @@ func (b *Bot) recordApplied(job linkedInJob, resumePath, coverPath, resumeVer, c
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("job_id", job.ID).Msg("failed to record applied job")
+	} else if b.cfg.OnApplied != nil {
+		b.cfg.OnApplied()
 	}
 	if b.seenCache != nil {
 		b.seenCache.mark(job.ID, seenApplied)

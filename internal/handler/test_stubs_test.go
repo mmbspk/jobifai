@@ -26,7 +26,7 @@ func (stubTailor) TailorProfile(_ context.Context, profile *domain.ResumeProfile
 	return profile, nil
 }
 
-func (stubTailor) WriteCoverLetter(_ context.Context, _ *domain.ResumeProfile, _ string) (string, error) {
+func (stubTailor) WriteCoverLetter(_ context.Context, _ *domain.ResumeProfile, _, _ string) (string, error) {
 	return "Dear hiring team,\n", nil
 }
 

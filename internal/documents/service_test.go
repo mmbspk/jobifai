@@ -74,10 +74,10 @@ func TestService_CreateResumeFromProfile_OwnershipAndPDF(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, versionID)
 
-	_, _, err = svc.PDFBytes(ctx, "other-user", versionID)
+	_, _, _, err = svc.PDFBytes(ctx, "other-user", versionID)
 	require.ErrorIs(t, err, documents.ErrForbidden)
 
-	pdf, _, err := svc.PDFBytes(ctx, userID, versionID)
+	pdf, _, _, err := svc.PDFBytes(ctx, userID, versionID)
 	require.NoError(t, err)
 	assert.True(t, bytes.HasPrefix(pdf, []byte("%PDF")))
 }
@@ -92,7 +92,7 @@ func TestService_ReconstructPDF_ZeroRendererCallsWhenArtifactExists(t *testing.T
 	require.NoError(t, err)
 	require.Equal(t, int32(1), cr.calls.Load())
 
-	_, _, err = svc.PDFBytes(ctx, userID, versionID)
+	_, _, _, err = svc.PDFBytes(ctx, userID, versionID)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), cr.calls.Load(), "download must not re-render when artifact exists")
 }

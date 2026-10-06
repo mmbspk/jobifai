@@ -209,6 +209,12 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/api/usage/totals", usage.Totals)
 			r.Get("/api/admin/quota/defaults", adminH.QuotaDefaultsGet)
 			r.Put("/api/admin/quota/defaults", adminH.QuotaDefaultsSet)
+			r.Get("/api/admin/retention/defaults", adminH.RetentionDefaultsGet)
+			r.Put("/api/admin/retention/defaults", adminH.RetentionDefaultsSet)
+			r.Get("/api/admin/retention/audit", adminH.RetentionAuditList)
+			r.Get("/api/admin/retention/preview/{user_id}", adminH.RetentionPreviewUser)
+			r.Post("/api/admin/retention/run/{user_id}", adminH.RetentionRunUser)
+			r.Get("/api/admin/documents/artifact-metrics", adminH.DocumentsArtifactMetrics)
 			r.Get("/api/admin/billing/summary", adminH.BillingSummary)
 			r.Get("/api/admin/billing/users", adminH.BillingUsers)
 			r.Get("/api/admin/billing/webhook-events", adminH.BillingWebhookEvents)
@@ -245,6 +251,11 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/api/admin/models/policies/{task}/rollback", adminH.ModelsPolicyRollback)
 		})
 	})
+
+	// ── Document download: accepts ?token= for browser link compatibility ──
+	// Must be outside the RequireAuth group since browser navigations can only
+	// send the JWT as a query parameter, not as an Authorization header.
+	r.Get("/api/jobs/applied/{job_id}/pdf/{kind}", jobs.DownloadAppliedPDF)
 
 	// ── Static file serving for generated PDFs ───────────────────────────
 	// Accepts JWT as ?token= (query param) so browser <a> links work without

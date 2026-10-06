@@ -112,7 +112,11 @@ func TestGoogle_Callback_Success_IssuesAppTokens(t *testing.T) {
 		assert.Equal(t, "oauth-user@example.com", email)
 		assert.Equal(t, "OAuth User", name)
 		assert.NotEmpty(t, avatar)
-		return "app-user-oauth-1", nil
+		// Insert a real user row so the FK on refresh_tokens is satisfied.
+		const userID = "app-user-oauth-1"
+		_, _ = db.Exec(`INSERT OR IGNORE INTO users (id, email, password_hash, is_admin, created_at)
+			VALUES (?, ?, 'oauth', 0, datetime('now'))`, userID, email)
+		return userID, nil
 	})
 
 	state := "csrf-state-token"

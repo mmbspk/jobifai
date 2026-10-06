@@ -12,9 +12,18 @@ interface Props {
   readonly deletePending: boolean
 }
 
+function appliedPdfHref(jobID: string, kind: 'resume' | 'cover_letter'): string {
+  return `/api/jobs/applied/${jobID}/pdf/${kind}?token=${getToken() ?? ''}`
+}
+
 export function AppliedJobItem({ job, onDelete, deletePending }: Props) {
   const [open, setOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const hasResume = Boolean(job.resume_content_version_id || job.resume_path)
+  const hasCover = Boolean(job.cover_letter_content_version_id || job.cover_letter_path)
+  const resumeEvicted = hasResume && job.resume_artifact_evicted === true
+  const coverEvicted = hasCover && job.cover_letter_artifact_evicted === true
 
   return (
     <div className="border-b border-[var(--color-border-subtle)] last:border-0">
@@ -49,24 +58,32 @@ export function AppliedJobItem({ job, onDelete, deletePending }: Props) {
             Applied {formatDate(job.applied_at)}
           </p>
           <div className="flex flex-wrap gap-3">
-            {job.resume_path && (
+            {hasResume && (
               <a
-                href={`/api/files/${job.resume_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
+                href={appliedPdfHref(job.id, 'resume')}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 text-xs text-[var(--color-accent)] hover:underline"
               >
-                <FileText size={12} /> Resume
+                <FileText size={12} />
+                Resume
+                {resumeEvicted && (
+                  <span className="text-[var(--color-text-dim)]">(rebuilt)</span>
+                )}
               </a>
             )}
-            {job.cover_letter_path && (
+            {hasCover && (
               <a
-                href={`/api/files/${job.cover_letter_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
+                href={appliedPdfHref(job.id, 'cover_letter')}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 text-xs text-[var(--color-accent)] hover:underline"
               >
-                <FileText size={12} /> Cover letter
+                <FileText size={12} />
+                Cover letter
+                {coverEvicted && (
+                  <span className="text-[var(--color-text-dim)]">(rebuilt)</span>
+                )}
               </a>
             )}
             <a href={job.link} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-accent)]">

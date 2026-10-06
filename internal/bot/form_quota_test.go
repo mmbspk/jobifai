@@ -18,7 +18,7 @@ type providerRateLimitTailor struct{}
 func (quotaFailTailor) TailorProfile(context.Context, *domain.ResumeProfile, string) (*domain.ResumeProfile, error) {
 	return nil, fmt.Errorf("unexpected")
 }
-func (quotaFailTailor) WriteCoverLetter(context.Context, *domain.ResumeProfile, string) (string, error) {
+func (quotaFailTailor) WriteCoverLetter(context.Context, *domain.ResumeProfile, string, string) (string, error) {
 	return "", fmt.Errorf("unexpected")
 }
 func (quotaFailTailor) AnswerFormQuestion(context.Context, []byte, string, []string) (string, error) {
@@ -31,7 +31,7 @@ func (quotaFailTailor) IdentifyFormFields(context.Context, []byte) ([]domain.Ide
 func (providerRateLimitTailor) TailorProfile(context.Context, *domain.ResumeProfile, string) (*domain.ResumeProfile, error) {
 	return nil, fmt.Errorf("unexpected")
 }
-func (providerRateLimitTailor) WriteCoverLetter(context.Context, *domain.ResumeProfile, string) (string, error) {
+func (providerRateLimitTailor) WriteCoverLetter(context.Context, *domain.ResumeProfile, string, string) (string, error) {
 	return "", fmt.Errorf("unexpected")
 }
 func (providerRateLimitTailor) AnswerFormQuestion(context.Context, []byte, string, []string) (string, error) {

@@ -1,7 +1,11 @@
 package handler_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,6 +13,24 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 )
+
+// postResumeFile uploads bytes as a resume_file multipart field.
+func postResumeFile(t *testing.T, router http.Handler, token, filename string, content []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	part, err := w.CreateFormFile("resume_file", filename)
+	require.NoError(t, err)
+	_, err = part.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	req := httptest.NewRequest(http.MethodPost, "/api/settings/resume/upload", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
 
 func TestSettings_General_EmptyReturns200(t *testing.T) {
 	svc, _ := newTestServices(t)
@@ -162,4 +184,35 @@ func TestSettings_General_NonAdminCannotOverwriteLLM(t *testing.T) {
 	wGetAdmin := authGet(t, router, "/api/settings/general", token)
 	require.NoError(t, json.NewDecoder(wGetAdmin.Body).Decode(&got))
 	assert.Equal(t, "claude-admin-model", got.LLM.Model)
+}
+
+// TestSettings_ResumeUpload_YAML_NoLLMConfigured verifies that a valid YAML resume profile
+// can be imported even when no LLM is configured for the user.
+func TestSettings_ResumeUpload_YAML_NoLLMConfigured(t *testing.T) {
+	svc, _ := newTestServices(t)
+	// No LLMFactory wired: YAML upload must succeed without hitting an extractor.
+	router := handler.NewRouter(svc)
+	token := registerAndLogin(t, router, "yaml-nollm@example.com", "password123")
+
+	yaml := []byte("personal_information:\n  name: Fatima Malik\n  email: fatima@example.com\nsummary: Experienced accountant\n")
+	w := postResumeFile(t, router, token, "resume_profile.yaml", yaml)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var p domain.ResumeProfile
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&p))
+	assert.Equal(t, "Fatima Malik", p.PersonalInformation.Name)
+}
+
+// TestSettings_ResumeUpload_NonYAML_NoLLMConfigured_Returns422 verifies that uploading a
+// non-YAML file (e.g. PDF) when no LLM is configured still returns 422.
+func TestSettings_ResumeUpload_NonYAML_NoLLMConfigured_Returns422(t *testing.T) {
+	svc, _ := newTestServices(t)
+	// LLMFactory is set but returns nil (no API key) — this is production behaviour when unconfigured.
+	svc.LLMFactory = func(string) (handler.ResumeExtractor, handler.ResumeTailor) { return nil, nil }
+	svc.FileToText = noopFileToText
+	router := handler.NewRouter(svc)
+	token := registerAndLogin(t, router, "pdf-nollm@example.com", "password123")
+
+	w := postResumeFile(t, router, token, "resume.pdf", []byte("%PDF-1.4 fake content"))
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 }

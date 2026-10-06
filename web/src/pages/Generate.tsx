@@ -256,7 +256,7 @@ export function Generate() {
           <textarea value={f.promptHint} onChange={e => generationStore.setForm({ promptHint: e.target.value })} rows={2}
             placeholder={tab === 'cover'
               ? 'e.g. Emphasise leadership experience, keep it under 300 words'
-              : 'e.g. Highlight Python and ML skills, downplay frontend experience'}
+              : 'e.g. Highlight project management experience, downplay administrative work'}
             className={cn(inputClassName, 'resize-none')} />
         </div>
       )}

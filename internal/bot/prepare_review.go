@@ -89,6 +89,12 @@ func (b *Bot) linkedInApplyStepHash(page *rod.Page) string {
 
 // PrepareReviewDocuments opens the apply form, scans capabilities, and materializes documents.
 func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID string) error {
+	if m.submitWorkGuard != nil {
+		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
+			return err
+		}
+		defer m.submitWorkGuard.EndWork(userID)
+	}
 	req, err := m.pendingSubmitRequest(userID, jobID)
 	if err != nil {
 		return err

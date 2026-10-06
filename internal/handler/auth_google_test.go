@@ -76,6 +76,7 @@ func TestAuth_GoogleCallback_MockOAuthServer(t *testing.T) {
 
 	svc, _ := newTestServices(t)
 	svc.DB = db
+	svc.Users = auth.NewUserStore(db) // same DB as Google handler so FK is satisfied
 	svc.Google = auth.NewGoogleHandler(auth.GoogleConfig{
 		ClientID:     "client",
 		ClientSecret: "secret",

@@ -59,6 +59,27 @@ export const adminApi = {
     reconcileUser: (userId: string) =>
       apiPost<AdminBillingReconcileResult>(`/admin/billing/users/${encodeURIComponent(userId)}/reconcile`, {}),
   },
+  retention: {
+    defaults: {
+      get: () => apiGet<DocumentRetentionDefaults>('/admin/retention/defaults'),
+      set: (body: DocumentRetentionDefaults) => apiPut<DocumentRetentionDefaults>('/admin/retention/defaults', body),
+    },
+    audit: {
+      list: (limit = 50) => apiGet<RetentionAuditRow[]>(`/admin/retention/audit?limit=${limit}`),
+    },
+  },
+}
+
+export interface DocumentRetentionDefaults {
+  latest_submitted_applications: number
+}
+
+export interface RetentionAuditRow {
+  id: string
+  admin_user_id: string
+  previous_limit: number
+  new_limit: number
+  created_at: string
 }
 
 export interface AdminBillingConfigStatus {

@@ -160,6 +160,17 @@ export function ApplicationSettingsPage() {
             <option value="skip_optional">Skip optional cover letters</option>
           </SettingsSelect>
         </SettingsField>
+        <SettingsField label="Cover letter tone" sub="Writing style for AI-generated cover letters — adjust word choice and formality">
+          <SettingsSelect
+            value={form.cover_letter_tone ?? ''}
+            onChange={e => set('cover_letter_tone', e.target.value)}
+          >
+            <option value="">Default (direct, first person)</option>
+            <option value="formal">Formal</option>
+            <option value="conversational">Conversational</option>
+            <option value="confident">Confident</option>
+          </SettingsSelect>
+        </SettingsField>
         <Switch
           label="Allow job-site resume if default is missing"
           helper="Only when you explicitly enable this fallback. Otherwise applications hold for review."

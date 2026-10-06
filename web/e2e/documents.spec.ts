@@ -43,4 +43,23 @@ test.describe('Documents page', () => {
     await expect(page).toHaveURL('/documents')
     await expect(page.getByRole('heading', { name: 'Documents' })).toBeVisible()
   })
+
+  test('navigates to documents from the collapsed sidebar', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Collapse sidebar' }).click()
+    await page.locator('aside').getByRole('link', { name: 'Documents' }).click()
+    await expect(page).toHaveURL('/documents')
+    await expect(page.getByRole('heading', { name: 'Documents' })).toBeVisible()
+  })
+
+  test('navigates to documents from the mobile Jobs menu', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Jobs', exact: true }).click()
+    const menu = page.getByRole('dialog', { name: 'Jobs' })
+    await menu.getByRole('button', { name: 'Documents', exact: true }).click()
+    await expect(page).toHaveURL('/documents')
+    await expect(page.getByRole('heading', { name: 'Documents' })).toBeVisible()
+    await expect(menu).not.toBeVisible()
+  })
 })

@@ -179,7 +179,7 @@ func (l *lazyDocGen) materializeWithPolicies() {
 				if market != nil && market.CoverLetterPrompt != "" {
 					promptCtx = market.CoverLetterPrompt + "\n\nJob Description:\n" + jobDesc
 				}
-				return l.b.cfg.Tailor.WriteCoverLetter(l.b.llmCtx(ctx, "cover letter", l.job.ID), profile, promptCtx)
+				return l.b.cfg.Tailor.WriteCoverLetter(l.b.llmCtx(ctx, "cover letter", l.job.ID), profile, promptCtx, l.b.cfg.CoverLetterTone)
 			},
 			ExportUpload: func(userID, jobID, versionID, kind string, payload documents.VersionUploadPayload) (string, error) {
 				return documents.ExportApplicationUploadFile(exportRoot, userID, jobID, versionID, kind, payload.Filename, payload.Data)
@@ -330,8 +330,7 @@ func (l *lazyDocGen) applyCaps(caps documents.FormDocumentCapabilities) {
 		l.capsFingerprint = next
 		return
 	}
-	shouldReset := l.materialized && l.formCaps.Detected && (
-		(prev != "" && prev != next) ||
+	shouldReset := l.materialized && l.formCaps.Detected && ((prev != "" && prev != next) ||
 		(!wasDetected && l.formCaps.Detected) ||
 		strings.Contains(l.holdReason, "unknown"))
 	if shouldReset {
@@ -345,4 +344,16 @@ func (l *lazyDocGen) packJSONForPersist() string {
 		return l.refsJSON
 	}
 	return documents.WriteApplicationPackJSON(l.pack)
+}
+
+// Keep generated files protected until the caller publishes application references.
+func (b *Bot) beginDocumentWork(ctx context.Context) (func(), error) {
+	if b.cfg.Documents == nil || b.cfg.Documents.WorkGuard == nil {
+		return func() {}, nil
+	}
+	guard := b.cfg.Documents.WorkGuard
+	if err := guard.BeginWork(ctx, b.cfg.UserID); err != nil {
+		return nil, err
+	}
+	return func() { guard.EndWork(b.cfg.UserID) }, nil
 }
