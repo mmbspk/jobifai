@@ -300,6 +300,12 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	var gs domain.GeneralSettings
+	if err := h.svc.Config.Get(userID, keyGeneralSettings, &gs); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not read settings"})
+		return
+	}
+
 	// Try to fetch job page content if no manual description provided
 	if jobDesc == "" && jobURL != "" && !skipFetch {
 		fetched, fetchErr := h.svc.FetchJobPage(r.Context(), jobURL)
@@ -329,7 +335,7 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 	}
 	jobContext += extraContext(r)
 
-	body, err := tailor.WriteCoverLetter(r.Context(), profile, jobContext)
+	body, err := tailor.WriteCoverLetter(r.Context(), profile, jobContext, gs.CoverLetterTone)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return

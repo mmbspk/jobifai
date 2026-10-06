@@ -183,7 +183,7 @@ func BuildTailorMessages(profile *domain.ResumeProfile, jobDesc string) ([]llm.M
 
 // BuildCoverLetterPrompt renders the full cover letter prompt (single string, tests/diagnostics).
 func BuildCoverLetterPrompt(profile *domain.ResumeProfile, jobDesc string) (string, error) {
-	msgs, err := BuildCoverLetterMessages(profile, jobDesc)
+	msgs, err := BuildCoverLetterMessages(profile, jobDesc, "")
 	if err != nil {
 		return "", err
 	}
@@ -195,7 +195,8 @@ func BuildCoverLetterPrompt(profile *domain.ResumeProfile, jobDesc string) (stri
 }
 
 // BuildCoverLetterMessages renders production cover letter messages (static system + dynamic user).
-func BuildCoverLetterMessages(profile *domain.ResumeProfile, jobDesc string) ([]llm.Message, error) {
+// tone adjusts writing style; pass "" for the default style.
+func BuildCoverLetterMessages(profile *domain.ResumeProfile, jobDesc, tone string) ([]llm.Message, error) {
 	marketInstructions, jobDesc := splitMarketPrefix(jobDesc)
 	trimmed := ForCoverLetter(profile)
 	profileJSON, err := json.Marshal(trimmed)
@@ -208,6 +209,7 @@ func BuildCoverLetterMessages(profile *domain.ResumeProfile, jobDesc string) ([]
 		MarketInstructions: marketInstructions,
 		ExperienceContext:  computeExperienceContext(profile),
 		PromptInstructions: profile.PromptInstructions,
+		Tone:               tone,
 	}
 	var sys, user bytes.Buffer
 	if err := coverLetterSystemTempl.Execute(&sys, data); err != nil {

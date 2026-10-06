@@ -129,7 +129,7 @@ func (l *lazyDocGen) formProfileJSON() []byte {
 // ResumeTailor is the subset of resume.Tailor the bot uses.
 type ResumeTailor interface {
 	TailorProfile(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (*domain.ResumeProfile, error)
-	WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (string, error)
+	WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc, tone string) (string, error)
 	// AnswerFormQuestion picks the best answer for a job-application form field.
 	// profileJSON is a pre-serialized trimmed profile cached once per job session.
 	// options is non-nil for radio/select, the returned string must match one of the labels.
@@ -169,6 +169,7 @@ type Config struct {
 	Tailor           ResumeTailor    // nil = no LLM tailoring
 	Scorer           JobScorer       // nil = let all jobs through
 	HalalChecker     JobHalalChecker // nil = halal filter disabled
+	CoverLetterTone  string          // "" = default; see domain.GeneralSettings.CoverLetterTone
 	Renderer         ResumeRenderer
 	DB               *sql.DB
 	UserID           string // owner of this bot session
@@ -1376,7 +1377,7 @@ func (b *Bot) generateCoverLetter(ctx context.Context, profile *domain.ResumePro
 	if market != nil && market.CoverLetterPrompt != "" {
 		promptCtx = market.CoverLetterPrompt + "\n\nJob Description:\n" + jobDesc
 	}
-	body, err := b.cfg.Tailor.WriteCoverLetter(b.llmCtx(ctx, "cover letter", job.ID), profile, promptCtx)
+	body, err := b.cfg.Tailor.WriteCoverLetter(b.llmCtx(ctx, "cover letter", job.ID), profile, promptCtx, b.cfg.CoverLetterTone)
 	if err != nil {
 		return ""
 	}

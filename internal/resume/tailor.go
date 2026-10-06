@@ -54,6 +54,9 @@ var coverLetterSystemTempl = template.Must(template.New("cover-sys").Parse(`You 
 MARKET-SPECIFIC INSTRUCTIONS (follow exactly):
 {{.MarketInstructions}}
 {{end}}
+{{if .Tone}}
+TONE: Write in a {{.Tone}} tone throughout. Adjust word choice, sentence rhythm, and formality to match this style while still following all other rules below.
+{{end}}
 {{if .ExperienceContext}}
 FACTUAL CONTEXT, these values are pre-computed and correct; use them exactly, do not recalculate from dates:
 {{.ExperienceContext}}
@@ -126,6 +129,7 @@ type promptData struct {
 	MarketInstructions string
 	ExperienceContext  string
 	PromptInstructions string
+	Tone               string
 }
 
 // TailorProfile rewrites profile JSON targeting the given job description.
@@ -159,12 +163,9 @@ func (t *Tailor) TailorProfile(ctx context.Context, profile *domain.ResumeProfil
 }
 
 // WriteCoverLetter generates a cover letter body for the profile + job description.
-func (t *Tailor) WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (string, error) {
-	in, err := json.Marshal(map[string]any{"profile": profile, "job_description": jobDesc})
-	if err != nil {
-		return "", fmt.Errorf("cover letter: marshal input: %w", err)
-	}
-	msgs, err := ProviderMessages(domain.TaskCoverLetter, in)
+// tone adjusts the writing style (e.g. "formal", "conversational"); pass "" for the default style.
+func (t *Tailor) WriteCoverLetter(ctx context.Context, profile *domain.ResumeProfile, jobDesc, tone string) (string, error) {
+	msgs, err := BuildCoverLetterMessages(profile, jobDesc, tone)
 	if err != nil {
 		return "", fmt.Errorf("cover letter: render prompt: %w", err)
 	}

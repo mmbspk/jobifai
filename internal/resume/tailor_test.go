@@ -50,7 +50,7 @@ func TestTailor_WriteCoverLetter_Valid(t *testing.T) {
 	tailor := resume.NewTailor(client, client, client, client)
 
 	profile := &domain.ResumeProfile{Summary: "Experienced professional"}
-	out, err := tailor.WriteCoverLetter(context.Background(), profile, "Senior role at Acme")
+	out, err := tailor.WriteCoverLetter(context.Background(), profile, "Senior role at Acme", "")
 	require.NoError(t, err)
 	assert.Contains(t, out, "Dear Hiring Manager")
 }
@@ -63,7 +63,7 @@ func TestTailor_WriteCoverLetter_LLMError(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	tailor := resume.NewTailor(client, client, client, client)
-	_, err := tailor.WriteCoverLetter(context.Background(), &domain.ResumeProfile{}, "job desc")
+	_, err := tailor.WriteCoverLetter(context.Background(), &domain.ResumeProfile{}, "job desc", "")
 	require.Error(t, err)
 }
 

@@ -80,7 +80,7 @@ func ProviderMessages(task string, input json.RawMessage) ([]llm.Message, error)
 		if err := json.Unmarshal(in.Profile, &profile); err != nil {
 			return nil, err
 		}
-		return BuildCoverLetterMessages(&profile, in.JobDescription)
+		return BuildCoverLetterMessages(&profile, in.JobDescription, "")
 	case domain.TaskApplicationQuestions:
 		var in struct {
 			Profile    json.RawMessage   `json:"profile"`

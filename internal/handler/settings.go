@@ -66,16 +66,11 @@ func (h *SettingsHandlers) ResumeSet(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/settings/resume/upload
-// Accepts a plain-text resume file. Extracts a structured ResumeProfile via LLM
-// and returns it for the caller to review before saving (do NOT auto-save).
-// PDF/DOCX parsing is added in Phase 4.
+// Accepts a resume file. For YAML files that match the ResumeProfile schema,
+// deserializes directly (no LLM). All other formats extract via LLM.
+// Returns the profile for the caller to review before saving (do NOT auto-save).
 func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
-	extractor, _ := h.svc.LLMFactory(userID)
-	if extractor == nil {
-		unprocessable(w, "LLM not configured — ask an admin to set the default API key under Admin → Defaults")
-		return
-	}
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "could not parse multipart form"})
 		return
@@ -102,6 +97,26 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not store original upload: " + storeErr.Error()})
 			return
 		}
+	}
+
+	// Fast path: if the uploaded file is already a YAML profile (e.g. a
+	// previously exported resume_profile.yaml), deserialize it directly
+	// without burning an LLM call.  Fall through to LLM extraction if the
+	// YAML does not unmarshal cleanly into ResumeProfile.
+	ext := strings.ToLower(filepath.Ext(fh.Filename))
+	if ext == ".yaml" || ext == ".yml" {
+		var p domain.ResumeProfile
+		if yamlErr := yaml.Unmarshal(raw, &p); yamlErr == nil && p.PersonalInformation.Name != "" {
+			writeJSON(w, http.StatusOK, &p)
+			return
+		}
+	}
+
+	// YAML fast path did not match — fall through to LLM extraction.
+	extractor, _ := h.svc.LLMFactory(userID)
+	if extractor == nil {
+		unprocessable(w, "LLM not configured — ask an admin to set the default API key under Admin → Defaults")
+		return
 	}
 
 	text, err := h.svc.FileToText(bytes.NewReader(raw), fh.Filename)
@@ -180,6 +195,7 @@ func userFacingGeneral(s domain.GeneralSettings) domain.GeneralSettings {
 		MaxJobsPerKeyword:     s.MaxJobsPerKeyword,
 		HalalJobFilter:        s.HalalJobFilter,
 		GenerateNewResumeDocs: s.GenerateNewResumeDocs,
+		CoverLetterTone:       s.CoverLetterTone,
 		DocumentPolicies:      s.DocumentPolicies,
 	}
 	if s.HumanBehavior.DailyApplicationLimit > 0 {
@@ -198,6 +214,7 @@ func mergeUserGeneralUpdate(stored, incoming domain.GeneralSettings) domain.Gene
 	out.MaxJobsPerKeyword = incoming.MaxJobsPerKeyword
 	out.HalalJobFilter = incoming.HalalJobFilter
 	out.GenerateNewResumeDocs = incoming.GenerateNewResumeDocs
+	out.CoverLetterTone = incoming.CoverLetterTone
 	if incoming.DocumentPolicies.ResumeMode != "" || incoming.DocumentPolicies.CoverMode != "" {
 		out.DocumentPolicies = incoming.DocumentPolicies
 		out.DocumentPolicies.Version = domain.DocumentPolicyMigrationVersion
