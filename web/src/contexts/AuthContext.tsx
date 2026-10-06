@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { userApi, type AuthTokens, type Me } from '../api/user'
 import { apiGet, apiPut } from '../api/client'
 
@@ -33,6 +34,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const queryClient = useQueryClient()
 
   const scheduleRefresh = useCallback(function scheduleRefresh(expiresIn: number) {
     if (refreshTimer.current) clearTimeout(refreshTimer.current)
@@ -100,25 +102,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const tokens = await userApi.login(email, password)
     saveTokens(tokens)
     scheduleRefresh(tokens.expires_in)
+    queryClient.clear()
     const me = await apiGet<Me>('/me')
     setUser(me)
-  }, [scheduleRefresh])
+  }, [scheduleRefresh, queryClient])
 
   const register = useCallback(async (email: string, password: string, displayName?: string) => {
     const tokens = await userApi.register(email, password, displayName)
     saveTokens(tokens)
     scheduleRefresh(tokens.expires_in)
+    queryClient.clear()
     const me = await apiGet<Me>('/me')
     setUser(me)
-  }, [scheduleRefresh])
+  }, [scheduleRefresh, queryClient])
 
   const logout = useCallback(async () => {
     const raw = localStorage.getItem(REFRESH_KEY)
     if (raw) { try { await userApi.logout(raw) } catch { /* best effort */ } }
     clearTokens()
     if (refreshTimer.current) clearTimeout(refreshTimer.current)
+    queryClient.clear()
     setUser(null)
-  }, [])
+  }, [queryClient])
 
   const updateMe = useCallback(async (displayName: string, avatarUrl = '') => {
     await apiPut('/me', { display_name: displayName, avatar_url: avatarUrl })

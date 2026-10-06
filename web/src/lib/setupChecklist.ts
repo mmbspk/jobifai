@@ -2,7 +2,7 @@ import type { ResumeProfile, WorkPreferences } from '../types'
 
 export const SETUP_PLAN_REVIEW_KEY = 'jobifai:setup-plan-reviewed'
 
-export type SetupStepId = 'profile' | 'search' | 'platform' | 'plan' | 'application'
+export type SetupStepId = 'profile' | 'search' | 'platform' | 'documents' | 'plan' | 'application'
 
 export interface SetupStepDef {
   id: SetupStepId
@@ -22,7 +22,8 @@ export const SETUP_STEP_DEFS: SetupStepDef[] = [
     title: 'Add your profile',
     summary: 'Jobifai uses your experience, skills, and contact details to score roles and fill application forms.',
     instructions: [
-      'Open Settings → Profile and upload a resume or fill in the sections manually.',
+      'Open Settings → Profile and upload a file (PDF, DOCX, TXT, or YAML) or fill in the sections manually.',
+      'Exported Jobifai profile YAML re-imports directly without AI credits; other YAML files may fall back to metered extraction.',
       'Include at least a summary or work history so roles can be scored accurately.',
       'Save the profile — automation cannot start until it is stored on the server.',
     ],
@@ -59,8 +60,22 @@ export const SETUP_STEP_DEFS: SetupStepDef[] = [
     required: true,
   },
   {
-    id: 'plan',
+    id: 'documents',
     order: 4,
+    title: 'Set up your documents',
+    summary: 'Create a default resume so the bot has a ready-made document to attach to each application.',
+    instructions: [
+      'Go to Documents and click "Resume from profile" — it generates a formatted resume instantly with no AI credits.',
+      'Set it as your default resume; the bot uses it when the application policy selects it.',
+      'To use your own file, upload it under Settings → Profile; it will then appear here to set as a default.',
+    ],
+    to: '/documents',
+    cta: 'Open documents',
+    required: false,
+  },
+  {
+    id: 'plan',
+    order: 5,
     title: 'Review plan & credits',
     summary: 'See your trial or monthly credit allowance and what happens when credits run out.',
     instructions: [
@@ -74,13 +89,14 @@ export const SETUP_STEP_DEFS: SetupStepDef[] = [
   },
   {
     id: 'application',
-    order: 5,
+    order: 6,
     title: 'Review application behaviour',
     summary: 'Choose how aggressively Jobifai applies and whether you approve each submission first.',
     instructions: [
       'Set your suitability threshold — roles below this score are skipped.',
       'Turn on “Review before submission” if you want to approve each application.',
       'Pick a default resume market if you target a specific region.',
+      'Set a cover letter tone (formal, conversational, or confident) to shape AI-written cover letters.',
     ],
     to: '/settings/application',
     cta: 'Application settings',
@@ -95,6 +111,8 @@ export interface SetupCheckInput {
   seekSession: boolean
   /** Admins and other unlimited accounts skip the plan review step. */
   quotaUnlimited?: boolean
+  /** True when the user has a saved default resume version. */
+  hasDefaultDocument?: boolean
 }
 
 export function isPlanReviewReady(input: Pick<SetupCheckInput, 'quotaUnlimited'>): boolean {
@@ -113,6 +131,10 @@ export function markPlanReviewed(): void {
   } catch {
     /* ignore */
   }
+}
+
+export function isDocsReady(input: Pick<SetupCheckInput, 'hasDefaultDocument'>): boolean {
+  return Boolean(input.hasDefaultDocument)
 }
 
 export interface EvaluatedSetupStep extends SetupStepDef {
@@ -155,6 +177,7 @@ export function evaluateSetupSteps(input: SetupCheckInput): EvaluatedSetupStep[]
     profile: isProfileReady(input.profile),
     search: isSearchReady(input.preferences),
     platform: isPlatformReady(input),
+    documents: isDocsReady(input),
     plan: isPlanReviewReady(input),
     application: false,
   }

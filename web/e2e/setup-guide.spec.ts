@@ -59,6 +59,8 @@ test.describe('Setup guide', () => {
 
   test('optional steps show Recommended badge', async ({ page }) => {
     await expect(page.getByText('Prepare before you start automation')).toBeVisible()
+    const docsStep = page.locator('li').filter({ hasText: 'Set up your documents' })
+    await expect(docsStep.getByText('Recommended')).toBeVisible()
     const planStep = page.locator('li').filter({ hasText: 'Review plan & credits' })
     await expect(planStep.getByText('Recommended')).toBeVisible()
     const appStep = page.locator('li').filter({ hasText: 'Review application behaviour' })
@@ -68,5 +70,64 @@ test.describe('Setup guide', () => {
   test('Start automation button is disabled until required steps complete', async ({ page }) => {
     await expect(page.getByText('Prepare before you start automation')).toBeVisible()
     await expect(page.getByRole('button', { name: 'Start automation' })).toBeDisabled()
+  })
+})
+
+test.describe('Setup guide — account-switch cache isolation', () => {
+  test('documents step stays incomplete for B after A had a default (no stale-cache bleed)', async ({ page, request }) => {
+    // Pre-register B (API only — no browser involvement yet)
+    const emailB = `test-b-${Date.now()}@e2e.test`
+    const passwordB = 'e2epassword1'
+    expect((await request.post('/auth/register', {
+      data: { email: emailB, password: passwordB, display_name: 'User B' },
+    })).ok()).toBeTruthy()
+
+    // Register A and obtain a Bearer token for API setup calls
+    const userA = await registerAndInjectTokens(page, request)
+
+    // Give A a minimal profile so from-profile document creation works
+    expect((await request.post('/api/settings/resume', {
+      headers: { Authorization: `Bearer ${userA.accessToken}` },
+      data: { summary: 'E2E test profile for cache isolation test' },
+    })).ok()).toBeTruthy()
+
+    // Create a resume document from A's profile
+    const createRes = await request.post('/api/documents/resume/from-profile', {
+      headers: { Authorization: `Bearer ${userA.accessToken}` },
+      data: { title: 'E2E default resume' },
+    })
+    expect(createRes.ok()).toBeTruthy()
+    const { content_version_id } = await createRes.json() as { content_version_id: string }
+
+    // Set the created version as A's default resume
+    expect((await request.put('/api/documents/defaults', {
+      headers: { Authorization: `Bearer ${userA.accessToken}` },
+      data: { kind: 'resume', content_version_id },
+    })).ok()).toBeTruthy()
+
+    // Navigate to dashboard as A — documents step should be complete (no "4" in badge)
+    await page.goto('/')
+    const docsStep = page.locator('li').filter({ hasText: 'Set up your documents' })
+    await expect(docsStep).toBeVisible()
+    await expect(docsStep.locator('button > span').first()).not.toHaveText('4')
+
+    // Sign out A via the sidebar button — this triggers a client-side auth transition
+    // (no page reload, so the module-level QueryClient singleton stays alive)
+    await page.getByTitle('Sign out').click()
+    await page.waitForURL('/')
+
+    // Navigate to the login page via the "Sign in" link in the landing nav — client-side
+    // navigation keeps the QueryClient singleton alive (no page reload).
+    // AuthContext.login() must call queryClient.clear() to prevent A's cache bleeding into B.
+    await page.getByRole('link', { name: 'Sign in', exact: true }).first().click()
+    await expect(page).toHaveURL('/login')
+    await page.locator('input[type="email"]').fill(emailB)
+    await page.locator('input[type="password"]').fill(passwordB)
+    await page.getByRole('button', { name: 'Sign in' }).click()
+    await page.waitForURL('/')
+
+    // B has no default document — the documents step must be incomplete
+    await expect(docsStep).toBeVisible()
+    await expect(docsStep.locator('button > span').first()).toHaveText('4')
   })
 })

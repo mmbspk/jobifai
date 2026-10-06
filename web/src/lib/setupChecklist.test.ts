@@ -26,6 +26,7 @@ import {
   isPlatformReady,
   isProfileReady,
   isSearchReady,
+  isDocsReady,
   markPlanReviewed,
   requiredSetupComplete,
   setupProgress,
@@ -64,15 +65,34 @@ describe('setupChecklist', () => {
     localStorage.removeItem(SETUP_PLAN_REVIEW_KEY)
   })
 
-  it('computes required progress', () => {
-    const steps = evaluateSetupSteps({
+  it('documents step complete/incomplete based on hasDefaultDocument, not browser state', () => {
+    expect(isDocsReady({ hasDefaultDocument: false })).toBe(false)
+    expect(isDocsReady({ hasDefaultDocument: true })).toBe(true)
+    // no hasDefaultDocument (e.g. empty documents list) → incomplete
+    expect(isDocsReady({})).toBe(false)
+  })
+
+  it('computes required progress, documents optional and not counted', () => {
+    const base = {
       profile: { summary: 'ok' },
       preferences: { positions: ['Role'], search_targets: [{ location: 'Berlin' }] },
       linkedInSession: false,
       seekSession: true,
-    })
+    }
+    // No default document — required steps still all done, docs stays incomplete
+    const steps = evaluateSetupSteps(base)
     expect(requiredSetupComplete(steps)).toBe(true)
     expect(setupProgress(steps)).toEqual({ done: 3, total: 3 })
+    const docsStep = steps.find(s => s.id === 'documents')
+    expect(docsStep?.required).toBe(false)
+    expect(docsStep?.to).toBe('/documents')
+    expect(docsStep?.complete).toBe(false)
+
+    // With a default document set — docs step flips complete, required progress unchanged
+    const stepsWithDefault = evaluateSetupSteps({ ...base, hasDefaultDocument: true })
+    expect(stepsWithDefault.find(s => s.id === 'documents')?.complete).toBe(true)
+    expect(setupProgress(stepsWithDefault)).toEqual({ done: 3, total: 3 })
+
     const planStep = steps.find(s => s.id === 'plan')
     expect(planStep?.required).toBe(false)
     expect(planStep?.to).toBe('/settings/plan')
