@@ -94,7 +94,7 @@ make docker-run
 |---------------------|---------------------------|----------------------------------|
 | `./data`            | `/app/data`               | SQLite database                  |
 | `./job_applications`| `/app/job_applications`   | Generated resume and cover letter PDFs |
-| `./resume_style`    | `/app/resume_style`       | Custom resume CSS overrides (`style_<name>.css` — appears in Settings → Style picker) |
+| `./resume_style`    | `/app/resume_style`       | Custom resume CSS overrides (`style_<name>.css` — applied by the PDF renderer; market-bundled styles in `resume_markets/styles/` are what appear in Settings → Style picker) |
 
 **Bundled in the image (not a volume):** `resume_markets/` — YAML market presets for **Default market** and resume generation. If you run the Go binary outside Docker, keep a `resume_markets/` directory next to the executable (same layout as the repo).
 

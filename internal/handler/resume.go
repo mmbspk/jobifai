@@ -301,7 +301,10 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 	}
 
 	var gs domain.GeneralSettings
-	_ = h.svc.Config.Get(userID, keyGeneralSettings, &gs)
+	if err := h.svc.Config.Get(userID, keyGeneralSettings, &gs); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not read settings"})
+		return
+	}
 
 	// Try to fetch job page content if no manual description provided
 	if jobDesc == "" && jobURL != "" && !skipFetch {

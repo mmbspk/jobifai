@@ -66,16 +66,11 @@ func (h *SettingsHandlers) ResumeSet(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/settings/resume/upload
-// Accepts a plain-text resume file. Extracts a structured ResumeProfile via LLM
-// and returns it for the caller to review before saving (do NOT auto-save).
-// PDF/DOCX parsing is added in Phase 4.
+// Accepts a resume file. For YAML files that match the ResumeProfile schema,
+// deserializes directly (no LLM). All other formats extract via LLM.
+// Returns the profile for the caller to review before saving (do NOT auto-save).
 func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
-	extractor, _ := h.svc.LLMFactory(userID)
-	if extractor == nil {
-		unprocessable(w, "LLM not configured — ask an admin to set the default API key under Admin → Defaults")
-		return
-	}
 	if err := r.ParseMultipartForm(8 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "could not parse multipart form"})
 		return
@@ -115,6 +110,13 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, http.StatusOK, &p)
 			return
 		}
+	}
+
+	// YAML fast path did not match — fall through to LLM extraction.
+	extractor, _ := h.svc.LLMFactory(userID)
+	if extractor == nil {
+		unprocessable(w, "LLM not configured — ask an admin to set the default API key under Admin → Defaults")
+		return
 	}
 
 	text, err := h.svc.FileToText(bytes.NewReader(raw), fh.Filename)
