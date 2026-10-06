@@ -19,6 +19,7 @@ const JOB_LINKS = [
   { to: '/jobs/top-matches', label: 'Top Matches' },
   { to: '/jobs/skipped', label: 'Skipped' },
   { to: '/jobs/cannot-apply', label: 'Cannot Apply' },
+  { to: '/documents', label: 'Documents' },
 ] as const
 
 export function AppBottomNav() {
@@ -58,7 +59,7 @@ export function AppBottomNav() {
                     Jobs
                   </button>
                 </DialogTrigger>
-                <DialogContent title="Jobs" description="Application history and matches">
+                <DialogContent title="Jobs" description="Application history, matches, and documents">
                   <ul className="space-y-1">
                     {JOB_LINKS.map(link => (
                       <li key={link.to}>

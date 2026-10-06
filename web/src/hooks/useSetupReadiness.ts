@@ -75,6 +75,8 @@ export function useSetupReadiness() {
         quotaUnlimited: quotaQ.data?.unlimited === true,
         hasDefaultDocument: Boolean(documentsQ.data?.defaults?.resume_version_id),
       }),
+    // planReviewTick forces re-read of localStorage (isPlanReviewReady) when plan is reviewed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       profileQ.data,
       prefsQ.data,
