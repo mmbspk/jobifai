@@ -199,17 +199,48 @@ func TestResetPassword_PasswordTooShort(t *testing.T) {
 }
 
 func TestChangePassword_Success(t *testing.T) {
-	svc, _ := newTestServices(t)
+	svc, db := newTestServices(t)
 	router := handler.NewRouter(svc)
 
-	token := registerAndLogin(t, router, "changepw@example.com", "oldpassword1")
-	require.NotEmpty(t, token)
+	tokens := registerAndLoginFull(t, router, "changepw@example.com", "oldpassword1")
+	require.NotEmpty(t, tokens.AccessToken)
+	require.NotEmpty(t, tokens.RefreshToken)
 
-	w := authPut(t, router, "/api/me/password", token, map[string]string{
+	// Create two additional refresh tokens for this user (simulate other devices).
+	user, err := auth.NewUserStore(db).ByEmail("changepw@example.com")
+	require.NoError(t, err)
+	otherRefreshA, err := auth.GenerateRefreshToken()
+	require.NoError(t, err)
+	require.NoError(t, auth.SaveRefreshToken(db, user.ID, otherRefreshA))
+	otherRefreshB, err := auth.GenerateRefreshToken()
+	require.NoError(t, err)
+	require.NoError(t, auth.SaveRefreshToken(db, user.ID, otherRefreshB))
+
+	// Change password, supplying the current refresh token to preserve this session.
+	w := authPut(t, router, "/api/me/password", tokens.AccessToken, map[string]string{
 		"current_password": "oldpassword1",
 		"new_password":     "newpassword99",
+		"refresh_token":    tokens.RefreshToken,
 	})
 	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Current refresh token must still be valid (session preserved).
+	refreshBody, _ := json.Marshal(map[string]string{"refresh_token": tokens.RefreshToken})
+	rr := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(refreshBody))
+	rr.Header.Set("Content-Type", "application/json")
+	wr := httptest.NewRecorder()
+	router.ServeHTTP(wr, rr)
+	assert.Equal(t, http.StatusOK, wr.Code, "current refresh token must still work after password change")
+
+	// Other refresh tokens must be revoked.
+	for _, rt := range []string{otherRefreshA, otherRefreshB} {
+		rBody, _ := json.Marshal(map[string]string{"refresh_token": rt})
+		rOther := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(rBody))
+		rOther.Header.Set("Content-Type", "application/json")
+		wOther := httptest.NewRecorder()
+		router.ServeHTTP(wOther, rOther)
+		assert.Equal(t, http.StatusUnauthorized, wOther.Code, "other refresh tokens must be revoked")
+	}
 
 	// Should be able to log in with new password.
 	loginBody, _ := json.Marshal(map[string]string{"email": "changepw@example.com", "password": "newpassword99"})
@@ -218,6 +249,14 @@ func TestChangePassword_Success(t *testing.T) {
 	wLogin := httptest.NewRecorder()
 	router.ServeHTTP(wLogin, req)
 	assert.Equal(t, http.StatusOK, wLogin.Code)
+
+	// Old password must no longer work.
+	oldBody, _ := json.Marshal(map[string]string{"email": "changepw@example.com", "password": "oldpassword1"})
+	reqOld := httptest.NewRequest(http.MethodPost, "/auth/login", bytes.NewReader(oldBody))
+	reqOld.Header.Set("Content-Type", "application/json")
+	wOld := httptest.NewRecorder()
+	router.ServeHTTP(wOld, reqOld)
+	assert.Equal(t, http.StatusUnauthorized, wOld.Code, "old password must be rejected after change")
 }
 
 func TestChangePassword_WrongCurrentPassword(t *testing.T) {
@@ -251,6 +290,45 @@ func TestChangePassword_GoogleOnlyAccount(t *testing.T) {
 		"new_password":     "newpassword99",
 	})
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+
+	// Response should NOT mention forgot-password.
+	assert.NotContains(t, w.Body.String(), "forgot-password", "error must not direct Google users to forgot-password flow")
+}
+
+func TestChangePassword_CrossUserRefreshTokenIgnored(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+
+	// User A: register and get tokens.
+	tokensA := registerAndLoginFull(t, router, "user-a@example.com", "passwordA1")
+	// User B: register and get tokens.
+	tokensB := registerAndLoginFull(t, router, "user-b@example.com", "passwordB1")
+
+	// User A changes password, but supplies User B's refresh token.
+	w := authPut(t, router, "/api/me/password", tokensA.AccessToken, map[string]string{
+		"current_password": "passwordA1",
+		"new_password":     "newpasswordA9",
+		"refresh_token":    tokensB.RefreshToken, // wrong user
+	})
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// User A's own refresh token should be revoked (ownership mismatch → revoke all).
+	refreshBody, _ := json.Marshal(map[string]string{"refresh_token": tokensA.RefreshToken})
+	rr := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(refreshBody))
+	rr.Header.Set("Content-Type", "application/json")
+	wr := httptest.NewRecorder()
+	router.ServeHTTP(wr, rr)
+	assert.Equal(t, http.StatusUnauthorized, wr.Code, "user A's refresh token revoked when cross-user token was supplied")
+
+	// User B's refresh token should still work — it was never touched by A's request.
+	refreshBodyB, _ := json.Marshal(map[string]string{"refresh_token": tokensB.RefreshToken})
+	rrB := httptest.NewRequest(http.MethodPost, "/auth/refresh", bytes.NewReader(refreshBodyB))
+	rrB.Header.Set("Content-Type", "application/json")
+	wrB := httptest.NewRecorder()
+	router.ServeHTTP(wrB, rrB)
+	assert.Equal(t, http.StatusOK, wrB.Code, "user B's refresh token must not be affected by user A's password change")
+
+	_ = db
 }
 
 func TestChangePassword_Unauthenticated(t *testing.T) {

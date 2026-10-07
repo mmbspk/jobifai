@@ -4,7 +4,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const bcryptCost = 12
+var bcryptCost = 12
 
 // HashPassword returns the bcrypt hash of password.
 func HashPassword(password string) (string, error) {

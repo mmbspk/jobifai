@@ -1,4 +1,5 @@
 import { apiPut } from './client'
+import { authStorageKeys } from '../lib/authSession'
 
 // Auth API, public endpoints (no Bearer header required)
 const BASE = (import.meta.env.VITE_API_BASE ?? '')
@@ -64,9 +65,12 @@ export const userApi = {
 
   // Authenticated — uses Bearer token from localStorage via apiPut.
   // /api prefix is added by client.ts, so path here is /me/password.
+  // Sends the current refresh token so the backend can preserve this session
+  // while revoking all other active sessions.
   changePassword: (currentPassword: string, newPassword: string) =>
     apiPut<{ message: string }>('/me/password', {
       current_password: currentPassword,
       new_password: newPassword,
+      refresh_token: localStorage.getItem(authStorageKeys.refresh) ?? '',
     }),
 }

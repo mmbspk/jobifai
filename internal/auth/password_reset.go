@@ -17,6 +17,7 @@ const passwordResetTokenTTL = 1 * time.Hour
 
 var ErrResetTokenNotFound = errors.New("password reset token not found or expired")
 var ErrResetTokenAlreadyUsed = errors.New("password reset token has already been used")
+var ErrResetRateLimited = errors.New("a reset token was requested recently — please wait before requesting another")
 
 // GeneratePasswordResetToken returns a cryptographically random 32-byte base64url token.
 func GeneratePasswordResetToken() (string, error) {
@@ -73,6 +74,70 @@ func CreatePasswordResetToken(db *sql.DB, userID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create reset token: %w", err)
 	}
+	return rawToken, nil
+}
+
+// CreatePasswordResetTokenIfAllowed atomically checks the 5-minute rate limit
+// and, if allowed, creates a new reset token in a single BEGIN IMMEDIATE
+// transaction. Returns ErrResetRateLimited when the rate limit is hit.
+// Returns ("", nil) for empty userID so anti-enumeration callers can still 202.
+func CreatePasswordResetTokenIfAllowed(db *sql.DB, userID string) (string, error) {
+	if userID == "" {
+		return "", nil
+	}
+
+	rawToken, err := GeneratePasswordResetToken()
+	if err != nil {
+		return "", err
+	}
+	hash := hashPasswordResetToken(rawToken)
+	expires := time.Now().Add(passwordResetTokenTTL)
+	id := newUUID()
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create reset token: conn: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return "", fmt.Errorf("create reset token: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if _, rbErr := conn.ExecContext(context.Background(), "ROLLBACK"); rbErr != nil {
+				log.Error().Err(rbErr).Msg("create reset token: rollback failed")
+			}
+		}
+	}()
+
+	var lastCreated time.Time
+	err = conn.QueryRowContext(ctx,
+		`SELECT created_at FROM password_reset_tokens
+		 WHERE user_id = ? AND used_at IS NULL
+		 ORDER BY created_at DESC LIMIT 1`,
+		userID,
+	).Scan(&lastCreated)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("create reset token: rate check: %w", err)
+	}
+	if err == nil && time.Since(lastCreated) < 5*time.Minute {
+		return "", ErrResetRateLimited
+	}
+
+	if _, err = conn.ExecContext(ctx,
+		`INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)`,
+		id, userID, hash, expires,
+	); err != nil {
+		return "", fmt.Errorf("create reset token: insert: %w", err)
+	}
+
+	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return "", fmt.Errorf("create reset token: commit: %w", err)
+	}
+	committed = true
 	return rawToken, nil
 }
 
@@ -146,6 +211,73 @@ func ConsumePasswordResetToken(db *sql.DB, rawToken, newPasswordHash string) err
 
 	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("consume reset token: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// UpdatePasswordAndRevokeOtherSessions atomically updates the user's password
+// and revokes every refresh token except the supplied currentRefreshToken, so
+// the caller's own session stays alive. If currentRefreshToken is empty or
+// cannot be verified as belonging to userID, all refresh tokens are revoked.
+func UpdatePasswordAndRevokeOtherSessions(db *sql.DB, userID, newPasswordHash, currentRefreshToken string) error {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("change password: conn: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("change password: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if _, rbErr := conn.ExecContext(context.Background(), "ROLLBACK"); rbErr != nil {
+				log.Error().Err(rbErr).Msg("change password: rollback failed")
+			}
+		}
+	}()
+
+	// Verify supplied refresh token ownership before trusting it.
+	currentHash := ""
+	if currentRefreshToken != "" {
+		h := hashRefreshToken(currentRefreshToken)
+		var ownerID string
+		err := conn.QueryRowContext(ctx,
+			`SELECT user_id FROM refresh_tokens WHERE token_hash = ?`, h,
+		).Scan(&ownerID)
+		if err == nil && ownerID == userID {
+			currentHash = h
+		}
+		// Any failure (not found, wrong owner, DB error) → revoke all sessions.
+	}
+
+	if _, err = conn.ExecContext(ctx,
+		`UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?`,
+		newPasswordHash, userID,
+	); err != nil {
+		return fmt.Errorf("change password: update: %w", err)
+	}
+
+	if currentHash != "" {
+		if _, err = conn.ExecContext(ctx,
+			`DELETE FROM refresh_tokens WHERE user_id = ? AND token_hash != ?`,
+			userID, currentHash,
+		); err != nil {
+			return fmt.Errorf("change password: revoke others: %w", err)
+		}
+	} else {
+		if _, err = conn.ExecContext(ctx,
+			`DELETE FROM refresh_tokens WHERE user_id = ?`, userID,
+		); err != nil {
+			return fmt.Errorf("change password: revoke all: %w", err)
+		}
+	}
+
+	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("change password: commit: %w", err)
 	}
 	committed = true
 	return nil

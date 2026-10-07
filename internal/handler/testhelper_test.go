@@ -61,6 +61,22 @@ func registerAndLogin(t *testing.T, router http.Handler, email, password string)
 	return tokens.AccessToken
 }
 
+// registerAndLoginFull creates a user and returns both the access and refresh tokens.
+func registerAndLoginFull(t *testing.T, router http.Handler, email, password string) auth.Tokens {
+	t.Helper()
+
+	body, _ := json.Marshal(map[string]string{"email": email, "password": password})
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	require.Equal(t, http.StatusCreated, w.Code, "register failed: %s", w.Body)
+
+	var tokens auth.Tokens
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&tokens))
+	return tokens
+}
+
 // authGet performs a GET with a Bearer token.
 func authGet(t *testing.T, router http.Handler, path, token string) *httptest.ResponseRecorder {
 	t.Helper()

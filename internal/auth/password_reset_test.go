@@ -21,13 +21,11 @@ func TestCreatePasswordResetToken_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, rawToken)
 
-	// Consuming the token should update the password and succeed.
 	newHash, err := auth.HashPassword("newpassword123")
 	require.NoError(t, err)
 	err = auth.ConsumePasswordResetToken(db, rawToken, newHash)
 	require.NoError(t, err)
 
-	// Verify password was updated.
 	updated, err := s.ByID(u.ID)
 	require.NoError(t, err)
 	require.NoError(t, auth.CheckPassword(updated.PasswordHash, "newpassword123"))
@@ -45,7 +43,6 @@ func TestConsumePasswordResetToken_AlreadyUsed(t *testing.T) {
 	newHash, _ := auth.HashPassword("pass12345")
 	require.NoError(t, auth.ConsumePasswordResetToken(db, rawToken, newHash))
 
-	// Second use should fail.
 	err = auth.ConsumePasswordResetToken(db, rawToken, newHash)
 	assert.True(t, errors.Is(err, auth.ErrResetTokenAlreadyUsed))
 }
@@ -62,18 +59,15 @@ func TestConsumePasswordResetToken_RevokesRefreshTokens(t *testing.T) {
 	u, err := s.Create("revoke@example.com", "hash", "Revoke")
 	require.NoError(t, err)
 
-	// Issue a refresh token.
 	rawRefresh, err := auth.GenerateRefreshToken()
 	require.NoError(t, err)
 	require.NoError(t, auth.SaveRefreshToken(db, u.ID, rawRefresh))
 
-	// Reset password.
 	rawToken, err := auth.CreatePasswordResetToken(db, u.ID)
 	require.NoError(t, err)
 	newHash, _ := auth.HashPassword("pass12345")
 	require.NoError(t, auth.ConsumePasswordResetToken(db, rawToken, newHash))
 
-	// Refresh token should no longer work.
 	_, err = auth.ConsumeRefreshToken(db, rawRefresh)
 	assert.Error(t, err)
 }
@@ -138,6 +132,118 @@ func TestCanRequestPasswordReset_UnknownUser(t *testing.T) {
 	assert.True(t, ok, "empty user ID should always return true (no enumeration)")
 }
 
+func TestCreatePasswordResetTokenIfAllowed_RateLimit(t *testing.T) {
+	db := newUsersTestDB(t)
+	s := auth.NewUserStore(db)
+	u, err := s.Create("atomic-ratelimit@example.com", "hash", "AtomicRateLimit")
+	require.NoError(t, err)
+
+	token1, err := auth.CreatePasswordResetTokenIfAllowed(db, u.ID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, token1)
+
+	_, err = auth.CreatePasswordResetTokenIfAllowed(db, u.ID)
+	assert.True(t, errors.Is(err, auth.ErrResetRateLimited), "second request should be rate-limited, got: %v", err)
+}
+
+func TestCreatePasswordResetTokenIfAllowed_EmptyUserID(t *testing.T) {
+	db := newUsersTestDB(t)
+	token, err := auth.CreatePasswordResetTokenIfAllowed(db, "")
+	require.NoError(t, err)
+	assert.Empty(t, token)
+}
+
+func TestCreatePasswordResetTokenIfAllowed_Concurrent(t *testing.T) {
+	db := newUsersTestDB(t)
+	s := auth.NewUserStore(db)
+	u, err := s.Create("concurrent-allowed@example.com", "hash", "ConcurrentAllowed")
+	require.NoError(t, err)
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	var successes, rateLimited int
+	var mu sync.Mutex
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, e := auth.CreatePasswordResetTokenIfAllowed(db, u.ID)
+			mu.Lock()
+			defer mu.Unlock()
+			if e == nil {
+				successes++
+			} else if errors.Is(e, auth.ErrResetRateLimited) {
+				rateLimited++
+			}
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, 1, successes, "exactly one goroutine should create a token")
+	assert.Equal(t, goroutines-1, rateLimited, "all others should be rate-limited")
+}
+
+func TestUpdatePasswordAndRevokeOtherSessions(t *testing.T) {
+	db := newUsersTestDB(t)
+	s := auth.NewUserStore(db)
+	u, err := s.Create("session-revoke@example.com", "hash", "SessionRevoke")
+	require.NoError(t, err)
+
+	keepToken, err := auth.GenerateRefreshToken()
+	require.NoError(t, err)
+	require.NoError(t, auth.SaveRefreshToken(db, u.ID, keepToken))
+	otherA, err := auth.GenerateRefreshToken()
+	require.NoError(t, err)
+	require.NoError(t, auth.SaveRefreshToken(db, u.ID, otherA))
+	otherB, err := auth.GenerateRefreshToken()
+	require.NoError(t, err)
+	require.NoError(t, auth.SaveRefreshToken(db, u.ID, otherB))
+
+	newHash, err := auth.HashPassword("new-password-99")
+	require.NoError(t, err)
+	require.NoError(t, auth.UpdatePasswordAndRevokeOtherSessions(db, u.ID, newHash, keepToken))
+
+	updated, err := s.ByID(u.ID)
+	require.NoError(t, err)
+	require.NoError(t, auth.CheckPassword(updated.PasswordHash, "new-password-99"))
+
+	uid, err := auth.ConsumeRefreshToken(db, keepToken)
+	assert.NoError(t, err)
+	assert.Equal(t, u.ID, uid)
+
+	_, err = auth.ConsumeRefreshToken(db, otherA)
+	assert.Error(t, err, "otherA should be revoked")
+	_, err = auth.ConsumeRefreshToken(db, otherB)
+	assert.Error(t, err, "otherB should be revoked")
+}
+
+func TestUpdatePasswordAndRevokeOtherSessions_CrossUserTokenIgnored(t *testing.T) {
+	db := newUsersTestDB(t)
+	s := auth.NewUserStore(db)
+	userA, err := s.Create("session-a@example.com", "hash", "A")
+	require.NoError(t, err)
+	userB, err := s.Create("session-b@example.com", "hash", "B")
+	require.NoError(t, err)
+
+	tokenA, err := auth.GenerateRefreshToken()
+	require.NoError(t, err)
+	require.NoError(t, auth.SaveRefreshToken(db, userA.ID, tokenA))
+
+	tokenB, err := auth.GenerateRefreshToken()
+	require.NoError(t, err)
+	require.NoError(t, auth.SaveRefreshToken(db, userB.ID, tokenB))
+
+	newHash, _ := auth.HashPassword("new-pw-99")
+	require.NoError(t, auth.UpdatePasswordAndRevokeOtherSessions(db, userA.ID, newHash, tokenB))
+
+	_, err = auth.ConsumeRefreshToken(db, tokenA)
+	assert.Error(t, err, "userA's own token must be revoked when cross-user token was supplied")
+
+	uid, err := auth.ConsumeRefreshToken(db, tokenB)
+	assert.NoError(t, err)
+	assert.Equal(t, userB.ID, uid)
+}
+
 func TestSweepExpiredPasswordResetTokens(t *testing.T) {
 	db := newUsersTestDB(t)
 	s := auth.NewUserStore(db)
@@ -147,17 +253,15 @@ func TestSweepExpiredPasswordResetTokens(t *testing.T) {
 	_, err = auth.CreatePasswordResetToken(db, u.ID)
 	require.NoError(t, err)
 
-	// Manually expire the token.
 	_, err = db.Exec(`UPDATE password_reset_tokens SET expires_at = ? WHERE user_id = ?`,
 		time.Now().Add(-2*time.Hour), u.ID)
 	require.NoError(t, err)
 
 	require.NoError(t, auth.SweepExpiredPasswordResetTokens(db))
 
-	// Attempting to consume should now fail.
-	raw2, err2 := auth.CreatePasswordResetToken(db, u.ID) // this also creates a new token
+	raw2, err2 := auth.CreatePasswordResetToken(db, u.ID)
 	require.NoError(t, err2)
-	require.NotEmpty(t, raw2) // swept token is gone so new one created fine
+	require.NotEmpty(t, raw2)
 }
 
 func TestUpdatePassword(t *testing.T) {

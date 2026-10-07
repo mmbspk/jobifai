@@ -73,16 +73,10 @@ func (h *PasswordResetHandlers) sendPasswordResetEmail(emailAddr string, snd Ema
 		return nil
 	}
 
-	// Rate-limit: one reset request per 5 minutes.
-	ok, err := auth.CanRequestPasswordReset(h.db, user.ID)
-	if err != nil {
-		return fmt.Errorf("forgot password: rate check: %w", err)
+	rawToken, err := auth.CreatePasswordResetTokenIfAllowed(h.db, user.ID)
+	if errors.Is(err, auth.ErrResetRateLimited) {
+		return nil // rate limited — silently drop (caller still returned 202)
 	}
-	if !ok {
-		return nil // rate limited — silently drop
-	}
-
-	rawToken, err := auth.CreatePasswordResetToken(h.db, user.ID)
 	if err != nil {
 		return fmt.Errorf("forgot password: create token: %w", err)
 	}

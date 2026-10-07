@@ -49,14 +49,7 @@ export function SecuritySettingsPage() {
 
       {isGoogleOnly ? (
         <div className="rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] p-6 text-sm text-[var(--color-text-muted)]">
-          <p>Your account uses Google sign-in and does not have a password set.</p>
-          <p className="mt-2">
-            To add a password, sign out and use the{' '}
-            <a href="/forgot-password" className="text-[var(--color-accent)] hover:underline">
-              forgot password
-            </a>{' '}
-            flow with your account email address.
-          </p>
+          <p>This account uses Google sign-in and does not currently have a password. Continue signing in with Google.</p>
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="space-y-4 max-w-sm">

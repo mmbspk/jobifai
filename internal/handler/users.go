@@ -245,8 +245,9 @@ func (h *UserHandlers) UpdateMe(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	var req struct {
-		Current     string `json:"current_password"`
-		NewPassword string `json:"new_password"`
+		Current      string `json:"current_password"`
+		NewPassword  string `json:"new_password"`
+		RefreshToken string `json:"refresh_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid JSON"})
@@ -272,8 +273,7 @@ func (h *UserHandlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user.PasswordHash == "" {
-		// Google-only account — cannot set a password here; use forgot-password flow instead.
-		unprocessable(w, "this account uses Google sign-in — to add a password, use the forgot-password flow")
+		unprocessable(w, "this account uses Google sign-in and does not currently have a password")
 		return
 	}
 
@@ -288,7 +288,7 @@ func (h *UserHandlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := auth.UpdatePassword(h.db, userID, newHash); err != nil {
+	if err := auth.UpdatePasswordAndRevokeOtherSessions(h.db, userID, newHash, req.RefreshToken); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
