@@ -7,6 +7,7 @@ import { cn } from '../lib'
 import { Bell, Moon, Sun } from 'lucide-react'
 import { JobifaiLogo } from './brand/JobifaiLogo'
 import { useTheme } from '../hooks/useTheme'
+import { EmailVerificationBanner } from './auth/EmailVerificationBanner'
 
 export function Layout({ children }: { readonly children?: ReactNode }) {
   const isAdmin = useLocation().pathname.startsWith('/admin')
@@ -44,6 +45,7 @@ export function Layout({ children }: { readonly children?: ReactNode }) {
         style={{ transition: 'padding-left 200ms' }}
       >
         <div className={cn('mx-auto px-4 py-6 md:px-7 md:py-10 lg:px-8 lg:py-12', isAdmin ? 'max-w-[1600px]' : 'max-w-[1120px]')}>
+          <EmailVerificationBanner />
           {children ?? <Outlet />}
         </div>
       </main>

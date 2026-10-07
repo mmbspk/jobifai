@@ -25,6 +25,7 @@ import { PlatformsSettingsPage } from './pages/settings/Platforms'
 import { PlanPage } from './pages/settings/Plan'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
+import { VerifyEmailPage } from './pages/VerifyEmail'
 import { Landing } from './pages/Landing'
 import { Pricing } from './pages/Pricing'
 import { PostAuthRedirect } from './components/auth/PostAuthRedirect'
@@ -163,6 +164,7 @@ function AppRoutes() {
       <Route path="/pricing" element={<Pricing />} />
       <Route path="/login"    element={<GuestRoute><Login /></GuestRoute>} />
       <Route path="/register" element={<GuestRoute><Register /></GuestRoute>} />
+      <Route path="/auth/verify-email" element={<VerifyEmailPage />} />
 
       {/* Authenticated app shell (paths other than /) */}
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>

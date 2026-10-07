@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 )
 
@@ -84,6 +86,15 @@ func (h *UserHandlers) Register(w http.ResponseWriter, r *http.Request) {
 
 	if h.svc.Quota != nil {
 		_ = h.svc.Quota.InitTrial(r.Context(), user.ID)
+	}
+
+	// Create verification token synchronously (fast DB insert), then send
+	// the email in a goroutine so registration is not blocked on SMTP.
+	if rawToken, err := auth.CreateVerificationToken(h.db, user.ID); err != nil {
+		log.Error().Err(err).Str("user_id", user.ID).Msg("register: create verification token failed")
+		// Non-fatal — user can request resend later.
+	} else {
+		go h.sendVerificationEmail(user.Email, user.DisplayName, rawToken)
 	}
 
 	tokens, err := h.issueTokens(user.ID, user.Email)
@@ -198,13 +209,14 @@ func (h *UserHandlers) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":           user.ID,
-		"email":        user.Email,
-		"display_name": user.DisplayName,
-		"avatar_url":   user.AvatarURL,
-		"has_password": user.PasswordHash != "",
-		"has_google":   user.GoogleID != "",
-		"is_admin":     user.IsAdmin,
+		"id":             user.ID,
+		"email":          user.Email,
+		"display_name":   user.DisplayName,
+		"avatar_url":     user.AvatarURL,
+		"has_password":   user.PasswordHash != "",
+		"has_google":     user.GoogleID != "",
+		"is_admin":       user.IsAdmin,
+		"email_verified": user.EmailVerified,
 	})
 }
 
@@ -244,4 +256,20 @@ func (h *UserHandlers) issueTokens(userID, email string) (*auth.Tokens, error) {
 		RefreshToken: rawRefresh,
 		ExpiresIn:    int(auth.AccessTokenTTL().Seconds()),
 	}, nil
+}
+
+// sendVerificationEmail sends the confirmation email. Runs in a goroutine;
+// errors are logged but not fatal — the account was already created.
+// rawToken is the pre-created token (creation happens synchronously in Register).
+func (h *UserHandlers) sendVerificationEmail(email, displayName, rawToken string) {
+	if h.svc.EmailSender == nil {
+		log.Warn().Msg("register: email sender not configured — verification email skipped")
+		return
+	}
+	verifyURL := buildVerifyURL(h.svc.AppBaseURL, rawToken)
+	if err := h.svc.EmailSender.SendVerification(context.Background(), email, displayName, verifyURL); err != nil {
+		log.Error().Err(err).Msg("register: send verification email failed")
+		return
+	}
+	log.Info().Msg("verification email sent")
 }

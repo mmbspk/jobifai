@@ -21,6 +21,7 @@ import (
 	"github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/email"
 	"github.com/user/jobifai/internal/handler"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/llmreuse"
@@ -319,6 +320,8 @@ func main() {
 		Documents: docSvc,
 		Retention: retentionSvc,
 		LLMReuseMetrics: llmReuseStore,
+		EmailSender: buildEmailSender(cfgStore, secretsStore),
+		AppBaseURL:  os.Getenv("APP_BASE_URL"),
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
 			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
@@ -342,6 +345,22 @@ func main() {
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+
+	// ── Background: sweep expired verification tokens daily ─────────────
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := auth.SweepExpiredVerificationTokens(database); err != nil {
+					log.Error().Err(err).Msg("sweep verification tokens")
+				}
+			case <-shutdownCtx.Done():
+				return
+			}
+		}
+	}()
 
 	go func() {
 		log.Info().Str("addr", *addr).Msg("jobifai server starting")
@@ -442,6 +461,27 @@ func (a *usageStoreAdapter) Session(userID string) domain.SessionUsage {
 		OutputTokens: snap.OutputTokens,
 		Calls:        snap.Calls,
 	}
+}
+
+// buildEmailSender constructs an SMTPSender from admin-configured email settings.
+// Falls back to a NoopSender if no valid config is stored.
+func buildEmailSender(cfgStore *config.Store, secrets *config.SecretsStore) handler.EmailSender {
+	var cfg domain.EmailConfig
+	_ = cfgStore.Get(domain.SystemUserID, "email_settings", &cfg)
+	smtpPass, _ := secrets.Get(domain.SystemUserID, "smtp_pass")
+	sender, err := email.NewSMTPSender(email.Config{
+		Provider:  cfg.Provider,
+		SMTPHost:  cfg.SMTPHost,
+		SMTPPort:  cfg.SMTPPort,
+		SMTPUser:  cfg.SMTPUser,
+		SMTPPass:  smtpPass,
+		EmailFrom: cfg.EmailFrom,
+	})
+	if err != nil {
+		log.Info().Msg("email not configured — verification emails will be skipped")
+		return email.NoopSender{}
+	}
+	return sender
 }
 
 func countYAMLFiles(dir string) int {

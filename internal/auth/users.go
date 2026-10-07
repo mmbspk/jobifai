@@ -16,15 +16,16 @@ import (
 
 // User represents a registered application user.
 type User struct {
-	ID           string
-	Email        string
-	DisplayName  string
-	PasswordHash string // empty for Google-only accounts
-	GoogleID     string // empty for email/password accounts
-	AvatarURL    string
-	IsAdmin      bool
-	VerboseLogs  bool
-	CreatedAt    time.Time
+	ID            string
+	Email         string
+	DisplayName   string
+	PasswordHash  string // empty for Google-only accounts
+	GoogleID      string // empty for email/password accounts
+	AvatarURL     string
+	IsAdmin       bool
+	VerboseLogs   bool
+	EmailVerified bool
+	CreatedAt     time.Time
 }
 
 var ErrUserNotFound = errors.New("user not found")
@@ -62,6 +63,7 @@ func (s *UserStore) Create(email, passwordHash, displayName string) (*User, erro
 }
 
 // UpsertGoogle finds or creates a user by their Google ID; updates email/name/avatar on each login.
+// Google-authenticated accounts are considered pre-verified.
 func (s *UserStore) UpsertGoogle(googleID, email, displayName, avatarURL string) (*User, error) {
 	now := time.Now()
 	// Try to find existing user by google_id or email.
@@ -69,7 +71,7 @@ func (s *UserStore) UpsertGoogle(googleID, email, displayName, avatarURL string)
 	if err == nil {
 		// Update profile fields.
 		if _, err := s.db.Exec(
-			`UPDATE users SET email=?, display_name=?, avatar_url=?, updated_at=? WHERE id=?`,
+			`UPDATE users SET email=?, display_name=?, avatar_url=?, email_verified=1, updated_at=? WHERE id=?`,
 			email, displayName, avatarURL, now, u.ID,
 		); err != nil {
 			log.Error().Err(err).Str("user_id", u.ID).Msg("upsert google: failed to update existing user")
@@ -77,13 +79,14 @@ func (s *UserStore) UpsertGoogle(googleID, email, displayName, avatarURL string)
 		u.Email = email
 		u.DisplayName = displayName
 		u.AvatarURL = avatarURL
+		u.EmailVerified = true
 		return u, nil
 	}
 	// Maybe the user registered by email first, link the Google ID.
 	u, err = s.ByEmail(email)
 	if err == nil {
 		if _, err := s.db.Exec(
-			`UPDATE users SET google_id=?, display_name=?, avatar_url=?, updated_at=? WHERE id=?`,
+			`UPDATE users SET google_id=?, display_name=?, avatar_url=?, email_verified=1, updated_at=? WHERE id=?`,
 			googleID, displayName, avatarURL, now, u.ID,
 		); err != nil {
 			log.Error().Err(err).Str("user_id", u.ID).Msg("upsert google: failed to link google id")
@@ -91,26 +94,27 @@ func (s *UserStore) UpsertGoogle(googleID, email, displayName, avatarURL string)
 		u.GoogleID = googleID
 		u.DisplayName = displayName
 		u.AvatarURL = avatarURL
+		u.EmailVerified = true
 		return u, nil
 	}
 	// New user, create one.
 	id := newUUID()
 	_, err = s.db.Exec(
-		`INSERT INTO users (id, email, google_id, display_name, avatar_url, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO users (id, email, google_id, display_name, avatar_url, email_verified, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
 		id, email, googleID, displayName, avatarURL, now, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("upsert google user: %w", err)
 	}
-	return &User{ID: id, Email: email, GoogleID: googleID, DisplayName: displayName, AvatarURL: avatarURL, CreatedAt: now}, nil
+	return &User{ID: id, Email: email, GoogleID: googleID, DisplayName: displayName, AvatarURL: avatarURL, EmailVerified: true, CreatedAt: now}, nil
 }
 
 // ByID fetches a user by their primary key.
 func (s *UserStore) ByID(id string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0), created_at
 		 FROM users WHERE id = ?`, id,
 	))
 }
@@ -119,7 +123,7 @@ func (s *UserStore) ByID(id string) (*User, error) {
 func (s *UserStore) ByEmail(email string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0), created_at
 		 FROM users WHERE email = ?`, email,
 	))
 }
@@ -128,7 +132,7 @@ func (s *UserStore) ByEmail(email string) (*User, error) {
 func (s *UserStore) ByGoogleID(googleID string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0), created_at
 		 FROM users WHERE google_id = ?`, googleID,
 	))
 }
@@ -137,7 +141,7 @@ func (s *UserStore) ByGoogleID(googleID string) (*User, error) {
 func (s *UserStore) List() ([]User, error) {
 	rows, err := s.db.Query(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0), created_at
 		 FROM users ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -147,11 +151,12 @@ func (s *UserStore) List() ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		var verbose int
-		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &u.CreatedAt); err != nil {
+		var verbose, emailVerified int
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &emailVerified, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		u.VerboseLogs = verbose != 0
+		u.EmailVerified = emailVerified != 0
 		out = append(out, u)
 	}
 	return out, rows.Err()
@@ -210,9 +215,10 @@ func (s *UserStore) Update(userID, displayName, avatarURL string) error {
 
 func (s *UserStore) scan(row *sql.Row) (*User, error) {
 	var u User
-	var verbose int
-	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &u.CreatedAt)
+	var verbose, emailVerified int
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &emailVerified, &u.CreatedAt)
 	u.VerboseLogs = verbose != 0
+	u.EmailVerified = emailVerified != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}

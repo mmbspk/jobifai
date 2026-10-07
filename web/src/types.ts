@@ -413,3 +413,11 @@ export interface QuotaStatus {
   cancel_at_period_end?: boolean
   top_up_packs?: TopUpPack[]
 }
+
+export interface EmailConfig {
+  email_provider?: string
+  smtp_host?: string
+  smtp_port?: number
+  smtp_user?: string
+  email_from?: string
+}
