@@ -365,6 +365,75 @@ func loginUser(t *testing.T, router http.Handler, email, password string) string
 	return tokens.AccessToken
 }
 
+// TestDeleteAccount_GoogleOnly verifies DELETE /api/me for accounts with no local
+// password hash (created via Google OAuth). These accounts require the confirmation
+// string "DELETE" instead of a password.
+func TestDeleteAccount_GoogleOnly(t *testing.T) {
+	router, svc, _ := buildEmailChangeRouter(t)
+
+	// Create a Google-only user (no password_hash).
+	u, err := svc.Users.UpsertGoogle("goog-id-test-001", "google@example.com", "Google User", "")
+	require.NoError(t, err)
+
+	// Mint a valid access token for this user.
+	googleToken, err := svc.TokenManager.IssueAccess(u.ID, u.Email)
+	require.NoError(t, err)
+
+	// 1. Missing confirm entirely → 400.
+	w := authDeleteWithBody(t, router, "/api/me", googleToken, map[string]string{})
+	assert.Equal(t, http.StatusBadRequest, w.Code, "missing confirm must return 400")
+
+	// 2. Lowercase "delete" must not be accepted → 400.
+	w = authDeleteWithBody(t, router, "/api/me", googleToken, map[string]string{
+		"confirm": "delete",
+	})
+	assert.Equal(t, http.StatusBadRequest, w.Code, "lowercase confirm must return 400")
+
+	// 3. Correct uppercase "DELETE" → 204 No Content, empty body.
+	w = authDeleteWithBody(t, router, "/api/me", googleToken, map[string]string{
+		"confirm": "DELETE",
+	})
+	assert.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+	assert.Empty(t, w.Body.String(), "204 must have empty body")
+
+	// 4. User row must be gone.
+	_, err = svc.Users.ByID(u.ID)
+	assert.ErrorIs(t, err, auth.ErrUserNotFound, "user row should be deleted")
+
+	// 5. The previously-issued token must now be rejected (account no longer exists).
+	w2 := authGet(t, router, "/api/me", googleToken)
+	assert.Equal(t, http.StatusUnauthorized, w2.Code, "deleted Google-only account JWT must be rejected")
+}
+
+// TestDeleteAccount_HybridAccount verifies that an account with both a password_hash
+// and a google_id always requires current_password — "confirm: DELETE" alone must
+// not bypass the password gate.
+func TestDeleteAccount_HybridAccount(t *testing.T) {
+	router, svc, _ := buildEmailChangeRouter(t)
+
+	// Create a regular email/password account, then attach a google_id.
+	token := registerAndLogin(t, router, "hybrid@example.com", "password123")
+	userID := userIDFromToken(t, router, token)
+
+	_, err := svc.DB.Exec(`UPDATE users SET google_id = ? WHERE id = ?`, "goog-hybrid-456", userID)
+	require.NoError(t, err)
+
+	// Confirm string alone must not suffice for a hybrid account.
+	w := authDeleteWithBody(t, router, "/api/me", token, map[string]string{
+		"confirm": "DELETE",
+	})
+	assert.Equal(t, http.StatusBadRequest, w.Code, "hybrid account must require password, not confirm string")
+
+	// Correct password must succeed.
+	w = authDeleteWithBody(t, router, "/api/me", token, map[string]string{
+		"current_password": "password123",
+	})
+	assert.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
+
+	_, err = svc.Users.ByID(userID)
+	assert.ErrorIs(t, err, auth.ErrUserNotFound, "hybrid account row should be deleted")
+}
+
 // extractQueryParam is a small helper to pull a query parameter out of a URL string.
 func extractQueryParam(t *testing.T, rawURL, key string) string {
 	t.Helper()
