@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -14,6 +15,8 @@ const userEmailKey contextKey = "user_email"
 
 // RequireAuth is middleware that validates the Bearer JWT and injects the
 // user_id and email into the request context. Returns 401 on missing/invalid token.
+//
+// Deprecated: prefer RequireAuthAndExistence which also guards deleted accounts.
 func RequireAuth(tm *TokenManager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,4 +56,47 @@ func writeUnauthorized(w http.ResponseWriter, msg string) {
 	w.WriteHeader(http.StatusUnauthorized)
 	b, _ := json.Marshal(map[string]string{"message": msg})
 	_, _ = w.Write(b)
+}
+
+// RequireAuthAndExistence is middleware that validates the Bearer JWT AND verifies
+// the referenced user_id still exists in the database with the same email as the
+// JWT claims. Use this instead of RequireAuth so that:
+//   - A JWT issued to a deleted account is immediately rejected (existence check).
+//   - A pre-email-change JWT is rejected after the email is updated (identity check).
+//
+// Adds one lightweight indexed PK lookup per authenticated request.
+func RequireAuthAndExistence(tm *TokenManager, db *sql.DB) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			header := r.Header.Get("Authorization")
+			if !strings.HasPrefix(header, "Bearer ") {
+				writeUnauthorized(w, "missing or malformed authorization header")
+				return
+			}
+			tokenStr := strings.TrimPrefix(header, "Bearer ")
+			claims, err := tm.Verify(tokenStr)
+			if err != nil {
+				writeUnauthorized(w, "invalid or expired token")
+				return
+			}
+			// Confirm the account still exists AND that the JWT email matches the
+			// current email on file. This rejects:
+			//   - JWTs issued to deleted accounts (row missing → not found)
+			//   - Pre-email-change JWTs (email claim differs from current DB email)
+			var currentEmail string
+			if qErr := db.QueryRowContext(r.Context(),
+				`SELECT email FROM users WHERE id = ? LIMIT 1`, claims.UserID,
+			).Scan(&currentEmail); qErr != nil {
+				writeUnauthorized(w, "account not found")
+				return
+			}
+			if currentEmail != claims.Email {
+				writeUnauthorized(w, "token identity is stale — please sign in again")
+				return
+			}
+			ctx := context.WithValue(r.Context(), userIDKey, claims.UserID)
+			ctx = context.WithValue(ctx, userEmailKey, claims.Email)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }

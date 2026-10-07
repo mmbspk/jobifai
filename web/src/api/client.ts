@@ -85,6 +85,10 @@ export async function apiDelete<T>(path: string): Promise<T> {
   return apiFetch<T>(path, { method: 'DELETE', headers: {} })
 }
 
+export async function apiDeleteWithBody<T>(path: string, body?: unknown): Promise<T> {
+  return apiFetch<T>(path, { method: 'DELETE', body: JSON.stringify(body) })
+}
+
 export async function apiPostForm<T>(path: string, form: FormData, opts?: ApiRequestOpts): Promise<T> {
   const token = getToken()
   const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}

@@ -9,6 +9,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>
   register: (email: string, password: string, displayName?: string) => Promise<void>
   logout: () => Promise<void>
+  forceLogout: () => void
   updateMe: (displayName: string, avatarUrl?: string) => Promise<void>
   resendVerification: () => Promise<void>
   googleLoginUrl: string
@@ -126,6 +127,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null)
   }, [queryClient])
 
+  const forceLogout = useCallback(() => {
+    clearTokens()
+    if (refreshTimer.current) clearTimeout(refreshTimer.current)
+    queryClient.clear()
+    setUser(null)
+  }, [queryClient])
+
   const updateMe = useCallback(async (displayName: string, avatarUrl = '') => {
     await apiPut('/me', { display_name: displayName, avatar_url: avatarUrl })
     setUser(prev => prev ? { ...prev, display_name: displayName, avatar_url: avatarUrl } : prev)
@@ -143,6 +151,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       login,
       register,
       logout,
+      forceLogout,
       updateMe,
       resendVerification,
       googleLoginUrl: userApi.googleLoginUrl(),

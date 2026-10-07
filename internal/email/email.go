@@ -39,6 +39,12 @@ type Sender interface {
 	SendVerificationReminder(ctx context.Context, toEmail, toName, verifyURL string) error
 	// SendPasswordReset sends a password-reset link to the user.
 	SendPasswordReset(ctx context.Context, toEmail, toName, resetURL string) error
+	// SendEmailChangeVerification sends a confirmation link to the new address.
+	SendEmailChangeVerification(ctx context.Context, toEmail, toName, verifyURL string) error
+	// SendEmailChangeOldNotification notifies the old address that the email was changed.
+	SendEmailChangeOldNotification(ctx context.Context, toEmail, toName, newEmail string) error
+	// SendEmailChangeNewConfirmation confirms to the new address that it is now active.
+	SendEmailChangeNewConfirmation(ctx context.Context, toEmail, toName string) error
 }
 
 // ─── SMTP implementation ───────────────────────────────────────────────────
@@ -92,6 +98,50 @@ func (s *SMTPSender) SendPasswordReset(ctx context.Context, toEmail, toName, res
 	sendCtx, cancel := context.WithTimeout(ctx, smtpSendTimeout)
 	defer cancel()
 
+	from := extractAddress(s.cfg.EmailFrom)
+	if port == 465 {
+		return sendImplicitTLS(sendCtx, addr, s.cfg.SMTPHost, auth, from, toEmail, msg)
+	}
+	return sendSTARTTLS(sendCtx, addr, s.cfg.SMTPHost, auth, from, toEmail, msg)
+}
+
+func (s *SMTPSender) SendEmailChangeVerification(ctx context.Context, toEmail, toName, verifyURL string) error {
+	plain, htmlBody, err := RenderEmailChangeVerification(toName, verifyURL)
+	if err != nil {
+		return fmt.Errorf("email: render email-change verification template: %w", err)
+	}
+	return s.sendMsg(ctx, toEmail, "Confirm your new email address — Jobifai", plain, htmlBody)
+}
+
+func (s *SMTPSender) SendEmailChangeOldNotification(ctx context.Context, toEmail, toName, newEmail string) error {
+	plain, htmlBody, err := RenderEmailChangeOldNotification(toName, newEmail)
+	if err != nil {
+		return fmt.Errorf("email: render email-change old-notification template: %w", err)
+	}
+	return s.sendMsg(ctx, toEmail, "Your Jobifai email address was changed", plain, htmlBody)
+}
+
+func (s *SMTPSender) SendEmailChangeNewConfirmation(ctx context.Context, toEmail, toName string) error {
+	plain, htmlBody, err := RenderEmailChangeNewConfirmation(toName)
+	if err != nil {
+		return fmt.Errorf("email: render email-change new-confirmation template: %w", err)
+	}
+	return s.sendMsg(ctx, toEmail, "Your Jobifai email address is confirmed", plain, htmlBody)
+}
+
+func (s *SMTPSender) sendMsg(ctx context.Context, toEmail, subject, plain, htmlBody string) error {
+	msg := buildMIMEMessage(s.cfg.EmailFrom, toEmail, subject, plain, htmlBody)
+	port := s.cfg.SMTPPort
+	if port == 0 {
+		port = 587
+	}
+	addr := fmt.Sprintf("%s:%d", s.cfg.SMTPHost, port)
+	var auth smtp.Auth
+	if s.cfg.SMTPUser != "" {
+		auth = smtp.PlainAuth("", s.cfg.SMTPUser, s.cfg.SMTPPass, s.cfg.SMTPHost)
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, smtpSendTimeout)
+	defer cancel()
 	from := extractAddress(s.cfg.EmailFrom)
 	if port == 465 {
 		return sendImplicitTLS(sendCtx, addr, s.cfg.SMTPHost, auth, from, toEmail, msg)
@@ -237,17 +287,33 @@ func (NoopSender) SendPasswordReset(_ context.Context, toEmail, _, _ string) err
 	log.Debug().Str("to", toEmail).Msg("email: noop password reset — email not configured")
 	return nil
 }
+func (NoopSender) SendEmailChangeVerification(_ context.Context, toEmail, _, _ string) error {
+	log.Debug().Str("to", toEmail).Msg("email: noop email-change verification — email not configured")
+	return nil
+}
+func (NoopSender) SendEmailChangeOldNotification(_ context.Context, toEmail, _, _ string) error {
+	log.Debug().Str("to", toEmail).Msg("email: noop email-change old notification — email not configured")
+	return nil
+}
+func (NoopSender) SendEmailChangeNewConfirmation(_ context.Context, toEmail, _ string) error {
+	log.Debug().Str("to", toEmail).Msg("email: noop email-change new confirmation — email not configured")
+	return nil
+}
 
 // ─── CaptureSender (tests: records sent emails for assertions) ─────────────
 
 // CapturedEmail records one transactional send for test assertions.
 type CapturedEmail struct {
-	To            string
-	VerifyURL     string
-	ResetURL      string
-	Reminder      bool
-	PasswordReset bool
-	SentAt        time.Time
+	To                      string
+	VerifyURL               string
+	ResetURL                string
+	Reminder                bool
+	PasswordReset           bool
+	EmailChangeVerify       bool   // verification link to new address
+	EmailChangeOldNotify    bool   // security notice to old address
+	EmailChangeNewConfirm   bool   // confirmation to new address
+	NewEmail                string // populated for EmailChangeOldNotify
+	SentAt                  time.Time
 }
 
 // CaptureSender records emails without delivering them. Use in tests.
@@ -277,6 +343,27 @@ func (c *CaptureSender) SendPasswordReset(_ context.Context, to, _, resetURL str
 	return nil
 }
 
+func (c *CaptureSender) SendEmailChangeVerification(_ context.Context, to, _, verifyURL string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.emails = append(c.emails, CapturedEmail{To: to, VerifyURL: verifyURL, EmailChangeVerify: true, SentAt: time.Now()})
+	return nil
+}
+
+func (c *CaptureSender) SendEmailChangeOldNotification(_ context.Context, to, _, newEmail string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.emails = append(c.emails, CapturedEmail{To: to, NewEmail: newEmail, EmailChangeOldNotify: true, SentAt: time.Now()})
+	return nil
+}
+
+func (c *CaptureSender) SendEmailChangeNewConfirmation(_ context.Context, to, _ string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.emails = append(c.emails, CapturedEmail{To: to, EmailChangeNewConfirm: true, SentAt: time.Now()})
+	return nil
+}
+
 // Last returns a copy of the most recently captured email, or nil if none were sent.
 func (c *CaptureSender) Last() *CapturedEmail {
 	c.mu.Lock()
@@ -286,6 +373,15 @@ func (c *CaptureSender) Last() *CapturedEmail {
 	}
 	cp := c.emails[len(c.emails)-1]
 	return &cp
+}
+
+// All returns a copy of all captured emails.
+func (c *CaptureSender) All() []CapturedEmail {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]CapturedEmail, len(c.emails))
+	copy(out, c.emails)
+	return out
 }
 
 // Count returns the number of emails captured so far.

@@ -1,4 +1,4 @@
-import { apiPut } from './client'
+import { apiDeleteWithBody, apiPost, apiPut } from './client'
 import { authStorageKeys } from '../lib/authSession'
 
 // Auth API, public endpoints (no Bearer header required)
@@ -30,6 +30,7 @@ export interface Me {
   has_google: boolean
   is_admin?: boolean
   email_verified?: boolean
+  pending_email?: string | null
 }
 
 export const userApi = {
@@ -72,5 +73,24 @@ export const userApi = {
       current_password: currentPassword,
       new_password: newPassword,
       refresh_token: localStorage.getItem(authStorageKeys.refresh) ?? '',
+    }),
+
+  requestEmailChange: (newEmail: string, currentPassword: string) =>
+    apiPost<{ message: string }>('/me/email', {
+      new_email: newEmail,
+      current_password: currentPassword,
+    }),
+
+  verifyEmailChange: async (token: string): Promise<{ message: string; code: string }> => {
+    const res = await fetch(`${BASE}/auth/verify-email-change?token=${encodeURIComponent(token)}`)
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok) throw Object.assign(new Error(j.message ?? res.statusText), { code: j.code ?? '' })
+    return j as { message: string; code: string }
+  },
+
+  deleteAccount: (opts: { currentPassword?: string; confirm?: string }) =>
+    apiDeleteWithBody<void>('/me', {
+      current_password: opts.currentPassword ?? '',
+      confirm: opts.confirm ?? '',
     }),
 }

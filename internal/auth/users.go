@@ -25,6 +25,7 @@ type User struct {
 	IsAdmin       bool
 	VerboseLogs   bool
 	EmailVerified bool
+	PendingEmail  string // non-empty when an email-change verification is outstanding
 	CreatedAt     time.Time
 }
 
@@ -114,7 +115,8 @@ func (s *UserStore) UpsertGoogle(googleID, email, displayName, avatarURL string)
 func (s *UserStore) ByID(id string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0),
+		        COALESCE(pending_email,''), created_at
 		 FROM users WHERE id = ?`, id,
 	))
 }
@@ -123,7 +125,8 @@ func (s *UserStore) ByID(id string) (*User, error) {
 func (s *UserStore) ByEmail(email string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0),
+		        COALESCE(pending_email,''), created_at
 		 FROM users WHERE email = ?`, email,
 	))
 }
@@ -132,7 +135,8 @@ func (s *UserStore) ByEmail(email string) (*User, error) {
 func (s *UserStore) ByGoogleID(googleID string) (*User, error) {
 	return s.scan(s.db.QueryRow(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0),
+		        COALESCE(pending_email,''), created_at
 		 FROM users WHERE google_id = ?`, googleID,
 	))
 }
@@ -141,7 +145,8 @@ func (s *UserStore) ByGoogleID(googleID string) (*User, error) {
 func (s *UserStore) List() ([]User, error) {
 	rows, err := s.db.Query(
 		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0), created_at
+		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0),
+		        COALESCE(pending_email,''), created_at
 		 FROM users ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -152,7 +157,7 @@ func (s *UserStore) List() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var verbose, emailVerified int
-		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &emailVerified, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &emailVerified, &u.PendingEmail, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		u.VerboseLogs = verbose != 0
@@ -216,7 +221,7 @@ func (s *UserStore) Update(userID, displayName, avatarURL string) error {
 func (s *UserStore) scan(row *sql.Row) (*User, error) {
 	var u User
 	var verbose, emailVerified int
-	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &emailVerified, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &emailVerified, &u.PendingEmail, &u.CreatedAt)
 	u.VerboseLogs = verbose != 0
 	u.EmailVerified = emailVerified != 0
 	if errors.Is(err, sql.ErrNoRows) {
