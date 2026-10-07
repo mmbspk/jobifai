@@ -35,6 +35,15 @@ func (d *dynamicEmailSender) SendVerificationReminder(ctx context.Context, toEma
 	return d.send(ctx, toEmail, toName, verifyURL, true)
 }
 
+func (d *dynamicEmailSender) SendPasswordReset(ctx context.Context, toEmail, toName, resetURL string) error {
+	sender, err := buildEmailSenderFromConfig(d.cfgStore, d.secrets)
+	if err != nil {
+		log.Debug().Str("to", toEmail).Msg("email: not configured — skipping password reset send")
+		return nil
+	}
+	return sender.SendPasswordReset(ctx, toEmail, toName, resetURL)
+}
+
 func (d *dynamicEmailSender) send(ctx context.Context, toEmail, toName, verifyURL string, reminder bool) error {
 	sender, err := buildEmailSenderFromConfig(d.cfgStore, d.secrets)
 	if err != nil {

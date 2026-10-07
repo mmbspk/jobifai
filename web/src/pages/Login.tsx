@@ -73,6 +73,11 @@ export function Login() {
           value={password}
           onChange={e => setPassword(e.target.value)}
         />
+        <div className="text-right -mt-2">
+          <Link to="/forgot-password" className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-accent)] hover:underline">
+            Forgot password?
+          </Link>
+        </div>
         <Button type="submit" variant="primary" fullWidth loading={busy} size="lg">
           {busy ? 'Signing in…' : 'Sign in'}
         </Button>

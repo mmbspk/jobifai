@@ -9,6 +9,7 @@ import { Review } from './pages/Review'
 import { Generate } from './pages/Generate'
 import { Documents } from './pages/Documents'
 import { ApplicationSettingsPage } from './pages/settings/Application'
+import { SecuritySettingsPage } from './pages/settings/Security'
 import { AdminOverviewPage } from './pages/admin/Overview'
 import { AdminDefaultsPage } from './pages/admin/Defaults'
 import { AdminAutomationPage } from './pages/admin/Automation'
@@ -26,6 +27,8 @@ import { PlanPage } from './pages/settings/Plan'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { VerifyEmailPage } from './pages/VerifyEmail'
+import { ForgotPassword } from './pages/ForgotPassword'
+import { ResetPassword } from './pages/ResetPassword'
 import { Landing } from './pages/Landing'
 import { Pricing } from './pages/Pricing'
 import { PostAuthRedirect } from './components/auth/PostAuthRedirect'
@@ -43,6 +46,7 @@ const SETTINGS_TABS = [
   { to: '/settings/resume',      label: 'Profile' },
   { to: '/settings/platforms',   label: 'Platforms' },
   { to: '/settings/plan',        label: 'Plan' },
+  { to: '/settings/security',    label: 'Security' },
 ]
 
 function SettingsLayout() {
@@ -58,6 +62,7 @@ function SettingsLayout() {
           <Route path="resume"      element={<Resume />} />
           <Route path="platforms"   element={<PlatformsSettingsPage />} />
           <Route path="plan"        element={<PlanPage />} />
+          <Route path="security"    element={<SecuritySettingsPage />} />
           <Route path="general"     element={<Navigate to="/settings/application" replace />} />
           <Route path="secrets"     element={<Navigate to="/settings/platforms" replace />} />
           <Route path="usage"       element={<Navigate to="/" replace />} />
@@ -164,6 +169,8 @@ function AppRoutes() {
       <Route path="/pricing" element={<Pricing />} />
       <Route path="/login"    element={<GuestRoute><Login /></GuestRoute>} />
       <Route path="/register" element={<GuestRoute><Register /></GuestRoute>} />
+      <Route path="/forgot-password" element={<GuestRoute><ForgotPassword /></GuestRoute>} />
+      <Route path="/reset-password"  element={<ResetPassword />} />
       <Route path="/auth/verify-email" element={<VerifyEmailPage />} />
 
       {/* Authenticated app shell (paths other than /) */}

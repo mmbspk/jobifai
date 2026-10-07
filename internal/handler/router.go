@@ -42,6 +42,7 @@ func NewRouter(svc *Services) *chi.Mux {
 	quotaH := NewQuotaHandlers(svc)
 	billingH := NewBillingHandlers(svc)
 	verifyH := NewVerificationHandlers(svc)
+	pwResetH := NewPasswordResetHandlers(svc)
 
 	// ── Public: user accounts + OAuth ────────────────────────────────────
 	r.Post("/api/billing/webhook", billingH.Webhook)
@@ -53,6 +54,8 @@ func NewRouter(svc *Services) *chi.Mux {
 		r.Post("/logout", users.Logout)
 		r.Get("/verify-email", verifyH.VerifyEmail)
 		r.Post("/resend-verification", verifyH.ResendVerification)
+		r.Post("/forgot-password", pwResetH.ForgotPassword)
+		r.Post("/reset-password", pwResetH.ResetPassword)
 		if svc.Google != nil {
 			r.Get("/google", svc.Google.Redirect)
 			r.Get("/google/callback", svc.Google.Callback)
@@ -94,6 +97,7 @@ func NewRouter(svc *Services) *chi.Mux {
 		// ── Me ───────────────────────────────────────────────────────────
 		r.Get("/api/me", users.Me)
 		r.Put("/api/me", users.UpdateMe)
+		r.Put("/api/me/password", users.ChangePassword)
 
 		r.Get("/api/quota/status", quotaH.Status)
 		r.Post("/api/billing/checkout", billingH.Checkout)

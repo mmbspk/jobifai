@@ -37,6 +37,8 @@ type Sender interface {
 	SendVerification(ctx context.Context, toEmail, toName, verifyURL string) error
 	// SendVerificationReminder is used when the user explicitly requests a resend.
 	SendVerificationReminder(ctx context.Context, toEmail, toName, verifyURL string) error
+	// SendPasswordReset sends a password-reset link to the user.
+	SendPasswordReset(ctx context.Context, toEmail, toName, resetURL string) error
 }
 
 // ─── SMTP implementation ───────────────────────────────────────────────────
@@ -64,6 +66,37 @@ func (s *SMTPSender) SendVerification(ctx context.Context, toEmail, toName, veri
 
 func (s *SMTPSender) SendVerificationReminder(ctx context.Context, toEmail, toName, verifyURL string) error {
 	return s.send(ctx, toEmail, toName, verifyURL, true)
+}
+
+func (s *SMTPSender) SendPasswordReset(ctx context.Context, toEmail, toName, resetURL string) error {
+	subj := "Reset your Jobifai password"
+
+	plain, htmlBody, err := RenderPasswordReset(toName, resetURL)
+	if err != nil {
+		return fmt.Errorf("email: render reset template: %w", err)
+	}
+
+	msg := buildMIMEMessage(s.cfg.EmailFrom, toEmail, subj, plain, htmlBody)
+
+	port := s.cfg.SMTPPort
+	if port == 0 {
+		port = 587
+	}
+	addr := fmt.Sprintf("%s:%d", s.cfg.SMTPHost, port)
+
+	var auth smtp.Auth
+	if s.cfg.SMTPUser != "" {
+		auth = smtp.PlainAuth("", s.cfg.SMTPUser, s.cfg.SMTPPass, s.cfg.SMTPHost)
+	}
+
+	sendCtx, cancel := context.WithTimeout(ctx, smtpSendTimeout)
+	defer cancel()
+
+	from := extractAddress(s.cfg.EmailFrom)
+	if port == 465 {
+		return sendImplicitTLS(sendCtx, addr, s.cfg.SMTPHost, auth, from, toEmail, msg)
+	}
+	return sendSTARTTLS(sendCtx, addr, s.cfg.SMTPHost, auth, from, toEmail, msg)
 }
 
 func (s *SMTPSender) send(ctx context.Context, toEmail, toName, verifyURL string, isReminder bool) error {
@@ -200,15 +233,21 @@ func (NoopSender) SendVerificationReminder(_ context.Context, toEmail, _, _ stri
 	log.Debug().Str("to", toEmail).Msg("email: noop reminder — email not configured")
 	return nil
 }
+func (NoopSender) SendPasswordReset(_ context.Context, toEmail, _, _ string) error {
+	log.Debug().Str("to", toEmail).Msg("email: noop password reset — email not configured")
+	return nil
+}
 
 // ─── CaptureSender (tests: records sent emails for assertions) ─────────────
 
 // CapturedEmail records one transactional send for test assertions.
 type CapturedEmail struct {
-	To        string
-	VerifyURL string
-	Reminder  bool
-	SentAt    time.Time
+	To            string
+	VerifyURL     string
+	ResetURL      string
+	Reminder      bool
+	PasswordReset bool
+	SentAt        time.Time
 }
 
 // CaptureSender records emails without delivering them. Use in tests.
@@ -228,6 +267,13 @@ func (c *CaptureSender) SendVerificationReminder(_ context.Context, to, _, verif
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.emails = append(c.emails, CapturedEmail{To: to, VerifyURL: verifyURL, Reminder: true, SentAt: time.Now()})
+	return nil
+}
+
+func (c *CaptureSender) SendPasswordReset(_ context.Context, to, _, resetURL string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.emails = append(c.emails, CapturedEmail{To: to, ResetURL: resetURL, PasswordReset: true, SentAt: time.Now()})
 	return nil
 }
 
