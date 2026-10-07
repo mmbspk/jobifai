@@ -44,6 +44,33 @@ func (d *dynamicEmailSender) SendPasswordReset(ctx context.Context, toEmail, toN
 	return sender.SendPasswordReset(ctx, toEmail, toName, resetURL)
 }
 
+func (d *dynamicEmailSender) SendEmailChangeVerification(ctx context.Context, toEmail, toName, verifyURL string) error {
+	sender, err := buildEmailSenderFromConfig(d.cfgStore, d.secrets)
+	if err != nil {
+		log.Debug().Str("to", toEmail).Msg("email: not configured — skipping email-change verification send")
+		return nil
+	}
+	return sender.SendEmailChangeVerification(ctx, toEmail, toName, verifyURL)
+}
+
+func (d *dynamicEmailSender) SendEmailChangeOldNotification(ctx context.Context, toEmail, toName, newEmail string) error {
+	sender, err := buildEmailSenderFromConfig(d.cfgStore, d.secrets)
+	if err != nil {
+		log.Debug().Str("to", toEmail).Msg("email: not configured — skipping email-change old-notify send")
+		return nil
+	}
+	return sender.SendEmailChangeOldNotification(ctx, toEmail, toName, newEmail)
+}
+
+func (d *dynamicEmailSender) SendEmailChangeNewConfirmation(ctx context.Context, toEmail, toName string) error {
+	sender, err := buildEmailSenderFromConfig(d.cfgStore, d.secrets)
+	if err != nil {
+		log.Debug().Str("to", toEmail).Msg("email: not configured — skipping email-change new-confirm send")
+		return nil
+	}
+	return sender.SendEmailChangeNewConfirmation(ctx, toEmail, toName)
+}
+
 func (d *dynamicEmailSender) send(ctx context.Context, toEmail, toName, verifyURL string, reminder bool) error {
 	sender, err := buildEmailSenderFromConfig(d.cfgStore, d.secrets)
 	if err != nil {

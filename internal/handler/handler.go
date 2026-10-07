@@ -223,6 +223,9 @@ type EmailSender interface {
 	SendVerification(ctx context.Context, toEmail, toName, verifyURL string) error
 	SendVerificationReminder(ctx context.Context, toEmail, toName, verifyURL string) error
 	SendPasswordReset(ctx context.Context, toEmail, toName, resetURL string) error
+	SendEmailChangeVerification(ctx context.Context, toEmail, toName, verifyURL string) error
+	SendEmailChangeOldNotification(ctx context.Context, toEmail, toName, newEmail string) error
+	SendEmailChangeNewConfirmation(ctx context.Context, toEmail, toName string) error
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────
@@ -279,6 +282,15 @@ func wsOptions(r *http.Request) *websocket.AcceptOptions {
 		return &websocket.AcceptOptions{OriginPatterns: strings.Split(env, ",")}
 	}
 	return &websocket.AcceptOptions{OriginPatterns: []string{r.Host}}
+}
+
+// nullableString returns nil when s is empty, otherwise returns &s.
+// Used to render optional string fields as JSON null rather than "".
+func nullableString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func parseTime(s string) (time.Time, error) {

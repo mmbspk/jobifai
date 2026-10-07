@@ -43,6 +43,7 @@ func NewRouter(svc *Services) *chi.Mux {
 	billingH := NewBillingHandlers(svc)
 	verifyH := NewVerificationHandlers(svc)
 	pwResetH := NewPasswordResetHandlers(svc)
+	emailChangeH := NewEmailChangeHandlers(svc)
 
 	// ── Public: user accounts + OAuth ────────────────────────────────────
 	r.Post("/api/billing/webhook", billingH.Webhook)
@@ -56,6 +57,7 @@ func NewRouter(svc *Services) *chi.Mux {
 		r.Post("/resend-verification", verifyH.ResendVerification)
 		r.Post("/forgot-password", pwResetH.ForgotPassword)
 		r.Post("/reset-password", pwResetH.ResetPassword)
+		r.Get("/verify-email-change", emailChangeH.VerifyEmailChange)
 		if svc.Google != nil {
 			r.Get("/google", svc.Google.Redirect)
 			r.Get("/google/callback", svc.Google.Callback)
@@ -91,13 +93,15 @@ func NewRouter(svc *Services) *chi.Mux {
 	// ── All /api/* routes require a valid JWT ────────────────────────────
 	r.Group(func(r chi.Router) {
 		if svc.TokenManager != nil {
-			r.Use(auth.RequireAuth(svc.TokenManager))
+			r.Use(auth.RequireAuthAndExistence(svc.TokenManager, svc.DB))
 		}
 
 		// ── Me ───────────────────────────────────────────────────────────
 		r.Get("/api/me", users.Me)
 		r.Put("/api/me", users.UpdateMe)
 		r.Put("/api/me/password", users.ChangePassword)
+		r.Post("/api/me/email", emailChangeH.RequestEmailChange)
+		r.Delete("/api/me", emailChangeH.DeleteAccount)
 
 		r.Get("/api/quota/status", quotaH.Status)
 		r.Post("/api/billing/checkout", billingH.Checkout)

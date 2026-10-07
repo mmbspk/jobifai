@@ -132,6 +132,20 @@ func authDelete(t *testing.T, router http.Handler, path, token string) *httptest
 	return w
 }
 
+// authDeleteWithBody performs a DELETE with a Bearer token and JSON body.
+func authDeleteWithBody(t *testing.T, router http.Handler, path, token string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodDelete, path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
+}
+
 // authPostMultipart sends multipart/form-data with optional fields.
 func authPostMultipart(t *testing.T, router http.Handler, path, token string, fields map[string]string) *httptest.ResponseRecorder {
 	t.Helper()

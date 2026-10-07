@@ -10,6 +10,7 @@ import { Generate } from './pages/Generate'
 import { Documents } from './pages/Documents'
 import { ApplicationSettingsPage } from './pages/settings/Application'
 import { SecuritySettingsPage } from './pages/settings/Security'
+import { AccountSettingsPage } from './pages/settings/Account'
 import { AdminOverviewPage } from './pages/admin/Overview'
 import { AdminDefaultsPage } from './pages/admin/Defaults'
 import { AdminAutomationPage } from './pages/admin/Automation'
@@ -27,6 +28,7 @@ import { PlanPage } from './pages/settings/Plan'
 import { Login } from './pages/Login'
 import { Register } from './pages/Register'
 import { VerifyEmailPage } from './pages/VerifyEmail'
+import { VerifyEmailChangePage } from './pages/VerifyEmailChange'
 import { ForgotPassword } from './pages/ForgotPassword'
 import { ResetPassword } from './pages/ResetPassword'
 import { Landing } from './pages/Landing'
@@ -41,6 +43,7 @@ import { Badge } from './components/ui/badge'
 import { PageHeader } from './components/shell/PageHeader'
 
 const SETTINGS_TABS = [
+  { to: '/settings/account',     label: 'Account' },
   { to: '/settings/application', label: 'Application' },
   { to: '/settings/preferences', label: 'Preferences' },
   { to: '/settings/resume',      label: 'Profile' },
@@ -58,6 +61,7 @@ function SettingsLayout() {
       <div className="min-w-0">
         <Routes>
           <Route path="application" element={<ApplicationSettingsPage />} />
+          <Route path="account"     element={<AccountSettingsPage />} />
           <Route path="preferences" element={<Preferences />} />
           <Route path="resume"      element={<Resume />} />
           <Route path="platforms"   element={<PlatformsSettingsPage />} />
@@ -172,6 +176,7 @@ function AppRoutes() {
       <Route path="/forgot-password" element={<GuestRoute><ForgotPassword /></GuestRoute>} />
       <Route path="/reset-password"  element={<ResetPassword />} />
       <Route path="/auth/verify-email" element={<VerifyEmailPage />} />
+      <Route path="/auth/verify-email-change" element={<VerifyEmailChangePage />} />
 
       {/* Authenticated app shell (paths other than /) */}
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
