@@ -233,6 +233,10 @@ func main() {
 	botMgr.SetLLMReuse(llmReuseStore)
 
 	// ── Router ──────────────────────────────────────────────────────────
+	appBaseURL := os.Getenv("APP_BASE_URL")
+	if appBaseURL == "" {
+		log.Warn().Msg("APP_BASE_URL is not set — email verification links will use http://localhost:8081 as fallback; set APP_BASE_URL for production deployments")
+	}
 	svc := &handler.Services{
 		StartedAt:    time.Now(),
 		DB:           database,
@@ -319,6 +323,7 @@ func main() {
 		Documents: docSvc,
 		Retention: retentionSvc,
 		LLMReuseMetrics: llmReuseStore,
+		AppBaseURL:  appBaseURL,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
 			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
@@ -342,6 +347,22 @@ func main() {
 		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+
+	// ── Background: sweep expired verification tokens daily ─────────────
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := auth.SweepExpiredVerificationTokens(database); err != nil {
+					log.Error().Err(err).Msg("sweep verification tokens")
+				}
+			case <-shutdownCtx.Done():
+				return
+			}
+		}
+	}()
 
 	go func() {
 		log.Info().Str("addr", *addr).Msg("jobifai server starting")
@@ -443,6 +464,10 @@ func (a *usageStoreAdapter) Session(userID string) domain.SessionUsage {
 		Calls:        snap.Calls,
 	}
 }
+
+// buildEmailSender is replaced by handler.NewDynamicEmailSender, which
+// resolves SMTP configuration on every send so admin changes take effect
+// without restart. This function has been removed.
 
 func countYAMLFiles(dir string) int {
 	entries, err := os.ReadDir(dir)

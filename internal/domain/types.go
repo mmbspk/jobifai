@@ -403,3 +403,14 @@ type SessionUsage struct {
 	Calls            int      `json:"calls"`
 	EstimatedCostUSD *float64 `json:"estimated_cost_usd"`
 }
+
+// EmailConfig holds admin-configurable email delivery settings.
+// Stored in config under SystemUserID / keyEmailSettings.
+// The SMTP password is stored separately in SecretsStore.
+type EmailConfig struct {
+	Provider  string `json:"email_provider,omitempty"` // "smtp" (default)
+	SMTPHost  string `json:"smtp_host,omitempty"`
+	SMTPPort  int    `json:"smtp_port,omitempty"` // 0 → default 587
+	SMTPUser  string `json:"smtp_user,omitempty"`
+	EmailFrom string `json:"email_from,omitempty"` // e.g. "Jobifai <noreply@jobifai.com.au>"
+}

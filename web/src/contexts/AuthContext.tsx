@@ -10,6 +10,7 @@ interface AuthState {
   register: (email: string, password: string, displayName?: string) => Promise<void>
   logout: () => Promise<void>
   updateMe: (displayName: string, avatarUrl?: string) => Promise<void>
+  resendVerification: () => Promise<void>
   googleLoginUrl: string
 }
 
@@ -130,6 +131,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(prev => prev ? { ...prev, display_name: displayName, avatar_url: avatarUrl } : prev)
   }, [])
 
+  const resendVerification = useCallback(async () => {
+    if (!user?.email) return
+    await userApi.resendVerification(user.email)
+  }, [user])
+
   return (
     <AuthContext.Provider value={{
       user,
@@ -138,6 +144,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       register,
       logout,
       updateMe,
+      resendVerification,
       googleLoginUrl: userApi.googleLoginUrl(),
     }}>
       {children}

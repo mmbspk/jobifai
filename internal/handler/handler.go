@@ -91,6 +91,13 @@ type Services struct {
 	// LLMReuseMetrics exposes the LLM content cache-hit counter for the admin metrics endpoint.
 	// Optional: when nil, the llm_cache_hits field in the snapshot is always zero.
 	LLMReuseMetrics LLMReuseMetricsReader
+	// EmailSender delivers transactional emails (verification, etc.).
+	// When nil, email delivery is skipped silently (useful in tests / unconfigured).
+	EmailSender EmailSender
+	// AppBaseURL is the publicly reachable root of the app, used to construct
+	// verification links in emails. E.g. "https://jobifai.com.au".
+	// Falls back to the request Host header if empty.
+	AppBaseURL string
 }
 
 // GoogleOAuthHandler handles the Google OAuth2 redirect + callback.
@@ -207,6 +214,14 @@ type UsageStore interface {
 // tracked inside llmreuse.Store.
 type LLMReuseMetricsReader interface {
 	LLMCacheHitCount() int64
+}
+
+// EmailSender is the interface handlers use to deliver transactional emails.
+// The concrete implementation is internal/email.Sender — defined here as an
+// interface so handlers never import the email package directly.
+type EmailSender interface {
+	SendVerification(ctx context.Context, toEmail, toName, verifyURL string) error
+	SendVerificationReminder(ctx context.Context, toEmail, toName, verifyURL string) error
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────

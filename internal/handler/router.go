@@ -16,6 +16,12 @@ import (
 
 // NewRouter constructs and returns the fully-wired chi router.
 func NewRouter(svc *Services) *chi.Mux {
+	// Auto-wire dynamic email sender so admin config changes take effect
+	// immediately. Only skipped when a sender is explicitly provided (e.g. tests).
+	if svc.EmailSender == nil && svc.Config != nil && svc.Secrets != nil {
+		svc.EmailSender = NewDynamicEmailSender(svc.Config, svc.Secrets)
+	}
+
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -35,6 +41,7 @@ func NewRouter(svc *Services) *chi.Mux {
 	usage := NewUsageHandlers(svc)
 	quotaH := NewQuotaHandlers(svc)
 	billingH := NewBillingHandlers(svc)
+	verifyH := NewVerificationHandlers(svc)
 
 	// ── Public: user accounts + OAuth ────────────────────────────────────
 	r.Post("/api/billing/webhook", billingH.Webhook)
@@ -44,6 +51,8 @@ func NewRouter(svc *Services) *chi.Mux {
 		r.Post("/login", users.Login)
 		r.Post("/refresh", users.Refresh)
 		r.Post("/logout", users.Logout)
+		r.Get("/verify-email", verifyH.VerifyEmail)
+		r.Post("/resend-verification", verifyH.ResendVerification)
 		if svc.Google != nil {
 			r.Get("/google", svc.Google.Redirect)
 			r.Get("/google/callback", svc.Google.Callback)
@@ -249,6 +258,11 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/api/admin/models/evals/{id}/detail", adminH.ModelsEvalDetail)
 			r.Post("/api/admin/models/policies/{task}/approve", adminH.ModelsPolicyApprove)
 			r.Post("/api/admin/models/policies/{task}/rollback", adminH.ModelsPolicyRollback)
+			// Email configuration
+			r.Get("/api/admin/email/settings", adminH.EmailSettingsGet)
+			r.Put("/api/admin/email/settings", adminH.EmailSettingsSet)
+			r.Delete("/api/admin/email/settings/smtp-pass", adminH.EmailDeleteSMTPPass)
+			r.Post("/api/admin/email/test", adminH.EmailTest)
 		})
 	})
 

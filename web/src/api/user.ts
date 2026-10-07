@@ -26,6 +26,7 @@ export interface Me {
   has_password: boolean
   has_google: boolean
   is_admin?: boolean
+  email_verified?: boolean
 }
 
 export const userApi = {
@@ -42,4 +43,14 @@ export const userApi = {
     authFetch<void>('/auth/logout', { refresh_token: refreshToken }),
 
   googleLoginUrl: () => `${BASE}/auth/google`,
+
+  resendVerification: (email: string) =>
+    authFetch<{ message: string }>('/auth/resend-verification', { email }),
+
+  verifyEmail: async (token: string): Promise<{ message: string }> => {
+    const res = await fetch(`${BASE}/auth/verify-email?token=${encodeURIComponent(token)}`)
+    const j = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(j.message ?? res.statusText)
+    return j as { message: string }
+  },
 }
