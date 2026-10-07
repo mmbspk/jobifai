@@ -68,9 +68,33 @@ export const adminApi = {
       list: (limit = 50) => apiGet<RetentionAuditRow[]>(`/admin/retention/audit?limit=${limit}`),
     },
   },
+  email: {
+    settings: {
+      get: () => apiGet<EmailSettingsResponse>('/admin/email/settings'),
+      set: (body: EmailSettingsRequest) => apiPut<{ message: string }>('/admin/email/settings', body),
+      deleteSmtpPass: () => apiDelete<{ message: string }>('/admin/email/settings/smtp-pass'),
+    },
+    test: (to: string) => apiPost<{ message: string }>('/admin/email/test', { to }),
+  },
 }
 
-export interface DocumentRetentionDefaults {
+export interface EmailSettingsResponse {
+  email_provider?: string
+  smtp_host?: string
+  smtp_port?: number
+  smtp_user?: string
+  email_from?: string
+  has_smtp_pass: boolean
+}
+
+export interface EmailSettingsRequest {
+  email_provider?: string
+  smtp_host?: string
+  smtp_port?: number
+  smtp_user?: string
+  email_from?: string
+  smtp_pass?: string
+}
   latest_submitted_applications: number
 }
 

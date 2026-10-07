@@ -21,7 +21,6 @@ import (
 	"github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
-	"github.com/user/jobifai/internal/email"
 	"github.com/user/jobifai/internal/handler"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/llmreuse"
@@ -234,6 +233,10 @@ func main() {
 	botMgr.SetLLMReuse(llmReuseStore)
 
 	// ── Router ──────────────────────────────────────────────────────────
+	appBaseURL := os.Getenv("APP_BASE_URL")
+	if appBaseURL == "" {
+		log.Warn().Msg("APP_BASE_URL is not set — email verification links will use http://localhost:8081 as fallback; set APP_BASE_URL for production deployments")
+	}
 	svc := &handler.Services{
 		StartedAt:    time.Now(),
 		DB:           database,
@@ -320,8 +323,7 @@ func main() {
 		Documents: docSvc,
 		Retention: retentionSvc,
 		LLMReuseMetrics: llmReuseStore,
-		EmailSender: buildEmailSender(cfgStore, secretsStore),
-		AppBaseURL:  os.Getenv("APP_BASE_URL"),
+		AppBaseURL:  appBaseURL,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
 			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
@@ -463,26 +465,9 @@ func (a *usageStoreAdapter) Session(userID string) domain.SessionUsage {
 	}
 }
 
-// buildEmailSender constructs an SMTPSender from admin-configured email settings.
-// Falls back to a NoopSender if no valid config is stored.
-func buildEmailSender(cfgStore *config.Store, secrets *config.SecretsStore) handler.EmailSender {
-	var cfg domain.EmailConfig
-	_ = cfgStore.Get(domain.SystemUserID, "email_settings", &cfg)
-	smtpPass, _ := secrets.Get(domain.SystemUserID, "smtp_pass")
-	sender, err := email.NewSMTPSender(email.Config{
-		Provider:  cfg.Provider,
-		SMTPHost:  cfg.SMTPHost,
-		SMTPPort:  cfg.SMTPPort,
-		SMTPUser:  cfg.SMTPUser,
-		SMTPPass:  smtpPass,
-		EmailFrom: cfg.EmailFrom,
-	})
-	if err != nil {
-		log.Info().Msg("email not configured — verification emails will be skipped")
-		return email.NoopSender{}
-	}
-	return sender
-}
+// buildEmailSender is replaced by handler.NewDynamicEmailSender, which
+// resolves SMTP configuration on every send so admin changes take effect
+// without restart. This function has been removed.
 
 func countYAMLFiles(dir string) int {
 	entries, err := os.ReadDir(dir)

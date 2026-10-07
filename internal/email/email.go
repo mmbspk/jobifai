@@ -16,6 +16,10 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// smtpSendTimeout is the maximum time allowed for a complete SMTP send,
+// including dial, TLS handshake, authentication, and message transfer.
+const smtpSendTimeout = 30 * time.Second
+
 // Config holds the runtime email configuration loaded from the admin settings.
 type Config struct {
 	Provider  string // "smtp" (currently the only production provider)
@@ -62,7 +66,7 @@ func (s *SMTPSender) SendVerificationReminder(ctx context.Context, toEmail, toNa
 	return s.send(ctx, toEmail, toName, verifyURL, true)
 }
 
-func (s *SMTPSender) send(_ context.Context, toEmail, toName, verifyURL string, isReminder bool) error {
+func (s *SMTPSender) send(ctx context.Context, toEmail, toName, verifyURL string, isReminder bool) error {
 	subj := "Confirm your email address — Jobifai"
 	if isReminder {
 		subj = "Reminder: confirm your email address — Jobifai"
@@ -87,23 +91,33 @@ func (s *SMTPSender) send(_ context.Context, toEmail, toName, verifyURL string, 
 		auth = smtp.PlainAuth("", s.cfg.SMTPUser, s.cfg.SMTPPass, s.cfg.SMTPHost)
 	}
 
+	// Wrap with a send timeout so SMTP cannot hang indefinitely.
+	sendCtx, cancel := context.WithTimeout(ctx, smtpSendTimeout)
+	defer cancel()
+
+	from := extractAddress(s.cfg.EmailFrom)
 	if port == 465 {
-		return sendImplicitTLS(addr, s.cfg.SMTPHost, auth, extractAddress(s.cfg.EmailFrom), toEmail, msg)
+		return sendImplicitTLS(sendCtx, addr, s.cfg.SMTPHost, auth, from, toEmail, msg)
 	}
-	return smtp.SendMail(addr, auth, extractAddress(s.cfg.EmailFrom), []string{toEmail}, msg)
+	return sendSTARTTLS(sendCtx, addr, s.cfg.SMTPHost, auth, from, toEmail, msg)
 }
 
-func sendImplicitTLS(addr, host string, auth smtp.Auth, from, to string, msg []byte) error {
-	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+func sendImplicitTLS(ctx context.Context, addr, host string, auth smtp.Auth, from, to string, msg []byte) error {
+	var d net.Dialer
+	rawConn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("email: tls dial %s: %w", addr, err)
+		return fmt.Errorf("email: dial %s: %w", addr, err)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = rawConn.SetDeadline(deadline)
+	}
+
+	conn := tls.Client(rawConn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+	if err := conn.HandshakeContext(ctx); err != nil {
+		_ = rawConn.Close()
+		return fmt.Errorf("email: tls handshake %s: %w", addr, err)
 	}
 	defer func() { _ = conn.Close() }()
-
-	_, _, err = net.SplitHostPort(addr) // validate addr format
-	if err != nil {
-		return err
-	}
 
 	c, err := smtp.NewClient(conn, host)
 	if err != nil {
@@ -111,6 +125,47 @@ func sendImplicitTLS(addr, host string, auth smtp.Auth, from, to string, msg []b
 	}
 	defer func() { _ = c.Quit() }()
 
+	if auth != nil {
+		if err := c.Auth(auth); err != nil {
+			return fmt.Errorf("email: smtp auth: %w", err)
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("email: smtp MAIL FROM: %w", err)
+	}
+	if err := c.Rcpt(to); err != nil {
+		return fmt.Errorf("email: smtp RCPT TO: %w", err)
+	}
+	wc, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("email: smtp DATA: %w", err)
+	}
+	if _, err := wc.Write(msg); err != nil {
+		return fmt.Errorf("email: smtp write body: %w", err)
+	}
+	return wc.Close()
+}
+
+func sendSTARTTLS(ctx context.Context, addr, host string, auth smtp.Auth, from, to string, msg []byte) error {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("email: dial %s: %w", addr, err)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	defer func() { _ = conn.Close() }()
+
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		return fmt.Errorf("email: smtp client: %w", err)
+	}
+	defer func() { _ = c.Quit() }()
+
+	if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+		return fmt.Errorf("email: starttls: %w", err)
+	}
 	if auth != nil {
 		if err := c.Auth(auth); err != nil {
 			return fmt.Errorf("email: smtp auth: %w", err)

@@ -79,6 +79,8 @@ func CanResendVerification(db *sql.DB, userID string) error {
 // ConsumeVerificationToken validates rawToken, marks the user's email verified,
 // and records used_at on the token — all in one transaction to prevent races.
 // Returns ErrTokenNotFound / ErrTokenExpired / ErrTokenAlreadyUsed on failure.
+// The UPDATE uses "WHERE id = ? AND used_at IS NULL" so that if two goroutines
+// race to consume the same token, exactly one succeeds.
 func ConsumeVerificationToken(db *sql.DB, rawToken string) (userID string, err error) {
 	hash := hashVerificationToken(rawToken)
 
@@ -94,31 +96,32 @@ func ConsumeVerificationToken(db *sql.DB, rawToken string) (userID string, err e
 
 	var tokenID string
 	var expiresAt time.Time
-	var usedAt sql.NullTime
 	err = tx.QueryRow(
-		`SELECT id, user_id, expires_at, used_at
-		 FROM email_verification_tokens WHERE token_hash = ?`,
+		`SELECT id, user_id, expires_at FROM email_verification_tokens WHERE token_hash = ?`,
 		hash,
-	).Scan(&tokenID, &userID, &expiresAt, &usedAt)
+	).Scan(&tokenID, &userID, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrTokenNotFound
 	}
 	if err != nil {
 		return "", fmt.Errorf("verify email: lookup token: %w", err)
 	}
-	if usedAt.Valid {
-		return "", ErrTokenAlreadyUsed
-	}
 	if time.Now().After(expiresAt) {
 		return "", ErrTokenExpired
 	}
 
-	// Mark token used.
-	if _, err = tx.Exec(
-		`UPDATE email_verification_tokens SET used_at = ? WHERE id = ?`,
+	// Atomically mark the token as used. The WHERE clause prevents a race where
+	// two concurrent goroutines both passed the SELECT but only one should win.
+	res, execErr := tx.Exec(
+		`UPDATE email_verification_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL`,
 		time.Now(), tokenID,
-	); err != nil {
-		return "", fmt.Errorf("verify email: mark token used: %w", err)
+	)
+	if execErr != nil {
+		err = fmt.Errorf("verify email: mark token used: %w", execErr)
+		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", ErrTokenAlreadyUsed
 	}
 
 	// Mark user's email verified.

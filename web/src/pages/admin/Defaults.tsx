@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { Check } from 'lucide-react'
 import { adminApi } from '../../api/admin'
+import type { EmailSettingsRequest } from '../../api/admin'
 import { Button } from '../../components/Button'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { SettingsField, SettingsSection, SettingsSelect } from '../../components/settings/settings-ui'
@@ -24,12 +25,30 @@ export function AdminDefaultsPage() {
   const qc = useQueryClient()
   const { data: system } = useQuery({ queryKey: ['admin-system'], queryFn: adminApi.system.get })
   const { data: secrets } = useQuery({ queryKey: ['admin-system-secrets'], queryFn: adminApi.systemSecrets.get })
+  const { data: emailData } = useQuery({ queryKey: ['admin-email-settings'], queryFn: adminApi.email.settings.get })
   const [llm, setLlm] = useState<LLMConfig>({})
   const [saved, setSaved] = useState(false)
+  const [emailCfg, setEmailCfg] = useState<EmailSettingsRequest>({})
+  const [emailSaved, setEmailSaved] = useState(false)
+  const [testTo, setTestTo] = useState('')
+  const [testMsg, setTestMsg] = useState<string | null>(null)
+  const [testError, setTestError] = useState<string | null>(null)
 
   useEffect(() => {
     if (system?.llm) setLlm(system.llm)
   }, [system])
+
+  useEffect(() => {
+    if (emailData) {
+      setEmailCfg({
+        email_provider: emailData.email_provider ?? '',
+        smtp_host: emailData.smtp_host ?? '',
+        smtp_port: emailData.smtp_port ?? 587,
+        smtp_user: emailData.smtp_user ?? '',
+        email_from: emailData.email_from ?? '',
+      })
+    }
+  }, [emailData])
 
   const saveSystem = useMutation({
     mutationFn: async () => {
@@ -37,9 +56,30 @@ export function AdminDefaultsPage() {
       await adminApi.system.set({ ...base, llm })
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['admin-system'] })
+      void qc.invalidateQueries({ queryKey: ['admin-system'] })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+    },
+  })
+
+  const saveEmail = useMutation({
+    mutationFn: () => adminApi.email.settings.set(emailCfg),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin-email-settings'] })
+      setEmailSaved(true)
+      setTimeout(() => setEmailSaved(false), 2000)
+    },
+  })
+
+  const sendTestEmail = useMutation({
+    mutationFn: () => adminApi.email.test(testTo),
+    onSuccess: (res) => {
+      setTestMsg(res.message)
+      setTestError(null)
+    },
+    onError: (e: Error) => {
+      setTestError(e.message)
+      setTestMsg(null)
     },
   })
 
@@ -119,6 +159,89 @@ export function AdminDefaultsPage() {
       {saveSystem.isError && (
         <p className="text-xs text-[var(--color-danger)] text-center">{(saveSystem.error as Error).message}</p>
       )}
+
+      <SettingsSection title="Transactional email" description="SMTP settings for verification emails. Leave blank to disable email sending.">
+        <div className="flex flex-wrap gap-4">
+          <SettingsField label="SMTP host" layout="column">
+            <input
+              value={emailCfg.smtp_host ?? ''}
+              onChange={e => setEmailCfg({ ...emailCfg, smtp_host: e.target.value })}
+              placeholder="smtp.resend.com"
+              className={cn(inputClassName, 'min-w-[200px]')}
+            />
+          </SettingsField>
+          <SettingsField label="SMTP port" layout="column">
+            <input
+              type="number"
+              value={emailCfg.smtp_port ?? 587}
+              onChange={e => setEmailCfg({ ...emailCfg, smtp_port: Number.parseInt(e.target.value, 10) || 587 })}
+              className={cn(inputClassName, 'w-24')}
+            />
+          </SettingsField>
+          <SettingsField label="SMTP username" layout="column">
+            <input
+              value={emailCfg.smtp_user ?? ''}
+              onChange={e => setEmailCfg({ ...emailCfg, smtp_user: e.target.value })}
+              placeholder="resend"
+              className={cn(inputClassName, 'min-w-[160px]')}
+            />
+          </SettingsField>
+          <SettingsField label="From address" layout="column">
+            <input
+              value={emailCfg.email_from ?? ''}
+              onChange={e => setEmailCfg({ ...emailCfg, email_from: e.target.value })}
+              placeholder="Jobifai <noreply@example.com>"
+              className={cn(inputClassName, 'min-w-[240px]')}
+            />
+          </SettingsField>
+        </div>
+        <MaskedSecretField
+          configured={!!emailData?.has_smtp_pass}
+          label="SMTP password"
+          helper={emailData?.has_smtp_pass ? 'A password is configured.' : 'No password set.'}
+          onSave={v =>
+            adminApi.email.settings.set({ ...emailCfg, smtp_pass: v }).then(() =>
+              qc.invalidateQueries({ queryKey: ['admin-email-settings'] }),
+            )
+          }
+          onDelete={() =>
+            adminApi.email.settings.deleteSmtpPass().then(() =>
+              qc.invalidateQueries({ queryKey: ['admin-email-settings'] }),
+            )
+          }
+        />
+        <Button
+          variant="primary"
+          loading={saveEmail.isPending}
+          leftIcon={emailSaved ? <Check size={14} /> : undefined}
+          onClick={() => saveEmail.mutate()}
+        >
+          {emailSaved ? 'Saved' : 'Save email settings'}
+        </Button>
+        {saveEmail.isError && (
+          <p className="text-xs text-[var(--color-danger)]">{(saveEmail.error as Error).message}</p>
+        )}
+        <SettingsField label="Send test email" sub="Verify the configuration is working." layout="column">
+          <div className="flex gap-2">
+            <input
+              value={testTo}
+              onChange={e => setTestTo(e.target.value)}
+              placeholder="recipient@example.com"
+              className={cn(inputClassName, 'max-w-xs')}
+            />
+            <Button
+              variant="secondary"
+              loading={sendTestEmail.isPending}
+              onClick={() => { setTestMsg(null); setTestError(null); sendTestEmail.mutate() }}
+              disabled={!testTo}
+            >
+              Send
+            </Button>
+          </div>
+          {testMsg && <p className="mt-1 text-xs text-[var(--color-success)]">{testMsg}</p>}
+          {testError && <p className="mt-1 text-xs text-[var(--color-danger)]">{testError}</p>}
+        </SettingsField>
+      </SettingsSection>
     </div>
   )
 }

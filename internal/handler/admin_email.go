@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -11,6 +12,59 @@ import (
 
 const keyEmailSettings = "email_settings"
 const secretKeySmtpPass = "smtp_pass"
+
+// NewDynamicEmailSender returns an EmailSender that reads the current email
+// configuration from the admin settings store on every send, so admin changes
+// take effect immediately without restarting the server.
+func NewDynamicEmailSender(cfgStore ConfigStore, secrets SecretsStore) EmailSender {
+	return &dynamicEmailSender{cfgStore: cfgStore, secrets: secrets}
+}
+
+// dynamicEmailSender resolves email config from the admin settings at send
+// time. When email is not configured it behaves like NoopSender (returns nil).
+type dynamicEmailSender struct {
+	cfgStore ConfigStore
+	secrets  SecretsStore
+}
+
+func (d *dynamicEmailSender) SendVerification(ctx context.Context, toEmail, toName, verifyURL string) error {
+	return d.send(ctx, toEmail, toName, verifyURL, false)
+}
+
+func (d *dynamicEmailSender) SendVerificationReminder(ctx context.Context, toEmail, toName, verifyURL string) error {
+	return d.send(ctx, toEmail, toName, verifyURL, true)
+}
+
+func (d *dynamicEmailSender) send(ctx context.Context, toEmail, toName, verifyURL string, reminder bool) error {
+	sender, err := buildEmailSenderFromConfig(d.cfgStore, d.secrets)
+	if err != nil {
+		// Email not yet configured — silently skip, consistent with NoopSender.
+		log.Debug().Str("to", toEmail).Msg("email: not configured — skipping send")
+		return nil
+	}
+	if reminder {
+		return sender.SendVerificationReminder(ctx, toEmail, toName, verifyURL)
+	}
+	return sender.SendVerification(ctx, toEmail, toName, verifyURL)
+}
+
+// snapshotEmailSender returns a pre-resolved EmailSender with the current
+// email configuration read synchronously. Safe to pass into goroutines —
+// the returned sender requires no further DB access.
+// Returns email.NoopSender{} when email is not configured or the sender is nil.
+func snapshotEmailSender(svc *Services) EmailSender {
+	if svc.EmailSender == nil {
+		return email.NoopSender{}
+	}
+	if ds, ok := svc.EmailSender.(*dynamicEmailSender); ok {
+		s, err := buildEmailSenderFromConfig(ds.cfgStore, ds.secrets)
+		if err != nil {
+			return email.NoopSender{}
+		}
+		return s
+	}
+	return svc.EmailSender
+}
 
 // GET /api/admin/email/settings
 func (h *AdminHandlers) EmailSettingsGet(w http.ResponseWriter, r *http.Request) {

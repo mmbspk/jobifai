@@ -16,6 +16,12 @@ import (
 
 // NewRouter constructs and returns the fully-wired chi router.
 func NewRouter(svc *Services) *chi.Mux {
+	// Auto-wire dynamic email sender so admin config changes take effect
+	// immediately. Only skipped when a sender is explicitly provided (e.g. tests).
+	if svc.EmailSender == nil && svc.Config != nil && svc.Secrets != nil {
+		svc.EmailSender = NewDynamicEmailSender(svc.Config, svc.Secrets)
+	}
+
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)

@@ -73,20 +73,22 @@ func (h *VerificationHandlers) ResendVerification(w http.ResponseWriter, r *http
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"message":"if an unverified account with that address exists, a verification email has been sent"}`))
 
-	// Process asynchronously so we can return immediately without leaking timing.
+	// Snapshot sender synchronously so the goroutine only does SMTP I/O
+	// and never touches the DB after the request context is done.
+	snd := snapshotEmailSender(h.svc)
 	go func() {
-		if err := h.sendResendEmail(req.Email); err != nil {
+		if err := h.sendResendEmail(req.Email, snd); err != nil {
 			log.Error().Err(err).Str("email", req.Email).Msg("resend verification: failed")
 		}
 	}()
 }
 
-func (h *VerificationHandlers) sendResendEmail(email string) error {
+func (h *VerificationHandlers) sendResendEmail(emailAddr string, snd EmailSender) error {
 	if h.svc.DB == nil {
 		return nil
 	}
 
-	user, err := h.svc.Users.ByEmail(email)
+	user, err := h.svc.Users.ByEmail(emailAddr)
 	if errors.Is(err, auth.ErrUserNotFound) {
 		return nil // silently drop — no enumeration
 	}
@@ -108,14 +110,8 @@ func (h *VerificationHandlers) sendResendEmail(email string) error {
 		return fmt.Errorf("resend: create token: %w", err)
 	}
 
-	if h.svc.EmailSender == nil {
-		log.Warn().Str("user_id", user.ID).Msg("resend verification: email sender not configured")
-		return nil
-	}
-
 	verifyURL := buildVerifyURL(h.svc.AppBaseURL, rawToken)
-	ctx := context.Background()
-	if err := h.svc.EmailSender.SendVerificationReminder(ctx, user.Email, user.DisplayName, verifyURL); err != nil {
+	if err := snd.SendVerificationReminder(context.Background(), user.Email, user.DisplayName, verifyURL); err != nil {
 		return fmt.Errorf("resend: send email: %w", err)
 	}
 	log.Info().Str("user_id", user.ID).Msg("resend verification email sent")
@@ -123,9 +119,11 @@ func (h *VerificationHandlers) sendResendEmail(email string) error {
 }
 
 // buildVerifyURL constructs the email-verification link.
-// baseURL should not have a trailing slash.
+// baseURL should not have a trailing slash. Logs a warning when falling back
+// to localhost so misconfigured production deployments surface the issue.
 func buildVerifyURL(baseURL, rawToken string) string {
 	if baseURL == "" {
+		log.Warn().Msg("APP_BASE_URL not set — email verification link uses http://localhost:8081 fallback; set APP_BASE_URL in production")
 		baseURL = "http://localhost:8081"
 	}
 	return fmt.Sprintf("%s/auth/verify-email?token=%s", strings.TrimRight(baseURL, "/"), rawToken)

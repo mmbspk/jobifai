@@ -45,7 +45,7 @@ export function EmailVerificationBanner() {
           {busy ? 'Sending…' : 'Resend email'}
         </button>
       ) : (
-        <span className="shrink-0 text-xs font-medium text-amber-700 dark:text-amber-300">Sent!</span>
+        <span className="shrink-0 text-xs font-medium text-amber-700 dark:text-amber-300">Request received — check your inbox shortly.</span>
       )}
     </div>
   )
