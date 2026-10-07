@@ -1,4 +1,4 @@
-package handler_test
+package auth_test
 
 import (
 	"os"
@@ -6,11 +6,9 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"github.com/user/jobifai/internal/auth"
-	"github.com/user/jobifai/internal/bot"
 )
 
 func TestMain(m *testing.M) {
 	auth.SetBcryptCostForTest(bcrypt.MinCost)
-	bot.RegisterTestAutomationRunner()
 	os.Exit(m.Run())
 }

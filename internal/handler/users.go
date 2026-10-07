@@ -241,6 +241,60 @@ func (h *UserHandlers) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	okMsg(w, "profile updated")
 }
 
+// PUT /api/me/password — authenticated password change.
+func (h *UserHandlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+	var req struct {
+		Current      string `json:"current_password"`
+		NewPassword  string `json:"new_password"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid JSON"})
+		return
+	}
+	if req.NewPassword == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "new_password is required"})
+		return
+	}
+	if len(req.NewPassword) < 8 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "password must be at least 8 characters"})
+		return
+	}
+
+	user, err := h.users.ByID(userID)
+	if errors.Is(err, auth.ErrUserNotFound) {
+		notFound(w, "user not found")
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+
+	if user.PasswordHash == "" {
+		unprocessable(w, "this account uses Google sign-in and does not currently have a password")
+		return
+	}
+
+	if err := auth.CheckPassword(user.PasswordHash, req.Current); err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "current password is incorrect"})
+		return
+	}
+
+	newHash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not hash password"})
+		return
+	}
+
+	if err := auth.UpdatePasswordAndRevokeOtherSessions(h.db, userID, newHash, req.RefreshToken); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	okMsg(w, "password updated")
+}
+
 // issueTokens creates a new access + refresh token pair for the user.
 func (h *UserHandlers) issueTokens(userID, email string) (*auth.Tokens, error) {
 	accessToken, err := h.tm.IssueAccess(userID, email)

@@ -222,6 +222,7 @@ type LLMReuseMetricsReader interface {
 type EmailSender interface {
 	SendVerification(ctx context.Context, toEmail, toName, verifyURL string) error
 	SendVerificationReminder(ctx context.Context, toEmail, toName, verifyURL string) error
+	SendPasswordReset(ctx context.Context, toEmail, toName, resetURL string) error
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────

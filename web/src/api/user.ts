@@ -1,3 +1,6 @@
+import { apiPut } from './client'
+import { authStorageKeys } from '../lib/authSession'
+
 // Auth API, public endpoints (no Bearer header required)
 const BASE = (import.meta.env.VITE_API_BASE ?? '')
 
@@ -47,10 +50,27 @@ export const userApi = {
   resendVerification: (email: string) =>
     authFetch<{ message: string }>('/auth/resend-verification', { email }),
 
+  forgotPassword: (email: string) =>
+    authFetch<{ message: string }>('/auth/forgot-password', { email }),
+
+  resetPassword: (token: string, newPassword: string) =>
+    authFetch<{ message: string }>('/auth/reset-password', { token, new_password: newPassword }),
+
   verifyEmail: async (token: string): Promise<{ message: string }> => {
     const res = await fetch(`${BASE}/auth/verify-email?token=${encodeURIComponent(token)}`)
     const j = await res.json().catch(() => ({}))
     if (!res.ok) throw new Error(j.message ?? res.statusText)
     return j as { message: string }
   },
+
+  // Authenticated — uses Bearer token from localStorage via apiPut.
+  // /api prefix is added by client.ts, so path here is /me/password.
+  // Sends the current refresh token so the backend can preserve this session
+  // while revoking all other active sessions.
+  changePassword: (currentPassword: string, newPassword: string) =>
+    apiPut<{ message: string }>('/me/password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+      refresh_token: localStorage.getItem(authStorageKeys.refresh) ?? '',
+    }),
 }
