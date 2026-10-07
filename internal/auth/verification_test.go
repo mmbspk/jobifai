@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -14,13 +13,6 @@ import (
 	"github.com/user/jobifai/internal/auth"
 	appdb "github.com/user/jobifai/internal/db"
 )
-
-// isSQLiteBusy reports whether err is a SQLite SQLITE_BUSY (code 5) error.
-// This can occur under load when goroutines compete for the write lock and
-// busy_timeout is not respected for the read-to-write upgrade in WAL mode.
-func isSQLiteBusy(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "SQLITE_BUSY")
-}
 
 func newDBAndUser(t *testing.T) (*sql.DB, string) {
 	t.Helper()
@@ -114,27 +106,20 @@ func TestConsumeVerificationToken_ConcurrentConsumption(t *testing.T) {
 		}()
 	}
 
-	var successes, blocked int
+	var successes, alreadyUsed int
 	for range goroutines {
 		switch e := <-results; {
 		case e == nil:
 			successes++
 		case errors.Is(e, auth.ErrTokenAlreadyUsed):
-			blocked++
+			alreadyUsed++
 		default:
-			// Under system load, SQLite may return SQLITE_BUSY when multiple
-			// goroutines compete for the write lock. This is still a safe
-			// outcome: the goroutine did not consume the token.
-			if isSQLiteBusy(e) {
-				blocked++
-			} else {
-				t.Errorf("unexpected error: %v", e)
-			}
+			t.Errorf("unexpected error (want nil or ErrTokenAlreadyUsed): %v", e)
 		}
 	}
 
 	assert.Equal(t, 1, successes, "exactly one goroutine should succeed")
-	assert.Equal(t, goroutines-1, blocked, "all others should be blocked")
+	assert.Equal(t, goroutines-1, alreadyUsed, "all others should get ErrTokenAlreadyUsed")
 }
 
 func TestCanResendVerification_AllowsFirstRequest(t *testing.T) {

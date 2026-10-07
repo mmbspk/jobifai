@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -13,8 +14,8 @@ import (
 )
 
 const (
-	verificationTokenTTL      = 24 * time.Hour
-	resendRateLimitWindow     = 5 * time.Minute
+	verificationTokenTTL  = 24 * time.Hour
+	resendRateLimitWindow = 5 * time.Minute
 )
 
 // ErrTokenNotFound is returned when a verification token does not exist.
@@ -79,24 +80,40 @@ func CanResendVerification(db *sql.DB, userID string) error {
 // ConsumeVerificationToken validates rawToken, marks the user's email verified,
 // and records used_at on the token — all in one transaction to prevent races.
 // Returns ErrTokenNotFound / ErrTokenExpired / ErrTokenAlreadyUsed on failure.
-// The UPDATE uses "WHERE id = ? AND used_at IS NULL" so that if two goroutines
-// race to consume the same token, exactly one succeeds.
+//
+// Uses BEGIN IMMEDIATE so the write lock is acquired before any reads.
+// This eliminates the SHARED→RESERVED lock-upgrade race present with deferred
+// BEGIN in SQLite WAL mode: competing goroutines are serialised at lock
+// acquisition, they all run to completion, and losers see RowsAffected == 0
+// → ErrTokenAlreadyUsed rather than SQLITE_BUSY.
 func ConsumeVerificationToken(db *sql.DB, rawToken string) (userID string, err error) {
 	hash := hashVerificationToken(rawToken)
+	ctx := context.Background()
 
-	tx, err := db.Begin()
+	// Obtain a dedicated connection so we can send BEGIN IMMEDIATE, which
+	// database/sql's BeginTx does not expose for SQLite.
+	conn, err := db.Conn(ctx)
 	if err != nil {
-		return "", fmt.Errorf("verify email: begin tx: %w", err)
+		return "", fmt.Errorf("verify email: get conn: %w", err)
 	}
+	defer func() { _ = conn.Close() }()
+
+	// BEGIN IMMEDIATE acquires a RESERVED (write) lock immediately.
+	// SQLite's busy_timeout applies here, so concurrent callers queue up
+	// rather than failing mid-transaction.
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return "", fmt.Errorf("verify email: begin: %w", err)
+	}
+	committed := false
 	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
 
 	var tokenID string
 	var expiresAt time.Time
-	err = tx.QueryRow(
+	err = conn.QueryRowContext(ctx,
 		`SELECT id, user_id, expires_at FROM email_verification_tokens WHERE token_hash = ?`,
 		hash,
 	).Scan(&tokenID, &userID, &expiresAt)
@@ -110,9 +127,10 @@ func ConsumeVerificationToken(db *sql.DB, rawToken string) (userID string, err e
 		return "", ErrTokenExpired
 	}
 
-	// Atomically mark the token as used. The WHERE clause prevents a race where
-	// two concurrent goroutines both passed the SELECT but only one should win.
-	res, execErr := tx.Exec(
+	// Atomically mark the token as used. The WHERE clause prevents a double-
+	// consume even if two goroutines both passed the SELECT; with BEGIN
+	// IMMEDIATE they are serialised so the loser sees RowsAffected == 0.
+	res, execErr := conn.ExecContext(ctx,
 		`UPDATE email_verification_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL`,
 		time.Now(), tokenID,
 	)
@@ -125,16 +143,17 @@ func ConsumeVerificationToken(db *sql.DB, rawToken string) (userID string, err e
 	}
 
 	// Mark user's email verified.
-	if _, err = tx.Exec(
+	if _, err = conn.ExecContext(ctx,
 		`UPDATE users SET email_verified = 1, updated_at = ? WHERE id = ?`,
 		time.Now(), userID,
 	); err != nil {
 		return "", fmt.Errorf("verify email: mark user verified: %w", err)
 	}
 
-	if err = tx.Commit(); err != nil {
+	if _, err = conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return "", fmt.Errorf("verify email: commit: %w", err)
 	}
+	committed = true
 	return userID, nil
 }
 

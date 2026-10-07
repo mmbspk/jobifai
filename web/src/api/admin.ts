@@ -95,6 +95,8 @@ export interface EmailSettingsRequest {
   email_from?: string
   smtp_pass?: string
 }
+
+export interface DocumentRetentionDefaults {
   latest_submitted_applications: number
 }
 
