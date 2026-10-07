@@ -89,7 +89,7 @@ export const userApi = {
   },
 
   deleteAccount: (opts: { currentPassword?: string; confirm?: string }) =>
-    apiDeleteWithBody<{ message: string }>('/me', {
+    apiDeleteWithBody<void>('/me', {
       current_password: opts.currentPassword ?? '',
       confirm: opts.confirm ?? '',
     }),

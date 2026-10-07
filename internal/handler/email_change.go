@@ -71,11 +71,18 @@ func (h *EmailChangeHandlers) RequestEmailChange(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Check whether the target address is already taken — report 409 so the UI
-	// can give a helpful message. This is not a timing oracle: ErrEmailTaken is
-	// only returned when the new address collides with an *existing* account.
-	if _, checkErr := h.svc.Users.ByEmail(req.NewEmail); checkErr == nil {
+	// Check whether the target address is already taken. Distinguish ErrUserNotFound
+	// (email is available) from an unexpected DB error (fail closed, 500).
+	_, checkErr := h.svc.Users.ByEmail(req.NewEmail)
+	switch {
+	case checkErr == nil:
 		conflict(w, "that email address is already registered to another account")
+		return
+	case errors.Is(checkErr, auth.ErrUserNotFound):
+		// Available — fall through.
+	default:
+		log.Error().Err(checkErr).Str("user_id", userID).Msg("email change: availability check")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not check email availability"})
 		return
 	}
 
@@ -112,7 +119,14 @@ func (h *EmailChangeHandlers) VerifyEmailChange(w http.ResponseWriter, r *http.R
 	userID, oldEmail, newEmail, err := auth.ConsumeEmailChangeToken(h.svc.DB, rawToken)
 	if errors.Is(err, auth.ErrEmailChangeTokenNotFound) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"message": "invalid or already-used verification token",
+			"message": "invalid or unknown verification token",
+			"code":    "invalid",
+		})
+		return
+	}
+	if errors.Is(err, auth.ErrEmailChangeTokenConsumed) {
+		writeJSON(w, http.StatusGone, map[string]string{
+			"message": "this verification link has already been used",
 			"code":    "invalid",
 		})
 		return
@@ -217,7 +231,7 @@ func (h *EmailChangeHandlers) DeleteAccount(w http.ResponseWriter, r *http.Reque
 	}
 
 	log.Info().Str("user_id", userID).Msg("account deleted")
-	writeJSON(w, http.StatusOK, map[string]string{"message": "account deleted successfully"})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // buildEmailChangeVerifyURL constructs the email-change verification link.

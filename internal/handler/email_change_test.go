@@ -206,11 +206,11 @@ func TestVerifyEmailChange_Replay(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	// Second consume must fail.
+	// Second consume must return 410.
 	req2 := httptest.NewRequest(http.MethodGet, "/auth/verify-email-change?token="+rawToken, nil)
 	rec2 := httptest.NewRecorder()
 	router.ServeHTTP(rec2, req2)
-	assert.Equal(t, http.StatusBadRequest, rec2.Code)
+	assert.Equal(t, http.StatusGone, rec2.Code)
 }
 
 // TestVerifyEmailChange_MissingToken returns 400.
@@ -231,7 +231,7 @@ func TestDeleteAccount_WithPassword(t *testing.T) {
 	w := authDeleteWithBody(t, router, "/api/me", token, map[string]string{
 		"current_password": "password123",
 	})
-	assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
 
 	// User row must be gone.
 	_, err := svc.Users.ByID(userID)
@@ -268,7 +268,7 @@ func TestDeleteAccount_JWTRejectedAfterDeletion(t *testing.T) {
 	w := authDeleteWithBody(t, router, "/api/me", token, map[string]string{
 		"current_password": "password123",
 	})
-	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, http.StatusNoContent, w.Code)
 
 	// The previously-issued token must now be rejected.
 	w2 := authGet(t, router, "/api/me", token)
@@ -311,6 +311,58 @@ func TestMeResponse_IncludesPendingEmail(t *testing.T) {
 	var me2 map[string]any
 	require.NoError(t, json.NewDecoder(w2.Body).Decode(&me2))
 	assert.Equal(t, "pending@example.com", me2["pending_email"])
+}
+
+// TestStaleJWTRejectedAfterEmailChange proves that a pre-email-change access JWT
+// is rejected once the user's email has been updated (Fix 4: identity freshness).
+func TestStaleJWTRejectedAfterEmailChange(t *testing.T) {
+	router, svc, cap := buildEmailChangeRouter(t)
+
+	// Step 1: log in and capture the access JWT.
+	oldToken := registerAndLogin(t, router, "old@example.com", "password123")
+
+	// Step 2: request an email change.
+	w := authPost(t, router, "/api/me/email", oldToken, map[string]string{
+		"new_email":        "new@example.com",
+		"current_password": "password123",
+	})
+	require.Equal(t, http.StatusAccepted, w.Code)
+
+	// Step 3: verify the new email (extracts raw token from the verification email).
+	rawToken := waitForEmailChangeVerify(t, cap)
+	req := httptest.NewRequest(http.MethodGet, "/auth/verify-email-change?token="+rawToken, nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	// Step 4: the old access JWT must now be rejected.
+	w2 := authGet(t, router, "/api/me", oldToken)
+	assert.Equal(t, http.StatusUnauthorized, w2.Code, "pre-email-change JWT must be rejected after email swap")
+
+	// Step 5: login with old email must fail.
+	w3 := authPost(t, router, "/auth/login", "", map[string]string{
+		"email": "old@example.com", "password": "password123",
+	})
+	assert.Equal(t, http.StatusUnauthorized, w3.Code, "login with old email must fail after swap")
+
+	// Step 6: login with new email must succeed and new JWT must work.
+	newToken := loginUser(t, router, "new@example.com", "password123")
+	w4 := authGet(t, router, "/api/me", newToken)
+	assert.Equal(t, http.StatusOK, w4.Code, "new JWT with new email must be accepted")
+
+	_ = svc // suppress unused warning
+}
+
+// loginUser performs a POST /auth/login and returns the access token.
+func loginUser(t *testing.T, router http.Handler, email, password string) string {
+	t.Helper()
+	w := authPost(t, router, "/auth/login", "", map[string]string{
+		"email": email, "password": password,
+	})
+	require.Equal(t, http.StatusOK, w.Code, "login failed: %s", w.Body)
+	var tokens struct{ AccessToken string `json:"access_token"` }
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&tokens))
+	return tokens.AccessToken
 }
 
 // extractQueryParam is a small helper to pull a query parameter out of a URL string.

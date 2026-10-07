@@ -14,12 +14,15 @@ import (
 // emailChangeTokenTTL matches verificationTokenTTL — 24 h is established convention.
 const emailChangeTokenTTL = 24 * time.Hour
 
-var ErrEmailChangeTokenNotFound = errors.New("email change token not found or already used")
+var ErrEmailChangeTokenNotFound = errors.New("email change token not found")
+var ErrEmailChangeTokenConsumed = errors.New("email change token already used")
 var ErrEmailChangeTokenExpired = errors.New("email change token expired")
 var ErrEmailChangeTargetTaken = errors.New("email address is already in use by another account")
 
 // CreateEmailChangeToken stores a pending email change for userID.
 // Any previous pending change is silently replaced (one pending change per account).
+// If the user had an existing pending token, its hash is recorded in
+// consumed_email_change_tokens so that replay of the old link returns 410.
 // The raw token is returned and must be embedded in the verification link email.
 // Only the SHA-256 hash is persisted.
 func CreateEmailChangeToken(db *sql.DB, userID, newEmail string) (string, error) {
@@ -32,7 +35,24 @@ func CreateEmailChangeToken(db *sql.DB, userID, newEmail string) (string, error)
 	}
 	hash := hashEmailChangeToken(raw)
 	expires := time.Now().Add(emailChangeTokenTTL)
-	_, err = db.Exec(
+
+	tx, err := db.Begin()
+	if err != nil {
+		return "", fmt.Errorf("create email change token: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// Capture any existing token hash before overwriting it, so replay of the
+	// replaced link can be detected (→ 410 instead of 400).
+	var oldHash sql.NullString
+	_ = tx.QueryRow(`SELECT email_change_token_hash FROM users WHERE id = ?`, userID).Scan(&oldHash)
+
+	_, err = tx.Exec(
 		`UPDATE users
 		    SET pending_email            = ?,
 		        email_change_token_hash  = ?,
@@ -42,8 +62,23 @@ func CreateEmailChangeToken(db *sql.DB, userID, newEmail string) (string, error)
 		newEmail, hash, expires, time.Now(), userID,
 	)
 	if err != nil {
-		return "", fmt.Errorf("create email change token: %w", err)
+		return "", fmt.Errorf("create email change token: update: %w", err)
 	}
+
+	// Record the old hash as consumed (replaced) so its link returns 410.
+	if oldHash.Valid && oldHash.String != "" {
+		if _, err = tx.Exec(
+			`INSERT OR IGNORE INTO consumed_email_change_tokens (token_hash, consumed_at) VALUES (?, ?)`,
+			oldHash.String, time.Now(),
+		); err != nil {
+			return "", fmt.Errorf("create email change token: record replaced: %w", err)
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return "", fmt.Errorf("create email change token: commit: %w", err)
+	}
+	committed = true
 	return raw, nil
 }
 
@@ -77,6 +112,20 @@ func ConsumeEmailChangeToken(db *sql.DB, rawToken string) (userID, oldEmail, new
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
+
+	// Check whether this token was already consumed (or replaced). This must
+	// happen inside BEGIN IMMEDIATE so the insert below is in the same tx.
+	var consumedAt time.Time
+	consumedErr := conn.QueryRowContext(ctx,
+		`SELECT consumed_at FROM consumed_email_change_tokens WHERE token_hash = ?`, hash,
+	).Scan(&consumedAt)
+	if consumedErr != nil && !errors.Is(consumedErr, sql.ErrNoRows) {
+		return "", "", "", fmt.Errorf("email change: check consumed: %w", consumedErr)
+	}
+	if errors.Is(consumedErr, nil) {
+		// Row found — token was already used.
+		return "", "", "", ErrEmailChangeTokenConsumed
+	}
 
 	var expiresAt time.Time
 	var pendingEmailNullable sql.NullString
@@ -129,10 +178,23 @@ func ConsumeEmailChangeToken(db *sql.DB, rawToken string) (userID, oldEmail, new
 		newEmail, time.Now(), userID, hash,
 	)
 	if execErr != nil {
+		// Translate UNIQUE constraint on users.email into the domain error so
+		// the handler can return 409 instead of 500 for the final-write race.
+		if isUniqueConstraint(execErr) {
+			return "", "", "", ErrEmailChangeTargetTaken
+		}
 		return "", "", "", fmt.Errorf("email change: swap email: %w", execErr)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return "", "", "", ErrEmailChangeTokenNotFound
+	}
+
+	// Record this hash as consumed so any replay returns 410.
+	if _, err = conn.ExecContext(ctx,
+		`INSERT OR IGNORE INTO consumed_email_change_tokens (token_hash, consumed_at) VALUES (?, ?)`,
+		hash, time.Now(),
+	); err != nil {
+		return "", "", "", fmt.Errorf("email change: record consumed: %w", err)
 	}
 
 	// Revoke all refresh tokens — user must re-authenticate with the new email.

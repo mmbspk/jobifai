@@ -138,7 +138,7 @@ describe('Account settings page', () => {
   })
 
   it('calls deleteAccount and forceLogout on successful deletion', async () => {
-    vi.mocked(userApi.deleteAccount).mockResolvedValue({ message: 'deleted' })
+    vi.mocked(userApi.deleteAccount).mockResolvedValue(undefined)
     const user = userEvent.setup()
     render(<AccountSettingsPage />)
 

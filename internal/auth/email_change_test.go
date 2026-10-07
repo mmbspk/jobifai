@@ -70,9 +70,9 @@ func TestConsumeEmailChangeToken_AlreadyUsed(t *testing.T) {
 	_, _, _, err = auth.ConsumeEmailChangeToken(db, rawToken)
 	require.NoError(t, err)
 
-	// Second consumption must fail.
+	// Second consumption must return ErrEmailChangeTokenConsumed (→ 410).
 	_, _, _, err = auth.ConsumeEmailChangeToken(db, rawToken)
-	require.ErrorIs(t, err, auth.ErrEmailChangeTokenNotFound)
+	require.ErrorIs(t, err, auth.ErrEmailChangeTokenConsumed)
 }
 
 func TestConsumeEmailChangeToken_Expired(t *testing.T) {
@@ -162,19 +162,48 @@ func TestConsumeEmailChangeToken_ConcurrentConsumption(t *testing.T) {
 		}()
 	}
 
-	var successes, notFound int
+	var successes, failures int
 	for range goroutines {
 		r := <-results
 		switch {
 		case r.err == nil:
 			successes++
-		case errors.Is(r.err, auth.ErrEmailChangeTokenNotFound):
-			notFound++
+		case errors.Is(r.err, auth.ErrEmailChangeTokenNotFound),
+			errors.Is(r.err, auth.ErrEmailChangeTokenConsumed):
+			failures++
 		default:
 			t.Errorf("unexpected error: %v", r.err)
 		}
 	}
 
 	assert.Equal(t, 1, successes, "exactly one goroutine should succeed")
-	assert.Equal(t, goroutines-1, notFound, "all others should get ErrEmailChangeTokenNotFound")
+	assert.Equal(t, goroutines-1, failures, "all others should fail with not-found or consumed")
+}
+
+// TestConsumeEmailChangeToken_FinalWriteCollision verifies that a target email
+// becoming taken after the change was requested (between request and verification)
+// returns ErrEmailChangeTargetTaken rather than a generic internal error.
+// This covers both the pre-check SELECT path and the UNIQUE constraint path on
+// the final UPDATE (the latter is the tight race the isUniqueConstraint guard handles).
+func TestConsumeEmailChangeToken_FinalWriteCollision(t *testing.T) {
+	db, us, ownerID := openEmailChangeDB(t)
+
+	// Request change to target@example.com (currently free).
+	rawToken, err := auth.CreateEmailChangeToken(db, ownerID, "target@example.com")
+	require.NoError(t, err)
+
+	// A concurrent registration takes target@example.com before the link is clicked.
+	_, err = us.Create("target@example.com", "hash2", "Squatter")
+	require.NoError(t, err)
+
+	// Consuming the link must return ErrEmailChangeTargetTaken, not a raw DB error.
+	_, _, _, consumeErr := auth.ConsumeEmailChangeToken(db, rawToken)
+	require.ErrorIs(t, consumeErr, auth.ErrEmailChangeTargetTaken)
+
+	// The owner's email must be unchanged — no partial mutation.
+	owner, err := us.ByID(ownerID)
+	require.NoError(t, err)
+	assert.Equal(t, "owner@example.com", owner.Email, "owner email must be unchanged after collision")
+	// Pending state is preserved (transaction rolled back before the swap).
+	assert.Equal(t, "target@example.com", owner.PendingEmail, "pending email still set after failed collision")
 }

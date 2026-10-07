@@ -59,8 +59,10 @@ func writeUnauthorized(w http.ResponseWriter, msg string) {
 }
 
 // RequireAuthAndExistence is middleware that validates the Bearer JWT AND verifies
-// the referenced user_id still exists in the database. Use this instead of
-// RequireAuth so that a JWT issued to a deleted account is immediately rejected.
+// the referenced user_id still exists in the database with the same email as the
+// JWT claims. Use this instead of RequireAuth so that:
+//   - A JWT issued to a deleted account is immediately rejected (existence check).
+//   - A pre-email-change JWT is rejected after the email is updated (identity check).
 //
 // Adds one lightweight indexed PK lookup per authenticated request.
 func RequireAuthAndExistence(tm *TokenManager, db *sql.DB) func(http.Handler) http.Handler {
@@ -77,13 +79,19 @@ func RequireAuthAndExistence(tm *TokenManager, db *sql.DB) func(http.Handler) ht
 				writeUnauthorized(w, "invalid or expired token")
 				return
 			}
-			// Confirm the account still exists — deleting the user row must
-			// immediately invalidate any outstanding access JWTs.
-			var exists int
+			// Confirm the account still exists AND that the JWT email matches the
+			// current email on file. This rejects:
+			//   - JWTs issued to deleted accounts (row missing → not found)
+			//   - Pre-email-change JWTs (email claim differs from current DB email)
+			var currentEmail string
 			if qErr := db.QueryRowContext(r.Context(),
-				`SELECT 1 FROM users WHERE id = ? LIMIT 1`, claims.UserID,
-			).Scan(&exists); qErr != nil {
+				`SELECT email FROM users WHERE id = ? LIMIT 1`, claims.UserID,
+			).Scan(&currentEmail); qErr != nil {
 				writeUnauthorized(w, "account not found")
+				return
+			}
+			if currentEmail != claims.Email {
+				writeUnauthorized(w, "token identity is stale — please sign in again")
 				return
 			}
 			ctx := context.WithValue(r.Context(), userIDKey, claims.UserID)
