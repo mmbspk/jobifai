@@ -101,9 +101,10 @@ func ResolvePublicAppURL(svc *Services, r *http.Request) string {
 	return "http://localhost:8081"
 }
 
-// buildVerifyURL constructs the email-verification link from an already-resolved base URL.
+// buildVerifyURL constructs the email-verification browser link from an already-resolved base URL.
+// Uses the frontend route /verify-email (not /auth/verify-email, which is the API endpoint).
 func buildVerifyURL(base, token string) string {
-	return fmt.Sprintf("%s/auth/verify-email?token=%s", strings.TrimRight(base, "/"), token)
+	return fmt.Sprintf("%s/verify-email?token=%s", strings.TrimRight(base, "/"), token)
 }
 
 // buildPasswordResetURL constructs the password-reset link from an already-resolved base URL.
@@ -111,7 +112,8 @@ func buildPasswordResetURL(base, token string) string {
 	return fmt.Sprintf("%s/reset-password?token=%s", strings.TrimRight(base, "/"), token)
 }
 
-// buildEmailChangeVerifyURL constructs the email-change verification link from an already-resolved base URL.
+// buildEmailChangeVerifyURL constructs the email-change verification browser link from an already-resolved base URL.
+// Uses the frontend route /verify-email-change (not /auth/verify-email-change, which is the API endpoint).
 func buildEmailChangeVerifyURL(base, token string) string {
-	return fmt.Sprintf("%s/auth/verify-email-change?token=%s", strings.TrimRight(base, "/"), token)
+	return fmt.Sprintf("%s/verify-email-change?token=%s", strings.TrimRight(base, "/"), token)
 }

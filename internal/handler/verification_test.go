@@ -252,8 +252,10 @@ func TestBuildVerifyURL_UsesAppBaseURL(t *testing.T) {
 
 	last := capture.Last()
 	require.NotNil(t, last)
-	assert.Contains(t, last.VerifyURL, "https://app.example.com/auth/verify-email",
+	assert.Contains(t, last.VerifyURL, "https://app.example.com/verify-email",
 		"verify URL should use APP_BASE_URL, not localhost")
+	assert.NotContains(t, last.VerifyURL, "/auth/verify-email",
+		"verify URL must not use the /auth/ API prefix")
 	assert.NotContains(t, last.VerifyURL, "//auth",
 		"URL must not contain double-slash from trailing slash on APP_BASE_URL")
 }
@@ -279,7 +281,8 @@ func TestBuildVerifyURL_FallsBackToLocalhost(t *testing.T) {
 
 	last := capture.Last()
 	require.NotNil(t, last)
-	assert.Contains(t, last.VerifyURL, "http://localhost:8081/auth/verify-email")
+	assert.Contains(t, last.VerifyURL, "http://localhost:8081/verify-email")
+	assert.NotContains(t, last.VerifyURL, "/auth/verify-email")
 }
 
 // ── Admin email API tests ─────────────────────────────────────────────────────
