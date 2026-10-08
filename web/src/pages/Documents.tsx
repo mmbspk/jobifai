@@ -172,9 +172,9 @@ export function Documents() {
                   .catch(err => setActionErr(actionError(err)))
               }}
             >
-              <option value="">Default</option>
+              <option value="">Default style</option>
               {styles.map(s => (
-                <option key={s.name} value={s.name}>{s.name}</option>
+                <option key={s.name} value={s.name}>{s.display_name ?? s.name}</option>
               ))}
             </select>
           </label>

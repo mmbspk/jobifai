@@ -175,8 +175,8 @@ var defaultGeneralSettings = domain.GeneralSettings{
 		PauseBetweenJobsMin:   5,
 		PauseBetweenJobsMax:   15,
 	},
-	JobSuitabilityScore:       7,
-	MaxJobsPerKeyword:         25,
+	JobSuitabilityScore: 7,
+	MaxJobsPerKeyword:   25,
 }
 
 func (h *SettingsHandlers) isAdmin(r *http.Request) bool {
@@ -432,7 +432,7 @@ func (h *SettingsHandlers) StylesList(w http.ResponseWriter, r *http.Request) {
 	}
 	var styles []domain.ResumeStyle
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".css") {
+		if e.IsDir() || strings.HasPrefix(e.Name(), "_") || !strings.HasSuffix(e.Name(), ".css") {
 			continue
 		}
 		stem := strings.TrimSuffix(e.Name(), ".css")
@@ -445,14 +445,38 @@ func (h *SettingsHandlers) StylesList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		styles = append(styles, domain.ResumeStyle{
-			Name:    strings.Join(words, " "),
-			CSSFile: filepath.Join(stylesDir, e.Name()),
+			Name:        strings.Join(words, " "),
+			DisplayName: styleDisplayName(strings.Join(words, " ")),
+			CSSFile:     filepath.Join(stylesDir, e.Name()),
 		})
 	}
 	if styles == nil {
 		styles = []domain.ResumeStyle{}
 	}
 	writeJSON(w, http.StatusOK, styles)
+}
+
+func styleDisplayName(name string) string {
+	switch strings.ToLower(name) {
+	case "au":
+		return "Australia"
+	case "de":
+		return "Germany"
+	case "fr":
+		return "France"
+	case "in":
+		return "India"
+	case "nordics":
+		return "Nordic countries"
+	case "pk":
+		return "Pakistan"
+	case "uk":
+		return "United Kingdom"
+	case "us":
+		return "United States"
+	default:
+		return name
+	}
 }
 
 // ── Markets ────────────────────────────────────────────────────────────────

@@ -6,6 +6,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +15,26 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 )
+
+func TestSettings_Styles_FriendlyLabelsPreserveValuesAndHideSharedLayouts(t *testing.T) {
+	svc, _ := newTestServices(t)
+	svc.StylesDir = t.TempDir()
+	for _, name := range []string{"style_au.css", "style_us.css", "style_my_design.css", "_base_a4.css", "_base_letter.css"} {
+		require.NoError(t, os.WriteFile(filepath.Join(svc.StylesDir, name), []byte("body {}"), 0o600))
+	}
+	router := handler.NewRouter(svc)
+	token := registerAndLogin(t, router, "friendly-styles@example.com", "password123")
+	w := authGet(t, router, "/api/settings/styles", token)
+	require.Equal(t, http.StatusOK, w.Code)
+	var styles []domain.ResumeStyle
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&styles))
+	require.Len(t, styles, 3)
+	labels := map[string]string{}
+	for _, style := range styles {
+		labels[style.Name] = style.DisplayName
+	}
+	assert.Equal(t, map[string]string{"Au": "Australia", "Us": "United States", "My Design": "My Design"}, labels)
+}
 
 // postResumeFile uploads bytes as a resume_file multipart field.
 func postResumeFile(t *testing.T, router http.Handler, token, filename string, content []byte) *httptest.ResponseRecorder {
