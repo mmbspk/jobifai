@@ -201,21 +201,30 @@ func ResolveLLMAPIKey(secrets SecretsKV, userID string, allowPersonalKey bool, u
 	return k, false, e
 }
 
-// EnforceLLMCredentialConsistency ensures that a tester's personal provider/model
-// overrides are only used when a matching personal credential is available. When the
-// resolved LLM config differs from the system default but no personal key exists, the
-// config is reverted to the system LLM — preventing a mix of personal overrides with
-// Admin-funded credentials. This must be called after ResolveOperationalSettings and
-// before building the LLM client.
+// EnforceLLMCredentialConsistency ensures that a tester's LLM overrides are only
+// active when a personal credential is actually selected. It uses the same resolver
+// that will be used to build the LLM client, so the decision is based on the credential
+// that would actually be used — not merely on the presence of a secret.
+//
+// When the resolver returns a system (non-personal) credential, the entire gs.LLM is
+// replaced with the system LLM config. This resets ALL override fields — provider, model,
+// task models, UseProxy, proxy URL, MaxTokens — so none of them can remain active against
+// an Admin-funded credential.
+//
+// When a personal credential is selected, gs.LLM is left unchanged. The tester owns both
+// the key and the configuration; runtime auth/quota failures from that credential will
+// propagate as errors and will never silently fall back to the system credential.
+//
+// Must be called after ResolveOperationalSettings and before building the LLM client.
 func EnforceLLMCredentialConsistency(store ConfigGetter, secrets SecretsKV, userID string, allowOverrides bool, gs *domain.GeneralSettings) {
 	if !allowOverrides {
 		return
 	}
-	sys := SystemGeneralKV(store)
-	hasPersonalKey := secrets.Has(userID, "llm_api_key") ||
-		(gs.LLM.UseProxy && secrets.Has(userID, "proxy_key"))
-	if !hasPersonalKey && (gs.LLM.Provider != sys.LLM.Provider || gs.LLM.Model != sys.LLM.Model) {
-		gs.LLM = sys.LLM
+	// Ask the same resolver with the same UseProxy flag it will receive from the caller.
+	// If it selects a system credential (or errors), revert the entire LLM config.
+	_, isPersonal, err := ResolveLLMAPIKey(secrets, userID, true, gs.LLM.UseProxy)
+	if err != nil || !isPersonal {
+		gs.LLM = SystemGeneralKV(store).LLM
 	}
 }
 

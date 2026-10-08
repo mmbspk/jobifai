@@ -251,3 +251,124 @@ func TestEnforceLLMCredentialConsistency_KeepsOverrideWhenKeyPresent(t *testing.
 	assert.Equal(t, "openai", gs.LLM.Provider, "override must be kept when personal key is present")
 	assert.Equal(t, "gpt-4o", gs.LLM.Model)
 }
+
+// TestEnforceLLMCredentialConsistency_TaskModelOnlyOverrideReverts verifies that a
+// task-model-only override (no provider/model change) is also reverted when the tester
+// has no personal key. Previously only provider/model differences triggered a revert,
+// leaving task-model overrides active against the system credential.
+func TestEnforceLLMCredentialConsistency_TaskModelOnlyOverrideReverts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := config.NewStore(db)
+	secrets := config.NewSecretsStore(db, "test-passphrase")
+
+	require.NoError(t, store.Set(domain.SystemUserID, config.KeyGeneralSettings, domain.GeneralSettings{
+		LLM: domain.LLMConfig{
+			Provider: "claude",
+			Model:    "claude-sonnet-4-6",
+			TaskModels: map[string]domain.TaskModel{
+				"scoring": {Model: "claude-haiku-4-5"},
+			},
+		},
+	}))
+	require.NoError(t, secrets.Set(domain.SystemUserID, "llm_api_key", "sk-system"))
+
+	userID := "tester-task-override"
+	// Override only the task model, keep same provider/model.
+	require.NoError(t, store.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{
+		TaskModels: map[string]domain.TaskModel{
+			"scoring": {Model: "gpt-4o-mini"},
+		},
+	}))
+	// No personal key.
+
+	gs := config.ResolveOperationalSettings(store, userID, true)
+	// Task model override is applied at resolution time.
+	assert.Equal(t, "gpt-4o-mini", gs.LLM.TaskModels["scoring"].Model)
+
+	// After enforcement the system default must be fully restored.
+	config.EnforceLLMCredentialConsistency(store, secrets, userID, true, &gs)
+	assert.Equal(t, "claude-haiku-4-5", gs.LLM.TaskModels["scoring"].Model,
+		"task-model override must be reverted — no personal key")
+}
+
+// TestEnforceLLMCredentialConsistency_PersonalKeyWithSystemProxyReverts verifies that
+// when the system has proxy enabled and the tester has a personal llm_api_key but no
+// personal proxy_key, the entire LLM config reverts to system. The proxy credential
+// (not the direct API key) is the one that would actually be used.
+func TestEnforceLLMCredentialConsistency_PersonalKeyWithSystemProxyReverts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := config.NewStore(db)
+	secrets := config.NewSecretsStore(db, "test-passphrase")
+
+	// System config: proxy enabled.
+	require.NoError(t, store.Set(domain.SystemUserID, config.KeyGeneralSettings, domain.GeneralSettings{
+		LLM: domain.LLMConfig{
+			Provider: "claude", Model: "claude-sonnet-4-6",
+			UseProxy: true, ProxyURL: "https://proxy.example.com",
+		},
+	}))
+	require.NoError(t, secrets.Set(domain.SystemUserID, "proxy_key", "pk-system"))
+
+	userID := "tester-proxy"
+	// Tester has a personal llm_api_key but no personal proxy_key.
+	require.NoError(t, secrets.Set(userID, "llm_api_key", "sk-personal"))
+	require.NoError(t, store.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{
+		Provider: "openai", Model: "gpt-4o",
+	}))
+
+	// gs.LLM.UseProxy=true comes from system (since tester didn't override UseProxy).
+	gs := config.ResolveOperationalSettings(store, userID, true)
+	assert.True(t, gs.LLM.UseProxy, "proxy must be active from system config")
+	assert.Equal(t, "openai", gs.LLM.Provider)
+
+	// EnforceLLMCredentialConsistency: with UseProxy=true, ResolveLLMAPIKey checks for
+	// personal proxy_key first — user has none, so system proxy key is selected
+	// (isPersonal=false). The tester's direct API key is irrelevant when proxy is active.
+	config.EnforceLLMCredentialConsistency(store, secrets, userID, true, &gs)
+	assert.Equal(t, "claude", gs.LLM.Provider, "system credential selected — must revert to system config")
+	assert.Equal(t, "claude-sonnet-4-6", gs.LLM.Model)
+	assert.True(t, gs.LLM.UseProxy, "system UseProxy must be preserved")
+}
+
+// TestEnforceLLMCredentialConsistency_IncompatibleProviderKeyKept verifies that when a
+// tester has a personal key AND a provider override (even if the key might not match the
+// provider), the configuration is kept unchanged. Runtime auth failures propagate as
+// errors and never silently fall back to the system credential — the tester owns both
+// the key and the configuration.
+func TestEnforceLLMCredentialConsistency_IncompatibleProviderKeyKept(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := config.NewStore(db)
+	secrets := config.NewSecretsStore(db, "test-passphrase")
+
+	require.NoError(t, store.Set(domain.SystemUserID, config.KeyGeneralSettings, domain.GeneralSettings{
+		LLM: domain.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+	}))
+	require.NoError(t, secrets.Set(domain.SystemUserID, "llm_api_key", "sk-system"))
+
+	userID := "tester-mismatch"
+	// Tester has a personal key but overrides to a different provider.
+	require.NoError(t, secrets.Set(userID, "llm_api_key", "sk-personal-maybe-anthropic"))
+	require.NoError(t, store.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{
+		Provider: "openai", Model: "gpt-4o",
+	}))
+
+	gs := config.ResolveOperationalSettings(store, userID, true)
+	config.EnforceLLMCredentialConsistency(store, secrets, userID, true, &gs)
+
+	// Personal key present → override kept as-is. Tester is responsible for compatibility;
+	// any runtime auth error from OpenAI will propagate without fallback to system.
+	assert.Equal(t, "openai", gs.LLM.Provider, "override must be kept when personal key present")
+	assert.Equal(t, "gpt-4o", gs.LLM.Model)
+}
