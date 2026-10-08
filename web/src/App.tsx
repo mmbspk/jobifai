@@ -12,6 +12,7 @@ import { ApplicationSettingsPage } from './pages/settings/Application'
 import { SecuritySettingsPage } from './pages/settings/Security'
 import { AccountSettingsPage } from './pages/settings/Account'
 import { AdminOverviewPage } from './pages/admin/Overview'
+import { AdminAIProviderPage } from './pages/admin/AIProvider'
 import { AdminDefaultsPage } from './pages/admin/Defaults'
 import { AdminAutomationPage } from './pages/admin/Automation'
 import { AdminUsersPage } from './pages/admin/Users'
@@ -88,19 +89,20 @@ function AdminLayout() {
         <AdminNav />
         <div className="min-w-0 space-y-6">
           <Routes>
-            <Route path="overview"   element={<AdminOverviewPage />} />
-            <Route path="defaults"   element={<AdminDefaultsPage />} />
-            <Route path="automation" element={<AdminAutomationPage />} />
-            <Route path="users"      element={<AdminUsersPage />} />
-            <Route path="quota"      element={<AdminQuotaPage />} />
-            <Route path="retention"  element={<AdminRetentionPage />} />
-            <Route path="economics"  element={<AdminEconomicsPage />} />
-            <Route path="models"     element={<AdminModelsPage />} />
-            <Route path="llm-usage"  element={<AdminLlmUsagePage />} />
-            <Route path="audit"      element={<AdminAuditErrorsPage />} />
-            <Route path="usage"      element={<Navigate to="/admin/llm-usage" replace />} />
-            <Route path="system"     element={<Navigate to="/admin/defaults" replace />} />
-            <Route path="secrets"    element={<Navigate to="/admin/defaults" replace />} />
+            <Route path="overview"     element={<AdminOverviewPage />} />
+            <Route path="ai-provider"  element={<AdminAIProviderPage />} />
+            <Route path="defaults"     element={<AdminDefaultsPage />} />
+            <Route path="automation"   element={<AdminAutomationPage />} />
+            <Route path="users"        element={<AdminUsersPage />} />
+            <Route path="quota"        element={<AdminQuotaPage />} />
+            <Route path="retention"    element={<AdminRetentionPage />} />
+            <Route path="economics"    element={<AdminEconomicsPage />} />
+            <Route path="models"       element={<AdminModelsPage />} />
+            <Route path="llm-usage"    element={<AdminLlmUsagePage />} />
+            <Route path="audit"        element={<AdminAuditErrorsPage />} />
+            <Route path="usage"        element={<Navigate to="/admin/llm-usage" replace />} />
+            <Route path="system"       element={<Navigate to="/admin/ai-provider" replace />} />
+            <Route path="secrets"      element={<Navigate to="/admin/ai-provider" replace />} />
             <Route index element={<Navigate to="overview" replace />} />
           </Routes>
         </div>

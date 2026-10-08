@@ -36,6 +36,7 @@ func NewRouter(svc *Services) *chi.Mux {
 	resume := NewResumeHandlers(svc)
 	documentsH := NewDocumentHandlers(svc)
 	settings := NewSettingsHandlers(svc)
+	settingsAI := NewSettingsAIHandlers(svc)
 	ws := NewWSHandlers(svc)
 	users := NewUserHandlers(svc, svc.Users, svc.TokenManager, svc.DB)
 	usage := NewUsageHandlers(svc)
@@ -197,6 +198,18 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/locations/suggest", settings.LocationSuggest)
 		})
 
+		// ── Tester-only: personal AI provider ────────────────────────
+		r.Group(func(r chi.Router) {
+			if svc.Users != nil {
+				r.Use(auth.RequireTester(svc.Users))
+			}
+			r.Post("/api/settings/secrets/api-key", settings.SecretsSetAPIKey)
+			r.Delete("/api/settings/secrets/api-key", settings.SecretsDeleteAPIKey)
+			r.Get("/api/settings/ai-provider", settingsAI.Get)
+			r.Put("/api/settings/ai-provider", settingsAI.Update)
+			r.Post("/api/settings/ai-provider/test", settingsAI.Test)
+		})
+
 		// ── E2E fixtures (test server only) ───────────────────────────────
 		if os.Getenv("JOBIFAI_E2E") == "1" {
 			e2eH := NewE2EFixtureHandlers(svc)
@@ -206,6 +219,7 @@ func NewRouter(svc *Services) *chi.Mux {
 
 		// ── Admin-only ────────────────────────────────────────────────────
 		adminH := NewAdminHandlers(svc)
+		adminAIH := NewAdminAIProviderHandlers(svc)
 		r.Group(func(r chi.Router) {
 			if svc.Users != nil {
 				r.Use(auth.RequireAdmin(svc.Users))
@@ -274,6 +288,8 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Put("/api/admin/email/settings", adminH.EmailSettingsSet)
 			r.Delete("/api/admin/email/settings/smtp-pass", adminH.EmailDeleteSMTPPass)
 			r.Post("/api/admin/email/test", adminH.EmailTest)
+			// AI provider connection test
+			r.Post("/api/admin/ai-provider/test", adminAIH.Test)
 		})
 	})
 

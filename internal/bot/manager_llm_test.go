@@ -21,7 +21,8 @@ func TestBuildPerUserLLM_HalalUsesTaskOverride(t *testing.T) {
 	cfgStore := config.NewStore(sqldb)
 	secrets := config.NewSecretsStore(sqldb, "test-key")
 	userID := "user-halal-test"
-	require.NoError(t, secrets.Set(userID, "llm_api_key", "fake-key"))
+	// System key is used for all non-tester users; personal keys require tester role
+	require.NoError(t, secrets.Set(domain.SystemUserID, "llm_api_key", "fake-key"))
 	require.NoError(t, cfgStore.Set(userID, "general_settings", domain.GeneralSettings{
 		HalalJobFilter: true,
 		LLM: domain.LLMConfig{
@@ -56,7 +57,8 @@ func TestBuildPerUserLLM_InvalidPolicyReturnsError(t *testing.T) {
 	cfgStore := config.NewStore(sqldb)
 	secrets := config.NewSecretsStore(sqldb, "test-key")
 	userID := "user-policy-bad"
-	require.NoError(t, secrets.Set(userID, "llm_api_key", "fake-key"))
+	// System key is used for all non-tester users; personal keys require tester role
+	require.NoError(t, secrets.Set(domain.SystemUserID, "llm_api_key", "fake-key"))
 	require.NoError(t, cfgStore.Set(userID, "general_settings", domain.GeneralSettings{
 		LLM: domain.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
 	}))

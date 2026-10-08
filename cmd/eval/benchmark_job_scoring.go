@@ -190,7 +190,7 @@ func evalService(dbPath string) (*engine.Service, *sql.DB) {
 		Catalog: pricing.DefaultCatalog(), EvalPricing: evalCat, BaseLLM: gs.LLM,
 		KeyResolver: func(provider string) (string, bool) {
 			if provider == gs.LLM.Provider {
-				k, err := config.ResolveLLMAPIKey(secrets, domain.SystemUserID, gs.LLM.UseProxy)
+				k, err := config.ResolveLLMAPIKey(secrets, domain.SystemUserID, false, gs.LLM.UseProxy)
 				return k, err == nil && k != ""
 			}
 			k, err := secrets.Get(domain.SystemUserID, "eval_"+provider+"_api_key")

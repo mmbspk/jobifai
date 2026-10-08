@@ -4,10 +4,9 @@ import { Check } from 'lucide-react'
 import { adminApi } from '../../api/admin'
 import type { EmailSettingsRequest } from '../../api/admin'
 import { Button } from '../../components/Button'
-import { PageHeader } from '../../components/shell/PageHeader'
-import { SettingsField, SettingsSection, SettingsSelect } from '../../components/settings/settings-ui'
 import { MaskedSecretField } from '../../components/settings/MaskedSecretField'
-import { Switch } from '../../components/ui/switch'
+import { PageHeader } from '../../components/shell/PageHeader'
+import { SettingsField, SettingsSection } from '../../components/settings/settings-ui'
 import { inputClassName } from '../../components/ui/input'
 import { cn } from '../../lib'
 import type { AppSettings, LLMConfig } from '../../types'
@@ -25,7 +24,6 @@ export function AdminDefaultsPage() {
   const qc = useQueryClient()
   const { data: appData } = useQuery({ queryKey: ['admin-app-settings'], queryFn: adminApi.app.settings.get })
   const { data: system } = useQuery({ queryKey: ['admin-system'], queryFn: adminApi.system.get })
-  const { data: secrets } = useQuery({ queryKey: ['admin-system-secrets'], queryFn: adminApi.systemSecrets.get })
   const { data: emailData } = useQuery({ queryKey: ['admin-email-settings'], queryFn: adminApi.email.settings.get })
   const [appCfg, setAppCfg] = useState<AppSettings>({})
   const [appSaved, setAppSaved] = useState(false)
@@ -115,7 +113,7 @@ export function AdminDefaultsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Defaults"
-        description="Deployment-wide LLM settings. Accounts inherit these unless overridden on the Users tab."
+        description="Deployment-wide settings. AI provider configuration is in the AI Provider tab."
       />
 
       <SettingsSection title="Application">
@@ -143,40 +141,7 @@ export function AdminDefaultsPage() {
         {appError && <p className="text-sm text-destructive mt-1">{appError}</p>}
       </SettingsSection>
 
-      <SettingsSection title="Default LLM">
-        <div className="flex flex-wrap gap-4">
-          <SettingsField label="Provider" layout="column">
-            <SettingsSelect value={llm.provider ?? 'claude'} onChange={e => setLlm({ ...llm, provider: e.target.value })}>
-              <option value="claude">Claude</option>
-              <option value="openai">OpenAI</option>
-              <option value="ollama">Ollama</option>
-            </SettingsSelect>
-          </SettingsField>
-          <SettingsField label="Default model" layout="column">
-            <input
-              value={llm.model ?? ''}
-              onChange={e => setLlm({ ...llm, model: e.target.value })}
-              placeholder="claude-sonnet-4-6"
-              className={cn(inputClassName, 'min-w-[200px]')}
-            />
-          </SettingsField>
-        </div>
-        <Switch
-          label="Route through proxy"
-          checked={llm.use_proxy ?? false}
-          onCheckedChange={v => setLlm({ ...llm, use_proxy: v })}
-        />
-        {llm.use_proxy && (
-          <input
-            value={llm.proxy_url ?? ''}
-            onChange={e => setLlm({ ...llm, proxy_url: e.target.value })}
-            placeholder="Proxy URL"
-            className={inputClassName}
-          />
-        )}
-      </SettingsSection>
-
-      <SettingsSection title="Default task models" description="Leave blank to inherit the default model above.">
+      <SettingsSection title="Default task models" description="Leave blank to inherit the provider's default model. Configure the provider in AI Provider.">
         {TASKS.map(t => (
           <SettingsField key={t.key} label={t.label} sub={t.hint} layout="column">
             <input
@@ -189,18 +154,8 @@ export function AdminDefaultsPage() {
         ))}
       </SettingsSection>
 
-      <SettingsSection title="Default API key" description="Used when a user has not set their own key on Platforms.">
-        <MaskedSecretField
-          configured={!!secrets?.has_default_api_key}
-          label="API key"
-          helper={secrets?.has_default_api_key ? 'A deployment default is configured.' : 'No default key — each user must supply one.'}
-          onSave={v => adminApi.systemSecrets.setApiKey(v).then(() => qc.invalidateQueries({ queryKey: ['admin-system-secrets'] }))}
-          onDelete={() => adminApi.systemSecrets.deleteApiKey().then(() => qc.invalidateQueries({ queryKey: ['admin-system-secrets'] }))}
-        />
-      </SettingsSection>
-
       <Button variant="primary" fullWidth loading={saveSystem.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => saveSystem.mutate()}>
-        {saved ? 'Saved' : 'Save changes'}
+        {saved ? 'Saved' : 'Save task models'}
       </Button>
       {saveSystem.isError && (
         <p className="text-xs text-[var(--color-danger)] text-center">{(saveSystem.error as Error).message}</p>

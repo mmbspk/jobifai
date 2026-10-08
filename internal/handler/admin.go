@@ -135,6 +135,7 @@ func (h *AdminHandlers) UsersList(w http.ResponseWriter, r *http.Request) {
 			Email:       u.Email,
 			DisplayName: u.DisplayName,
 			IsAdmin:     u.IsAdmin,
+			IsTester:    u.IsTester,
 			VerboseLogs: u.VerboseLogs,
 			CreatedAt:   u.CreatedAt.Format(time.RFC3339),
 			HasAPIKey:   config.HasUserLLMAPIKey(h.svc.Secrets, u.ID),
@@ -173,6 +174,7 @@ func (h *AdminHandlers) UserGet(w http.ResponseWriter, r *http.Request) {
 			Email:       u.Email,
 			DisplayName: u.DisplayName,
 			IsAdmin:     u.IsAdmin,
+			IsTester:    u.IsTester,
 			VerboseLogs: u.VerboseLogs,
 			CreatedAt:   u.CreatedAt.Format(time.RFC3339),
 			HasAPIKey:   config.HasUserLLMAPIKey(h.svc.Secrets, u.ID),
@@ -202,6 +204,7 @@ func (h *AdminHandlers) UserUpdate(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		IsAdmin        *bool                      `json:"is_admin"`
+		IsTester       *bool                      `json:"is_tester"`
 		VerboseLogs    *bool                      `json:"verbose_logs"`
 		LLMOverrides   *domain.LLMOverrides       `json:"llm_overrides"`
 		QuotaOverrides *domain.QuotaUserOverrides `json:"quota_overrides"`
@@ -214,6 +217,22 @@ func (h *AdminHandlers) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		if err := h.svc.Users.SetAdmin(userID, *req.IsAdmin); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 			return
+		}
+		// Promoting to admin: clear personal provider credentials (they use admin panel instead)
+		if *req.IsAdmin {
+			_ = h.svc.Secrets.Delete(userID, "llm_api_key")
+			_ = h.svc.Config.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{})
+		}
+	}
+	if req.IsTester != nil {
+		if err := h.svc.Users.SetTester(userID, *req.IsTester); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+			return
+		}
+		// Demoting from tester: delete personal provider credentials
+		if !*req.IsTester {
+			_ = h.svc.Secrets.Delete(userID, "llm_api_key")
+			_ = h.svc.Config.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{})
 		}
 	}
 	if req.VerboseLogs != nil {

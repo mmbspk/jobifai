@@ -168,8 +168,10 @@ func ResolveOperationalSettings(store ConfigGetter, userID string) domain.Genera
 	return out
 }
 
-// ResolveLLMAPIKey returns the user's key if set, otherwise the system default.
-func ResolveLLMAPIKey(secrets SecretsKV, userID string, useProxy bool) (string, error) {
+// ResolveLLMAPIKey returns the user's personal key if allowPersonalKey is true and
+// the user has one set; otherwise falls back to the system default key.
+// allowPersonalKey should be true only for tester and admin users.
+func ResolveLLMAPIKey(secrets SecretsKV, userID string, allowPersonalKey bool, useProxy bool) (string, error) {
 	if useProxy {
 		if k, err := secrets.Get(userID, "proxy_key"); err == nil && k != "" {
 			return k, nil
@@ -178,7 +180,7 @@ func ResolveLLMAPIKey(secrets SecretsKV, userID string, useProxy bool) (string, 
 			return k, nil
 		}
 	}
-	if secrets.Has(userID, "llm_api_key") {
+	if allowPersonalKey && secrets.Has(userID, "llm_api_key") {
 		return secrets.Get(userID, "llm_api_key")
 	}
 	return secrets.Get(domain.SystemUserID, "llm_api_key")

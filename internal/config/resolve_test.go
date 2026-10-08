@@ -44,7 +44,7 @@ func TestResolveOperationalSettings_SystemDefaultAPIKeyScope(t *testing.T) {
 	got = config.ResolveOperationalSettings(store, userID)
 	assert.Equal(t, 12, got.HumanBehavior.DailyApplicationLimit)
 
-	key, err := config.ResolveLLMAPIKey(secrets, userID, false)
+	key, err := config.ResolveLLMAPIKey(secrets, userID, false, false)
 	require.NoError(t, err)
 	assert.Equal(t, "sk-system", key)
 }

@@ -35,7 +35,7 @@ func (h *AdminHandlers) evalService(real bool) *engine.Service {
 			BaseLLM: gs.LLM,
 			KeyResolver: func(provider string) (string, bool) {
 				if provider == gs.LLM.Provider {
-					k, err := config.ResolveLLMAPIKey(h.svc.Secrets, "__default__", gs.LLM.UseProxy)
+					k, err := config.ResolveLLMAPIKey(h.svc.Secrets, "__default__", false, gs.LLM.UseProxy)
 					return k, err == nil && k != ""
 				}
 				k, err := h.svc.Secrets.Get("__default__", "eval_"+provider+"_api_key")

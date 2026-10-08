@@ -23,6 +23,7 @@ type User struct {
 	GoogleID      string // empty for email/password accounts
 	AvatarURL     string
 	IsAdmin       bool
+	IsTester      bool
 	VerboseLogs   bool
 	EmailVerified bool
 	PendingEmail  string // non-empty when an email-change verification is outstanding
@@ -111,43 +112,35 @@ func (s *UserStore) UpsertGoogle(googleID, email, displayName, avatarURL string)
 	return &User{ID: id, Email: email, GoogleID: googleID, DisplayName: displayName, AvatarURL: avatarURL, EmailVerified: true, CreatedAt: now}, nil
 }
 
+const userSelectCols = `id, email, COALESCE(password_hash,''), display_name,
+        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(is_tester,0), COALESCE(verbose_logs,0), COALESCE(email_verified,0),
+        COALESCE(pending_email,''), created_at`
+
 // ByID fetches a user by their primary key.
 func (s *UserStore) ByID(id string) (*User, error) {
 	return s.scan(s.db.QueryRow(
-		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0),
-		        COALESCE(pending_email,''), created_at
-		 FROM users WHERE id = ?`, id,
+		`SELECT `+userSelectCols+` FROM users WHERE id = ?`, id,
 	))
 }
 
 // ByEmail fetches a user by email.
 func (s *UserStore) ByEmail(email string) (*User, error) {
 	return s.scan(s.db.QueryRow(
-		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0),
-		        COALESCE(pending_email,''), created_at
-		 FROM users WHERE email = ?`, email,
+		`SELECT `+userSelectCols+` FROM users WHERE email = ?`, email,
 	))
 }
 
 // ByGoogleID fetches a user by their Google subject ID.
 func (s *UserStore) ByGoogleID(googleID string) (*User, error) {
 	return s.scan(s.db.QueryRow(
-		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0),
-		        COALESCE(pending_email,''), created_at
-		 FROM users WHERE google_id = ?`, googleID,
+		`SELECT `+userSelectCols+` FROM users WHERE google_id = ?`, googleID,
 	))
 }
 
 // List returns all users ordered by created_at descending.
 func (s *UserStore) List() ([]User, error) {
 	rows, err := s.db.Query(
-		`SELECT id, email, COALESCE(password_hash,''), display_name,
-		        COALESCE(google_id,''), COALESCE(avatar_url,''), is_admin, COALESCE(verbose_logs,0), COALESCE(email_verified,0),
-		        COALESCE(pending_email,''), created_at
-		 FROM users ORDER BY created_at DESC`,
+		`SELECT ` + userSelectCols + ` FROM users ORDER BY created_at DESC`,
 	)
 	if err != nil {
 		return nil, err
@@ -156,10 +149,11 @@ func (s *UserStore) List() ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		var verbose, emailVerified int
-		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &emailVerified, &u.PendingEmail, &u.CreatedAt); err != nil {
+		var tester, verbose, emailVerified int
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &tester, &verbose, &emailVerified, &u.PendingEmail, &u.CreatedAt); err != nil {
 			return nil, err
 		}
+		u.IsTester = tester != 0
 		u.VerboseLogs = verbose != 0
 		u.EmailVerified = emailVerified != 0
 		out = append(out, u)
@@ -167,9 +161,23 @@ func (s *UserStore) List() ([]User, error) {
 	return out, rows.Err()
 }
 
-// SetAdmin updates the is_admin flag for a user.
+// SetAdmin updates the is_admin flag for a user. Promoting to admin also clears is_tester.
 func (s *UserStore) SetAdmin(userID string, isAdmin bool) error {
-	_, err := s.db.Exec(`UPDATE users SET is_admin = ?, updated_at = ? WHERE id = ?`, isAdmin, time.Now(), userID)
+	if isAdmin {
+		_, err := s.db.Exec(`UPDATE users SET is_admin = 1, is_tester = 0, updated_at = ? WHERE id = ?`, time.Now(), userID)
+		return err
+	}
+	_, err := s.db.Exec(`UPDATE users SET is_admin = 0, updated_at = ? WHERE id = ?`, time.Now(), userID)
+	return err
+}
+
+// SetTester updates the is_tester flag for a user. Testers cannot also be admins.
+func (s *UserStore) SetTester(userID string, isTester bool) error {
+	v := 0
+	if isTester {
+		v = 1
+	}
+	_, err := s.db.Exec(`UPDATE users SET is_tester = ?, updated_at = ? WHERE id = ?`, v, time.Now(), userID)
 	return err
 }
 
@@ -220,8 +228,9 @@ func (s *UserStore) Update(userID, displayName, avatarURL string) error {
 
 func (s *UserStore) scan(row *sql.Row) (*User, error) {
 	var u User
-	var verbose, emailVerified int
-	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &verbose, &emailVerified, &u.PendingEmail, &u.CreatedAt)
+	var tester, verbose, emailVerified int
+	err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.GoogleID, &u.AvatarURL, &u.IsAdmin, &tester, &verbose, &emailVerified, &u.PendingEmail, &u.CreatedAt)
+	u.IsTester = tester != 0
 	u.VerboseLogs = verbose != 0
 	u.EmailVerified = emailVerified != 0
 	if errors.Is(err, sql.ErrNoRows) {

@@ -32,6 +32,7 @@ type LLMUsageEventInput struct {
 	Attempt             int
 	PricingSource       string
 	PricingVersion      string
+	PersonalProvider    bool
 }
 
 // InsertLLMUsageEvent persists one event without quota (tests only).

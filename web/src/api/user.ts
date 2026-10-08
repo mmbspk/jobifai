@@ -29,6 +29,7 @@ export interface Me {
   has_password: boolean
   has_google: boolean
   is_admin?: boolean
+  is_tester?: boolean
   email_verified?: boolean
   pending_email?: string | null
 }

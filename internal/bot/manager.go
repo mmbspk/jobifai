@@ -75,6 +75,7 @@ type Manager struct {
 	retention        retentionAfterSubmit
 	llmReuse         *llmreuse.Store
 	submitWorkGuard  documents.UserWorkGuard
+	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
 }
 
 type retentionAfterSubmit interface {
@@ -122,6 +123,12 @@ func (m *Manager) SetLLMBilling(store *llmpolicy.Store, catalog *pricing.Catalog
 	m.llmPolicy = store
 	m.llmCatalog = catalog
 	m.usageLedger = ledger
+}
+
+// SetUserTypeChecker wires a lookup that reports whether a user is admin or tester,
+// used to decide whether their personal LLM API key is eligible during automation.
+func (m *Manager) SetUserTypeChecker(fn func(userID string) (isAdmin, isTester bool)) {
+	m.userTypeChecker = fn
 }
 
 func NewManager(
@@ -897,7 +904,12 @@ func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings) (Res
 // nil if no key is stored. When UseProxy is true, proxy_key takes precedence
 // over llm_api_key — matching the same logic used by the handler layer.
 func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.Client {
-	apiKey, err := config.ResolveLLMAPIKey(m.secrets, userID, gs.LLM.UseProxy)
+	allowPersonal := false
+	if m.userTypeChecker != nil {
+		isAdmin, isTester := m.userTypeChecker(userID)
+		allowPersonal = isAdmin || isTester
+	}
+	apiKey, err := config.ResolveLLMAPIKey(m.secrets, userID, allowPersonal, gs.LLM.UseProxy)
 	if err != nil || apiKey == "" {
 		return nil
 	}
