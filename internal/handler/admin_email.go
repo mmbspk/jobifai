@@ -104,6 +104,7 @@ func snapshotEmailSender(svc *Services) EmailSender {
 	if ds, ok := svc.EmailSender.(*dynamicEmailSender); ok {
 		s, err := buildEmailSenderFromConfig(ds.cfgStore, ds.secrets)
 		if err != nil {
+			log.Warn().Err(err).Msg("email: not configured — transactional email will not be sent; configure SMTP in Admin → Defaults → Transactional email")
 			return email.NoopSender{}
 		}
 		return s
