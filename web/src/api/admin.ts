@@ -1,5 +1,5 @@
 import { apiDelete, apiGet, apiPost, apiPut } from './client'
-import type { AdminUserDetail, AdminUserRow, GeneralSettings, LLMOverrides, QuotaUserOverrides } from '../types'
+import type { AdminUserDetail, AdminUserRow, AppSettings, GeneralSettings, LLMOverrides, QuotaUserOverrides } from '../types'
 
 export interface SystemSecretsStatus {
   has_default_api_key: boolean
@@ -8,6 +8,12 @@ export interface SystemSecretsStatus {
 }
 
 export const adminApi = {
+  app: {
+    settings: {
+      get: () => apiGet<AppSettings>('/admin/app/settings'),
+      set: (body: AppSettings) => apiPut<{ message: string }>('/admin/app/settings', body),
+    },
+  },
   system: {
     get: () => apiGet<GeneralSettings>('/admin/system'),
     set: (body: GeneralSettings) => apiPut<void>('/admin/system', body),

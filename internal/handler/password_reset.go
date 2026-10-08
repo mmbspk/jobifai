@@ -48,14 +48,15 @@ func (h *PasswordResetHandlers) ForgotPassword(w http.ResponseWriter, r *http.Re
 
 	// Snapshot sender before goroutine so no DB access happens after request ends.
 	snd := snapshotEmailSender(h.svc)
+	baseURL := ResolvePublicAppURL(h.svc, r)
 	go func() {
-		if err := h.sendPasswordResetEmail(req.Email, snd); err != nil {
+		if err := h.sendPasswordResetEmail(req.Email, snd, baseURL); err != nil {
 			log.Error().Err(err).Str("email", req.Email).Msg("forgot password: failed")
 		}
 	}()
 }
 
-func (h *PasswordResetHandlers) sendPasswordResetEmail(emailAddr string, snd EmailSender) error {
+func (h *PasswordResetHandlers) sendPasswordResetEmail(emailAddr string, snd EmailSender, baseURL string) error {
 	if h.db == nil || h.users == nil {
 		return nil
 	}
@@ -81,7 +82,7 @@ func (h *PasswordResetHandlers) sendPasswordResetEmail(emailAddr string, snd Ema
 		return fmt.Errorf("forgot password: create token: %w", err)
 	}
 
-	resetURL := buildPasswordResetURL(h.svc.AppBaseURL, rawToken)
+	resetURL := buildPasswordResetURL(baseURL, rawToken)
 	if err := snd.SendPasswordReset(context.Background(), user.Email, user.DisplayName, resetURL); err != nil {
 		return fmt.Errorf("forgot password: send email: %w", err)
 	}
@@ -134,12 +135,3 @@ func (h *PasswordResetHandlers) ResetPassword(w http.ResponseWriter, r *http.Req
 	okMsg(w, "password reset successfully — please sign in with your new password")
 }
 
-// buildPasswordResetURL constructs the password-reset link.
-// Falls back to localhost when APP_BASE_URL is unset (logs a warning).
-func buildPasswordResetURL(baseURL, rawToken string) string {
-	if baseURL == "" {
-		log.Warn().Msg("APP_BASE_URL not set — password reset link uses http://localhost:8081 fallback; set APP_BASE_URL in production")
-		baseURL = "http://localhost:8081"
-	}
-	return fmt.Sprintf("%s/reset-password?token=%s", strings.TrimRight(baseURL, "/"), rawToken)
-}

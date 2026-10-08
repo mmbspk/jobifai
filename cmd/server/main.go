@@ -234,9 +234,7 @@ func main() {
 
 	// ── Router ──────────────────────────────────────────────────────────
 	appBaseURL := os.Getenv("APP_BASE_URL")
-	if appBaseURL == "" {
-		log.Warn().Msg("APP_BASE_URL is not set — email verification links will use http://localhost:8081 as fallback; set APP_BASE_URL for production deployments")
-	}
+	handler.BootstrapPublicAppURL(cfgStore, appBaseURL)
 	svc := &handler.Services{
 		StartedAt:    time.Now(),
 		DB:           database,

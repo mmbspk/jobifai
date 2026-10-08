@@ -266,6 +266,9 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/api/admin/models/evals/{id}/detail", adminH.ModelsEvalDetail)
 			r.Post("/api/admin/models/policies/{task}/approve", adminH.ModelsPolicyApprove)
 			r.Post("/api/admin/models/policies/{task}/rollback", adminH.ModelsPolicyRollback)
+			// Application settings (canonical public URL)
+			r.Get("/api/admin/app/settings", adminH.AppSettingsGet)
+			r.Put("/api/admin/app/settings", adminH.AppSettingsSet)
 			// Email configuration
 			r.Get("/api/admin/email/settings", adminH.EmailSettingsGet)
 			r.Put("/api/admin/email/settings", adminH.EmailSettingsSet)

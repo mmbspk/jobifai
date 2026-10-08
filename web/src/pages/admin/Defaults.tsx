@@ -10,7 +10,7 @@ import { MaskedSecretField } from '../../components/settings/MaskedSecretField'
 import { Switch } from '../../components/ui/switch'
 import { inputClassName } from '../../components/ui/input'
 import { cn } from '../../lib'
-import type { LLMConfig } from '../../types'
+import type { AppSettings, LLMConfig } from '../../types'
 
 const TASKS = [
   { key: 'scoring', label: 'Suitability scoring', hint: 'Once per job. Haiku recommended.' },
@@ -23,9 +23,13 @@ const TASKS = [
 
 export function AdminDefaultsPage() {
   const qc = useQueryClient()
+  const { data: appData } = useQuery({ queryKey: ['admin-app-settings'], queryFn: adminApi.app.settings.get })
   const { data: system } = useQuery({ queryKey: ['admin-system'], queryFn: adminApi.system.get })
   const { data: secrets } = useQuery({ queryKey: ['admin-system-secrets'], queryFn: adminApi.systemSecrets.get })
   const { data: emailData } = useQuery({ queryKey: ['admin-email-settings'], queryFn: adminApi.email.settings.get })
+  const [appCfg, setAppCfg] = useState<AppSettings>({})
+  const [appSaved, setAppSaved] = useState(false)
+  const [appError, setAppError] = useState<string | null>(null)
   const [llm, setLlm] = useState<LLMConfig>({})
   const [saved, setSaved] = useState(false)
   const [emailCfg, setEmailCfg] = useState<EmailSettingsRequest>({})
@@ -33,6 +37,10 @@ export function AdminDefaultsPage() {
   const [testTo, setTestTo] = useState('')
   const [testMsg, setTestMsg] = useState<string | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (appData) setAppCfg({ public_app_url: appData.public_app_url ?? '' })
+  }, [appData])
 
   useEffect(() => {
     if (system?.llm) setLlm(system.llm)
@@ -49,6 +57,19 @@ export function AdminDefaultsPage() {
       })
     }
   }, [emailData])
+
+  const saveApp = useMutation({
+    mutationFn: () => adminApi.app.settings.set(appCfg),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin-app-settings'] })
+      setAppSaved(true)
+      setAppError(null)
+      setTimeout(() => setAppSaved(false), 2000)
+    },
+    onError: (e: Error) => {
+      setAppError(e.message)
+    },
+  })
 
   const saveSystem = useMutation({
     mutationFn: async () => {
@@ -96,6 +117,28 @@ export function AdminDefaultsPage() {
         title="Defaults"
         description="Deployment-wide LLM settings. Accounts inherit these unless overridden on the Users tab."
       />
+
+      <SettingsSection title="Application">
+        <SettingsField layout="column" label="Public application URL">
+          <input
+            className={inputClassName}
+            value={appCfg.public_app_url ?? ''}
+            onChange={e => setAppCfg({ ...appCfg, public_app_url: e.target.value })}
+            placeholder="https://jobifai.com.au"
+          />
+          <p className="text-sm text-muted-foreground mt-1">
+            The public browser URL for Jobifai. Used in verification, password-reset and other externally generated links.
+            Leave empty for local development (resolved from browser origin).
+          </p>
+        </SettingsField>
+        <div className="flex items-center gap-3 mt-2">
+          <Button onClick={() => saveApp.mutate()} disabled={saveApp.isPending}>
+            {appSaved ? <Check className="h-4 w-4 text-green-500" /> : null}
+            {appSaved ? 'Saved' : 'Save application settings'}
+          </Button>
+        </div>
+        {appError && <p className="text-sm text-destructive mt-1">{appError}</p>}
+      </SettingsSection>
 
       <SettingsSection title="Default LLM">
         <div className="flex flex-wrap gap-4">

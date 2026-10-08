@@ -421,3 +421,7 @@ export interface EmailConfig {
   smtp_user?: string
   email_from?: string
 }
+
+export interface AppSettings {
+  public_app_url?: string
+}
