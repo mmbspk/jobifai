@@ -344,6 +344,7 @@ export interface SecretsConfig {
 
 export interface ResumeStyle {
   name: string
+  display_name?: string
   css_file: string
 }
 

@@ -48,12 +48,12 @@ type PlatformSession struct {
 // ─── Jobs ──────────────────────────────────────────────────────────────────
 
 type AppliedJob struct {
-	ID               string        `json:"id"`
-	Platform         Platform      `json:"platform"`
-	Company          string        `json:"company"`
-	Role             string        `json:"role"`
-	Location         string        `json:"location,omitempty"`
-	Link             string        `json:"link"`
+	ID                          string        `json:"id"`
+	Platform                    Platform      `json:"platform"`
+	Company                     string        `json:"company"`
+	Role                        string        `json:"role"`
+	Location                    string        `json:"location,omitempty"`
+	Link                        string        `json:"link"`
 	ResumePath                  string        `json:"resume_path,omitempty"`
 	CoverLetterPath             string        `json:"cover_letter_path,omitempty"`
 	ResumeContentVersionID      string        `json:"resume_content_version_id,omitempty"`
@@ -91,24 +91,24 @@ type SkippedJob struct {
 }
 
 type PendingReview struct {
-	ResumeContentVersionID      string `json:"resume_content_version_id,omitempty"`
-	CoverLetterContentVersionID string `json:"cover_letter_content_version_id,omitempty"`
-	DocumentRefsJSON            string `json:"document_refs_json,omitempty"` // frozen pack after prepare/approve
-	JobID                string        `json:"job_id"`
-	Company              string        `json:"company"`
-	Role                 string        `json:"role"`
-	Location             string        `json:"location,omitempty"`
-	Platform             Platform      `json:"platform"`
-	Link                 string        `json:"link,omitempty"`
-	ResumePath           string        `json:"resume_path,omitempty"`
-	CoverLetterPath      string        `json:"cover_letter_path,omitempty"`
-	SuitabilityScore     int           `json:"suitability_score,omitempty"`
-	SuitabilityReasoning string        `json:"suitability_reasoning,omitempty"`
-	DueDate              string        `json:"due_date,omitempty"`
-	PostedDate           string        `json:"posted_date,omitempty"`
-	EasyApply            bool          `json:"easy_apply"`
-	HalalVerdict         *HalalVerdict `json:"halal_verdict,omitempty"`
-	CreatedAt            time.Time     `json:"created_at"`
+	ResumeContentVersionID      string        `json:"resume_content_version_id,omitempty"`
+	CoverLetterContentVersionID string        `json:"cover_letter_content_version_id,omitempty"`
+	DocumentRefsJSON            string        `json:"document_refs_json,omitempty"` // frozen pack after prepare/approve
+	JobID                       string        `json:"job_id"`
+	Company                     string        `json:"company"`
+	Role                        string        `json:"role"`
+	Location                    string        `json:"location,omitempty"`
+	Platform                    Platform      `json:"platform"`
+	Link                        string        `json:"link,omitempty"`
+	ResumePath                  string        `json:"resume_path,omitempty"`
+	CoverLetterPath             string        `json:"cover_letter_path,omitempty"`
+	SuitabilityScore            int           `json:"suitability_score,omitempty"`
+	SuitabilityReasoning        string        `json:"suitability_reasoning,omitempty"`
+	DueDate                     string        `json:"due_date,omitempty"`
+	PostedDate                  string        `json:"posted_date,omitempty"`
+	EasyApply                   bool          `json:"easy_apply"`
+	HalalVerdict                *HalalVerdict `json:"halal_verdict,omitempty"`
+	CreatedAt                   time.Time     `json:"created_at"`
 }
 
 type JobStats struct {
@@ -298,24 +298,24 @@ type HumanBehaviorConfig struct {
 }
 
 type GeneralSettings struct {
-	LLM                        LLMConfig           `json:"llm,omitempty"`
-	Browser                    BrowserConfig       `json:"browser,omitempty"`
-	HumanBehavior              HumanBehaviorConfig `json:"human_behavior,omitempty"`
-	DefaultResumeMarket        string              `json:"default_resume_market,omitempty"`
-	RequireReview              bool                `json:"require_review_before_submit,omitempty"`
-	JobSuitabilityScore        int                 `json:"job_suitability_score,omitempty"`
-	MaxJobsPerKeyword          int                 `json:"max_jobs_per_keyword,omitempty"`
-	HalalJobFilter             bool                `json:"halal_job_filter,omitempty"`
-	GenerateNewResumeDocs      bool                `json:"generate_new_resume_docs,omitempty"`
-	CoverLetterTone            string              `json:"cover_letter_tone,omitempty"`
-	DocumentPolicies           DocumentPolicies    `json:"document_policies,omitempty"`
+	LLM                   LLMConfig           `json:"llm,omitempty"`
+	Browser               BrowserConfig       `json:"browser,omitempty"`
+	HumanBehavior         HumanBehaviorConfig `json:"human_behavior,omitempty"`
+	DefaultResumeMarket   string              `json:"default_resume_market,omitempty"`
+	RequireReview         bool                `json:"require_review_before_submit,omitempty"`
+	JobSuitabilityScore   int                 `json:"job_suitability_score,omitempty"`
+	MaxJobsPerKeyword     int                 `json:"max_jobs_per_keyword,omitempty"`
+	HalalJobFilter        bool                `json:"halal_job_filter,omitempty"`
+	GenerateNewResumeDocs bool                `json:"generate_new_resume_docs,omitempty"`
+	CoverLetterTone       string              `json:"cover_letter_tone,omitempty"`
+	DocumentPolicies      DocumentPolicies    `json:"document_policies,omitempty"`
 }
 
 // AnswerQuestionsRequest is the payload for POST /api/resume/answer-questions.
 type AnswerQuestionsRequest struct {
-	JobURL      string   `json:"job_url"`
-	JobDesc     string   `json:"job_description"`
-	Questions   []string `json:"questions"`
+	JobURL    string   `json:"job_url"`
+	JobDesc   string   `json:"job_description"`
+	Questions []string `json:"questions"`
 }
 
 // QuestionAnswer holds a single question and its LLM-generated answer.
@@ -361,19 +361,19 @@ type SearchTarget struct {
 }
 
 type WorkPreferences struct {
-	Remote             bool                  `json:"remote,omitempty"`
-	Hybrid             bool                  `json:"hybrid,omitempty"`
-	Onsite             bool                  `json:"onsite,omitempty"`
-	ExperienceLevel    ExperienceLevelConfig `json:"experience_level,omitempty"`
-	JobTypes           JobTypeConfig         `json:"job_types,omitempty"`
-	Date               DateFilterConfig      `json:"date_filters,omitempty"`
-	Positions          []string              `json:"positions,omitempty"`
-	SearchTargets      []SearchTarget        `json:"search_targets,omitempty"`
-	Locations          []string              `json:"locations,omitempty"`
-	Distance           int                   `json:"distance,omitempty"`
-	CompanyBlacklist   []string              `json:"company_blacklist,omitempty"`
-	TitleBlacklist     []string              `json:"title_blacklist,omitempty"`
-	LocationBlacklist  []string              `json:"location_blacklist,omitempty"`
+	Remote            bool                  `json:"remote,omitempty"`
+	Hybrid            bool                  `json:"hybrid,omitempty"`
+	Onsite            bool                  `json:"onsite,omitempty"`
+	ExperienceLevel   ExperienceLevelConfig `json:"experience_level,omitempty"`
+	JobTypes          JobTypeConfig         `json:"job_types,omitempty"`
+	Date              DateFilterConfig      `json:"date_filters,omitempty"`
+	Positions         []string              `json:"positions,omitempty"`
+	SearchTargets     []SearchTarget        `json:"search_targets,omitempty"`
+	Locations         []string              `json:"locations,omitempty"`
+	Distance          int                   `json:"distance,omitempty"`
+	CompanyBlacklist  []string              `json:"company_blacklist,omitempty"`
+	TitleBlacklist    []string              `json:"title_blacklist,omitempty"`
+	LocationBlacklist []string              `json:"location_blacklist,omitempty"`
 }
 
 type SecretsConfig struct {
@@ -382,8 +382,9 @@ type SecretsConfig struct {
 }
 
 type ResumeStyle struct {
-	Name    string `json:"name"`
-	CSSFile string `json:"css_file"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
+	CSSFile     string `json:"css_file"`
 }
 
 type ResumeMarket struct {
