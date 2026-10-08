@@ -44,7 +44,7 @@ func TestResolveOperationalSettings_SystemDefaultAPIKeyScope(t *testing.T) {
 	got = config.ResolveOperationalSettings(store, userID, false)
 	assert.Equal(t, 12, got.HumanBehavior.DailyApplicationLimit)
 
-	key, err := config.ResolveLLMAPIKey(secrets, userID, false, false)
+	key, _, err := config.ResolveLLMAPIKey(secrets, userID, false, false)
 	require.NoError(t, err)
 	assert.Equal(t, "sk-system", key)
 }
@@ -154,12 +154,100 @@ func TestResolveLLMAPIKey_ProxyKeyRequiresAllowPersonal(t *testing.T) {
 	require.NoError(t, secrets.Set(domain.SystemUserID, "proxy_key", "system-proxy-key"))
 
 	// Regular user: must get system proxy key, not user proxy key.
-	k, err := config.ResolveLLMAPIKey(secrets, userID, false, true)
+	k, isPersonal, err := config.ResolveLLMAPIKey(secrets, userID, false, true)
 	require.NoError(t, err)
 	assert.Equal(t, "system-proxy-key", k, "regular user must use system proxy key")
+	assert.False(t, isPersonal, "system proxy key must not be flagged as personal")
 
 	// Tester: may use personal proxy key.
-	k, err = config.ResolveLLMAPIKey(secrets, userID, true, true)
+	k, isPersonal, err = config.ResolveLLMAPIKey(secrets, userID, true, true)
 	require.NoError(t, err)
 	assert.Equal(t, "user-proxy-key", k, "tester may use personal proxy key")
+	assert.True(t, isPersonal, "user proxy key must be flagged as personal")
+}
+
+// TestResolveLLMAPIKey_PersonalKeyFlaggedCorrectly verifies the isPersonal bool for the
+// non-proxy path: system key is false, user key is true.
+func TestResolveLLMAPIKey_PersonalKeyFlaggedCorrectly(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	secrets := config.NewSecretsStore(db, "test-passphrase")
+	userID := "user-attr"
+
+	require.NoError(t, secrets.Set(domain.SystemUserID, "llm_api_key", "sk-system"))
+	require.NoError(t, secrets.Set(userID, "llm_api_key", "sk-personal"))
+
+	// Regular user (allowPersonalKey=false) → system key, isPersonal=false.
+	k, isPersonal, err := config.ResolveLLMAPIKey(secrets, userID, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-system", k)
+	assert.False(t, isPersonal, "system key must not be flagged as personal")
+
+	// Tester (allowPersonalKey=true) → personal key, isPersonal=true.
+	k, isPersonal, err = config.ResolveLLMAPIKey(secrets, userID, true, false)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-personal", k)
+	assert.True(t, isPersonal, "personal key must be flagged as personal")
+}
+
+// TestEnforceLLMCredentialConsistency_RevertsOrphanedOverride verifies that when a tester
+// has a provider override but no personal key, EnforceLLMCredentialConsistency reverts
+// the LLM config to the system default to prevent mixing credentials.
+func TestEnforceLLMCredentialConsistency_RevertsOrphanedOverride(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := config.NewStore(db)
+	secrets := config.NewSecretsStore(db, "test-passphrase")
+
+	sys := domain.GeneralSettings{
+		LLM: domain.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+	}
+	require.NoError(t, store.Set(domain.SystemUserID, config.KeyGeneralSettings, sys))
+
+	userID := "tester-no-key"
+	require.NoError(t, store.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{
+		Provider: "openai", Model: "gpt-4o",
+	}))
+	// No personal llm_api_key set for this user.
+
+	gs := config.ResolveOperationalSettings(store, userID, true)
+	// Before consistency check, override is applied.
+	assert.Equal(t, "openai", gs.LLM.Provider)
+
+	config.EnforceLLMCredentialConsistency(store, secrets, userID, true, &gs)
+	assert.Equal(t, "claude", gs.LLM.Provider, "override must be reverted — no personal key")
+	assert.Equal(t, "claude-sonnet-4-6", gs.LLM.Model, "model must revert to system default")
+}
+
+// TestEnforceLLMCredentialConsistency_KeepsOverrideWhenKeyPresent verifies that the
+// consistency check does NOT revert LLM config when the tester has a personal key.
+func TestEnforceLLMCredentialConsistency_KeepsOverrideWhenKeyPresent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	store := config.NewStore(db)
+	secrets := config.NewSecretsStore(db, "test-passphrase")
+
+	require.NoError(t, store.Set(domain.SystemUserID, config.KeyGeneralSettings, domain.GeneralSettings{
+		LLM: domain.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+	}))
+
+	userID := "tester-with-key"
+	require.NoError(t, secrets.Set(userID, "llm_api_key", "sk-personal"))
+	require.NoError(t, store.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{
+		Provider: "openai", Model: "gpt-4o",
+	}))
+
+	gs := config.ResolveOperationalSettings(store, userID, true)
+	config.EnforceLLMCredentialConsistency(store, secrets, userID, true, &gs)
+	assert.Equal(t, "openai", gs.LLM.Provider, "override must be kept when personal key is present")
+	assert.Equal(t, "gpt-4o", gs.LLM.Model)
 }

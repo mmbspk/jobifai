@@ -175,25 +175,48 @@ func ResolveOperationalSettings(store ConfigGetter, userID string, allowLLMOverr
 	return out
 }
 
-// ResolveLLMAPIKey returns the API key to use for userID.
-// Personal keys (user-scoped llm_api_key or proxy_key) are only returned when
-// allowPersonalKey is true; otherwise the system key is used.
-// allowPersonalKey must be true only for tester and admin users.
-func ResolveLLMAPIKey(secrets SecretsKV, userID string, allowPersonalKey bool, useProxy bool) (string, error) {
+// ResolveLLMAPIKey returns the API key to use for userID, whether it is a personal
+// (user-scoped) key, and any error. The second return value is true only when the
+// key came from the user's own stored credential (llm_api_key or proxy_key), which
+// is the authoritative source for billing attribution and consistency checks.
+//
+// Personal keys are only returned when allowPersonalKey is true; otherwise the
+// system key is used. allowPersonalKey must be true only for tester and admin users.
+func ResolveLLMAPIKey(secrets SecretsKV, userID string, allowPersonalKey bool, useProxy bool) (key string, isPersonal bool, err error) {
 	if useProxy {
 		if allowPersonalKey {
-			if k, err := secrets.Get(userID, "proxy_key"); err == nil && k != "" {
-				return k, nil
+			if k, e := secrets.Get(userID, "proxy_key"); e == nil && k != "" {
+				return k, true, nil
 			}
 		}
-		if k, err := secrets.Get(domain.SystemUserID, "proxy_key"); err == nil && k != "" {
-			return k, nil
+		if k, e := secrets.Get(domain.SystemUserID, "proxy_key"); e == nil && k != "" {
+			return k, false, nil
 		}
 	}
 	if allowPersonalKey && secrets.Has(userID, "llm_api_key") {
-		return secrets.Get(userID, "llm_api_key")
+		k, e := secrets.Get(userID, "llm_api_key")
+		return k, true, e
 	}
-	return secrets.Get(domain.SystemUserID, "llm_api_key")
+	k, e := secrets.Get(domain.SystemUserID, "llm_api_key")
+	return k, false, e
+}
+
+// EnforceLLMCredentialConsistency ensures that a tester's personal provider/model
+// overrides are only used when a matching personal credential is available. When the
+// resolved LLM config differs from the system default but no personal key exists, the
+// config is reverted to the system LLM — preventing a mix of personal overrides with
+// Admin-funded credentials. This must be called after ResolveOperationalSettings and
+// before building the LLM client.
+func EnforceLLMCredentialConsistency(store ConfigGetter, secrets SecretsKV, userID string, allowOverrides bool, gs *domain.GeneralSettings) {
+	if !allowOverrides {
+		return
+	}
+	sys := SystemGeneralKV(store)
+	hasPersonalKey := secrets.Has(userID, "llm_api_key") ||
+		(gs.LLM.UseProxy && secrets.Has(userID, "proxy_key"))
+	if !hasPersonalKey && (gs.LLM.Provider != sys.LLM.Provider || gs.LLM.Model != sys.LLM.Model) {
+		gs.LLM = sys.LLM
+	}
 }
 
 // HasUserLLMAPIKey reports whether the user has their own API key override.

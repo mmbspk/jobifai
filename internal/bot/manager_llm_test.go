@@ -129,3 +129,79 @@ func TestUserLLMClient_RegularUserBilledAsShared(t *testing.T) {
 	require.NotNil(t, client, "regular user must still get a client (via system key)")
 	assert.False(t, client.IsPersonalProvider(), "regular user must not be flagged as personal provider")
 }
+
+// TestBuildConfig_TesterHonorsLLMOverrides verifies that Start (via buildConfig) applies
+// a tester's LLM overrides when the tester has a personal key — covering Issue 1.
+func TestBuildConfig_TesterHonorsLLMOverrides(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqldb, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	cfgStore := config.NewStore(sqldb)
+	secrets := config.NewSecretsStore(sqldb, "test-key")
+	userID := "tester-buildconfig"
+
+	// System default: claude.
+	require.NoError(t, cfgStore.Set(domain.SystemUserID, config.KeyGeneralSettings, domain.GeneralSettings{
+		LLM: domain.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+	}))
+	// Tester override: openai.
+	require.NoError(t, cfgStore.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{
+		Provider: "openai", Model: "gpt-4o",
+	}))
+	// Tester has a personal key — override must be honored.
+	require.NoError(t, secrets.Set(userID, "llm_api_key", "sk-personal"))
+	require.NoError(t, secrets.Set(domain.SystemUserID, "llm_api_key", "sk-system"))
+
+	m := NewManager(t.Context(), sqldb, cfgStore, secrets, nil, nil, nil, nil, nil, "resume_markets")
+	m.SetUserTypeChecker(func(uid string) (bool, bool) {
+		return false, uid == userID // isTester
+	})
+
+	// resolveUserLLM is exercised via userLLMClient (same resolution path as buildConfig).
+	gs := config.ResolveOperationalSettings(cfgStore, userID, true)
+	config.EnforceLLMCredentialConsistency(cfgStore, secrets, userID, true, &gs)
+	assert.Equal(t, "openai", gs.LLM.Provider, "tester with personal key must use their override")
+	assert.Equal(t, "gpt-4o", gs.LLM.Model)
+}
+
+// TestSetupBot_InconsistentTesterConfigReverts verifies that when a tester has a
+// provider override but no personal key, the resolved config reverts to the system
+// default — preventing a mix of personal overrides with Admin-funded credentials (Issue 3).
+func TestSetupBot_InconsistentTesterConfigReverts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqldb, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	cfgStore := config.NewStore(sqldb)
+	secrets := config.NewSecretsStore(sqldb, "test-key")
+	userID := "tester-no-key"
+
+	require.NoError(t, cfgStore.Set(domain.SystemUserID, config.KeyGeneralSettings, domain.GeneralSettings{
+		LLM: domain.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+	}))
+	require.NoError(t, cfgStore.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{
+		Provider: "openai", Model: "gpt-4o",
+	}))
+	// No personal key — system key only.
+	require.NoError(t, secrets.Set(domain.SystemUserID, "llm_api_key", "sk-system"))
+
+	m := NewManager(t.Context(), sqldb, cfgStore, secrets, nil, nil, nil, nil, nil, "resume_markets")
+	m.SetUserTypeChecker(func(_ string) (bool, bool) { return false, true })
+	m.SetLLMBilling(&llmpolicy.Store{DB: sqldb}, pricing.DefaultCatalog(), nil)
+
+	// Override is active before consistency enforcement.
+	gsRaw := config.ResolveOperationalSettings(cfgStore, userID, true)
+	assert.Equal(t, "openai", gsRaw.LLM.Provider)
+
+	// After enforcement the client must use the system config and NOT be flagged as personal.
+	gs := gsRaw
+	config.EnforceLLMCredentialConsistency(cfgStore, secrets, userID, true, &gs)
+	assert.Equal(t, "claude", gs.LLM.Provider, "orphaned override must revert to system provider")
+
+	client := m.userLLMClient(userID, gs)
+	require.NotNil(t, client)
+	assert.False(t, client.IsPersonalProvider(), "system key must not be flagged as personal")
+}

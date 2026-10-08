@@ -195,3 +195,108 @@ func TestAdminSetTester_SimultaneousAdminAndTesterRejected(t *testing.T) {
 		map[string]any{"is_admin": true, "is_tester": true})
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
+
+// TestAdminSetTester_OnAdminRejected verifies that setting is_tester=true on an existing
+// admin user is rejected, even when is_admin is omitted from the request (Issue 4).
+func TestAdminSetTester_OnAdminRejected(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+
+	adminToken := registerAndLogin(t, router, "admin@test.com", "password123")
+	setUserAdmin(t, db, "admin@test.com")
+
+	// Target is also an admin.
+	registerAndLogin(t, router, "admin2@test.com", "password123")
+	setUserAdmin(t, db, "admin2@test.com")
+
+	w := authGet(t, router, "/api/admin/users", adminToken)
+	require.Equal(t, http.StatusOK, w.Code)
+	var rows []map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&rows))
+	var targetID string
+	for _, r := range rows {
+		if r["email"] == "admin2@test.com" {
+			targetID = r["id"].(string)
+		}
+	}
+	require.NotEmpty(t, targetID)
+
+	// Sending only is_tester=true for an admin user must be rejected.
+	w = authPut(t, router, "/api/admin/users/"+targetID, adminToken,
+		map[string]any{"is_tester": true})
+	assert.Equal(t, http.StatusBadRequest, w.Code, "setting tester on admin user must fail")
+}
+
+// TestAdminSetTester_DemotionCleansProxyKey verifies that the tester's proxy_key is also
+// deleted when they are demoted, in addition to llm_api_key (Issue 4).
+func TestAdminSetTester_DemotionCleansProxyKey(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+
+	adminToken := registerAndLogin(t, router, "admin@test.com", "password123")
+	setUserAdmin(t, db, "admin@test.com")
+
+	registerAndLogin(t, router, "tester@test.com", "password123")
+	setUserTester(t, db, "tester@test.com")
+
+	w := authGet(t, router, "/api/admin/users", adminToken)
+	require.Equal(t, http.StatusOK, w.Code)
+	var rows []map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&rows))
+	var userID string
+	for _, r := range rows {
+		if r["email"] == "tester@test.com" {
+			userID = r["id"].(string)
+		}
+	}
+	require.NotEmpty(t, userID)
+
+	// Plant both personal keys.
+	require.NoError(t, svc.Secrets.Set(userID, "llm_api_key", "sk-personal"))
+	require.NoError(t, svc.Secrets.Set(userID, "proxy_key", "pk-personal"))
+
+	// Demote.
+	w = authPut(t, router, "/api/admin/users/"+userID, adminToken,
+		map[string]any{"is_tester": false})
+	require.Equal(t, http.StatusOK, w.Code)
+
+	assert.False(t, svc.Secrets.Has(userID, "llm_api_key"), "llm_api_key must be deleted on demotion")
+	assert.False(t, svc.Secrets.Has(userID, "proxy_key"), "proxy_key must be deleted on demotion")
+}
+
+// TestAdminSetTester_DemotionAtomicOrder verifies that credentials are cleaned up before
+// the role update: after a successful demotion the user is both role-demoted and key-free.
+func TestAdminSetTester_DemotionAtomicOrder(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+
+	adminToken := registerAndLogin(t, router, "admin@test.com", "password123")
+	setUserAdmin(t, db, "admin@test.com")
+
+	registerAndLogin(t, router, "tester@test.com", "password123")
+	setUserTester(t, db, "tester@test.com")
+
+	w := authGet(t, router, "/api/admin/users", adminToken)
+	require.Equal(t, http.StatusOK, w.Code)
+	var rows []map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&rows))
+	var userID string
+	for _, r := range rows {
+		if r["email"] == "tester@test.com" {
+			userID = r["id"].(string)
+		}
+	}
+	require.NotEmpty(t, userID)
+
+	require.NoError(t, svc.Secrets.Set(userID, "llm_api_key", "sk-personal"))
+
+	// Demote — must succeed atomically: role AND key both cleaned up.
+	w = authPut(t, router, "/api/admin/users/"+userID, adminToken,
+		map[string]any{"is_tester": false})
+	require.Equal(t, http.StatusOK, w.Code)
+
+	u, err := svc.Users.ByID(userID)
+	require.NoError(t, err)
+	assert.False(t, u.IsTester, "role must be demoted")
+	assert.False(t, svc.Secrets.Has(userID, "llm_api_key"), "personal key must be deleted")
+}

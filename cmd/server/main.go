@@ -422,13 +422,14 @@ func buildLLMDeps(userID string, checker func(string) (bool, bool), cfgStore *co
 	isAdmin, isTester := checker(userID)
 	allowPersonal := isAdmin || isTester
 	gs := config.ResolveOperationalSettings(cfgStore, userID, allowPersonal)
-	apiKey, err := config.ResolveLLMAPIKey(secrets, userID, allowPersonal, gs.LLM.UseProxy)
+	// Issue 3: revert LLM config to system default when overrides exist but no personal key.
+	config.EnforceLLMCredentialConsistency(cfgStore, secrets, userID, allowPersonal, &gs)
+	apiKey, isPersonal, err := config.ResolveLLMAPIKey(secrets, userID, allowPersonal, gs.LLM.UseProxy)
 	if err != nil || apiKey == "" {
 		return nil, nil, renderer, nil, false
 	}
 
-	usedPersonalKey := allowPersonal && secrets.Has(userID, "llm_api_key")
-	client := llm.New(gs.LLM, apiKey).WithUserID(userID).WithPersonalProvider(usedPersonalKey)
+	client := llm.New(gs.LLM, apiKey).WithUserID(userID).WithPersonalProvider(isPersonal)
 	if tracker != nil {
 		client = client.WithTracker(tracker)
 	}
@@ -447,7 +448,7 @@ func buildLLMDeps(userID string, checker func(string) (bool, bool), cfgStore *co
 	formAnswerC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskFormAnswer, userID)
 	formVisionC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskFormVision, userID)
 	tailor := resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC)
-	return resume.NewExtractor(extractC), tailor, renderer, client, usedPersonalKey
+	return resume.NewExtractor(extractC), tailor, renderer, client, isPersonal
 }
 
 // taskApplyWithFallback uses the base client for legacy/user misconfiguration only.

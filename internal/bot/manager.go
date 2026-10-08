@@ -762,7 +762,13 @@ func (m *Manager) InvalidateLinkedInBrowser(userID string) {
 }
 
 func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config, error) {
-	gs := config.ResolveOperationalSettings(m.cfgStore, userID, false)
+	allowLLMOverrides := false
+	if m.userTypeChecker != nil {
+		isAdmin, isTester := m.userTypeChecker(userID)
+		allowLLMOverrides = isAdmin || isTester
+	}
+	gs := config.ResolveOperationalSettings(m.cfgStore, userID, allowLLMOverrides)
+	config.EnforceLLMCredentialConsistency(m.cfgStore, m.secrets, userID, allowLLMOverrides, &gs)
 	if gs.HumanBehavior.DailyApplicationLimit == 0 {
 		gs.HumanBehavior.DailyApplicationLimit = 40
 	}
@@ -909,12 +915,11 @@ func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.C
 		isAdmin, isTester := m.userTypeChecker(userID)
 		allowPersonal = isAdmin || isTester
 	}
-	apiKey, err := config.ResolveLLMAPIKey(m.secrets, userID, allowPersonal, gs.LLM.UseProxy)
+	apiKey, isPersonal, err := config.ResolveLLMAPIKey(m.secrets, userID, allowPersonal, gs.LLM.UseProxy)
 	if err != nil || apiKey == "" {
 		return nil
 	}
-	usedPersonalKey := allowPersonal && m.secrets.Has(userID, "llm_api_key")
-	client := llm.New(gs.LLM, apiKey).WithUserID(userID).WithPersonalProvider(usedPersonalKey)
+	client := llm.New(gs.LLM, apiKey).WithUserID(userID).WithPersonalProvider(isPersonal)
 	if m.usageLedger != nil {
 		client = client.WithBilling(llm.BillingHooks{Ledger: m.usageLedger})
 	}
@@ -948,6 +953,7 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		allowLLMOverrides = isAdmin || isTester
 	}
 	gs := config.ResolveOperationalSettings(m.cfgStore, userID, allowLLMOverrides)
+	config.EnforceLLMCredentialConsistency(m.cfgStore, m.secrets, userID, allowLLMOverrides, &gs)
 	if market != "" {
 		gs.DefaultResumeMarket = market
 	}
