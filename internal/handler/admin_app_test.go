@@ -227,3 +227,52 @@ func TestEmailChangeRequest_UsesConfiguredPublicURL(t *testing.T) {
 	assert.True(t, strings.HasPrefix(sentURL, "https://change.jobifai.example/"),
 		"expected change-verify URL to start with https://change.jobifai.example/, got: %s", sentURL)
 }
+
+// waitForResendVerificationEmailTo blocks until a reminder (resend) verification email to a specific address is captured.
+func waitForResendVerificationEmailTo(t *testing.T, capture *email.CaptureSender, toEmail string) *email.CapturedEmail {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, m := range capture.All() {
+			if m.Reminder && m.VerifyURL != "" && m.To == toEmail {
+				cp := m
+				return &cp
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for resend verification email to %s", toEmail)
+	return nil
+}
+
+func TestResendVerificationEmail_UsesConfiguredPublicURL(t *testing.T) {
+	router, svc, capture := buildAppTestRouter(t)
+
+	// Register user (will be unverified initially, with a verification token)
+	registerAndLogin(t, router, "resend-urltest@example.com", "password123")
+
+	// Set app URL via admin
+	adminTok := registerAndLogin(t, router, "resend-admin@example.com", "password123")
+	setUserAdmin(t, svc.DB, "resend-admin@example.com")
+	w := authPut(t, router, "/api/admin/app/settings", adminTok, map[string]string{
+		"public_app_url": "https://resend.jobifai.example",
+	})
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// Backdate all existing verification tokens so the 5-minute resend rate limit is bypassed
+	_, err := svc.DB.Exec(`UPDATE email_verification_tokens SET created_at = datetime('now', '-10 minutes')`)
+	require.NoError(t, err)
+
+	// Request resend — should use the configured PublicAppURL
+	body, _ := json.Marshal(map[string]string{"email": "resend-urltest@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/auth/resend-verification", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusAccepted, rr.Code)
+
+	sent := waitForResendVerificationEmailTo(t, capture, "resend-urltest@example.com")
+	require.NotNil(t, sent)
+	assert.True(t, strings.HasPrefix(sent.VerifyURL, "https://resend.jobifai.example/"),
+		"expected resend VerifyURL to start with https://resend.jobifai.example/, got: %s", sent.VerifyURL)
+}

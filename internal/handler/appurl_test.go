@@ -25,10 +25,10 @@ func TestNormalizeAndValidateURL_TrailingSlash(t *testing.T) {
 	assert.Equal(t, "https://example.com", got)
 }
 
-func TestNormalizeAndValidateURL_PathStripped(t *testing.T) {
-	got, err := handler.NormalizeAndValidateURL("https://example.com/some/path")
-	require.NoError(t, err)
-	assert.Equal(t, "https://example.com", got)
+func TestNormalizeAndValidateURL_RejectsNonRootPath(t *testing.T) {
+	_, err := handler.NormalizeAndValidateURL("https://example.com/some/path")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path")
 }
 
 func TestNormalizeAndValidateURL_RejectsQueryString(t *testing.T) {
@@ -149,4 +149,38 @@ func TestBootstrapPublicAppURL_NoopWhenEnvEmpty(t *testing.T) {
 	var got domain.ApplicationSettings
 	_ = cfg.Get(domain.SystemUserID, "app_settings", &got)
 	assert.Equal(t, "", got.PublicAppURL)
+}
+
+func TestBootstrapPublicAppURL_AdminValuePersistsOverRestart(t *testing.T) {
+	db := newTestDB(t)
+	cfg := config.NewStore(db)
+
+	// Startup 1: APP_BASE_URL seeds the persisted value
+	handler.BootstrapPublicAppURL(cfg, "https://seed.example")
+	var got domain.ApplicationSettings
+	require.NoError(t, cfg.Get(domain.SystemUserID, "app_settings", &got))
+	assert.Equal(t, "https://seed.example", got.PublicAppURL)
+
+	// Admin overrides the persisted value at runtime
+	require.NoError(t, cfg.Set(domain.SystemUserID, "app_settings", domain.ApplicationSettings{PublicAppURL: "https://admin.example"}))
+
+	// Startup 2: different APP_BASE_URL must NOT overwrite the admin-configured value
+	handler.BootstrapPublicAppURL(cfg, "https://different.example")
+	require.NoError(t, cfg.Get(domain.SystemUserID, "app_settings", &got))
+	assert.Equal(t, "https://admin.example", got.PublicAppURL)
+}
+
+func TestResolvePublicAppURL_InvalidAppBaseURLRejected(t *testing.T) {
+	svc, _ := newTestServices(t)
+	svc.AppBaseURL = "not-a-valid-url"
+
+	// Without an Origin header the localhost fallback must be used, not the invalid env value
+	got := handler.ResolvePublicAppURL(svc, nil)
+	assert.Equal(t, "http://localhost:8081", got)
+
+	// A loopback Origin wins over the invalid AppBaseURL
+	r := httptest.NewRequest("GET", "/", nil)
+	r.Header.Set("Origin", "http://localhost:5173")
+	got = handler.ResolvePublicAppURL(svc, r)
+	assert.Equal(t, "http://localhost:5173", got)
 }

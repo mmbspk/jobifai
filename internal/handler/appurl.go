@@ -36,6 +36,9 @@ func NormalizeAndValidateURL(raw string) (string, error) {
 	if u.Fragment != "" {
 		return "", fmt.Errorf("URL must not include a fragment")
 	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("public application URL must not contain a path (use the root origin only, got path %q)", u.Path)
+	}
 	return u.Scheme + "://" + u.Host, nil
 }
 
@@ -67,17 +70,23 @@ func isLoopbackOrigin(origin string) bool {
 // Call this BEFORE spawning goroutines so the resolved URL can be passed as a
 // plain string. Never pass *http.Request into goroutines.
 func ResolvePublicAppURL(svc *Services, r *http.Request) string {
-	// A: persisted admin setting
+	// A: persisted admin setting (validate defensively — DB may have been edited manually)
 	if svc.Config != nil {
 		var appCfg domain.ApplicationSettings
 		_ = svc.Config.Get(domain.SystemUserID, keyAppSettings, &appCfg)
 		if appCfg.PublicAppURL != "" {
-			return appCfg.PublicAppURL
+			if normalized, err := NormalizeAndValidateURL(appCfg.PublicAppURL); err == nil && normalized != "" {
+				return normalized
+			}
+			log.Warn().Str("url", appCfg.PublicAppURL).Msg("persisted public app URL is malformed — skipping; reconfigure via Admin → Defaults → Application")
 		}
 	}
-	// B: APP_BASE_URL env var
+	// B: APP_BASE_URL env var (normalized at startup; validate defensively in case of direct Services construction)
 	if svc.AppBaseURL != "" {
-		return svc.AppBaseURL
+		if normalized, err := NormalizeAndValidateURL(svc.AppBaseURL); err == nil && normalized != "" {
+			return normalized
+		}
+		log.Warn().Str("url", svc.AppBaseURL).Msg("Services.AppBaseURL is malformed — skipping; set APP_BASE_URL to a valid http/https URL")
 	}
 	// C: loopback Origin from the current request
 	if r != nil {

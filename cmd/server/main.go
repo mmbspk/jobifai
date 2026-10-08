@@ -233,7 +233,12 @@ func main() {
 	botMgr.SetLLMReuse(llmReuseStore)
 
 	// ── Router ──────────────────────────────────────────────────────────
-	appBaseURL := os.Getenv("APP_BASE_URL")
+	rawAppBaseURL := os.Getenv("APP_BASE_URL")
+	appBaseURL, appURLErr := handler.NormalizeAndValidateURL(rawAppBaseURL)
+	if appURLErr != nil {
+		log.Warn().Err(appURLErr).Str("url", rawAppBaseURL).Msg("invalid APP_BASE_URL — ignoring environment value")
+		appBaseURL = ""
+	}
 	handler.BootstrapPublicAppURL(cfgStore, appBaseURL)
 	svc := &handler.Services{
 		StartedAt:    time.Now(),

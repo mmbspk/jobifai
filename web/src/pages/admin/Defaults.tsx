@@ -127,8 +127,11 @@ export function AdminDefaultsPage() {
             placeholder="https://jobifai.com.au"
           />
           <p className="text-sm text-muted-foreground mt-1">
-            The public browser URL for Jobifai. Used in verification, password-reset and other externally generated links.
-            Leave empty for local development (resolved from browser origin).
+            The public browser URL for Jobifai (e.g. <code>https://jobifai.com.au</code>). Used in
+            verification, password-reset and other externally generated links. Use the root origin
+            only — no path, query string or fragment. Leaving this empty allows the{' '}
+            <code>APP_BASE_URL</code> deployment value or browser-origin local-development fallback
+            to be used; clearing it does not permanently disable the deployment bootstrap value.
           </p>
         </SettingsField>
         <div className="flex items-center gap-3 mt-2">
