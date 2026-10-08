@@ -49,14 +49,12 @@ func (h *SettingsAIHandlers) Update(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "provider must be one of: claude, openai, gemini, ollama"})
 		return
 	}
+	// Always set the full override struct from the request, even when fields are empty.
+	// Empty string clears that override so the system default takes effect.
 	var overrides domain.LLMOverrides
 	_ = h.svc.Config.Get(userID, config.KeyLLMOverrides, &overrides)
-	if req.Provider != "" {
-		overrides.Provider = req.Provider
-	}
-	if req.Model != "" {
-		overrides.Model = req.Model
-	}
+	overrides.Provider = req.Provider
+	overrides.Model = req.Model
 	if err := h.svc.Config.Set(userID, config.KeyLLMOverrides, overrides); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return

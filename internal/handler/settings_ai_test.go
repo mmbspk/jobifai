@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/user/jobifai/internal/config"
+	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 )
 
@@ -119,4 +121,73 @@ func TestSettingsAI_ConnectionTestNilTester(t *testing.T) {
 	// LLMConnectionTester is nil — should get 503
 	w := authPost(t, router, "/api/settings/ai-provider/test", token, nil)
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+// TestSettingsAI_ClearOverride verifies that sending empty provider/model clears the override
+// so the tester falls back to the system default on the next GET.
+func TestSettingsAI_ClearOverride(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+
+	token := registerAndLogin(t, router, "tester@test.com", "password123")
+	setUserTester(t, db, "tester@test.com")
+
+	// Set an override first.
+	w := authPut(t, router, "/api/settings/ai-provider", token, map[string]string{
+		"provider": "openai",
+		"model":    "gpt-4o",
+	})
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// Clear by sending empty strings.
+	w = authPut(t, router, "/api/settings/ai-provider", token, map[string]string{
+		"provider": "",
+		"model":    "",
+	})
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// GET should now show no provider/model override.
+	w = authGet(t, router, "/api/settings/ai-provider", token)
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.Equal(t, "", resp["provider"], "provider override should be cleared")
+	assert.Equal(t, "", resp["model"], "model override should be cleared")
+}
+
+// TestSettingsAI_RegularUserLLMOverridesIgnored verifies that a regular user with
+// legacy LLM config in general_settings or KeyLLMOverrides cannot influence the resolved
+// provider/model through the config store (resolution enforced in ResolveOperationalSettings).
+func TestSettingsAI_RegularUserLLMOverridesIgnored(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+
+	// Register user and plant legacy LLM override directly in the DB.
+	token := registerAndLogin(t, router, "user@test.com", "password123")
+	_ = db
+	_ = token
+
+	// Resolve the user ID by looking up the user store.
+	u, err := svc.Users.ByEmail("user@test.com")
+	require.NoError(t, err)
+
+	// Plant legacy LLM override directly (simulating pre-migration data).
+	require.NoError(t, svc.Config.Set(u.ID, config.KeyLLMOverrides, domain.LLMOverrides{
+		Provider: "openai",
+		Model:    "gpt-4o",
+	}))
+
+	// System config.
+	require.NoError(t, svc.Config.Set(domain.SystemUserID, config.KeyGeneralSettings, domain.GeneralSettings{
+		LLM: domain.LLMConfig{Provider: "claude", Model: "claude-sonnet-4-6"},
+	}))
+
+	// The user cannot access the AI provider endpoint (forbidden).
+	w := authGet(t, router, "/api/settings/ai-provider", token)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+
+	// Verify resolution directly: the regular user's override must be ignored.
+	gs := config.ResolveOperationalSettings(svc.Config, u.ID, false)
+	assert.Equal(t, "claude", gs.LLM.Provider, "regular user must use system provider")
+	assert.Equal(t, "claude-sonnet-4-6", gs.LLM.Model, "regular user must use system model")
 }

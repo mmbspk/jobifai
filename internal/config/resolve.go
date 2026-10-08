@@ -131,8 +131,10 @@ func MergeLLM(base domain.LLMConfig, o domain.LLMOverrides) domain.LLMConfig {
 }
 
 // ResolveOperationalSettings merges system automation defaults, user application
-// preferences, and optional per-user LLM overrides — used by the bot and LLM factories.
-func ResolveOperationalSettings(store ConfigGetter, userID string) domain.GeneralSettings {
+// preferences, and — when allowLLMOverrides is true — optional per-user LLM overrides.
+// Pass allowLLMOverrides=true only for admin and tester users; regular users must always
+// use the system LLM configuration (provider, model, task models, proxy).
+func ResolveOperationalSettings(store ConfigGetter, userID string, allowLLMOverrides bool) domain.GeneralSettings {
 	sys := SystemGeneralKV(store)
 	user, err := getGeneral(store, userID)
 	hasUser := err == nil
@@ -140,6 +142,11 @@ func ResolveOperationalSettings(store ConfigGetter, userID string) domain.Genera
 		user = domain.GeneralSettings{}
 	}
 	out := applyUserApplicationFields(sys, user, hasUser)
+
+	if !allowLLMOverrides {
+		EnsureDocumentPolicies(&out)
+		return out
+	}
 
 	// Legacy: LLM stored on the user general_settings row before system defaults existed.
 	if hasUser && (user.LLM.Provider != "" || user.LLM.Model != "" || len(user.LLM.TaskModels) > 0 || user.LLM.UseProxy) {
@@ -168,13 +175,16 @@ func ResolveOperationalSettings(store ConfigGetter, userID string) domain.Genera
 	return out
 }
 
-// ResolveLLMAPIKey returns the user's personal key if allowPersonalKey is true and
-// the user has one set; otherwise falls back to the system default key.
-// allowPersonalKey should be true only for tester and admin users.
+// ResolveLLMAPIKey returns the API key to use for userID.
+// Personal keys (user-scoped llm_api_key or proxy_key) are only returned when
+// allowPersonalKey is true; otherwise the system key is used.
+// allowPersonalKey must be true only for tester and admin users.
 func ResolveLLMAPIKey(secrets SecretsKV, userID string, allowPersonalKey bool, useProxy bool) (string, error) {
 	if useProxy {
-		if k, err := secrets.Get(userID, "proxy_key"); err == nil && k != "" {
-			return k, nil
+		if allowPersonalKey {
+			if k, err := secrets.Get(userID, "proxy_key"); err == nil && k != "" {
+				return k, nil
+			}
 		}
 		if k, err := secrets.Get(domain.SystemUserID, "proxy_key"); err == nil && k != "" {
 			return k, nil

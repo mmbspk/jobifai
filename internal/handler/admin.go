@@ -213,6 +213,11 @@ func (h *AdminHandlers) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
+	// Prevent setting admin and tester simultaneously — they are mutually exclusive roles.
+	if req.IsAdmin != nil && req.IsTester != nil && *req.IsAdmin && *req.IsTester {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "admin and tester roles are mutually exclusive"})
+		return
+	}
 	if req.IsAdmin != nil {
 		if err := h.svc.Users.SetAdmin(userID, *req.IsAdmin); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
@@ -220,8 +225,14 @@ func (h *AdminHandlers) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		// Promoting to admin: clear personal provider credentials (they use admin panel instead)
 		if *req.IsAdmin {
-			_ = h.svc.Secrets.Delete(userID, "llm_api_key")
-			_ = h.svc.Config.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{})
+			if err := h.svc.Secrets.Delete(userID, "llm_api_key"); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "cleanup failed: " + err.Error()})
+				return
+			}
+			if err := h.svc.Config.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{}); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "cleanup failed: " + err.Error()})
+				return
+			}
 		}
 	}
 	if req.IsTester != nil {
@@ -231,8 +242,14 @@ func (h *AdminHandlers) UserUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		// Demoting from tester: delete personal provider credentials
 		if !*req.IsTester {
-			_ = h.svc.Secrets.Delete(userID, "llm_api_key")
-			_ = h.svc.Config.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{})
+			if err := h.svc.Secrets.Delete(userID, "llm_api_key"); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "cleanup failed: " + err.Error()})
+				return
+			}
+			if err := h.svc.Config.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{}); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "cleanup failed: " + err.Error()})
+				return
+			}
 		}
 	}
 	if req.VerboseLogs != nil {

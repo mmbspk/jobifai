@@ -247,7 +247,7 @@ func (h *AdminHandlers) OperationalErrors(w http.ResponseWriter, r *http.Request
 // GET /api/admin/health
 func (h *AdminHandlers) Health(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	gs := config.ResolveOperationalSettings(h.svc.Config, domain.SystemUserID)
+	gs := config.ResolveOperationalSettings(h.svc.Config, domain.SystemUserID, true)
 	hasKey := h.svc.Secrets.Has(domain.SystemUserID, "llm_api_key")
 	hasProxy := h.svc.Secrets.Has(domain.SystemUserID, "proxy_key")
 	var catSource, catErr, catRefresh string

@@ -65,7 +65,7 @@ func (h *AdminHandlers) ModelsRollbackPreview(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "no previous policy to restore"})
 		return
 	}
-	gs := config.ResolveOperationalSettings(h.svc.Config, domain.SystemUserID)
+	gs := config.ResolveOperationalSettings(h.svc.Config, domain.SystemUserID, true)
 	globalModel := gs.LLM.Model
 	restoreLabel := evalpolicy.FormatPolicyStateLabel(prev)
 	writeJSON(w, http.StatusOK, map[string]any{

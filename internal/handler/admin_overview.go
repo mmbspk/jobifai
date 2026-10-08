@@ -57,7 +57,7 @@ func (h *AdminHandlers) Overview(w http.ResponseWriter, r *http.Request) {
 			`SELECT COUNT(DISTINCT user_id) FROM llm_usage_events WHERE created_at >= datetime('now','-15 minutes')`, nil),
 	}
 
-	gs := config.ResolveOperationalSettings(h.svc.Config, domain.SystemUserID)
+	gs := config.ResolveOperationalSettings(h.svc.Config, domain.SystemUserID, true)
 	store := &llmpolicy.Store{DB: h.svc.DB}
 	catalog := pricing.DefaultCatalog()
 	tasks := []string{

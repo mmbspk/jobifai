@@ -275,7 +275,7 @@ func (m *Manager) Status(userID string) domain.BotStatus {
 		e.status.TodayCount = n
 	}
 	if e.status.State == domain.BotStateIdle && m.cfgStore != nil {
-		gs := config.ResolveOperationalSettings(m.cfgStore, userID)
+		gs := config.ResolveOperationalSettings(m.cfgStore, userID, false)
 		e.status.DailyLimit = gs.HumanBehavior.DailyApplicationLimit
 	}
 	s := e.status
@@ -762,7 +762,7 @@ func (m *Manager) InvalidateLinkedInBrowser(userID string) {
 }
 
 func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config, error) {
-	gs := config.ResolveOperationalSettings(m.cfgStore, userID)
+	gs := config.ResolveOperationalSettings(m.cfgStore, userID, false)
 	if gs.HumanBehavior.DailyApplicationLimit == 0 {
 		gs.HumanBehavior.DailyApplicationLimit = 40
 	}
@@ -913,7 +913,8 @@ func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.C
 	if err != nil || apiKey == "" {
 		return nil
 	}
-	client := llm.New(gs.LLM, apiKey).WithUserID(userID)
+	usedPersonalKey := allowPersonal && m.secrets.Has(userID, "llm_api_key")
+	client := llm.New(gs.LLM, apiKey).WithUserID(userID).WithPersonalProvider(usedPersonalKey)
 	if m.usageLedger != nil {
 		client = client.WithBilling(llm.BillingHooks{Ledger: m.usageLedger})
 	}
@@ -941,7 +942,12 @@ func (m *Manager) taskClient(base *llm.Client, gs domain.GeneralSettings, task s
 // setupBot loads user config and returns a ready Bot plus the resolved GeneralSettings.
 // market overrides DefaultResumeMarket when non-empty (used by ApplyFromURL).
 func (m *Manager) setupBot(userID string, platform domain.Platform, market string) (*Bot, domain.GeneralSettings, error) {
-	gs := config.ResolveOperationalSettings(m.cfgStore, userID)
+	allowLLMOverrides := false
+	if m.userTypeChecker != nil {
+		isAdmin, isTester := m.userTypeChecker(userID)
+		allowLLMOverrides = isAdmin || isTester
+	}
+	gs := config.ResolveOperationalSettings(m.cfgStore, userID, allowLLMOverrides)
 	if market != "" {
 		gs.DefaultResumeMarket = market
 	}

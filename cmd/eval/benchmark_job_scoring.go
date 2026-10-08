@@ -184,7 +184,7 @@ func evalService(dbPath string) (*engine.Service, *sql.DB) {
 	}
 	cfgStore := config.NewStore(sqldb)
 	secrets := config.NewSecretsStore(sqldb, machineKey)
-	gs := config.ResolveOperationalSettings(cfgStore, domain.SystemUserID)
+	gs := config.ResolveOperationalSettings(cfgStore, domain.SystemUserID, true)
 	evalCat := &pricing.EvalCatalog{Approved: pricing.DefaultCatalog(), DB: sqldb}
 	factory := &providers.Factory{
 		Catalog: pricing.DefaultCatalog(), EvalPricing: evalCat, BaseLLM: gs.LLM,

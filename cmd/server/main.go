@@ -314,7 +314,8 @@ func main() {
 			if client == nil {
 				return nil
 			}
-			gs := config.ResolveOperationalSettings(cfgStore, userID)
+			isAdmin, isTester := userTypeChecker(userID)
+			gs := config.ResolveOperationalSettings(cfgStore, userID, isAdmin || isTester)
 			scoreC, err := taskApply(client, gs, policyStore, catalog, "scoring")
 			if err != nil {
 				return nil
@@ -326,7 +327,8 @@ func main() {
 			if client == nil {
 				return nil
 			}
-			gs := config.ResolveOperationalSettings(cfgStore, userID)
+			isAdmin, isTester := userTypeChecker(userID)
+			gs := config.ResolveOperationalSettings(cfgStore, userID, isAdmin || isTester)
 			halalC, err := taskApply(client, gs, policyStore, catalog, "halal")
 			if err != nil {
 				return nil
@@ -342,7 +344,8 @@ func main() {
 			if client == nil {
 				return nil
 			}
-			gs := config.ResolveOperationalSettings(cfgStore, userID)
+			isAdmin, isTester := userTypeChecker(userID)
+			gs := config.ResolveOperationalSettings(cfgStore, userID, isAdmin || isTester)
 			qC, err := taskApply(client, gs, policyStore, catalog, "questions")
 			if err != nil {
 				return nil
@@ -416,9 +419,9 @@ func noPersonalKey(_ string) (bool, bool) { return false, false }
 func buildLLMDeps(userID string, checker func(string) (bool, bool), cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard, ledger *usage.Ledger, policyStore *llmpolicy.Store, catalog *pricing.Catalog, reuseStore *llmreuse.Store) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client, bool) {
 	renderer := resume.NewPDFRenderer("resume_style")
 
-	gs := config.ResolveOperationalSettings(cfgStore, userID)
 	isAdmin, isTester := checker(userID)
 	allowPersonal := isAdmin || isTester
+	gs := config.ResolveOperationalSettings(cfgStore, userID, allowPersonal)
 	apiKey, err := config.ResolveLLMAPIKey(secrets, userID, allowPersonal, gs.LLM.UseProxy)
 	if err != nil || apiKey == "" {
 		return nil, nil, renderer, nil, false

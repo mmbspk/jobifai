@@ -45,7 +45,7 @@ func cmdSmokeClaude(args []string) {
 	}
 	cfgStore := config.NewStore(sqldb)
 	secrets := config.NewSecretsStore(sqldb, machineKey)
-	gs := config.ResolveOperationalSettings(cfgStore, domain.SystemUserID)
+	gs := config.ResolveOperationalSettings(cfgStore, domain.SystemUserID, true)
 
 	factory := &providers.Factory{
 		Catalog:     pricing.DefaultCatalog(),

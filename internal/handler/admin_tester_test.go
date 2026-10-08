@@ -165,3 +165,33 @@ func TestAdminAIProviderTest_NoKey(t *testing.T) {
 	// Either 503 (tester nil) or 200 with success=false
 	assert.True(t, w.Code == http.StatusServiceUnavailable || w.Code == http.StatusOK)
 }
+
+// TestAdminSetTester_SimultaneousAdminAndTesterRejected verifies that setting both
+// is_admin=true and is_tester=true in a single request is rejected as a bad request.
+func TestAdminSetTester_SimultaneousAdminAndTesterRejected(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+
+	adminToken := registerAndLogin(t, router, "admin@test.com", "password123")
+	setUserAdmin(t, db, "admin@test.com")
+
+	registerAndLogin(t, router, "user@test.com", "password123")
+
+	// Get user ID.
+	w := authGet(t, router, "/api/admin/users", adminToken)
+	require.Equal(t, http.StatusOK, w.Code)
+	var rows []map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&rows))
+	var userID string
+	for _, r := range rows {
+		if r["email"] == "user@test.com" {
+			userID = r["id"].(string)
+		}
+	}
+	require.NotEmpty(t, userID)
+
+	// Attempt to set both admin and tester — must be rejected.
+	w = authPut(t, router, "/api/admin/users/"+userID, adminToken,
+		map[string]any{"is_admin": true, "is_tester": true})
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}

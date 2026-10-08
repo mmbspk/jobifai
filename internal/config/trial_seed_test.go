@@ -63,7 +63,7 @@ func TestResolveOperationalSettings_NewTrialUserEffectiveDefaults(t *testing.T) 
 
 	config.SeedTrialDailyApplicationLimit(store, "trial-user")
 
-	got := config.ResolveOperationalSettings(store, "trial-user")
+	got := config.ResolveOperationalSettings(store, "trial-user", false)
 	assert.Equal(t, 7, got.JobSuitabilityScore)
 	assert.Equal(t, 25, got.MaxJobsPerKeyword)
 	assert.Equal(t, domain.TrialDailyApplicationLimit, got.HumanBehavior.DailyApplicationLimit)

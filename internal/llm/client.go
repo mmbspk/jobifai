@@ -73,6 +73,14 @@ func (c *Client) WithPersonalProvider(personal bool) *Client {
 	return c
 }
 
+// IsPersonalProvider reports whether this client is using the user's own API key.
+func (c *Client) IsPersonalProvider() bool {
+	if c == nil {
+		return false
+	}
+	return c.personalProvider
+}
+
 // ProviderName returns the configured provider for this client.
 func (c *Client) ProviderName() string {
 	if c == nil {
