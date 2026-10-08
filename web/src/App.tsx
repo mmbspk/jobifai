@@ -175,8 +175,8 @@ function AppRoutes() {
       <Route path="/register" element={<GuestRoute><Register /></GuestRoute>} />
       <Route path="/forgot-password" element={<GuestRoute><ForgotPassword /></GuestRoute>} />
       <Route path="/reset-password"  element={<ResetPassword />} />
-      <Route path="/auth/verify-email" element={<VerifyEmailPage />} />
-      <Route path="/auth/verify-email-change" element={<VerifyEmailChangePage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
+      <Route path="/verify-email-change" element={<VerifyEmailChangePage />} />
 
       {/* Authenticated app shell (paths other than /) */}
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>

@@ -164,6 +164,10 @@ func TestRegistrationEmail_UsesConfiguredPublicURL(t *testing.T) {
 	require.NotNil(t, sent)
 	assert.True(t, strings.HasPrefix(sent.VerifyURL, "https://custom.jobifai.example/"),
 		"expected VerifyURL to start with https://custom.jobifai.example/, got: %s", sent.VerifyURL)
+	assert.Contains(t, sent.VerifyURL, "/verify-email?token=",
+		"expected VerifyURL to use /verify-email path (not /auth/verify-email), got: %s", sent.VerifyURL)
+	assert.NotContains(t, sent.VerifyURL, "/auth/verify-email",
+		"expected VerifyURL NOT to contain /auth/ prefix, got: %s", sent.VerifyURL)
 }
 
 func TestForgotPasswordEmail_UsesConfiguredPublicURL(t *testing.T) {
@@ -226,6 +230,10 @@ func TestEmailChangeRequest_UsesConfiguredPublicURL(t *testing.T) {
 	}
 	assert.True(t, strings.HasPrefix(sentURL, "https://change.jobifai.example/"),
 		"expected change-verify URL to start with https://change.jobifai.example/, got: %s", sentURL)
+	assert.Contains(t, sentURL, "/verify-email-change?token=",
+		"expected change-verify URL to use /verify-email-change path, got: %s", sentURL)
+	assert.NotContains(t, sentURL, "/auth/verify-email-change",
+		"expected change-verify URL NOT to contain /auth/ prefix, got: %s", sentURL)
 }
 
 // waitForResendVerificationEmailTo blocks until a reminder (resend) verification email to a specific address is captured.
@@ -275,4 +283,8 @@ func TestResendVerificationEmail_UsesConfiguredPublicURL(t *testing.T) {
 	require.NotNil(t, sent)
 	assert.True(t, strings.HasPrefix(sent.VerifyURL, "https://resend.jobifai.example/"),
 		"expected resend VerifyURL to start with https://resend.jobifai.example/, got: %s", sent.VerifyURL)
+	assert.Contains(t, sent.VerifyURL, "/verify-email?token=",
+		"expected resend VerifyURL to use /verify-email path (not /auth/verify-email), got: %s", sent.VerifyURL)
+	assert.NotContains(t, sent.VerifyURL, "/auth/verify-email",
+		"expected resend VerifyURL NOT to contain /auth/ prefix, got: %s", sent.VerifyURL)
 }
