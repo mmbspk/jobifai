@@ -63,7 +63,8 @@ func (h *PasswordResetHandlers) sendPasswordResetEmail(emailAddr string, snd Ema
 
 	user, err := h.users.ByEmail(emailAddr)
 	if errors.Is(err, auth.ErrUserNotFound) {
-		return nil // silently drop — no enumeration
+		log.Debug().Msg("forgot password: no matching account — silently ignoring")
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("forgot password: lookup user: %w", err)
@@ -71,12 +72,14 @@ func (h *PasswordResetHandlers) sendPasswordResetEmail(emailAddr string, snd Ema
 
 	// Google-only accounts have no password hash — no reset token.
 	if user.PasswordHash == "" {
+		log.Info().Str("user_id", user.ID).Msg("forgot password: account uses Google sign-in only — password reset is not available")
 		return nil
 	}
 
 	rawToken, err := auth.CreatePasswordResetTokenIfAllowed(h.db, user.ID)
 	if errors.Is(err, auth.ErrResetRateLimited) {
-		return nil // rate limited — silently drop (caller still returned 202)
+		log.Debug().Str("user_id", user.ID).Msg("forgot password: rate limited — duplicate request ignored")
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("forgot password: create token: %w", err)
