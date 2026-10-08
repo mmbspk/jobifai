@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -94,8 +93,8 @@ func (h *EmailChangeHandlers) RequestEmailChange(w http.ResponseWriter, r *http.
 	}
 
 	snd := snapshotEmailSender(h.svc)
+	verifyURL := buildEmailChangeVerifyURL(ResolvePublicAppURL(h.svc, r), rawToken)
 	go func() {
-		verifyURL := buildEmailChangeVerifyURL(h.svc.AppBaseURL, rawToken)
 		if err := snd.SendEmailChangeVerification(context.Background(), req.NewEmail, user.DisplayName, verifyURL); err != nil {
 			log.Error().Err(err).Str("user_id", userID).Msg("email change: send verification email")
 		}
@@ -234,11 +233,3 @@ func (h *EmailChangeHandlers) DeleteAccount(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// buildEmailChangeVerifyURL constructs the email-change verification link.
-func buildEmailChangeVerifyURL(baseURL, rawToken string) string {
-	if baseURL == "" {
-		log.Warn().Msg("APP_BASE_URL not set — email change verification link uses http://localhost:8081 fallback")
-		baseURL = "http://localhost:8081"
-	}
-	return fmt.Sprintf("%s/auth/verify-email-change?token=%s", strings.TrimRight(baseURL, "/"), rawToken)
-}

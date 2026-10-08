@@ -233,10 +233,13 @@ func main() {
 	botMgr.SetLLMReuse(llmReuseStore)
 
 	// ── Router ──────────────────────────────────────────────────────────
-	appBaseURL := os.Getenv("APP_BASE_URL")
-	if appBaseURL == "" {
-		log.Warn().Msg("APP_BASE_URL is not set — email verification links will use http://localhost:8081 as fallback; set APP_BASE_URL for production deployments")
+	rawAppBaseURL := os.Getenv("APP_BASE_URL")
+	appBaseURL, appURLErr := handler.NormalizeAndValidateURL(rawAppBaseURL)
+	if appURLErr != nil {
+		log.Warn().Err(appURLErr).Str("url", rawAppBaseURL).Msg("invalid APP_BASE_URL — ignoring environment value")
+		appBaseURL = ""
 	}
+	handler.BootstrapPublicAppURL(cfgStore, appBaseURL)
 	svc := &handler.Services{
 		StartedAt:    time.Now(),
 		DB:           database,

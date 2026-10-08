@@ -414,3 +414,9 @@ type EmailConfig struct {
 	SMTPUser  string `json:"smtp_user,omitempty"`
 	EmailFrom string `json:"email_from,omitempty"` // e.g. "Jobifai <noreply@jobifai.com.au>"
 }
+
+// ApplicationSettings holds deployment-level configuration persisted in the admin config store.
+// Stored in config under SystemUserID / keyAppSettings.
+type ApplicationSettings struct {
+	PublicAppURL string `json:"public_app_url"`
+}

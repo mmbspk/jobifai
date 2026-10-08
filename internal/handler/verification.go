@@ -76,14 +76,15 @@ func (h *VerificationHandlers) ResendVerification(w http.ResponseWriter, r *http
 	// Snapshot sender synchronously so the goroutine only does SMTP I/O
 	// and never touches the DB after the request context is done.
 	snd := snapshotEmailSender(h.svc)
+	baseURL := ResolvePublicAppURL(h.svc, r)
 	go func() {
-		if err := h.sendResendEmail(req.Email, snd); err != nil {
+		if err := h.sendResendEmail(req.Email, snd, baseURL); err != nil {
 			log.Error().Err(err).Str("email", req.Email).Msg("resend verification: failed")
 		}
 	}()
 }
 
-func (h *VerificationHandlers) sendResendEmail(emailAddr string, snd EmailSender) error {
+func (h *VerificationHandlers) sendResendEmail(emailAddr string, snd EmailSender, baseURL string) error {
 	if h.svc.DB == nil {
 		return nil
 	}
@@ -110,7 +111,7 @@ func (h *VerificationHandlers) sendResendEmail(emailAddr string, snd EmailSender
 		return fmt.Errorf("resend: create token: %w", err)
 	}
 
-	verifyURL := buildVerifyURL(h.svc.AppBaseURL, rawToken)
+	verifyURL := buildVerifyURL(baseURL, rawToken)
 	if err := snd.SendVerificationReminder(context.Background(), user.Email, user.DisplayName, verifyURL); err != nil {
 		return fmt.Errorf("resend: send email: %w", err)
 	}
@@ -118,13 +119,3 @@ func (h *VerificationHandlers) sendResendEmail(emailAddr string, snd EmailSender
 	return nil
 }
 
-// buildVerifyURL constructs the email-verification link.
-// baseURL should not have a trailing slash. Logs a warning when falling back
-// to localhost so misconfigured production deployments surface the issue.
-func buildVerifyURL(baseURL, rawToken string) string {
-	if baseURL == "" {
-		log.Warn().Msg("APP_BASE_URL not set — email verification link uses http://localhost:8081 fallback; set APP_BASE_URL in production")
-		baseURL = "http://localhost:8081"
-	}
-	return fmt.Sprintf("%s/auth/verify-email?token=%s", strings.TrimRight(baseURL, "/"), rawToken)
-}

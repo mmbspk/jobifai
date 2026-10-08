@@ -97,7 +97,8 @@ func (h *UserHandlers) Register(w http.ResponseWriter, r *http.Request) {
 		// Non-fatal — user can request resend later.
 	} else {
 		snd := snapshotEmailSender(h.svc)
-		go h.sendVerificationEmail(user.Email, user.DisplayName, rawToken, snd)
+		baseURL := ResolvePublicAppURL(h.svc, r)
+		go h.sendVerificationEmail(user.Email, user.DisplayName, rawToken, baseURL, snd)
 	}
 
 	tokens, err := h.issueTokens(user.ID, user.Email)
@@ -320,8 +321,8 @@ func (h *UserHandlers) issueTokens(userID, email string) (*auth.Tokens, error) {
 // errors are logged but not fatal — the account was already created.
 // snd must be pre-resolved (no DB access on Send) so this goroutine is safe
 // to run after test cleanup has closed the DB.
-func (h *UserHandlers) sendVerificationEmail(toEmail, displayName, rawToken string, snd EmailSender) {
-	verifyURL := buildVerifyURL(h.svc.AppBaseURL, rawToken)
+func (h *UserHandlers) sendVerificationEmail(toEmail, displayName, rawToken, baseURL string, snd EmailSender) {
+	verifyURL := buildVerifyURL(baseURL, rawToken)
 	if err := snd.SendVerification(context.Background(), toEmail, displayName, verifyURL); err != nil {
 		log.Error().Err(err).Msg("register: send verification email failed")
 		return
