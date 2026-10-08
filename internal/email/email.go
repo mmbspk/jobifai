@@ -45,6 +45,10 @@ type Sender interface {
 	SendEmailChangeOldNotification(ctx context.Context, toEmail, toName, newEmail string) error
 	// SendEmailChangeNewConfirmation confirms to the new address that it is now active.
 	SendEmailChangeNewConfirmation(ctx context.Context, toEmail, toName string) error
+	// SendTestEmail sends a plain configuration-test message with no action prompts.
+	// Used by the admin test endpoint to verify SMTP settings without sending
+	// a real verification or password-reset email.
+	SendTestEmail(ctx context.Context, toEmail string) error
 }
 
 // ─── SMTP implementation ───────────────────────────────────────────────────
@@ -127,6 +131,14 @@ func (s *SMTPSender) SendEmailChangeNewConfirmation(ctx context.Context, toEmail
 		return fmt.Errorf("email: render email-change new-confirmation template: %w", err)
 	}
 	return s.sendMsg(ctx, toEmail, "Your Jobifai email address is confirmed", plain, htmlBody)
+}
+
+func (s *SMTPSender) SendTestEmail(ctx context.Context, toEmail string) error {
+	plain, htmlBody, err := RenderTestEmail()
+	if err != nil {
+		return fmt.Errorf("email: render test email template: %w", err)
+	}
+	return s.sendMsg(ctx, toEmail, TestEmailSubject, plain, htmlBody)
 }
 
 func (s *SMTPSender) sendMsg(ctx context.Context, toEmail, subject, plain, htmlBody string) error {
@@ -299,6 +311,10 @@ func (NoopSender) SendEmailChangeNewConfirmation(_ context.Context, toEmail, _ s
 	log.Debug().Str("to", toEmail).Msg("email: noop email-change new confirmation — email not configured")
 	return nil
 }
+func (NoopSender) SendTestEmail(_ context.Context, toEmail string) error {
+	log.Debug().Str("to", toEmail).Msg("email: noop test email — email not configured")
+	return nil
+}
 
 // ─── CaptureSender (tests: records sent emails for assertions) ─────────────
 
@@ -312,6 +328,7 @@ type CapturedEmail struct {
 	EmailChangeVerify       bool   // verification link to new address
 	EmailChangeOldNotify    bool   // security notice to old address
 	EmailChangeNewConfirm   bool   // confirmation to new address
+	ConfigTest              bool   // admin configuration test email
 	NewEmail                string // populated for EmailChangeOldNotify
 	SentAt                  time.Time
 }
@@ -361,6 +378,13 @@ func (c *CaptureSender) SendEmailChangeNewConfirmation(_ context.Context, to, _ 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.emails = append(c.emails, CapturedEmail{To: to, EmailChangeNewConfirm: true, SentAt: time.Now()})
+	return nil
+}
+
+func (c *CaptureSender) SendTestEmail(_ context.Context, to string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.emails = append(c.emails, CapturedEmail{To: to, ConfigTest: true, SentAt: time.Now()})
 	return nil
 }
 

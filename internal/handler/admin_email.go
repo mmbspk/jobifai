@@ -71,6 +71,15 @@ func (d *dynamicEmailSender) SendEmailChangeNewConfirmation(ctx context.Context,
 	return sender.SendEmailChangeNewConfirmation(ctx, toEmail, toName)
 }
 
+func (d *dynamicEmailSender) SendTestEmail(ctx context.Context, toEmail string) error {
+	sender, err := buildEmailSenderFromConfig(d.cfgStore, d.secrets)
+	if err != nil {
+		log.Debug().Str("to", toEmail).Msg("email: not configured — skipping test email send")
+		return nil
+	}
+	return sender.SendTestEmail(ctx, toEmail)
+}
+
 func (d *dynamicEmailSender) send(ctx context.Context, toEmail, toName, verifyURL string, reminder bool) error {
 	sender, err := buildEmailSenderFromConfig(d.cfgStore, d.secrets)
 	if err != nil {
@@ -172,7 +181,7 @@ func (h *AdminHandlers) EmailTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := sender.SendVerification(r.Context(), req.To, "", "https://example.com/auth/verify-email?token=test"); err != nil {
+	if err := sender.SendTestEmail(r.Context(), req.To); err != nil {
 		log.Error().Err(err).Str("to", req.To).Msg("email test: send failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "send failed: " + err.Error()})
 		return
