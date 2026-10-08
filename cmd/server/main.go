@@ -422,9 +422,9 @@ func buildLLMDeps(userID string, checker func(string) (bool, bool), cfgStore *co
 	isAdmin, isTester := checker(userID)
 	allowPersonal := isAdmin || isTester
 	gs := config.ResolveOperationalSettings(cfgStore, userID, allowPersonal)
-	// Issue 3: revert LLM config to system default when overrides exist but no personal key.
-	config.EnforceLLMCredentialConsistency(cfgStore, secrets, userID, allowPersonal, &gs)
-	apiKey, isPersonal, err := config.ResolveLLMAPIKey(secrets, userID, allowPersonal, gs.LLM.UseProxy)
+	// Single-pass: enforce consistency and resolve the credential atomically so that
+	// gs.LLM and the API key are always derived from the same UseProxy probe.
+	apiKey, isPersonal, err := config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, allowPersonal, &gs)
 	if err != nil || apiKey == "" {
 		return nil, nil, renderer, nil, false
 	}

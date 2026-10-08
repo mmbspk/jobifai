@@ -39,7 +39,9 @@ func TestBuildPerUserLLM_HalalUsesTaskOverride(t *testing.T) {
 	m.SetLLMBilling(&llmpolicy.Store{DB: sqldb}, pricing.DefaultCatalog(), nil)
 
 	gs := config.ResolveOperationalSettings(cfgStore, userID, false)
-	_, _, halal, _, err := m.buildPerUserLLM(userID, gs)
+	apiKey, isPersonal, err := config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, false, &gs)
+	require.NoError(t, err)
+	_, _, halal, _, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	require.NoError(t, err)
 	require.NotNil(t, halal)
 }
@@ -68,7 +70,9 @@ func TestBuildPerUserLLM_InvalidPolicyReturnsError(t *testing.T) {
 	m.SetLLMBilling(&llmpolicy.Store{DB: sqldb}, pricing.DefaultCatalog(), nil)
 
 	gs := config.ResolveOperationalSettings(cfgStore, userID, false)
-	_, _, _, _, err = m.buildPerUserLLM(userID, gs)
+	apiKey, isPersonal, err := config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, false, &gs)
+	require.NoError(t, err)
+	_, _, _, _, err = m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	require.Error(t, err)
 }
 
@@ -97,7 +101,9 @@ func TestUserLLMClient_TesterBilledAsPersonal(t *testing.T) {
 	gs.LLM.Provider = "claude"
 	gs.LLM.Model = "claude-haiku-4-5"
 
-	client := m.userLLMClient(userID, gs)
+	apiKey, isPersonal, err := config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, true, &gs)
+	require.NoError(t, err)
+	client := m.userLLMClient(userID, gs, apiKey, isPersonal)
 	require.NotNil(t, client, "tester with personal key must get a client")
 	assert.True(t, client.IsPersonalProvider(), "tester client must be flagged as personal provider")
 }
@@ -125,7 +131,9 @@ func TestUserLLMClient_RegularUserBilledAsShared(t *testing.T) {
 	gs.LLM.Provider = "claude"
 	gs.LLM.Model = "claude-haiku-4-5"
 
-	client := m.userLLMClient(userID, gs)
+	apiKey, isPersonal, err := config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, false, &gs)
+	require.NoError(t, err)
+	client := m.userLLMClient(userID, gs, apiKey, isPersonal)
 	require.NotNil(t, client, "regular user must still get a client (via system key)")
 	assert.False(t, client.IsPersonalProvider(), "regular user must not be flagged as personal provider")
 }
@@ -159,9 +167,10 @@ func TestBuildConfig_TesterHonorsLLMOverrides(t *testing.T) {
 		return false, uid == userID // isTester
 	})
 
-	// resolveUserLLM is exercised via userLLMClient (same resolution path as buildConfig).
+	// resolveUserLLM is exercised via ResolveEffectiveLLMKey (same resolution path as buildConfig).
 	gs := config.ResolveOperationalSettings(cfgStore, userID, true)
-	config.EnforceLLMCredentialConsistency(cfgStore, secrets, userID, true, &gs)
+	_, _, err = config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, true, &gs)
+	require.NoError(t, err)
 	assert.Equal(t, "openai", gs.LLM.Provider, "tester with personal key must use their override")
 	assert.Equal(t, "gpt-4o", gs.LLM.Model)
 }
@@ -198,10 +207,11 @@ func TestSetupBot_InconsistentTesterConfigReverts(t *testing.T) {
 
 	// After enforcement the client must use the system config and NOT be flagged as personal.
 	gs := gsRaw
-	config.EnforceLLMCredentialConsistency(cfgStore, secrets, userID, true, &gs)
+	apiKey, isPersonal, err := config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, true, &gs)
+	require.NoError(t, err)
 	assert.Equal(t, "claude", gs.LLM.Provider, "orphaned override must revert to system provider")
 
-	client := m.userLLMClient(userID, gs)
+	client := m.userLLMClient(userID, gs, apiKey, isPersonal)
 	require.NotNil(t, client)
 	assert.False(t, client.IsPersonalProvider(), "system key must not be flagged as personal")
 }

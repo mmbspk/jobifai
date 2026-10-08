@@ -768,7 +768,11 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		allowLLMOverrides = isAdmin || isTester
 	}
 	gs := config.ResolveOperationalSettings(m.cfgStore, userID, allowLLMOverrides)
-	config.EnforceLLMCredentialConsistency(m.cfgStore, m.secrets, userID, allowLLMOverrides, &gs)
+	// Single-pass: gs.LLM is updated in-place and the key is resolved consistently.
+	apiKey, isPersonal, keyErr := config.ResolveEffectiveLLMKey(m.cfgStore, m.secrets, userID, allowLLMOverrides, &gs)
+	if keyErr != nil {
+		apiKey, isPersonal = "", false
+	}
 	if gs.HumanBehavior.DailyApplicationLimit == 0 {
 		gs.HumanBehavior.DailyApplicationLimit = 40
 	}
@@ -795,7 +799,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	}
 
 	runID := uuid.NewString()
-	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs)
+	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	if err != nil {
 		return nil, err
 	}
@@ -864,8 +868,8 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 
 // buildPerUserLLM constructs task-resolved LLM clients for one user session.
 // Returns startup defaults when no API key is available.
-func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings) (ResumeTailor, JobScorer, JobHalalChecker, *llm.UsageTracker, error) {
-	client := m.userLLMClient(userID, gs)
+func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings, apiKey string, isPersonal bool) (ResumeTailor, JobScorer, JobHalalChecker, *llm.UsageTracker, error) {
+	client := m.userLLMClient(userID, gs, apiKey, isPersonal)
 	if client == nil {
 		var halal JobHalalChecker
 		if gs.HalalJobFilter {
@@ -906,17 +910,11 @@ func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings) (Res
 	return resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC), resume.NewScorer(scoreC), halal, tracker, nil
 }
 
-// userLLMClient resolves the API key for userID and returns a ready client, or
-// nil if no key is stored. When UseProxy is true, proxy_key takes precedence
-// over llm_api_key — matching the same logic used by the handler layer.
-func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.Client {
-	allowPersonal := false
-	if m.userTypeChecker != nil {
-		isAdmin, isTester := m.userTypeChecker(userID)
-		allowPersonal = isAdmin || isTester
-	}
-	apiKey, isPersonal, err := config.ResolveLLMAPIKey(m.secrets, userID, allowPersonal, gs.LLM.UseProxy)
-	if err != nil || apiKey == "" {
+// userLLMClient builds a ready LLM client from a pre-resolved API key and isPersonal flag.
+// The key and flag must come from ResolveEffectiveLLMKey so that gs.LLM and the credential
+// are guaranteed to be consistent (same UseProxy probe). Returns nil when apiKey is empty.
+func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings, apiKey string, isPersonal bool) *llm.Client {
+	if apiKey == "" {
 		return nil
 	}
 	client := llm.New(gs.LLM, apiKey).WithUserID(userID).WithPersonalProvider(isPersonal)
@@ -953,7 +951,11 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		allowLLMOverrides = isAdmin || isTester
 	}
 	gs := config.ResolveOperationalSettings(m.cfgStore, userID, allowLLMOverrides)
-	config.EnforceLLMCredentialConsistency(m.cfgStore, m.secrets, userID, allowLLMOverrides, &gs)
+	// Single-pass: gs.LLM is updated in-place and the key is resolved consistently.
+	apiKey, isPersonal, keyErr := config.ResolveEffectiveLLMKey(m.cfgStore, m.secrets, userID, allowLLMOverrides, &gs)
+	if keyErr != nil {
+		apiKey, isPersonal = "", false
+	}
 	if market != "" {
 		gs.DefaultResumeMarket = market
 	}
@@ -972,7 +974,7 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 	}
 
 	runID := uuid.NewString()
-	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs)
+	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	if err != nil {
 		return nil, gs, err
 	}
