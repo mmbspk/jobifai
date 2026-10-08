@@ -96,7 +96,8 @@ type Services struct {
 	EmailSender EmailSender
 	// AppBaseURL is the publicly reachable root of the app, used to construct
 	// verification links in emails. E.g. "https://jobifai.com.au".
-	// Falls back to the request Host header if empty.
+	// Read from APP_BASE_URL at process startup. Falls back to http://localhost:8081
+	// when unset and logs a warning — set APP_BASE_URL in production.
 	AppBaseURL string
 }
 
@@ -226,6 +227,7 @@ type EmailSender interface {
 	SendEmailChangeVerification(ctx context.Context, toEmail, toName, verifyURL string) error
 	SendEmailChangeOldNotification(ctx context.Context, toEmail, toName, newEmail string) error
 	SendEmailChangeNewConfirmation(ctx context.Context, toEmail, toName string) error
+	SendTestEmail(ctx context.Context, toEmail string) error
 }
 
 // ─── helpers ───────────────────────────────────────────────────────────────

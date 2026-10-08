@@ -345,3 +345,62 @@ func RenderEmailChangeNewConfirmation(name string) (plain, html string, err erro
 	}
 	return pb.String(), hb.String(), nil
 }
+
+// ─── Configuration test email templates ───────────────────────────────────
+
+// TestEmailSubject is the fixed subject line for the admin configuration test email.
+const TestEmailSubject = "Jobifai email configuration test"
+
+var plainTestEmailTmpl = texttmpl.Must(texttmpl.New("test_email_plain").Parse(`Jobifai
+
+Your transactional email configuration is working correctly.
+
+This message was sent from Jobifai Admin → Defaults to verify the configured email provider.
+
+No action is required.
+
+— The Jobifai Team
+`))
+
+var htmlTestEmailTmpl = htmltmpl.Must(htmltmpl.New("test_email_html").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jobifai email configuration test</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f4f4f5; margin: 0; padding: 0; }
+    .container { max-width: 560px; margin: 40px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+    .header { background: #18181b; padding: 24px 32px; }
+    .header h1 { color: #ffffff; font-size: 20px; margin: 0; font-weight: 600; }
+    .body { padding: 32px; color: #3f3f46; font-size: 15px; line-height: 1.6; }
+    .body p { margin: 0 0 16px; }
+    .footer { padding: 20px 32px; border-top: 1px solid #e4e4e7; font-size: 12px; color: #a1a1aa; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header"><h1>Jobifai</h1></div>
+  <div class="body">
+    <p>Your transactional email configuration is working correctly.</p>
+    <p>This message was sent from <strong>Jobifai Admin → Defaults</strong> to verify the configured email provider.</p>
+    <p>No action is required.</p>
+  </div>
+  <div class="footer">This is an automated configuration test. No action is required.</div>
+</div>
+</body>
+</html>
+`))
+
+// RenderTestEmail renders both plain-text and HTML versions of the admin
+// configuration test email. It contains no URLs, tokens, or action prompts.
+func RenderTestEmail() (plain, html string, err error) {
+	var pb, hb bytes.Buffer
+	if err = plainTestEmailTmpl.Execute(&pb, nil); err != nil {
+		return "", "", fmt.Errorf("plain template: %w", err)
+	}
+	if err = htmlTestEmailTmpl.Execute(&hb, nil); err != nil {
+		return "", "", fmt.Errorf("html template: %w", err)
+	}
+	return pb.String(), hb.String(), nil
+}

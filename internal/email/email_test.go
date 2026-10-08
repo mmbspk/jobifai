@@ -68,3 +68,52 @@ func TestCaptureSender_Records(t *testing.T) {
 	assert.Equal(t, "b@example.com", cs.Last().To)
 	assert.True(t, cs.Last().Reminder)
 }
+
+func TestRenderTestEmail_SubjectAndContent(t *testing.T) {
+	plain, html, err := email.RenderTestEmail()
+	require.NoError(t, err)
+
+	assert.Equal(t, "Jobifai email configuration test", email.TestEmailSubject)
+
+	assert.Contains(t, plain, "configuration is working correctly")
+	assert.Contains(t, plain, "Admin → Defaults")
+	assert.Contains(t, plain, "No action is required")
+
+	assert.Contains(t, html, "configuration is working correctly")
+	assert.Contains(t, html, "Admin → Defaults")
+	assert.Contains(t, html, "No action is required")
+}
+
+func TestRenderTestEmail_NoVerificationURL(t *testing.T) {
+	plain, html, err := email.RenderTestEmail()
+	require.NoError(t, err)
+
+	for _, s := range []string{plain, html} {
+		// Must not contain account-verification or password-reset CTAs or artifacts.
+		assert.NotContains(t, s, "verify your email", "must not contain account-verification CTA")
+		assert.NotContains(t, s, "verify-email", "must not contain verification URL path")
+		assert.NotContains(t, s, "token=", "must not contain a token parameter")
+		assert.NotContains(t, s, "example.com", "must not contain example.com")
+		assert.NotContains(t, strings.ToLower(s), "reset", "must not contain password-reset wording")
+		assert.NotContains(t, strings.ToLower(s), "password", "must not contain password wording")
+		assert.NotContains(t, strings.ToLower(s), "account setup", "must not contain account-setup wording")
+	}
+}
+
+func TestCaptureSender_TestEmail(t *testing.T) {
+	cs := &email.CaptureSender{}
+
+	err := cs.SendTestEmail(context.Background(), "admin@example.com")
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, cs.Count())
+	last := cs.Last()
+	require.NotNil(t, last)
+	assert.Equal(t, "admin@example.com", last.To)
+	assert.True(t, last.ConfigTest, "ConfigTest flag must be set")
+	assert.False(t, last.Reminder)
+	assert.False(t, last.PasswordReset)
+	assert.False(t, last.EmailChangeVerify)
+	assert.Empty(t, last.VerifyURL)
+	assert.Empty(t, last.ResetURL)
+}
