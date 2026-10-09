@@ -215,6 +215,8 @@ type Bot struct {
 
 	seekSessionExpired bool // set during runSeek when a job page reveals the Seek session is no longer valid
 
+	seekSeams *seekAuthSeams // nil in production; injected in tests
+
 	seenCache *jobSeenCache
 }
 
@@ -236,7 +238,183 @@ func New(cfg Config) *Bot {
 	return &Bot{cfg: cfg, state: domain.BotStateIdle, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
 }
 
-// warmSeenCache loads applied/skipped/top-matches/approved job ids into memory.
+// ErrAuthRequired signals that the bot detected a platform authentication
+// challenge it cannot resolve automatically. The user must re-authenticate
+// via Settings → Connect before the bot can continue.
+var ErrAuthRequired = errors.New("platform authentication required")
+
+// seekAuthSeams holds injectable stubs for the SEEK re-auth lifecycle.
+// All fields default to nil (production uses real implementations).
+// Set non-nil in tests to exercise the recovery logic without launching Chrome.
+type seekAuthSeams struct {
+	ensureLoggedIn  func(*rod.Page) error
+	closeBrowser    func()
+	relaunchBrowser func() (*rod.Browser, *rod.Page, error)
+	checkLoginState func(*rod.Page) (browser.LoginState, error)
+}
+
+// authRefreshPollInterval is how often waitForSessionRefresh checks the session
+// store. Override in tests to speed up polling.
+var authRefreshPollInterval = 5 * time.Second
+
+// waitForSessionRefresh blocks until the stored session for userID/platform is
+// updated (user re-authenticated via Connect browser) or until the timeout
+// elapses. During the wait the bot state is user_action_required. Returns nil
+// when a fresh session is detected, error on timeout or bot stop.
+func (b *Bot) waitForSessionRefresh(userID, platform string, timeout time.Duration) error {
+	if b.cfg.Sessions == nil {
+		return fmt.Errorf("no session store available")
+	}
+	initial, err := b.cfg.Sessions.Status(userID, platform)
+	if err != nil {
+		return fmt.Errorf("read session status: %w", err)
+	}
+
+	b.mu.Lock()
+	b.state = domain.BotStateUserActionRequired
+	b.mu.Unlock()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case <-b.stopCh:
+			return fmt.Errorf("bot stopped while waiting for %s authentication", platform)
+		case <-time.After(authRefreshPollInterval):
+		}
+		current, serr := b.cfg.Sessions.Status(userID, platform)
+		if serr != nil {
+			continue
+		}
+		if current.UpdatedAt.After(initial.UpdatedAt) {
+			return nil
+		}
+	}
+	return fmt.Errorf("timed out waiting for %s authentication", platform)
+}
+
+// startProfileBrowser launches a fresh Chrome process from the persistent profile,
+// injects the configured session cookies, and navigates to the platform home URL.
+// It does NOT perform SingletonLock force-unlock — callers must ensure the profile
+// is free before calling (e.g. after a Connect browser has saved its session and closed).
+// On error, any started browser is closed before returning.
+func (b *Bot) startProfileBrowser() (br *rod.Browser, page *rod.Page, err error) {
+	dir := browser.ProfileDir(b.cfg.UserID, string(b.cfg.Platform), b.cfg.Settings.Browser.ChromeProfilePath)
+	browser.PrepareChromeProfileDir(dir) // clears stale singleton locks without force-killing
+
+	l := launcher.New().
+		Headless(!b.cfg.Settings.Browser.ShowBrowser).
+		Set("--disable-blink-features", "AutomationControlled").
+		Set("--exclude-switches", "enable-automation").
+		UserDataDir(dir)
+
+	u, launchErr := l.Launch()
+	if launchErr != nil {
+		return nil, nil, fmt.Errorf("launch chrome: %w", launchErr)
+	}
+	br = rod.New().ControlURL(u)
+	if connectErr := br.Connect(); connectErr != nil {
+		return nil, nil, fmt.Errorf("connect chrome: %w", connectErr)
+	}
+	page, err = br.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if err != nil {
+		_ = br.Close()
+		return nil, nil, fmt.Errorf("open blank page: %w", err)
+	}
+	if len(b.cfg.Cookies) > 0 {
+		if setErr := page.SetCookies(browser.ToCookieParams(b.cfg.Cookies)); setErr != nil {
+			log.Warn().Err(setErr).Msg("browser: set cookies")
+		}
+	}
+	homeURL := "https://www.linkedin.com"
+	if b.cfg.Platform == domain.PlatformSeek {
+		homeURL = "https://au.seek.com/jobs"
+	}
+	if navErr := page.Navigate(homeURL); navErr != nil {
+		_ = br.Close()
+		return nil, nil, fmt.Errorf("navigate %s: %w", b.cfg.Platform, navErr)
+	}
+	_ = page.Timeout(30 * time.Second).WaitLoad()
+	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+	return br, page, nil
+}
+
+// seekRecoverAuth encapsulates the SEEK re-auth recovery protocol.
+// closeFn is called to release the current bot browser before the wait begins.
+//
+// Returns (newBr, newPage, nil)  → recovery complete; caller MUST set BotStateRunning.
+// Returns (nil, nil, nil)        → ensureLoggedIn returned no error; nothing to recover.
+// Returns (nil, nil, err)        → unrecoverable failure.
+//
+// BotStateRunning is intentionally NOT set here — state transitions to Running
+// only in launchBrowser after this returns success, so the bot never reports
+// Running before a fully-verified browser is in hand.
+//
+// All four operations are injectable via b.seekSeams for unit testing without Chrome.
+func (b *Bot) seekRecoverAuth(page *rod.Page, closeFn func()) (newBr *rod.Browser, newPage *rod.Page, err error) {
+	ensureLoggedIn := func(p *rod.Page) error { return b.seekEnsureLoggedIn(p) }
+	relaunch := func() (*rod.Browser, *rod.Page, error) { return b.startProfileBrowser() }
+	checkState := func(p *rod.Page) (browser.LoginState, error) {
+		return browser.PageLoginState(p, "seek")
+	}
+	if s := b.seekSeams; s != nil {
+		if s.ensureLoggedIn != nil {
+			ensureLoggedIn = s.ensureLoggedIn
+		}
+		if s.relaunchBrowser != nil {
+			relaunch = s.relaunchBrowser
+		}
+		if s.checkLoginState != nil {
+			checkState = s.checkLoginState
+		}
+	}
+
+	authErr := ensureLoggedIn(page)
+	if authErr == nil {
+		return nil, nil, nil // happy path — no auth problem
+	}
+	if !errors.Is(authErr, ErrAuthRequired) {
+		// Non-auth errors (network, page parsing, SEEK outage) are released
+		// cleanly and propagated immediately — no wait for user action.
+		closeFn()
+		return nil, nil, fmt.Errorf("seek: %w", authErr)
+	}
+
+	// ErrAuthRequired: release the Chrome profile so the user can open Connect.
+	// ForceUnlock is NOT used — Connect closes cleanly before saving its session.
+	log.Warn().Msg("seek: auth required — releasing Chrome profile for Connect browser; waiting up to 5 min")
+	closeFn()
+
+	if waitErr := b.waitForSessionRefresh(b.cfg.UserID, "seek", 5*time.Minute); waitErr != nil {
+		return nil, nil, fmt.Errorf("seek: %w", waitErr)
+	}
+
+	// Reload the freshly saved cookies so the relaunched browser picks them up
+	// alongside the refreshed persistent profile state (Auth0, localStorage, etc.)
+	if b.cfg.Sessions != nil {
+		if fresh, loadErr := b.cfg.Sessions.Load(b.cfg.UserID, "seek"); loadErr == nil && len(fresh) > 0 {
+			b.cfg.Cookies = fresh
+		}
+	}
+
+	newBr, newPage, err = relaunch()
+	if err != nil {
+		return nil, nil, fmt.Errorf("seek: relaunch after re-auth: %w", err)
+	}
+
+	loginState, _ := checkState(newPage)
+	if loginState == browser.LoginStateNo {
+		if newBr != nil {
+			_ = newBr.Close()
+		}
+		return nil, nil, fmt.Errorf("seek: not authenticated after re-auth — open Settings → Platforms → Connect SEEK to sign in again")
+	}
+
+	// Recovery complete. BotStateRunning is set by the caller (launchBrowser)
+	// only after it confirms this success — never inside the recovery path itself.
+	return newBr, newPage, nil
+}
+
+
 func (b *Bot) warmSeenCache() {
 	if b.seenCache == nil {
 		b.seenCache = newJobSeenCache()
@@ -573,7 +751,9 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	}
 
 	l := launcher.New().
-		Headless(!b.cfg.Settings.Browser.ShowBrowser)
+		Headless(!b.cfg.Settings.Browser.ShowBrowser).
+		Set("--disable-blink-features", "AutomationControlled").
+		Set("--exclude-switches", "enable-automation")
 
 	// Always use a persistent profile for job platforms so Auth0/localStorage
 	// from Connect browser is reused. Path can be overridden in General settings.
@@ -585,7 +765,12 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	if err != nil && strings.Contains(err.Error(), "SingletonLock") {
 		log.Warn().Err(err).Str("dir", dir).Msg("browser: profile locked, force-unlocking and retrying")
 		browser.ForceUnlockChromeProfile(dir)
-		u, err = launcher.New().Headless(!b.cfg.Settings.Browser.ShowBrowser).UserDataDir(dir).Launch()
+		u, err = launcher.New().
+			Headless(!b.cfg.Settings.Browser.ShowBrowser).
+			Set("--disable-blink-features", "AutomationControlled").
+			Set("--exclude-switches", "enable-automation").
+			UserDataDir(dir).
+			Launch()
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("launch chrome: %w", err)
@@ -594,11 +779,11 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	if err := br.Connect(); err != nil {
 		return nil, nil, fmt.Errorf("connect chrome: %w", err)
 	}
-	// Set cookies on a blank page BEFORE navigating to LinkedIn,
+	// Set cookies on a blank page BEFORE navigating to the platform,
 	// so the session cookies are present on the very first request.
 	page, err := br.Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if err != nil {
-					_ = br.Close()
+		_ = br.Close()
 		return nil, nil, fmt.Errorf("open blank page: %w", err)
 	}
 	if len(b.cfg.Cookies) > 0 {
@@ -622,10 +807,27 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 
 	// Recover a dead session with stored credentials before giving up.
+	// For SEEK, only ErrAuthRequired triggers the user re-auth wait. Other errors
+	// (network failures, page parsing issues, SEEK outages) are propagated immediately.
+	// seekRecoverAuth encapsulates the full recovery logic and is injectable for tests.
 	switch b.cfg.Platform {
 	case domain.PlatformSeek:
-		if err := b.seekEnsureLoggedIn(page); err != nil {
-			log.Warn().Err(err).Msg("browser: seek session not authenticated after warm-up")
+		closeFn := func() { _ = br.Close() }
+		if b.seekSeams != nil && b.seekSeams.closeBrowser != nil {
+			closeFn = b.seekSeams.closeBrowser
+		}
+		recoveredBr, recoveredPage, recovErr := b.seekRecoverAuth(page, closeFn)
+		if recovErr != nil {
+			return nil, nil, recovErr
+		}
+		if recoveredBr != nil {
+			// Recovery complete: adopt the relaunched browser.
+			// BotStateRunning is set HERE — only after seekRecoverAuth confirms
+			// a new browser is live and auth has been verified on the fresh page.
+			br, page = recoveredBr, recoveredPage
+			b.mu.Lock()
+			b.state = domain.BotStateRunning
+			b.mu.Unlock()
 		}
 	case domain.PlatformLinkedIn:
 		if err := b.linkedinEnsureLoggedIn(page); err != nil {

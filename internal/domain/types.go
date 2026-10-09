@@ -18,12 +18,13 @@ var SupportedPlatforms = []Platform{PlatformLinkedIn, PlatformSeek}
 type BotState string
 
 const (
-	BotStateIdle          BotState = "idle"
-	BotStateRunning       BotState = "running"
-	BotStatePaused        BotState = "paused"
-	BotStatePendingReview BotState = "pending_review"
-	BotStateStopped       BotState = "stopped"
-	BotStateError         BotState = "error"
+	BotStateIdle               BotState = "idle"
+	BotStateRunning            BotState = "running"
+	BotStatePaused             BotState = "paused"
+	BotStatePendingReview      BotState = "pending_review"
+	BotStateStopped            BotState = "stopped"
+	BotStateError              BotState = "error"
+	BotStateUserActionRequired BotState = "user_action_required"
 )
 
 // LoginMethod represents how a platform session was established.
@@ -43,6 +44,7 @@ type PlatformSession struct {
 	HasSession  bool        `json:"has_session"`
 	LoginMethod LoginMethod `json:"login_method,omitempty"`
 	CreatedAt   time.Time   `json:"created_at,omitempty"`
+	UpdatedAt   time.Time   `json:"updated_at,omitempty"`
 }
 
 // ─── Jobs ──────────────────────────────────────────────────────────────────

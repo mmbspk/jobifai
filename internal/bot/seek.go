@@ -1959,10 +1959,10 @@ func (b *Bot) seekEnsureLoggedIn(page *rod.Page) error {
 
 	if b.cfg.SeekEmail == "" || b.cfg.SeekPassword == "" {
 		if state == browser.LoginStateNo || (err == nil && infoIsSeekLogin(page)) {
-			return fmt.Errorf("not logged in and no Seek credentials saved")
+			return fmt.Errorf("%w: no stored credentials — re-authenticate via Settings → Connect", ErrAuthRequired)
 		}
 		if state == browser.LoginStateNo {
-			return fmt.Errorf("not logged in")
+			return fmt.Errorf("%w: session expired — re-authenticate via Settings → Connect", ErrAuthRequired)
 		}
 		return nil
 	}

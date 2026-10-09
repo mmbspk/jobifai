@@ -1,7 +1,7 @@
 // ── Domain Types (mirrors internal/domain/types.go) ─────────────────
 
 export type Platform = 'linkedin' | 'seek'
-export type BotState = 'idle' | 'running' | 'paused' | 'pending_review' | 'stopped' | 'error'
+export type BotState = 'idle' | 'running' | 'paused' | 'pending_review' | 'stopped' | 'error' | 'user_action_required'
 export type LoginMethod = 'email_password' | 'google_oauth' | 'profile_reuse' | 'manual'
 
 export interface PlatformSession {
