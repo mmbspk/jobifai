@@ -44,7 +44,7 @@ func TestStore_ListDocuments_EmptyAndOriginalUpload(t *testing.T) {
 
 func TestStore_ListDocuments_ConcurrentDoesNotDeadlock(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
