@@ -39,7 +39,7 @@ func (s *SessionStore) Save(userID, platform, loginMethod string, cookies []byte
 	if err := s.secrets.Set(userID, sessionKeyPrefix+platform, string(cookies)); err != nil {
 		return fmt.Errorf("session save: encrypt: %w", err)
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := db.ExecWithRetry(s.db,
 		`INSERT INTO platform_sessions(user_id, platform, cookies_json, login_method, created_at, updated_at)
 		 VALUES(?,?,?,?,?,?)
@@ -52,15 +52,25 @@ func (s *SessionStore) Save(userID, platform, loginMethod string, cookies []byte
 	return err
 }
 
+// parseTimestamp parses a stored timestamp string, accepting RFC3339Nano for
+// new rows and RFC3339 for existing rows written before the precision upgrade.
+func parseTimestamp(s string) time.Time {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t
+	}
+	t, _ := time.Parse(time.RFC3339, s)
+	return t
+}
+
 // Status returns metadata for the platform session, or ErrSessionNotFound.
 func (s *SessionStore) Status(userID, platform string) (*domain.PlatformSession, error) {
 	var p domain.PlatformSession
-	var loginMethod, createdStr string
+	var loginMethod, createdStr, updatedStr string
 	err := s.db.QueryRow(
-		`SELECT platform, login_method, created_at FROM platform_sessions
+		`SELECT platform, login_method, created_at, updated_at FROM platform_sessions
 		 WHERE user_id = ? AND platform = ?`,
 		userID, platform,
-	).Scan(&p.Platform, &loginMethod, &createdStr)
+	).Scan(&p.Platform, &loginMethod, &createdStr, &updatedStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSessionNotFound
 	}
@@ -68,8 +78,8 @@ func (s *SessionStore) Status(userID, platform string) (*domain.PlatformSession,
 		return nil, err
 	}
 	p.LoginMethod = domain.LoginMethod(loginMethod)
-	t, _ := time.Parse(time.RFC3339, createdStr)
-	p.CreatedAt = t
+	p.CreatedAt = parseTimestamp(createdStr)
+	p.UpdatedAt = parseTimestamp(updatedStr)
 	p.HasSession = true
 	return &p, nil
 }

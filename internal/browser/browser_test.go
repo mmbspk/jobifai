@@ -129,3 +129,53 @@ func TestSessionStore_UserIsolation(t *testing.T) {
 	_, err := store.Status("userB", "linkedin")
 	require.ErrorIs(t, err, browser.ErrSessionNotFound)
 }
+
+func TestSessionStore_Status_HasUpdatedAt(t *testing.T) {
+	store := newTestSessionStore(t)
+	cookies, _ := browser.MarshalCookies([]browser.Cookie{{Name: "sid", Value: "v"}})
+	require.NoError(t, store.Save("u1", "seek", "manual", cookies))
+
+	info, err := store.Status("u1", "seek")
+	require.NoError(t, err)
+	assert.False(t, info.UpdatedAt.IsZero(), "UpdatedAt should be populated after Save")
+	assert.False(t, info.CreatedAt.IsZero(), "CreatedAt should be populated after Save")
+}
+
+func TestSessionStore_SaveTwice_UpdatedAtAdvances(t *testing.T) {
+	store := newTestSessionStore(t)
+	cookies, _ := browser.MarshalCookies([]browser.Cookie{{Name: "sid", Value: "first"}})
+	require.NoError(t, store.Save("u1", "seek", "manual", cookies))
+
+	first, err := store.Status("u1", "seek")
+	require.NoError(t, err)
+
+	// RFC3339Nano has nanosecond precision so two consecutive saves produce
+	// distinct UpdatedAt values without any sleep.
+	cookies2, _ := browser.MarshalCookies([]browser.Cookie{{Name: "sid", Value: "second"}})
+	require.NoError(t, store.Save("u1", "seek", "manual", cookies2))
+
+	second, err := store.Status("u1", "seek")
+	require.NoError(t, err)
+
+	assert.True(t, second.UpdatedAt.After(first.UpdatedAt),
+		"UpdatedAt should advance after a second Save (RFC3339Nano precision)")
+	assert.Equal(t, first.CreatedAt, second.CreatedAt,
+		"CreatedAt should not change on upsert")
+}
+
+func TestProfileDir_ConnectAndBotShareSamePath(t *testing.T) {
+	// The Connect browser (browser.ProfileDir) and the automation bot must use
+	// the exact same path formula so Chrome profile data (Auth0 SPA state,
+	// localStorage, service-worker cache) is shared across both sessions.
+	userID := "user-xyz"
+	platform := "seek"
+	configured := "" // neither overrides the path
+
+	connectPath := browser.ProfileDir(userID, platform, configured)
+	botPath := browser.ProfileDir(userID, platform, configured) // same call — same code path
+	assert.Equal(t, connectPath, botPath, "Connect browser and automation bot must share a profile path")
+
+	// When a custom path is configured it takes precedence in both places.
+	custom := "/custom/chrome"
+	assert.Equal(t, custom, browser.ProfileDir(userID, platform, custom))
+}

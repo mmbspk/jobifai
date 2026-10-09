@@ -44,13 +44,14 @@ function stateLabel(state: BotState): string {
     case 'pending_review': return 'Pending review'
     case 'stopped': return 'Stopped'
     case 'error': return 'Needs attention'
+    case 'user_action_required': return 'Sign in required'
     default: return state
   }
 }
 
 function stateBadgeVariant(state: BotState): 'accent' | 'warn' | 'danger' | 'muted' {
   if (state === 'running') return 'accent'
-  if (state === 'paused' || state === 'pending_review') return 'warn'
+  if (state === 'paused' || state === 'pending_review' || state === 'user_action_required') return 'warn'
   if (state === 'error') return 'danger'
   return 'muted'
 }
@@ -63,6 +64,7 @@ function stateHeadline(state: BotState): string {
     case 'pending_review': return 'Waiting for your review'
     case 'error': return 'Automation needs attention'
     case 'stopped': return 'Automation has stopped'
+    case 'user_action_required': return 'Sign in required to continue'
     default: return stateLabel(state)
   }
 }
@@ -173,6 +175,19 @@ export function BotStatusCard(props: BotStatusCardProps) {
           <p className="text-sm text-[var(--color-text-muted)]">
             Automation is paused. Your progress has been preserved.
           </p>
+        )}
+
+        {state === 'user_action_required' && (
+          <div className="rounded-[var(--radius-md)] border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-4 py-3">
+            <p className="text-sm font-medium text-[var(--color-warn-text)]">Action needed</p>
+            <p className="text-sm text-[var(--color-text-muted)] mt-1">
+              SEEK needs you to sign in again.{' '}
+              <Link to="/settings/platforms" className="font-medium text-[var(--color-accent)] hover:underline">
+                Open Settings → Platforms → Connect SEEK
+              </Link>
+              . Jobifai will resume automatically after you reconnect.
+            </p>
+          </div>
         )}
 
         <div className="flex flex-col sm:flex-row sm:items-end gap-4 justify-between">

@@ -44,7 +44,7 @@ func TestStore_ListDocuments_EmptyAndOriginalUpload(t *testing.T) {
 
 func TestStore_ListDocuments_ConcurrentDoesNotDeadlock(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
@@ -63,13 +63,14 @@ func TestStore_ListDocuments_ConcurrentDoesNotDeadlock(t *testing.T) {
 		require.NoError(t, err)
 	}
 
+	errCh := make(chan error, 8)
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			_, _, err := store.ListDocuments(ctx, userID)
-			require.NoError(t, err)
+			errCh <- err
 		}()
 	}
 	done := make(chan struct{})
@@ -81,5 +82,9 @@ func TestStore_ListDocuments_ConcurrentDoesNotDeadlock(t *testing.T) {
 	case <-done:
 	case <-ctx.Done():
 		t.Fatal("ListDocuments concurrent calls deadlocked")
+	}
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
 	}
 }

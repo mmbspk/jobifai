@@ -219,6 +219,7 @@ func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool, 
 	l := launcher.New().
 		Headless(false).
 		Set("--disable-blink-features", "AutomationControlled").
+		Set("--exclude-switches", "enable-automation").
 		Set("--no-sandbox").
 		Set("--disable-gpu").
 		Set("--disable-dev-shm-usage")
@@ -237,6 +238,7 @@ func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool, 
 		url, err = launcher.New().
 			Headless(false).
 			Set("--disable-blink-features", "AutomationControlled").
+			Set("--exclude-switches", "enable-automation").
 			Set("--no-sandbox").
 			Set("--disable-gpu").
 			Set("--disable-dev-shm-usage").
@@ -249,8 +251,17 @@ func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool, 
 
 	b := rod.New().ControlURL(url).MustConnect()
 
-	page := b.MustPage(loginURL)
-	_ = page // user interacts manually
+	// Open a blank page and navigate to the platform — this ensures any future
+	// pre-navigation setup (e.g. cookie injection) runs before the login page loads.
+	page, pageErr := b.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	if pageErr != nil {
+		_ = b.Close()
+		return "", fmt.Errorf("browser: create page: %w", pageErr)
+	}
+	if navErr := page.Navigate(loginURL); navErr != nil {
+		_ = b.Close()
+		return "", fmt.Errorf("browser: navigate to %s: %w", loginURL, navErr)
+	}
 
 	sess := &Session{
 		ID:        uuid.New().String(),
