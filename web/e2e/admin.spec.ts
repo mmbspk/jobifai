@@ -39,7 +39,7 @@ test.describe('Admin', () => {
     await expect(page.getByRole('heading', { name: 'AI usage', exact: true })).toBeVisible()
 
     await page.goto('/admin/defaults')
-    await expect(page.getByText('Default LLM')).toBeVisible()
+    await expect(page.getByText('Default task models')).toBeVisible()
   })
 
   test('models recommendation review opens dialog', async ({ page }) => {
