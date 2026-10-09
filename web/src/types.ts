@@ -249,9 +249,17 @@ export interface AdminUserRow {
   email: string
   display_name: string
   is_admin: boolean
+  is_tester: boolean
   verbose_logs?: boolean
   created_at: string
   has_api_key: boolean
+}
+
+export interface AIProviderStatus {
+  provider: string
+  model: string
+  has_key: boolean
+  active_source: 'personal' | 'admin_default'
 }
 
 export interface AdminUserDetail extends AdminUserRow {

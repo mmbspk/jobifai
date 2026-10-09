@@ -220,6 +220,7 @@ func (h *UserHandlers) Me(w http.ResponseWriter, r *http.Request) {
 		"has_password":   user.PasswordHash != "",
 		"has_google":     user.GoogleID != "",
 		"is_admin":       user.IsAdmin,
+		"is_tester":      user.IsTester,
 		"email_verified": user.EmailVerified,
 		"pending_email":  nullableString(user.PendingEmail),
 	})

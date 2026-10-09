@@ -75,6 +75,7 @@ type Manager struct {
 	retention        retentionAfterSubmit
 	llmReuse         *llmreuse.Store
 	submitWorkGuard  documents.UserWorkGuard
+	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
 }
 
 type retentionAfterSubmit interface {
@@ -122,6 +123,12 @@ func (m *Manager) SetLLMBilling(store *llmpolicy.Store, catalog *pricing.Catalog
 	m.llmPolicy = store
 	m.llmCatalog = catalog
 	m.usageLedger = ledger
+}
+
+// SetUserTypeChecker wires a lookup that reports whether a user is admin or tester,
+// used to decide whether their personal LLM API key is eligible during automation.
+func (m *Manager) SetUserTypeChecker(fn func(userID string) (isAdmin, isTester bool)) {
+	m.userTypeChecker = fn
 }
 
 func NewManager(
@@ -268,7 +275,7 @@ func (m *Manager) Status(userID string) domain.BotStatus {
 		e.status.TodayCount = n
 	}
 	if e.status.State == domain.BotStateIdle && m.cfgStore != nil {
-		gs := config.ResolveOperationalSettings(m.cfgStore, userID)
+		gs := config.ResolveOperationalSettings(m.cfgStore, userID, false)
 		e.status.DailyLimit = gs.HumanBehavior.DailyApplicationLimit
 	}
 	s := e.status
@@ -755,7 +762,17 @@ func (m *Manager) InvalidateLinkedInBrowser(userID string) {
 }
 
 func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config, error) {
-	gs := config.ResolveOperationalSettings(m.cfgStore, userID)
+	allowLLMOverrides := false
+	if m.userTypeChecker != nil {
+		isAdmin, isTester := m.userTypeChecker(userID)
+		allowLLMOverrides = isAdmin || isTester
+	}
+	gs := config.ResolveOperationalSettings(m.cfgStore, userID, allowLLMOverrides)
+	// Single-pass: gs.LLM is updated in-place and the key is resolved consistently.
+	apiKey, isPersonal, keyErr := config.ResolveEffectiveLLMKey(m.cfgStore, m.secrets, userID, allowLLMOverrides, &gs)
+	if keyErr != nil {
+		apiKey, isPersonal = "", false
+	}
 	if gs.HumanBehavior.DailyApplicationLimit == 0 {
 		gs.HumanBehavior.DailyApplicationLimit = 40
 	}
@@ -782,7 +799,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	}
 
 	runID := uuid.NewString()
-	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs)
+	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	if err != nil {
 		return nil, err
 	}
@@ -851,8 +868,8 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 
 // buildPerUserLLM constructs task-resolved LLM clients for one user session.
 // Returns startup defaults when no API key is available.
-func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings) (ResumeTailor, JobScorer, JobHalalChecker, *llm.UsageTracker, error) {
-	client := m.userLLMClient(userID, gs)
+func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings, apiKey string, isPersonal bool) (ResumeTailor, JobScorer, JobHalalChecker, *llm.UsageTracker, error) {
+	client := m.userLLMClient(userID, gs, apiKey, isPersonal)
 	if client == nil {
 		var halal JobHalalChecker
 		if gs.HalalJobFilter {
@@ -893,15 +910,14 @@ func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings) (Res
 	return resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC), resume.NewScorer(scoreC), halal, tracker, nil
 }
 
-// userLLMClient resolves the API key for userID and returns a ready client, or
-// nil if no key is stored. When UseProxy is true, proxy_key takes precedence
-// over llm_api_key — matching the same logic used by the handler layer.
-func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings) *llm.Client {
-	apiKey, err := config.ResolveLLMAPIKey(m.secrets, userID, gs.LLM.UseProxy)
-	if err != nil || apiKey == "" {
+// userLLMClient builds a ready LLM client from a pre-resolved API key and isPersonal flag.
+// The key and flag must come from ResolveEffectiveLLMKey so that gs.LLM and the credential
+// are guaranteed to be consistent (same UseProxy probe). Returns nil when apiKey is empty.
+func (m *Manager) userLLMClient(userID string, gs domain.GeneralSettings, apiKey string, isPersonal bool) *llm.Client {
+	if apiKey == "" {
 		return nil
 	}
-	client := llm.New(gs.LLM, apiKey).WithUserID(userID)
+	client := llm.New(gs.LLM, apiKey).WithUserID(userID).WithPersonalProvider(isPersonal)
 	if m.usageLedger != nil {
 		client = client.WithBilling(llm.BillingHooks{Ledger: m.usageLedger})
 	}
@@ -929,7 +945,17 @@ func (m *Manager) taskClient(base *llm.Client, gs domain.GeneralSettings, task s
 // setupBot loads user config and returns a ready Bot plus the resolved GeneralSettings.
 // market overrides DefaultResumeMarket when non-empty (used by ApplyFromURL).
 func (m *Manager) setupBot(userID string, platform domain.Platform, market string) (*Bot, domain.GeneralSettings, error) {
-	gs := config.ResolveOperationalSettings(m.cfgStore, userID)
+	allowLLMOverrides := false
+	if m.userTypeChecker != nil {
+		isAdmin, isTester := m.userTypeChecker(userID)
+		allowLLMOverrides = isAdmin || isTester
+	}
+	gs := config.ResolveOperationalSettings(m.cfgStore, userID, allowLLMOverrides)
+	// Single-pass: gs.LLM is updated in-place and the key is resolved consistently.
+	apiKey, isPersonal, keyErr := config.ResolveEffectiveLLMKey(m.cfgStore, m.secrets, userID, allowLLMOverrides, &gs)
+	if keyErr != nil {
+		apiKey, isPersonal = "", false
+	}
 	if market != "" {
 		gs.DefaultResumeMarket = market
 	}
@@ -948,7 +974,7 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 	}
 
 	runID := uuid.NewString()
-	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs)
+	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	if err != nil {
 		return nil, gs, err
 	}

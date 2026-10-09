@@ -25,6 +25,28 @@ func RequireAdmin(users *UserStore) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireTester ensures the authenticated user has is_tester set.
+// Admin users are NOT granted tester access — admins configure the shared provider
+// through the admin panel, not through the personal tester provider endpoints.
+// Must run after RequireAuth.
+func RequireTester(users *UserStore) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			userID := UserIDFromCtx(r.Context())
+			if userID == "" {
+				writeForbidden(w, "tester access required")
+				return
+			}
+			u, err := users.ByID(userID)
+			if err != nil || !u.IsTester {
+				writeForbidden(w, "tester access required")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func writeForbidden(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)

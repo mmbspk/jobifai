@@ -19,14 +19,14 @@ import (
 )
 
 func (h *AdminHandlers) baseProvider() string {
-	gs := config.ResolveOperationalSettings(h.svc.Config, "__default__")
+	gs := config.ResolveOperationalSettings(h.svc.Config, "__default__", true)
 	return gs.LLM.Provider
 }
 
 func (h *AdminHandlers) evalService(real bool) *engine.Service {
 	svc := &engine.Service{DB: h.svc.DB, Config: engine.Config{MaxConcurrency: 3}}
 	if real {
-		gs := config.ResolveOperationalSettings(h.svc.Config, "__default__")
+		gs := config.ResolveOperationalSettings(h.svc.Config, "__default__", true)
 		evalCat := &pricing.EvalCatalog{Approved: pricing.DefaultCatalog(), DB: h.svc.DB}
 		svc.EvalPricing = evalCat
 		svc.Run = engine.ProviderRunner{Factory: &providers.Factory{
@@ -35,7 +35,7 @@ func (h *AdminHandlers) evalService(real bool) *engine.Service {
 			BaseLLM: gs.LLM,
 			KeyResolver: func(provider string) (string, bool) {
 				if provider == gs.LLM.Provider {
-					k, err := config.ResolveLLMAPIKey(h.svc.Secrets, "__default__", gs.LLM.UseProxy)
+					k, _, err := config.ResolveLLMAPIKey(h.svc.Secrets, "__default__", false, gs.LLM.UseProxy)
 					return k, err == nil && k != ""
 				}
 				k, err := h.svc.Secrets.Get("__default__", "eval_"+provider+"_api_key")
@@ -319,7 +319,13 @@ func (h *AdminHandlers) ModelsEffective(w http.ResponseWriter, r *http.Request) 
 	if userID == "" {
 		userID = "__default__"
 	}
-	gs := config.ResolveOperationalSettings(h.svc.Config, userID)
+	allowLLM := userID == domain.SystemUserID || userID == "__default__"
+	if !allowLLM && h.svc.Users != nil {
+		if u, err := h.svc.Users.ByID(userID); err == nil {
+			allowLLM = u.IsAdmin || u.IsTester
+		}
+	}
+	gs := config.ResolveOperationalSettings(h.svc.Config, userID, allowLLM)
 	store := &llmpolicy.Store{DB: h.svc.DB}
 	catalog := pricing.DefaultCatalog()
 	tasks := []string{

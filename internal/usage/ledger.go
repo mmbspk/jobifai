@@ -45,6 +45,7 @@ type RecordInput struct {
 	Success             bool
 	ErrorCode           string
 	LogicalOp           bool // true = successful logical Jobifai operation (one per Chat success)
+	PersonalProvider    bool // true when the user's own API key is being used (not the system key)
 }
 
 // Record persists billing synchronously in one transaction.
@@ -150,6 +151,7 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 		Attempt:             in.Call.Attempt,
 		PricingSource:       pricingSource,
 		PricingVersion:      pricingVersion,
+		PersonalProvider:    in.PersonalProvider,
 	}
 
 	var burnPrep quota.BurnPrepare

@@ -41,7 +41,7 @@ export const adminApi = {
     },
     update: (
       userId: string,
-      body: { is_admin?: boolean; verbose_logs?: boolean; llm_overrides?: LLMOverrides; quota_overrides?: QuotaUserOverrides },
+      body: { is_admin?: boolean; is_tester?: boolean; verbose_logs?: boolean; llm_overrides?: LLMOverrides; quota_overrides?: QuotaUserOverrides },
     ) => apiPut<void>(`/admin/users/${userId}`, body),
     setApiKey: (userId: string, value: string) =>
       apiPost<void>(`/admin/users/${userId}/secrets/api-key`, { value }),
@@ -81,6 +81,9 @@ export const adminApi = {
       deleteSmtpPass: () => apiDelete<{ message: string }>('/admin/email/settings/smtp-pass'),
     },
     test: (to: string) => apiPost<{ message: string }>('/admin/email/test', { to }),
+  },
+  aiProvider: {
+    test: () => apiPost<{ success: boolean; latency_ms: number; provider: string; model: string; error?: string }>('/admin/ai-provider/test', {}),
   },
 }
 

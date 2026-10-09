@@ -144,8 +144,17 @@ func main() {
 	quotaSvc.SetPricingCatalog(catalog)
 	llmReuseStore := &llmreuse.Store{DB: database}
 
+	// ── User type checker (for LLM personal key resolution) ─────────────
+	userTypeChecker := func(uid string) (isAdmin, isTester bool) {
+		u, err := userStore.ByID(uid)
+		if err != nil {
+			return false, false
+		}
+		return u.IsAdmin, u.IsTester
+	}
+
 	// ── LLM deps (nil if no API key stored yet) ─────────────────────────
-	extractor, tailor, renderer, llmClient := buildLLMDeps("__default__", cfgStore, secretsStore, usageStore.For("__default__"), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
+	extractor, tailor, renderer, llmClient, _ := buildLLMDeps("__default__", noPersonalKey, cfgStore, secretsStore, usageStore.For("__default__"), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 
 	// ── Bot manager ──────────────────────────────────────────────────────
 	var botTailor bot.ResumeTailor
@@ -231,6 +240,7 @@ func main() {
 	}
 	botMgr.SetRetention(retentionSvc)
 	botMgr.SetLLMReuse(llmReuseStore)
+	botMgr.SetUserTypeChecker(userTypeChecker)
 
 	// ── Router ──────────────────────────────────────────────────────────
 	rawAppBaseURL := os.Getenv("APP_BASE_URL")
@@ -296,15 +306,16 @@ func main() {
 		Quota:        quotaSvc,
 		HTTPClient:   &http.Client{Timeout: 5 * time.Second},
 		LLMFactory: func(userID string) (handler.ResumeExtractor, handler.ResumeTailor) {
-			e, t, _, _ := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
+			e, t, _, _, _ := buildLLMDeps(userID, userTypeChecker, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			return e, t
 		},
 		EvaluatorFactory: func(userID string) handler.JobEvaluator {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
+			_, _, _, client, _ := buildLLMDeps(userID, userTypeChecker, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
 				return nil
 			}
-			gs := config.ResolveOperationalSettings(cfgStore, userID)
+			isAdmin, isTester := userTypeChecker(userID)
+			gs := config.ResolveOperationalSettings(cfgStore, userID, isAdmin || isTester)
 			scoreC, err := taskApply(client, gs, policyStore, catalog, "scoring")
 			if err != nil {
 				return nil
@@ -312,11 +323,12 @@ func main() {
 			return resume.NewScorer(scoreC)
 		},
 		HalalCheckerFactory: func(userID string) handler.JobHalalChecker {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
+			_, _, _, client, _ := buildLLMDeps(userID, userTypeChecker, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
 				return nil
 			}
-			gs := config.ResolveOperationalSettings(cfgStore, userID)
+			isAdmin, isTester := userTypeChecker(userID)
+			gs := config.ResolveOperationalSettings(cfgStore, userID, isAdmin || isTester)
 			halalC, err := taskApply(client, gs, policyStore, catalog, "halal")
 			if err != nil {
 				return nil
@@ -328,16 +340,24 @@ func main() {
 		LLMReuseMetrics: llmReuseStore,
 		AppBaseURL:  appBaseURL,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
-			_, _, _, client := buildLLMDeps(userID, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
+			_, _, _, client, _ := buildLLMDeps(userID, userTypeChecker, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
 				return nil
 			}
-			gs := config.ResolveOperationalSettings(cfgStore, userID)
+			isAdmin, isTester := userTypeChecker(userID)
+			gs := config.ResolveOperationalSettings(cfgStore, userID, isAdmin || isTester)
 			qC, err := taskApply(client, gs, policyStore, catalog, "questions")
 			if err != nil {
 				return nil
 			}
 			return resume.NewQuestionAnswerer(qC)
+		},
+		LLMConnectionTester: func(ctx context.Context, userID string) (string, string, int64, error) {
+			_, _, _, client, _ := buildLLMDeps(userID, userTypeChecker, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
+			if client == nil {
+				return "", "", 0, errors.New("no API key configured")
+			}
+			return client.TestConnection(ctx)
 		},
 	}
 	router := handler.NewRouter(svc)
@@ -390,20 +410,26 @@ func main() {
 	log.Info().Msg("bye")
 }
 
-// buildLLMDeps returns an Extractor, Tailor, PDFRenderer, and raw LLM client from stored config.
-// userID scopes the config/secrets lookup; pass "__default__" for startup bootstrapping.
-// Extractor/Tailor/Client are nil if no API key is saved yet.
-// tracker is optional; if non-nil the returned client will accumulate token usage into it.
-func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard, ledger *usage.Ledger, policyStore *llmpolicy.Store, catalog *pricing.Catalog, reuseStore *llmreuse.Store) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client) {
+// noPersonalKey is a checker that always denies personal-key lookup (used for system/startup calls).
+func noPersonalKey(_ string) (bool, bool) { return false, false }
+
+// buildLLMDeps returns an Extractor, Tailor, PDFRenderer, raw LLM client, and a bool indicating
+// whether a personal provider key was used. Extractor/Tailor/Client are nil if no API key is saved.
+// checker reports (isAdmin, isTester) for userID; pass noPersonalKey for system/startup calls.
+func buildLLMDeps(userID string, checker func(string) (bool, bool), cfgStore *config.Store, secrets *config.SecretsStore, tracker *llm.UsageTracker, quotaGuard quota.LLMGuard, ledger *usage.Ledger, policyStore *llmpolicy.Store, catalog *pricing.Catalog, reuseStore *llmreuse.Store) (handler.ResumeExtractor, handler.ResumeTailor, handler.ResumeRenderer, *llm.Client, bool) {
 	renderer := resume.NewPDFRenderer("resume_style")
 
-	gs := config.ResolveOperationalSettings(cfgStore, userID)
-	apiKey, err := config.ResolveLLMAPIKey(secrets, userID, gs.LLM.UseProxy)
+	isAdmin, isTester := checker(userID)
+	allowPersonal := isAdmin || isTester
+	gs := config.ResolveOperationalSettings(cfgStore, userID, allowPersonal)
+	// Single-pass: enforce consistency and resolve the credential atomically so that
+	// gs.LLM and the API key are always derived from the same UseProxy probe.
+	apiKey, isPersonal, err := config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, allowPersonal, &gs)
 	if err != nil || apiKey == "" {
-		return nil, nil, renderer, nil
+		return nil, nil, renderer, nil, false
 	}
 
-	client := llm.New(gs.LLM, apiKey).WithUserID(userID)
+	client := llm.New(gs.LLM, apiKey).WithUserID(userID).WithPersonalProvider(isPersonal)
 	if tracker != nil {
 		client = client.WithTracker(tracker)
 	}
@@ -422,7 +448,7 @@ func buildLLMDeps(userID string, cfgStore *config.Store, secrets *config.Secrets
 	formAnswerC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskFormAnswer, userID)
 	formVisionC := taskApplyWithFallback(client, gs, policyStore, catalog, domain.TaskFormVision, userID)
 	tailor := resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC)
-	return resume.NewExtractor(extractC), tailor, renderer, client
+	return resume.NewExtractor(extractC), tailor, renderer, client, isPersonal
 }
 
 // taskApplyWithFallback uses the base client for legacy/user misconfiguration only.

@@ -53,16 +53,40 @@ type Message struct {
 
 // Client dispatches LLM requests based on the active configuration.
 type Client struct {
-	cfg         domain.LLMConfig
-	apiKey      string
-	httpCli     *http.Client
-	tracker     *UsageTracker // optional; if set, accumulates token usage per call
-	billing     BillingHooks
-	guard       quota.LLMGuard
-	userID      string
-	taskRuntime TaskRuntime
-	costCeiling *costCeiling
-	reuse       *ReuseCoordinator
+	cfg             domain.LLMConfig
+	apiKey          string
+	httpCli         *http.Client
+	tracker         *UsageTracker // optional; if set, accumulates token usage per call
+	billing         BillingHooks
+	guard           quota.LLMGuard
+	userID          string
+	taskRuntime     TaskRuntime
+	costCeiling     *costCeiling
+	reuse           *ReuseCoordinator
+	personalProvider bool // true when the user's own API key (not the system key) is being used
+}
+
+// WithPersonalProvider marks whether this client is using the user's own API key (vs system key).
+// This is recorded in usage events to distinguish shared vs personal provider usage.
+func (c *Client) WithPersonalProvider(personal bool) *Client {
+	c.personalProvider = personal
+	return c
+}
+
+// IsPersonalProvider reports whether this client is using the user's own API key.
+func (c *Client) IsPersonalProvider() bool {
+	if c == nil {
+		return false
+	}
+	return c.personalProvider
+}
+
+// ProviderName returns the configured provider for this client.
+func (c *Client) ProviderName() string {
+	if c == nil {
+		return ""
+	}
+	return c.cfg.Provider
 }
 
 // WithReuse attaches exact-generation reuse (content-scoped, visual identity separate).
@@ -121,6 +145,7 @@ func (c *Client) WithModel(model string, maxTokens int) *Client {
 		cfg: cfg, apiKey: c.apiKey, httpCli: c.httpCli, tracker: c.tracker,
 		billing: c.billing, guard: c.guard, userID: c.userID,
 		taskRuntime: c.taskRuntime, costCeiling: c.costCeiling, reuse: c.reuse,
+		personalProvider: c.personalProvider,
 	}
 }
 
@@ -171,6 +196,24 @@ func (c *Client) ChatValidated(ctx context.Context, msgs []Message, validate fun
 		return "", errors.New("document validator required")
 	}
 	return c.chat(ctx, msgs, validate)
+}
+
+// TestConnection sends a minimal message to verify the configured provider and API key.
+// Returns the effective provider, model, round-trip latency, and any error.
+func (c *Client) TestConnection(ctx context.Context) (provider, model string, latencyMS int64, err error) {
+	if c == nil || c.apiKey == "" {
+		return "", "", 0, errors.New("no API key configured")
+	}
+	start := time.Now()
+	resp, chatErr := c.Chat(ctx, []Message{{Role: "user", Content: "Respond with the word OK and nothing else."}})
+	latencyMS = time.Since(start).Milliseconds()
+	if chatErr != nil {
+		return c.cfg.Provider, c.cfg.Model, latencyMS, chatErr
+	}
+	if resp == "" {
+		return c.cfg.Provider, c.cfg.Model, latencyMS, errors.New("empty response from provider")
+	}
+	return c.cfg.Provider, c.cfg.Model, latencyMS, nil
 }
 
 func (c *Client) chat(ctx context.Context, msgs []Message, validate func(string) (string, error)) (response string, retErr error) {

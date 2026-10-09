@@ -115,7 +115,7 @@ func (h *BotHandlers) Status(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	if h.svc.Bot == nil {
 		s := domain.BotStatus{State: domain.BotStateIdle}
-		gs := config.ResolveOperationalSettings(h.svc.Config, userID)
+		gs := config.ResolveOperationalSettings(h.svc.Config, userID, false)
 		s.DailyLimit = gs.HumanBehavior.DailyApplicationLimit
 		writeJSON(w, http.StatusOK, s)
 		return

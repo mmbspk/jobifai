@@ -131,8 +131,10 @@ func MergeLLM(base domain.LLMConfig, o domain.LLMOverrides) domain.LLMConfig {
 }
 
 // ResolveOperationalSettings merges system automation defaults, user application
-// preferences, and optional per-user LLM overrides — used by the bot and LLM factories.
-func ResolveOperationalSettings(store ConfigGetter, userID string) domain.GeneralSettings {
+// preferences, and — when allowLLMOverrides is true — optional per-user LLM overrides.
+// Pass allowLLMOverrides=true only for admin and tester users; regular users must always
+// use the system LLM configuration (provider, model, task models, proxy).
+func ResolveOperationalSettings(store ConfigGetter, userID string, allowLLMOverrides bool) domain.GeneralSettings {
 	sys := SystemGeneralKV(store)
 	user, err := getGeneral(store, userID)
 	hasUser := err == nil
@@ -140,6 +142,11 @@ func ResolveOperationalSettings(store ConfigGetter, userID string) domain.Genera
 		user = domain.GeneralSettings{}
 	}
 	out := applyUserApplicationFields(sys, user, hasUser)
+
+	if !allowLLMOverrides {
+		EnsureDocumentPolicies(&out)
+		return out
+	}
 
 	// Legacy: LLM stored on the user general_settings row before system defaults existed.
 	if hasUser && (user.LLM.Provider != "" || user.LLM.Model != "" || len(user.LLM.TaskModels) > 0 || user.LLM.UseProxy) {
@@ -168,20 +175,69 @@ func ResolveOperationalSettings(store ConfigGetter, userID string) domain.Genera
 	return out
 }
 
-// ResolveLLMAPIKey returns the user's key if set, otherwise the system default.
-func ResolveLLMAPIKey(secrets SecretsKV, userID string, useProxy bool) (string, error) {
+// ResolveLLMAPIKey returns the API key to use for userID, whether it is a personal
+// (user-scoped) key, and any error. The second return value is true only when the
+// key came from the user's own stored credential (llm_api_key or proxy_key), which
+// is the authoritative source for billing attribution and consistency checks.
+//
+// Personal keys are only returned when allowPersonalKey is true; otherwise the
+// system key is used. allowPersonalKey must be true only for tester and admin users.
+func ResolveLLMAPIKey(secrets SecretsKV, userID string, allowPersonalKey bool, useProxy bool) (key string, isPersonal bool, err error) {
 	if useProxy {
-		if k, err := secrets.Get(userID, "proxy_key"); err == nil && k != "" {
-			return k, nil
+		if allowPersonalKey {
+			if k, e := secrets.Get(userID, "proxy_key"); e == nil && k != "" {
+				return k, true, nil
+			}
 		}
-		if k, err := secrets.Get(domain.SystemUserID, "proxy_key"); err == nil && k != "" {
-			return k, nil
+		if k, e := secrets.Get(domain.SystemUserID, "proxy_key"); e == nil && k != "" {
+			return k, false, nil
 		}
 	}
-	if secrets.Has(userID, "llm_api_key") {
-		return secrets.Get(userID, "llm_api_key")
+	if allowPersonalKey && secrets.Has(userID, "llm_api_key") {
+		k, e := secrets.Get(userID, "llm_api_key")
+		return k, true, e
 	}
-	return secrets.Get(domain.SystemUserID, "llm_api_key")
+	k, e := secrets.Get(domain.SystemUserID, "llm_api_key")
+	return k, false, e
+}
+
+// ResolveEffectiveLLMKey enforces credential-configuration consistency and resolves the
+// effective API key in a single, atomic operation. It updates gs.LLM in-place and returns
+// the key that will actually be used, and whether it is personal.
+//
+// The algorithm probes ResolveLLMAPIKey with the current gs.LLM.UseProxy. If a personal
+// credential is selected, gs.LLM is kept and the probed key is returned directly. If a
+// system credential is selected, gs.LLM is replaced with the system default and the system
+// key is resolved again with allowPersonalKey=false — preventing a personal direct key from
+// being selected when UseProxy reverts from true (tester override) to false (system default).
+//
+// This single-pass approach is the only way to guarantee that the returned key and gs.LLM
+// are consistent: splitting the operations into a separate enforcement step followed by a
+// re-resolution can produce divergent credentials when UseProxy changes between the two calls.
+func ResolveEffectiveLLMKey(store ConfigGetter, secrets SecretsKV, userID string, allowOverrides bool, gs *domain.GeneralSettings) (key string, isPersonal bool, err error) {
+	if !allowOverrides {
+		k, _, e := ResolveLLMAPIKey(secrets, userID, false, gs.LLM.UseProxy)
+		return k, false, e
+	}
+	// Single probe using the tester's current UseProxy setting.
+	k, personal, e := ResolveLLMAPIKey(secrets, userID, true, gs.LLM.UseProxy)
+	if e != nil || !personal {
+		// System credential selected — revert ALL LLM overrides, then resolve the system
+		// key using the system's UseProxy (allowPersonalKey=false so a personal direct key
+		// cannot be picked up after UseProxy reverts from true to false).
+		gs.LLM = SystemGeneralKV(store).LLM
+		k, _, e = ResolveLLMAPIKey(secrets, userID, false, gs.LLM.UseProxy)
+		return k, false, e
+	}
+	// Personal credential — keep the tester's LLM config and use the probed key.
+	return k, true, nil
+}
+
+// EnforceLLMCredentialConsistency updates gs.LLM in-place using the same single-pass logic
+// as ResolveEffectiveLLMKey. Kept for callers (tests) that only need the config update and
+// do not consume the resolved key; production code should call ResolveEffectiveLLMKey.
+func EnforceLLMCredentialConsistency(store ConfigGetter, secrets SecretsKV, userID string, allowOverrides bool, gs *domain.GeneralSettings) {
+	_, _, _ = ResolveEffectiveLLMKey(store, secrets, userID, allowOverrides, gs)
 }
 
 // HasUserLLMAPIKey reports whether the user has their own API key override.

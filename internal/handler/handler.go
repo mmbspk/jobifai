@@ -99,6 +99,10 @@ type Services struct {
 	// Read from APP_BASE_URL at process startup. Falls back to http://localhost:8081
 	// when unset and logs a warning — set APP_BASE_URL in production.
 	AppBaseURL string
+	// LLMConnectionTester validates a provider+key combo by issuing a minimal live request.
+	// Returns (provider, model, latencyMS, err). Used by admin AI Provider test and tester
+	// personal provider test. Pass domain.SystemUserID for the system provider check.
+	LLMConnectionTester func(ctx context.Context, userID string) (provider, model string, latencyMS int64, err error)
 }
 
 // GoogleOAuthHandler handles the Google OAuth2 redirect + callback.

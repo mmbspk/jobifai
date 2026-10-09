@@ -45,7 +45,7 @@ func cmdSmokeClaude(args []string) {
 	}
 	cfgStore := config.NewStore(sqldb)
 	secrets := config.NewSecretsStore(sqldb, machineKey)
-	gs := config.ResolveOperationalSettings(cfgStore, domain.SystemUserID)
+	gs := config.ResolveOperationalSettings(cfgStore, domain.SystemUserID, true)
 
 	factory := &providers.Factory{
 		Catalog:     pricing.DefaultCatalog(),
@@ -53,7 +53,7 @@ func cmdSmokeClaude(args []string) {
 		BaseLLM:     gs.LLM,
 		KeyResolver: func(provider string) (string, bool) {
 			if provider == gs.LLM.Provider {
-				k, err := config.ResolveLLMAPIKey(secrets, domain.SystemUserID, gs.LLM.UseProxy)
+				k, _, err := config.ResolveLLMAPIKey(secrets, domain.SystemUserID, false, gs.LLM.UseProxy)
 				return k, err == nil && k != ""
 			}
 			k, err := secrets.Get(domain.SystemUserID, "eval_"+provider+"_api_key")

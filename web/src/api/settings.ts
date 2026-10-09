@@ -1,5 +1,13 @@
-import { apiGet, apiPost, apiPostForm, apiDelete } from './client'
-import type { GeneralSettings, WorkPreferences, ResumeProfile, SecretsConfig, ResumeStyle, ResumeMarket } from '../types'
+import { apiGet, apiPost, apiPostForm, apiPut, apiDelete } from './client'
+import type { GeneralSettings, WorkPreferences, ResumeProfile, SecretsConfig, ResumeStyle, ResumeMarket, AIProviderStatus } from '../types'
+
+export interface AIProviderTestResult {
+  success: boolean
+  latency_ms: number
+  provider: string
+  model: string
+  error?: string
+}
 
 export const settingsApi = {
   general: {
@@ -28,6 +36,11 @@ export const settingsApi = {
       apiPost<void>('/settings/secrets/credentials', { platform, email, password }),
     deleteCredentials: (platform: string) =>
       apiDelete<void>(`/settings/secrets/credentials?platform=${encodeURIComponent(platform)}`),
+  },
+  aiProvider: {
+    get: () => apiGet<AIProviderStatus>('/settings/ai-provider'),
+    set: (cfg: { provider: string; model: string }) => apiPut<void>('/settings/ai-provider', cfg),
+    test: () => apiPost<AIProviderTestResult>('/settings/ai-provider/test', {}),
   },
   styles: {
     list: () => apiGet<ResumeStyle[]>('/settings/styles'),

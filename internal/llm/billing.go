@@ -133,6 +133,7 @@ func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int
 		Success:             success,
 		ErrorCode:           errCode,
 		LogicalOp:           logicalOp,
+		PersonalProvider:    c.personalProvider,
 	})
 	if err != nil {
 		log.Error().Err(err).Str("event", "llm_billing_record_failed").Str("task", call.Task).Msg("billing record failed")

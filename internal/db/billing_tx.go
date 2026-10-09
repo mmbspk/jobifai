@@ -36,20 +36,24 @@ func RecordBillingTx(tx *sql.Tx, in LLMUsageEventInput, quotaBurnCredits int64, 
 	if in.ActualModelVerified {
 		verified = 1
 	}
+	personalProvider := 0
+	if in.PersonalProvider {
+		personalProvider = 1
+	}
 	_, err := tx.Exec(`
 		INSERT INTO llm_usage_events (
 			id, created_at, user_id, task, provider, requested_model, actual_model, actual_model_verified,
 			input_tokens, output_tokens, cache_write_5m_tokens, cache_write_1h_tokens, cache_read_tokens,
 			raw_cost_usd_micro, loaded_cost_usd_micro, credits_burned, latency_ms,
 			success, error_code, correlation_id, idempotency_key, job_id, application_id, automation_run_id,
-			attempt, pricing_source, pricing_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			attempt, pricing_source, pricing_version, personal_provider
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, time.Now().UTC(), in.UserID, in.Task, in.Provider, in.RequestedModel, in.ActualModel, verified,
 		in.InputTokens, in.OutputTokens, in.CacheWrite5mTokens, in.CacheWrite1hTokens, in.CacheReadTokens,
 		in.RawCostUSDMicro, in.LoadedCostUSDMicro, in.CreditsBurned, in.LatencyMS,
 		success, nullIfEmpty(in.ErrorCode), in.CorrelationID, nullIfEmpty(in.IdempotencyKey),
 		nullIfEmpty(in.JobID), nullIfEmpty(in.ApplicationID), nullIfEmpty(in.AutomationRunID),
-		in.Attempt, in.PricingSource, in.PricingVersion,
+		in.Attempt, in.PricingSource, in.PricingVersion, personalProvider,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {

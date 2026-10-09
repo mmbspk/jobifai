@@ -70,6 +70,14 @@ export function AdminUsersPage() {
     },
   })
 
+  const toggleTester = useMutation({
+    mutationFn: (next: boolean) => adminApi.users.update(selectedId!, { is_tester: next }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-users'] })
+      qc.invalidateQueries({ queryKey: ['admin-user', selectedId] })
+    },
+  })
+
   const toggleVerboseLogs = useMutation({
     mutationFn: (next: boolean) => adminApi.users.update(selectedId!, { verbose_logs: next }),
     onSuccess: () => {
@@ -137,6 +145,7 @@ export function AdminUsersPage() {
                   <div className="text-xs text-[var(--color-text-dim)]">{u.email}</div>
                   <div className="flex flex-wrap gap-1.5 mt-1.5">
                     {u.is_admin && <Badge variant="admin">Admin</Badge>}
+                    {u.is_tester && <Badge variant="accent">Tester</Badge>}
                     {u.has_api_key && <Badge variant="accent">Own API key</Badge>}
                   </div>
                 </button>
@@ -157,6 +166,13 @@ export function AdminUsersPage() {
                   helper="Can open the Admin area and change deployment defaults."
                   checked={detail.is_admin}
                   onCheckedChange={v => toggleAdmin.mutate(v)}
+                />
+                <Switch
+                  label="Tester"
+                  helper="Can configure a personal AI provider in Settings → Platforms."
+                  checked={detail.is_tester ?? false}
+                  disabled={detail.is_admin}
+                  onCheckedChange={v => toggleTester.mutate(v)}
                 />
                 <Switch
                   label="Verbose dashboard logs"

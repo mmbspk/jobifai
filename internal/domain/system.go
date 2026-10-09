@@ -19,6 +19,7 @@ type AdminUserRow struct {
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name"`
 	IsAdmin     bool   `json:"is_admin"`
+	IsTester    bool   `json:"is_tester"`
 	VerboseLogs bool   `json:"verbose_logs"`
 	CreatedAt   string `json:"created_at"`
 	HasAPIKey   bool   `json:"has_api_key"`

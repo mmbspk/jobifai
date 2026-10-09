@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { Check, Eye, EyeOff, MonitorCheck, Trash2 } from 'lucide-react'
+import { Check, Eye, EyeOff, MonitorCheck, Trash2, Loader2 } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { authApi } from '../../api/auth'
 import { getToken, apiGet } from '../../api/client'
@@ -11,6 +11,7 @@ import { MaskedSecretField } from '../../components/settings/MaskedSecretField'
 import { inputClassName } from '../../components/ui/input'
 import { Button } from '../../components/ui/button'
 import { cn } from '../../lib'
+import { useAuth } from '../../contexts/AuthContext'
 
 const PLATFORMS = ['linkedin', 'seek'] as const
 
@@ -234,7 +235,7 @@ function CredentialsCard({ platform, hasCreds }: CredentialsCardProps) {
 }
 
 export function PlatformsSettingsPage() {
-  const qc = useQueryClient()
+  const { user } = useAuth()
   const { data: secrets } = useQuery({ queryKey: ['settings-secrets'], queryFn: settingsApi.secrets.get })
 
   return (
@@ -244,16 +245,7 @@ export function PlatformsSettingsPage() {
         description="Connect job boards and configure the AI provider used for scoring and document generation."
       />
 
-      <SettingsSection title="AI provider" description="Your API key is stored encrypted and never shown again after saving.">
-        <SettingsField label="LLM API key" sub="Used when you run Generate, automation, and profile extraction">
-          <MaskedSecretField
-            configured={!!secrets?.llm_api_key}
-            label="API key"
-            onSave={v => settingsApi.secrets.setApiKey('llm_api_key', v).then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
-            onDelete={() => settingsApi.secrets.deleteApiKey().then(() => qc.invalidateQueries({ queryKey: ['settings-secrets'] }))}
-          />
-        </SettingsField>
-      </SettingsSection>
+      {user?.is_tester && <TesterAIProviderSection />}
 
       <SettingsSection title="Job board connections" description="Sign in so Jobifai can search listings and submit applications on your behalf.">
         <div className="space-y-2">
@@ -267,6 +259,126 @@ export function PlatformsSettingsPage() {
         </div>
       </SettingsSection>
     </div>
+  )
+}
+
+function TesterAIProviderSection() {
+  const qc = useQueryClient()
+  const { data: status, refetch } = useQuery({
+    queryKey: ['settings-ai-provider'],
+    queryFn: settingsApi.aiProvider.get,
+  })
+  const [provider, setProvider] = useState('')
+  const [model, setModel] = useState('')
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ success: boolean; latency_ms: number; provider: string; model: string; error?: string } | null>(null)
+
+  useEffect(() => {
+    if (status) {
+      setProvider(status.provider || '')
+      setModel(status.model || '')
+    }
+  }, [status])
+
+  const save = useMutation({
+    mutationFn: () => settingsApi.aiProvider.set({ provider, model }),
+    onSuccess: () => { void refetch() },
+  })
+
+  const handleTest = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const res = await settingsApi.aiProvider.test()
+      setTestResult(res)
+    } catch (e) {
+      setTestResult({ success: false, latency_ms: 0, provider: '', model: '', error: String(e) })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  return (
+    <SettingsSection
+      title="Personal AI provider"
+      description="Use your own AI provider for testing. When configured with a key, your personal provider will be used instead of Jobifai's default AI."
+    >
+      {status && (
+        <div className="mb-3">
+          <span className={cn(
+            'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium',
+            status.active_source === 'personal'
+              ? 'bg-[var(--color-success-subtle)] text-[var(--color-success)]'
+              : 'bg-[var(--color-muted)] text-[var(--color-muted-fg)]',
+          )}>
+            {status.active_source === 'personal' ? 'Using your personal AI provider' : "Using Jobifai's default AI"}
+          </span>
+        </div>
+      )}
+      <SettingsField label="Provider">
+        <select
+          className={inputClassName}
+          value={provider}
+          onChange={e => setProvider(e.target.value)}
+        >
+          <option value="">— same as admin default —</option>
+          <option value="claude">Claude (Anthropic)</option>
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Gemini (Google)</option>
+          <option value="ollama">Ollama (local)</option>
+        </select>
+      </SettingsField>
+      <SettingsField label="Model">
+        <input
+          className={inputClassName}
+          type="text"
+          placeholder="e.g. claude-sonnet-4-5"
+          value={model}
+          onChange={e => setModel(e.target.value)}
+        />
+      </SettingsField>
+      <SettingsField label="API key" sub="Stored encrypted. Providing a key enables your personal provider.">
+        <MaskedSecretField
+          configured={!!status?.has_key}
+          label="API key"
+          onSave={v => settingsApi.secrets.setApiKey('llm_api_key', v).then(() => {
+            void qc.invalidateQueries({ queryKey: ['settings-secrets'] })
+            void refetch()
+          })}
+          onDelete={() => settingsApi.secrets.deleteApiKey().then(() => {
+            void qc.invalidateQueries({ queryKey: ['settings-secrets'] })
+            void refetch()
+          })}
+        />
+      </SettingsField>
+      <div className="flex items-center gap-3 pt-1">
+        <Button
+          size="sm"
+          onClick={() => save.mutate()}
+          disabled={save.isPending}
+        >
+          {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save'}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleTest}
+          disabled={testing}
+        >
+          {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Test connection'}
+        </Button>
+        {testResult && (
+          <span className={cn(
+            'text-xs',
+            testResult.success ? 'text-[var(--color-success)]' : 'text-[var(--color-danger)]',
+          )}>
+            {testResult.success
+              ? `OK · ${testResult.provider}/${testResult.model} · ${testResult.latency_ms}ms`
+              : (testResult.error ?? 'Connection failed')}
+          </span>
+        )}
+      </div>
+    </SettingsSection>
   )
 }
 
