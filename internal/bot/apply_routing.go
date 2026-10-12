@@ -29,3 +29,21 @@ func skipReasonBelongsInTopMatches(reason string) bool {
 	}
 	return false
 }
+
+// queueApplyOutcome maps a platformApply error from processApprovedQueue to the
+// (outcome, stage, reasonCode) triple written to apply_attempts. It does NOT handle
+// errAlreadyApplied — that sentinel is checked before this function is called.
+//
+// Errors from easyApply/seekApply already carry "easy apply:" or "seek apply:"
+// prefixes, so skipReasonBelongsInTopMatches receives them directly without an
+// additional label — previously the "approved queue: " prefix was prepended here
+// which inadvertently prevented the blocked-ATS branch from ever matching.
+func queueApplyOutcome(err error) (outcome AttemptOutcome, stage, reasonCode string) {
+	if isSeekSubmitUnconfirmedError(err) {
+		return OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed"
+	}
+	if skipReasonBelongsInTopMatches(err.Error()) {
+		return OutcomeBlocked, "apply", "not_automatable"
+	}
+	return classifyApplyOutcome(err), "apply", "apply_error"
+}
