@@ -5,14 +5,18 @@ package bot
 // without any browser dependency.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appdb "github.com/user/jobifai/internal/db"
@@ -25,6 +29,49 @@ func openAttemptTestDB(t *testing.T) *sql.DB {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+// openPartialSchemaDB opens a SQLite DB that has ONLY the columns that
+// finishAttempt's UPDATE needs (so the UPDATE succeeds with 0 rows) but is
+// missing the columns that the fallback INSERT needs (so the INSERT fails).
+// This lets tests verify the second "fallback INSERT also failed" warning path.
+func openPartialSchemaDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "partial_schema.db")
+	// Use the same sqlite driver (registered by appdb import) but without migrations.
+	db, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	// Include all columns the UPDATE's SET clause uses; omit user_id, platform,
+	// entry_point, and started_at which the INSERT requires — so INSERT fails.
+	_, err = db.Exec(`
+		CREATE TABLE apply_attempts (
+			id          TEXT PRIMARY KEY,
+			job_id      TEXT,
+			url         TEXT,
+			role        TEXT,
+			company     TEXT,
+			outcome     TEXT,
+			stage       TEXT,
+			reason_code TEXT,
+			reason_text TEXT,
+			finished_at TEXT,
+			elapsed_ms  INTEGER
+		)
+	`)
+	require.NoError(t, err)
+	return db
+}
+
+// captureLogs replaces the global zerolog logger with one writing to a buffer
+// for the duration of the test. Returns the buffer.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	orig := log.Logger
+	log.Logger = zerolog.New(buf)
+	t.Cleanup(func() { log.Logger = orig })
+	return buf
 }
 
 func newTestAC(userID, platform string) *AttemptContext {
@@ -206,52 +253,76 @@ func TestFinishAttempt_CancelledAndTimedOut(t *testing.T) {
 	assert.Equal(t, "timed_out", outcome)
 }
 
-// TestFinishAttempt_DBWriteFailure_NoopNoPanic verifies that when the DB is
-// closed before finishAttempt (so both the UPDATE and fallback INSERT fail),
-// the function logs and returns without panicking.
-func TestFinishAttempt_DBWriteFailure_NoopNoPanic(t *testing.T) {
+// TestFinishAttempt_DiagnosticWarning_WhenBeginSkipped verifies that finishAttempt
+// emits the "in-progress row missing" diagnostic warning when no beginAttempt row
+// exists (UPDATE finds 0 rows). The fallback INSERT succeeds and the outcome is
+// persisted.
+func TestFinishAttempt_DiagnosticWarning_WhenBeginSkipped(t *testing.T) {
 	db := openAttemptTestDB(t)
 	ac := newTestAC("u1", "linkedin")
-	beginAttempt(db, ac)
-	_ = db.Close() // close before finishAttempt — simulates DB going away mid-attempt
+	buf := captureLogs(t)
 
-	// Neither the UPDATE nor the fallback INSERT will succeed, but there must be no panic.
-	assert.NotPanics(t, func() {
-		finishAttempt(db, ac, OutcomeFailed, "apply", "apply_error", "something")
-	})
+	finishAttempt(db, ac, OutcomeFailed, "apply", "apply_error", "timeout")
+
+	assert.True(t, strings.Contains(buf.String(), "in-progress row missing"),
+		"diagnostic warning must be emitted when UPDATE finds 0 rows; log output: %s", buf.String())
+
+	var outcome string
+	require.NoError(t, db.QueryRow(`SELECT outcome FROM apply_attempts WHERE id = ?`, ac.AttemptID).Scan(&outcome))
+	assert.Equal(t, "failed", outcome, "fallback INSERT must still persist the outcome")
+}
+
+// TestFinishAttempt_FallbackInsertFails_BothWarningsLogged verifies the path where
+// UPDATE succeeds with 0 rows (no beginAttempt row, partial schema) and the fallback
+// INSERT also fails (partial schema is missing required columns). Both the
+// "in-progress row missing" and "fallback INSERT also failed" warnings must be logged.
+func TestFinishAttempt_FallbackInsertFails_BothWarningsLogged(t *testing.T) {
+	// Use a DB whose schema satisfies the UPDATE's SET columns but is missing the
+	// columns that the fallback INSERT requires (user_id, platform, entry_point,
+	// started_at), so the INSERT returns an error.
+	db := openPartialSchemaDB(t)
+	ac := newTestAC("u1", "seek")
+	buf := captureLogs(t)
+
+	finishAttempt(db, ac, OutcomeFailed, "apply", "apply_error", "ats error")
+
+	out := buf.String()
+	assert.True(t, strings.Contains(out, "in-progress row missing"),
+		"must warn that the in-progress row is missing; log: %s", out)
+	assert.True(t, strings.Contains(out, "fallback INSERT also failed"),
+		"must warn when the fallback INSERT also fails; log: %s", out)
 }
 
 // ── queue outcome routing invariant ───────────────────────────────────────
 
-// TestQueueOutcomeRouting_ErrorsMapToCorrectOutcomes encodes the error→outcome
-// routing table that processApprovedQueue implements. The full path cannot be
-// exercised without a browser, so this test validates the routing conditions
-// directly — ensuring no future refactor silently changes the mapping.
-func TestQueueOutcomeRouting_ErrorsMapToCorrectOutcomes(t *testing.T) {
+// TestQueueApplyOutcome_RoutingTable tests the queueApplyOutcome production helper
+// directly. This ensures the routing logic inside processApprovedQueue cannot break
+// silently — any change to the routing must also break this test.
+func TestQueueApplyOutcome_RoutingTable(t *testing.T) {
+	// An error from easyApply/seekApply that triggers skipReasonBelongsInTopMatches:
+	// must start with "easy apply:" or "seek apply:" and contain a blocked-marker keyword.
+	blockedErr := errors.New("easy apply: blocked (external ATS — not automatable)")
+
 	cases := []struct {
-		name    string
-		err     error
-		outcome AttemptOutcome
+		name       string
+		err        error
+		outcome    AttemptOutcome
+		stage      string
+		reasonCode string
 	}{
-		{"already applied", errAlreadyApplied, OutcomeAlreadyApplied},
-		{"seek submit unconfirmed", errSeekSubmitUnconfirmed, OutcomeSubmissionUnknown},
-		{"context cancelled", context.Canceled, OutcomeCancelled},
-		{"deadline exceeded", context.DeadlineExceeded, OutcomeTimedOut},
-		{"wrapped cancel", fmt.Errorf("browser: %w", context.Canceled), OutcomeCancelled},
-		{"wrapped timeout", fmt.Errorf("navigate: %w", context.DeadlineExceeded), OutcomeTimedOut},
-		{"plain error", errors.New("ATS blocked"), OutcomeFailed},
+		{"seek submit unconfirmed", errSeekSubmitUnconfirmed, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed"},
+		{"context cancelled", context.Canceled, OutcomeCancelled, "apply", "apply_error"},
+		{"deadline exceeded", context.DeadlineExceeded, OutcomeTimedOut, "apply", "apply_error"},
+		{"wrapped cancel", fmt.Errorf("browser: %w", context.Canceled), OutcomeCancelled, "apply", "apply_error"},
+		{"blocked ATS", blockedErr, OutcomeBlocked, "apply", "not_automatable"},
+		{"plain error", errors.New("unexpected DOM state"), OutcomeFailed, "apply", "apply_error"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var got AttemptOutcome
-			if errors.Is(tc.err, errAlreadyApplied) {
-				got = OutcomeAlreadyApplied
-			} else if isSeekSubmitUnconfirmedError(tc.err) {
-				got = OutcomeSubmissionUnknown
-			} else {
-				got = classifyApplyOutcome(tc.err)
-			}
-			assert.Equal(t, tc.outcome, got)
+			outcome, stage, reasonCode := queueApplyOutcome(tc.err)
+			assert.Equal(t, tc.outcome, outcome)
+			assert.Equal(t, tc.stage, stage)
+			assert.Equal(t, tc.reasonCode, reasonCode)
 		})
 	}
 }

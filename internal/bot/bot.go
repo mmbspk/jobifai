@@ -2552,14 +2552,8 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			b.recordApplyFailure(j, score, err)
 			_, _ = appdb.ExecWithRetry(b.cfg.DB,
 				`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
-			reason := err.Error()
-			if isSeekSubmitUnconfirmedError(err) {
-				finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed", reason)
-			} else if skipReasonBelongsInTopMatches("approved queue: " + reason) {
-				finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "not_automatable", reason)
-			} else {
-				finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "apply", "apply_error", reason)
-			}
+			outcome, stage, reasonCode := queueApplyOutcome(err)
+			finishAttempt(b.cfg.DB, ac, outcome, stage, reasonCode, err.Error())
 			continue
 		}
 		_ = jobPage.Close()
