@@ -30,12 +30,12 @@ func (s *stubQuota) PrepareTransactionalBurn(_ string, credits int64) (quota.Bur
 	return quota.BurnPrepare{}, nil
 }
 
-func (s *stubQuota) CommitTransactionalBurn(_ *sql.Tx, _ string, credits int64, prep quota.BurnPrepare) error {
+func (s *stubQuota) CommitTransactionalBurn(_ *sql.Tx, _ string, credits int64, prep quota.BurnPrepare) (int64, error) {
 	if prep.SkipBurn {
-		return nil
+		return 0, nil
 	}
 	s.credits += credits
-	return nil
+	return credits, nil
 }
 
 func TestLedger_RecordSuccessfulCall(t *testing.T) {
