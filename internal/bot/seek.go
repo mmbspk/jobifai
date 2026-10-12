@@ -949,7 +949,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 		log.Info().Str("job_id", job.ID).Int("score", result.Score).Int("min_score", minScore).Msgf("seek: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
 		return result.Score, result.Reasoning, nil, false
 	}
-	log.Info().Msgf("seek: score %d/10, %q @ %s", result.Score, job.Title, job.Company)
+	log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Msgf("seek: score %d/10, %q @ %s", result.Score, job.Title, job.Company)
 
 	// Halal check, only runs after score passes to avoid wasted LLM calls.
 	// HARAM → skip; DOUBTFUL → let through but carry verdict for storage.
@@ -960,15 +960,15 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 				b.abortOnLLMFailure(err)
 				return result.Score, result.Reasoning, nil, false
 			}
-			log.Warn().Err(err).Msg("seek: halal check failed, letting job through")
+			log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: halal check failed, letting job through")
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSeekSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
-			log.Info().Msgf("seek: halal skip (HARAM) %q @ %s", job.Title, job.Company)
+			log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: halal skip (HARAM) %q @ %s", job.Title, job.Company)
 			return result.Score, result.Reasoning, nil, false
 		} else if verdict.Verdict == "DOUBTFUL" {
 			halalVerdict, _ = json.Marshal(verdict)
-			log.Info().Msgf("seek: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
+			log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
 		}
 	}
 
@@ -1245,43 +1245,53 @@ func (b *Bot) routeSeekToTopMatches(ctx context.Context, job seekJob, score int,
 }
 
 func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job seekJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) seekSubmitOutcome {
+	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformSeek), job.ID, job.URL, job.Title, job.Company, "automated_seek")
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
-		log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: document work guard")
+		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: document work guard")
+		recordAttempt(b.cfg.DB, ac, OutcomeFailed, "document_work_guard", "begin_work_failed", err.Error())
 		return seekSubmitCannotApply
 	}
 	defer release()
+	if lazy != nil {
+		lazy.attemptID = ac.AttemptID
+	}
 	if !job.EasyApply {
-		log.Warn().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
+		log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
 		b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
+		recordAttempt(b.cfg.DB, ac, OutcomeSkipped, "routing", "not_quick_apply", "routed to Top Matches")
 		return seekSubmitTopMatches
 	}
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		log.Error().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: open job page")
+		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: open job page")
 		b.recordSeekSkipped(job, "seek apply: open job page: "+err.Error(), score, reasoning, halalVerdict)
+		recordAttempt(b.cfg.DB, ac, OutcomeFailed, "open_page", "browser_error", err.Error())
 		return seekSubmitCannotApply
 	}
 	defer func() { _ = jobPage.Close() }()
 
 	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
-		log.Error().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: apply failed")
+		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: apply failed")
 		if isSeekApplyBlockedError(err) {
-			log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: not automatable — routing to Top Matches")
+			log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: not automatable — routing to Top Matches")
 			b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
+			recordAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "ats_blocked", err.Error())
 			return seekSubmitTopMatches
 		}
 		if isSeekSessionExpiredError(err) {
 			b.markSeekSessionExpired()
 			seekDumpUploadDebug(jobPage, "stepup_auth")
-			log.Error().Str("job_id", job.ID).Str("url", job.URL).Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
+			log.Error().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
 		}
 		b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
+		recordAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", err.Error())
 		return seekSubmitCannotApply
 	}
 	resume, cover := lazy.get()
 	b.recordSeekApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
-	b.logApplied(job.Title, job.Company, domain.PlatformSeek, llmBefore)
+	b.logApplied(job.ID, job.Title, job.Company, domain.PlatformSeek, llmBefore)
+	recordAttempt(b.cfg.DB, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
 	return seekSubmitApplied
 }
 
