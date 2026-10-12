@@ -58,20 +58,9 @@ func pricingFromRaw(rawMicro int64, qd domain.QuotaDefaults) ResourcePricing {
 	if qd.CreditsPerUSD <= 0 {
 		return ResourcePricing{}
 	}
-	markup := qd.ServiceMarkup
-	if markup < 0 {
-		markup = 0
-	}
-	// Mirror BurnCreditsFromRawMicro (minus PerCallFeeUSD, which is AI-call-specific).
-	// float64 throughout matches the AI-billing pipeline; CreditsFromLoadedUSD is shared.
-	loadedUSD := float64(rawMicro) / 1_000_000 * (1 + markup)
-	if loadedUSD <= 0 {
-		loadedUSD = float64(rawMicro) / 1_000_000
-	}
-	loadedMicro := int64(loadedUSD * 1_000_000)
-	if loadedMicro <= 0 {
-		loadedMicro = rawMicro
-	}
+	// Shared loaded-cost pipeline: raw → markup → loadedMicro.
+	// PerCallFeeUSD is intentionally NOT applied — it is AI-call-specific.
+	loadedMicro := quota.LoadedMicroFromRaw(qd, rawMicro)
 	credits := quota.CreditsFromLoadedUSD(qd, loadedMicro)
 	return ResourcePricing{
 		RawCostUSDMicro:    rawMicro,

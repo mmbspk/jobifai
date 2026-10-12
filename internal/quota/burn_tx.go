@@ -75,7 +75,7 @@ func (s *Service) CommitTransactionalBurn(tx *sql.Tx, userID string, credits int
 			// Grace path: check that the requested credits don't exceed the grace allowance
 			// authorised at prepare time. Uses DB-row overage so concurrent TXs are serialised.
 			currentOverage := max(int64(0), row.PeriodUsedCredits-row.PeriodAllowanceCredits)
-			graceUse = max(int64(0), credits-(remaining+row.TopUpCreditsRemaining))
+			graceUse = max(int64(0), credits-remaining)
 			if currentOverage+graceUse > prep.GraceAllowedCredits {
 				return 0, fmt.Errorf("resource billing: %w", ErrExceeded)
 			}

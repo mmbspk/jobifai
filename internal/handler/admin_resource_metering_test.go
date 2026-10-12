@@ -33,8 +33,8 @@ func (s *stubResourceService) SaveDefaults(d domain.ResourceMeteringDefaults) er
 	s.defaults = d
 	return nil
 }
-func (s *stubResourceService) EstimateRenderCredits() int64    { return s.renderCredits }
-func (s *stubResourceService) EstimateBrowserIncrementCredits() int64 { return s.browserCredits }
+func (s *stubResourceService) EstimateRenderCredits() (int64, error)    { return s.renderCredits, nil }
+func (s *stubResourceService) EstimateBrowserIncrementCredits() (int64, error) { return s.browserCredits, nil }
 
 // newServicesWithResource returns a Services bag with a real resource.Service attached.
 func newServicesWithResource(t *testing.T) (*handler.Services, func() string) {

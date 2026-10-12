@@ -81,8 +81,10 @@ func buildResourceMeteringResponse(def domain.ResourceMeteringDefaults, svc *Ser
 	if svc.Resource == nil {
 		return resp
 	}
-	resp.RenderCreditsPerRender = svc.Resource.EstimateRenderCredits()
-	incrementCredits := svc.Resource.EstimateBrowserIncrementCredits()
+	if rc, err := svc.Resource.EstimateRenderCredits(); err == nil {
+		resp.RenderCreditsPerRender = rc
+	}
+	incrementCredits, _ := svc.Resource.EstimateBrowserIncrementCredits()
 	inc := def.Browser.BillingIncrementSecs
 	if inc <= 0 {
 		inc = 30

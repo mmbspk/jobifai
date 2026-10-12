@@ -217,8 +217,8 @@ type QuotaService interface {
 type ResourceService interface {
 	LoadDefaults() (domain.ResourceMeteringDefaults, error)
 	SaveDefaults(d domain.ResourceMeteringDefaults) error
-	EstimateRenderCredits() int64
-	EstimateBrowserIncrementCredits() int64
+	EstimateRenderCredits() (int64, error)
+	EstimateBrowserIncrementCredits() (int64, error)
 }
 
 // UsageStore provides per-user LLM token usage snapshots.

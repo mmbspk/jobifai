@@ -16,6 +16,20 @@ func CreditsFromLoadedUSD(def domain.QuotaDefaults, loadedMicro int64) int64 {
 	return credits
 }
 
+// LoadedMicroFromRaw applies the service markup to a raw provider micro-USD cost.
+// PerCallFeeUSD is intentionally NOT added — it is an AI-call-specific charge.
+func LoadedMicroFromRaw(def domain.QuotaDefaults, rawMicro int64) int64 {
+	markup := def.ServiceMarkup
+	if markup < 0 {
+		markup = 0
+	}
+	loadedUSD := float64(rawMicro) / 1_000_000 * (1 + markup)
+	if loadedUSD < 0 {
+		loadedUSD = 0
+	}
+	return int64(loadedUSD * 1_000_000)
+}
+
 // BurnCreditsFromRawMicro applies markup + per-call fee to raw provider micro-USD.
 func BurnCreditsFromRawMicro(def domain.QuotaDefaults, rawMicro int64, includeCallFee bool) int64 {
 	llmUSD := USDFromMicro(rawMicro)

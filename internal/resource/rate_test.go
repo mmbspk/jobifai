@@ -216,6 +216,38 @@ func TestPriceResource_AwkwardRateCreditsMatchAI(t *testing.T) {
 	assert.Equal(t, loadedMicro, p.LoadedCostUSDMicro, "loaded micro must match parity derivation")
 }
 
+// TestPriceResource_LoadedMicroMatchesQuotaPrimitive verifies that pricingFromRaw uses the
+// shared quota.LoadedMicroFromRaw primitive and not a separate float pipeline.
+func TestPriceResource_LoadedMicroMatchesQuotaPrimitive(t *testing.T) {
+	cases := []struct {
+		name     string
+		rawMicro int64
+		qd       domain.QuotaDefaults
+	}{
+		{"exact 3 credits", 2_000, domain.QuotaDefaults{ServiceMarkup: 0.5, CreditsPerUSD: 1000}},
+		{"awkward 2201", 2_201, domain.QuotaDefaults{ServiceMarkup: 0.5, CreditsPerUSD: 1000}},
+		{"tiny 7", 7, domain.QuotaDefaults{ServiceMarkup: 0.5, CreditsPerUSD: 1000}},
+		{"no markup", 999_999, domain.QuotaDefaults{ServiceMarkup: 0, CreditsPerUSD: 1000}},
+		{"large 1500000", 1_500_000, domain.QuotaDefaults{ServiceMarkup: 0.5, CreditsPerUSD: 1000}},
+		{"different markup 1.25", 2_000, domain.QuotaDefaults{ServiceMarkup: 1.25, CreditsPerUSD: 500}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := domain.ResourceMeteringDefaults{
+				Enabled: true,
+				Render:  domain.RenderMeteringConfig{Enabled: true, RawCostUSDMicroPerRender: tc.rawMicro},
+			}
+			p := PriceResource(res, tc.qd, domain.ResourceTypeDocumentRender)
+			wantLoaded := quota.LoadedMicroFromRaw(tc.qd, tc.rawMicro)
+			wantCredits := quota.CreditsFromLoadedUSD(tc.qd, wantLoaded)
+			assert.Equal(t, wantLoaded, p.LoadedCostUSDMicro,
+				"LoadedCostUSDMicro must equal quota.LoadedMicroFromRaw")
+			assert.Equal(t, wantCredits, p.Credits,
+				"Credits must equal quota.CreditsFromLoadedUSD(LoadedMicroFromRaw)")
+		})
+	}
+}
+
 // TestEstimateBrowserIncrementCredits_AwkwardRate proves that an uncommon rate that is not
 // divisible by 3600 still produces a stable integer result (F2).
 func TestEstimateBrowserIncrementCredits_AwkwardRate(t *testing.T) {

@@ -14,7 +14,6 @@ import (
 // quotaBurner is the subset of quota.Service needed by the resource billing service.
 type quotaBurner interface {
 	BeforeCreditUse(ctx context.Context, userID string, credits int64) error
-	PrepareTransactionalBurn(userID string, credits int64) (quota.BurnPrepare, error)
 	PrepareTransactionalBurnStrict(userID string, credits int64) (quota.BurnPrepare, error)
 	CommitTransactionalBurn(tx *sql.Tx, userID string, credits int64, prep quota.BurnPrepare) (int64, error)
 }
@@ -45,22 +44,24 @@ func (s *Service) SaveDefaults(d domain.ResourceMeteringDefaults) error {
 }
 
 // EstimateRenderCredits returns the credit cost for one new PDF render at current rates.
-func (s *Service) EstimateRenderCredits() int64 {
+// Returns an error if the metering configuration cannot be loaded.
+func (s *Service) EstimateRenderCredits() (int64, error) {
 	cfg, err := s.LoadDefaults()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return EstimateRenderCredits(cfg, s.quotaDefaultsFn())
+	return EstimateRenderCredits(cfg, s.quotaDefaultsFn()), nil
 }
 
 // EstimateBrowserIncrementCredits returns the credit cost for one billing increment of
 // active browser automation at current rates.
-func (s *Service) EstimateBrowserIncrementCredits() int64 {
+// Returns an error if the metering configuration cannot be loaded.
+func (s *Service) EstimateBrowserIncrementCredits() (int64, error) {
 	cfg, err := s.LoadDefaults()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return EstimateBrowserIncrementCredits(cfg, s.quotaDefaultsFn())
+	return EstimateBrowserIncrementCredits(cfg, s.quotaDefaultsFn()), nil
 }
 
 // Before checks whether a resource operation costing the given credits may proceed.
@@ -141,10 +142,7 @@ func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 			return err
 		}
 	} else {
-		prep, err = s.quota.PrepareTransactionalBurn(in.UserID, 0)
-		if err != nil {
-			return err
-		}
+		prep = quota.BurnPrepare{SkipBurn: true}
 	}
 
 	event := domain.ResourceUsageEvent{
@@ -178,7 +176,6 @@ func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 	_, err = resourcedb.RecordResourceBillingTx(tx, event, burnCredits, quotaUpdate)
 	if err != nil {
 		if errors.Is(err, resourcedb.ErrResourceIdempotencyConflict) {
-			_ = tx.Commit()
 			return nil
 		}
 		return err

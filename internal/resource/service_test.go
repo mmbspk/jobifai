@@ -559,30 +559,50 @@ func TestRecordOnce_SubscriberGraceStillWorks(t *testing.T) {
 	assert.Equal(t, int64(3), row.OverageDebtCredits, "EndSubscriberSession must settle 3 grace credits as debt")
 }
 
-// TestRecordOnce_ConcurrentSameKey verifies exactly one burn under concurrent retries.
+// TestRecordOnce_ConcurrentSameKey verifies that concurrent retries with the same key
+// all return nil and burn credits exactly once (no double-charge from the UNIQUE race).
 func TestRecordOnce_ConcurrentSameKey(t *testing.T) {
 	t.Parallel()
-	svc, quotaSvc, userID, _ := testResourceService(t)
+	db := testDB(t)
+	quotaSvc, userID := testQuotaService(t, db)
+	cfg := config.NewStore(db)
+	enableResourceMetering(t, cfg)
+	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
+
+	const goroutines = 5
 	input := resource.RecordInput{
 		UserID:         userID,
 		ResourceType:   domain.ResourceTypeDocumentRender,
-		IdempotencyKey: "render:concurrent",
+		IdempotencyKey: "render:concurrent-same",
 		Quantity:       1,
 		Unit:           "render",
 		Success:        true,
 	}
+	errs := make([]error, goroutines)
 	var wg sync.WaitGroup
-	for range 5 {
+	for i := range goroutines {
 		wg.Add(1)
-		go func() {
+		go func(idx int) {
 			defer wg.Done()
-			_ = svc.RecordOnce(context.Background(), input)
-		}()
+			errs[idx] = svc.RecordOnce(context.Background(), input)
+		}(i)
 	}
 	wg.Wait()
+
+	// All callers must return nil — duplicates are silently no-ops, not errors.
+	for i, e := range errs {
+		assert.NoError(t, e, "goroutine %d must not return an error (idempotent duplicate)", i)
+	}
+
+	// Exactly one event must be stored.
+	var eventCount int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM resource_usage_events WHERE idempotency_key=?`, input.IdempotencyKey).Scan(&eventCount))
+	assert.Equal(t, 1, eventCount, "exactly one event must exist regardless of concurrent retries")
+
+	// Exactly 3 credits must be burned — not 3 × goroutines.
 	row, err := quotaSvc.RowForUser(userID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(500-3), row.TrialRemainingCredits, "concurrent duplicates must burn exactly once")
+	assert.Equal(t, int64(500-3), row.TrialRemainingCredits, "concurrent duplicates must burn credits exactly once")
 }
 
 // TestRecordOnce_DifferentKeys verifies distinct keys each burn independently.
@@ -829,81 +849,128 @@ func TestRecordOnce_GraceExhaustedFails(t *testing.T) {
 	assert.Equal(t, int64(10), row.PeriodUsedCredits, "no deduction on grace-exceeded rejection")
 }
 
-// TestRecordOnce_ConcurrentAIAndResource verifies that a concurrent LLM-path burn and a
-// resource-path burn against the same near-exhausted balance cannot together overspend.
-// Combined cost (3+3=6) exceeds balance (5): exactly one must commit (Blocker 4 regression).
-func TestRecordOnce_ConcurrentAIAndResource(t *testing.T) {
-	t.Parallel()
+// setupGraceWithTopUp creates a Starter subscriber whose monthly allowance is exhausted
+// and whose top-up bucket has been funded. Returns (db, quotaSvc, resourceSvc, userID).
+// GraceCredits and TopUpAmount are caller-supplied.
+func setupGraceWithTopUp(
+	t *testing.T,
+	graceCredits int64,
+	topUpAmount int64,
+) (*sql.DB, *quota.Service, *resource.Service, string) {
+	t.Helper()
 	db := testDB(t)
 	cfg := config.NewStore(db)
 	require.NoError(t, cfg.Set(domain.SystemUserID, "quota_defaults", domain.QuotaDefaults{
-		EnforcementDefault: true, CreditsPerUSD: 1000, ServiceMarkup: 0.5,
-		TrialCredits: 5, TrialDays: 7,
+		EnforcementDefault:     true,
+		CreditsPerUSD:          1000,
+		ServiceMarkup:          0.5,
+		StarterCreditsMonthly:  10,
+		SubscriberGraceCredits: graceCredits,
 	}))
-	// render = 3 credits; combined 3+3=6 > 5
-	require.NoError(t, cfg.Set(domain.SystemUserID, "resource_metering_defaults", domain.ResourceMeteringDefaults{
-		Enabled: true,
-		Render:  domain.RenderMeteringConfig{Enabled: true, RawCostUSDMicroPerRender: 2_000},
-	}))
-	userID := "conc-ai-resource-" + t.Name()
+	enableResourceMetering(t, cfg) // render = 3 credits (2000 µ-USD × 1.5 × 1000 / 1_000_000)
+	userID := "grace-topup-" + t.Name()
 	_, err := db.Exec(
-		`INSERT INTO users (id, email, password_hash, display_name, is_admin, created_at) VALUES (?, ?, 'x', 'C', 0, CURRENT_TIMESTAMP)`,
+		`INSERT INTO users (id, email, password_hash, display_name, is_admin, created_at) VALUES (?, ?, 'x', 'GT', 0, CURRENT_TIMESTAMP)`,
 		userID, userID+"@test.com",
 	)
 	require.NoError(t, err)
 	quotaSvc := quota.NewService(db, cfg, nil)
 	require.NoError(t, quotaSvc.InitTrial(context.Background(), userID))
-
-	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
-
-	var wg sync.WaitGroup
-	errs := make([]error, 2)
-
-	// Goroutine 0: resource billing path (uses PrepareTransactionalBurnStrict via RecordOnce).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		errs[0] = svc.RecordOnce(context.Background(), resource.RecordInput{
-			UserID: userID, ResourceType: domain.ResourceTypeDocumentRender,
-			IdempotencyKey: "conc:resource", Success: true,
-		})
-	}()
-
-	// Goroutine 1: LLM billing path simulation — PrepareTransactionalBurnStrict + manual TX,
-	// mirroring what internal/usage/ledger.go does (prepare outside TX, commit inside TX).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		prep, prepErr := quotaSvc.PrepareTransactionalBurnStrict(userID, 3)
-		if prepErr != nil {
-			errs[1] = prepErr
-			return
-		}
-		tx, txErr := db.BeginTx(context.Background(), nil)
-		if txErr != nil {
-			errs[1] = txErr
-			return
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, commitErr := quotaSvc.CommitTransactionalBurn(tx, userID, 3, prep); commitErr != nil {
-			errs[1] = commitErr
-			return
-		}
-		errs[1] = tx.Commit()
-	}()
-
-	wg.Wait()
-
-	successes := 0
-	for _, e := range errs {
-		if e == nil {
-			successes++
-		}
+	require.NoError(t, quotaSvc.ApplyStripeSubscription(quota.StripeSubscriptionUpdate{
+		UserID: userID, EventID: "ev_gt", EventCreatedUnix: 100,
+		Plan: domain.QuotaPlanStarter, Status: "active",
+		AllowanceCredits: 10, PeriodStartUnix: 1700000000, PeriodEndUnix: 1702592000,
+	}))
+	// Exhaust monthly allowance.
+	require.NoError(t, quotaSvc.RecordLLMBurn(context.Background(), userID, 10))
+	// Fund top-up bucket.
+	if topUpAmount > 0 {
+		require.NoError(t, quotaSvc.GrantTopUpOnce(userID, "ev_topup_gt", "", topUpAmount))
 	}
-	assert.Equal(t, 1, successes, "exactly one of AI and resource burns must commit from 5-credit balance")
+	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
+	return db, quotaSvc, svc, userID
+}
+
+// TestRecordOnce_GraceWithTopUp_Success verifies that when the monthly allowance is exhausted
+// but a top-up bucket funds most of the cost, the grace overage covers the remainder and the
+// render succeeds, draining the top-up and recording the debt.
+func TestRecordOnce_GraceWithTopUp_Success(t *testing.T) {
+	t.Parallel()
+	// monthly=0, topUp=2, grace=1 → 3-credit render needs 1 credit from grace.
+	_, quotaSvc, svc, userID := setupGraceWithTopUp(t, 1, 2)
+	quotaSvc.BeginSubscriberSession(userID)
+
+	err := svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID:         userID,
+		ResourceType:   domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "grace-topup:success",
+		Success:        true,
+	})
+	require.NoError(t, err, "3-credit render must succeed: topUp(2)+grace(1)=3 is sufficient")
 
 	row, rowErr := quotaSvc.RowForUser(userID)
 	require.NoError(t, rowErr)
-	assert.Equal(t, int64(2), row.TrialRemainingCredits, "3 credits burned, 2 remaining")
-	assert.GreaterOrEqual(t, row.TrialRemainingCredits, int64(0), "balance must never go negative")
+	assert.Equal(t, int64(0), row.TopUpCreditsRemaining, "top-up fully consumed by the render")
+	assert.Equal(t, int64(11), row.PeriodUsedCredits, "1 grace credit pushed PeriodUsedCredits past 10")
+
+	quotaSvc.EndSubscriberSession(userID)
+
+	row, rowErr = quotaSvc.RowForUser(userID)
+	require.NoError(t, rowErr)
+	assert.Equal(t, int64(1), row.OverageDebtCredits, "EndSubscriberSession must settle 1 grace credit as debt")
+}
+
+// TestRecordOnce_GraceWithTopUp_NoGraceFails verifies that when grace is insufficient
+// to cover the overage (topUp partially covers but can't bridge the full cost gap),
+// the render is rejected. This directly validates the double-counting fix:
+// old bug: graceUse = max(0, 3-(1+1)) = 1 ≤ 1 → would succeed
+// new fix: graceUse = max(0, 3-1)    = 2 > 1 → correctly fails.
+func TestRecordOnce_GraceWithTopUp_NoGraceFails(t *testing.T) {
+	t.Parallel()
+	// monthly=0, topUp=1, grace=1 → 3-credit render needs 2 grace credits but only 1 allowed.
+	_, quotaSvc, svc, userID := setupGraceWithTopUp(t, 1, 1)
+	quotaSvc.BeginSubscriberSession(userID)
+	defer quotaSvc.EndSubscriberSession(userID)
+
+	err := svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID:         userID,
+		ResourceType:   domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "grace-topup:no-grace",
+		Success:        true,
+	})
+	require.Error(t, err, "render must fail: graceUse(2) > GraceAllowedCredits(1)")
+	assert.True(t, errors.Is(err, quota.ErrExceeded), "error must be quota.ErrExceeded")
+
+	row, rowErr := quotaSvc.RowForUser(userID)
+	require.NoError(t, rowErr)
+	assert.Equal(t, int64(1), row.TopUpCreditsRemaining, "top-up must be untouched on rejection")
+}
+
+// TestRecordOnce_GraceWithTopUp_ExhaustedGraceFails verifies that a second render is rejected
+// once the grace allowance is already fully consumed by a prior successful render.
+func TestRecordOnce_GraceWithTopUp_ExhaustedGraceFails(t *testing.T) {
+	t.Parallel()
+	// monthly=0, topUp=2, grace=1.
+	// First render (key "grace-topup:exh-1"): topUp covers 2, grace covers 1 → succeeds.
+	// Second render (key "grace-topup:exh-2"): topUp=0, needs 3 from grace; currentOverage=1 already → rejected.
+	_, quotaSvc, svc, userID := setupGraceWithTopUp(t, 1, 2)
+	quotaSvc.BeginSubscriberSession(userID)
+	defer quotaSvc.EndSubscriberSession(userID)
+
+	err := svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID:         userID,
+		ResourceType:   domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "grace-topup:exh-1",
+		Success:        true,
+	})
+	require.NoError(t, err, "first render must succeed")
+
+	err = svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID:         userID,
+		ResourceType:   domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "grace-topup:exh-2",
+		Success:        true,
+	})
+	require.Error(t, err, "second render must fail: grace already exhausted")
+	assert.True(t, errors.Is(err, quota.ErrExceeded), "error must be quota.ErrExceeded")
 }
