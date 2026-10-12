@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -88,6 +89,20 @@ func beginAttempt(db *sql.DB, ac *AttemptContext) {
 	)
 	if err != nil {
 		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Msg("attempt: failed to write in-progress marker")
+	}
+}
+
+// classifyApplyOutcome maps an error from the apply/browser/navigate path to
+// the most specific AttemptOutcome: cancelled for context.Canceled, timed_out
+// for context.DeadlineExceeded, and failed for everything else.
+func classifyApplyOutcome(err error) AttemptOutcome {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return OutcomeCancelled
+	case errors.Is(err, context.DeadlineExceeded):
+		return OutcomeTimedOut
+	default:
+		return OutcomeFailed
 	}
 }
 

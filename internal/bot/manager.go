@@ -371,14 +371,14 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		seekBr, brErr := m.getSeekBrowser(userID, gs)
 		if brErr != nil {
 			log.Error().Err(brErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("role", req.Role).Msg("approve: seek browser")
-			finishAttempt(m.db, ac, OutcomeFailed, "browser", "seek_browser_error", brErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(brErr), "browser", "seek_browser_error", brErr.Error())
 			return brErr
 		}
 		p, pageErr := seekBr.Page(proto.TargetCreateTarget{URL: req.Link})
 		if pageErr != nil {
 			m.InvalidateSeekBrowser(userID)
 			log.Error().Err(pageErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("role", req.Role).Msg("approve: open seek job tab")
-			finishAttempt(m.db, ac, OutcomeFailed, "open_page", "browser_error", pageErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(pageErr), "open_page", "browser_error", pageErr.Error())
 			return pageErr
 		}
 		br, jobPage = seekBr, p
@@ -386,7 +386,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		newBr, newPage, launchErr := b.launchBrowser(m.ctx)
 		if launchErr != nil {
 			log.Error().Err(launchErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("role", req.Role).Msg("approve: launch browser")
-			finishAttempt(m.db, ac, OutcomeFailed, "browser", "launch_failed", launchErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(launchErr), "browser", "launch_failed", launchErr.Error())
 			return launchErr
 		}
 		if gs.Browser.RemoteDebugPort == 0 {
@@ -398,7 +398,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			if ownsBr {
 				_ = newBr.Close()
 			}
-			finishAttempt(m.db, ac, OutcomeFailed, "navigate", "navigate_failed", navErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(navErr), "navigate", "navigate_failed", navErr.Error())
 			return navErr
 		}
 		br, jobPage = newBr, newPage
@@ -541,7 +541,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			if isSeekSubmitUnconfirmedError(applyErr) {
 				finishAttempt(m.db, ac, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed", applyErr.Error())
 			} else {
-				finishAttempt(m.db, ac, OutcomeFailed, "apply", "apply_error", applyErr.Error())
+				finishAttempt(m.db, ac, classifyApplyOutcome(applyErr), "apply", "apply_error", applyErr.Error())
 			}
 			return applyErr
 		}
@@ -1138,26 +1138,26 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	if platform == domain.PlatformSeek && gs.Browser.RemoteDebugPort == 0 {
 		seekBr, brErr := m.getSeekBrowser(userID, gs)
 		if brErr != nil {
-			finishAttempt(m.db, ac, OutcomeFailed, "browser", "seek_browser_error", brErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(brErr), "browser", "seek_browser_error", brErr.Error())
 			return ApplyFromURLResult{}, fmt.Errorf("seek browser: %w", brErr)
 		}
 		p, pageErr := seekBr.Page(proto.TargetCreateTarget{URL: jobURL})
 		if pageErr != nil {
 			m.InvalidateSeekBrowser(userID)
-			finishAttempt(m.db, ac, OutcomeFailed, "open_page", "browser_error", pageErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(pageErr), "open_page", "browser_error", pageErr.Error())
 			return ApplyFromURLResult{}, fmt.Errorf("open seek tab: %w", pageErr)
 		}
 		br, jobPage = seekBr, p
 	} else if platform == domain.PlatformLinkedIn && gs.Browser.RemoteDebugPort == 0 {
 		liBr, brErr := m.getLinkedInBrowser(userID, gs)
 		if brErr != nil {
-			finishAttempt(m.db, ac, OutcomeFailed, "browser", "linkedin_browser_error", brErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(brErr), "browser", "linkedin_browser_error", brErr.Error())
 			return ApplyFromURLResult{}, fmt.Errorf("linkedin browser: %w", brErr)
 		}
 		p, pageErr := liBr.Page(proto.TargetCreateTarget{URL: jobURL})
 		if pageErr != nil {
 			m.InvalidateLinkedInBrowser(userID)
-			finishAttempt(m.db, ac, OutcomeFailed, "open_page", "browser_error", pageErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(pageErr), "open_page", "browser_error", pageErr.Error())
 			return ApplyFromURLResult{}, fmt.Errorf("open linkedin tab: %w", pageErr)
 		}
 		br, jobPage = liBr, p
@@ -1165,13 +1165,13 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		// Remote debug port: connect to existing Chrome, open a new tab directly.
 		newBr, warmPage, launchErr := b.launchBrowser(ctx)
 		if launchErr != nil {
-			finishAttempt(m.db, ac, OutcomeFailed, "browser", "launch_failed", launchErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(launchErr), "browser", "launch_failed", launchErr.Error())
 			return ApplyFromURLResult{}, fmt.Errorf("launch browser: %w", launchErr)
 		}
 		newPage, pageErr := newBr.Page(proto.TargetCreateTarget{URL: jobURL})
 		_ = warmPage.Close()
 		if pageErr != nil {
-			finishAttempt(m.db, ac, OutcomeFailed, "open_page", "browser_error", pageErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(pageErr), "open_page", "browser_error", pageErr.Error())
 			return ApplyFromURLResult{}, fmt.Errorf("open job tab: %w", pageErr)
 		}
 		br, jobPage = newBr, newPage
@@ -1422,7 +1422,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		if isSeekSubmitUnconfirmedError(applyErr) {
 			finishAttempt(m.db, ac, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed", applyErr.Error())
 		} else {
-			finishAttempt(m.db, ac, OutcomeFailed, "apply", "apply_error", applyErr.Error())
+			finishAttempt(m.db, ac, classifyApplyOutcome(applyErr), "apply", "apply_error", applyErr.Error())
 		}
 		return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason},
 			fmt.Errorf("%s failed: %w", applyLabel, applyErr)

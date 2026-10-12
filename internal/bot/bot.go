@@ -1618,7 +1618,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
 		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: open job page")
-		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "open_page", "browser_error", err.Error())
+		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
 		return false
 	}
 	defer func() { _ = jobPage.Close() }()
@@ -1652,7 +1652,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			return false
 		}
 		b.recordSkipped(job, reason, score, reasoning, nil)
-		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", err.Error())
+		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "apply", "apply_error", err.Error())
 		return false
 	}
 	resume, cover := lazy.get()
@@ -2521,7 +2521,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		jobPage, err := br.Page(proto.TargetCreateTarget{URL: j.Link})
 		if err != nil {
 			log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: open job page")
-			finishAttempt(b.cfg.DB, ac, OutcomeFailed, "open_page", "browser_error", err.Error())
+			finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
 			continue
 		}
 		queueDetails := b.fetchJob(ctx, linkedInJob{ID: j.JobID, URL: j.Link, Company: j.Company, Title: j.Role})
@@ -2558,7 +2558,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			} else if skipReasonBelongsInTopMatches("approved queue: " + reason) {
 				finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "not_automatable", reason)
 			} else {
-				finishAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", reason)
+				finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "apply", "apply_error", reason)
 			}
 			continue
 		}

@@ -5,7 +5,10 @@ package bot
 // without any browser dependency.
 
 import (
+	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -161,4 +164,117 @@ func TestAttemptOutcome_ElapsedMS(t *testing.T) {
 	var elapsedMS int64
 	require.NoError(t, db.QueryRow(`SELECT elapsed_ms FROM apply_attempts WHERE id = ?`, ac.AttemptID).Scan(&elapsedMS))
 	assert.GreaterOrEqual(t, elapsedMS, int64(100), "elapsed_ms must reflect actual elapsed time")
+}
+
+// ── classifyApplyOutcome tests ─────────────────────────────────────────────
+
+// TestClassifyApplyOutcome_DirectErrors verifies the three direct classifications.
+func TestClassifyApplyOutcome_DirectErrors(t *testing.T) {
+	assert.Equal(t, OutcomeCancelled, classifyApplyOutcome(context.Canceled))
+	assert.Equal(t, OutcomeTimedOut, classifyApplyOutcome(context.DeadlineExceeded))
+	assert.Equal(t, OutcomeFailed, classifyApplyOutcome(errors.New("something broke")))
+}
+
+// TestClassifyApplyOutcome_WrappedErrors verifies that errors.Is unwrapping works
+// — the common production case is context.Canceled wrapped several layers deep
+// (e.g. rod CDP error wrapping context.Canceled).
+func TestClassifyApplyOutcome_WrappedErrors(t *testing.T) {
+	wrappedCancel := fmt.Errorf("browser closed: %w", context.Canceled)
+	wrappedTimeout := fmt.Errorf("navigate: %w", fmt.Errorf("dial tcp: %w", context.DeadlineExceeded))
+	assert.Equal(t, OutcomeCancelled, classifyApplyOutcome(wrappedCancel))
+	assert.Equal(t, OutcomeTimedOut, classifyApplyOutcome(wrappedTimeout))
+}
+
+// TestFinishAttempt_CancelledAndTimedOut verifies that the new outcome constants
+// are persisted correctly to the DB.
+func TestFinishAttempt_CancelledAndTimedOut(t *testing.T) {
+	db := openAttemptTestDB(t)
+
+	acCancel := newTestAC("u1", "linkedin")
+	beginAttempt(db, acCancel)
+	finishAttempt(db, acCancel, OutcomeCancelled, "apply", "apply_error", context.Canceled.Error())
+
+	var outcome string
+	require.NoError(t, db.QueryRow(`SELECT outcome FROM apply_attempts WHERE id = ?`, acCancel.AttemptID).Scan(&outcome))
+	assert.Equal(t, "cancelled", outcome)
+
+	acTimeout := newTestAC("u1", "seek")
+	beginAttempt(db, acTimeout)
+	finishAttempt(db, acTimeout, OutcomeTimedOut, "navigate", "navigate_failed", context.DeadlineExceeded.Error())
+
+	require.NoError(t, db.QueryRow(`SELECT outcome FROM apply_attempts WHERE id = ?`, acTimeout.AttemptID).Scan(&outcome))
+	assert.Equal(t, "timed_out", outcome)
+}
+
+// TestFinishAttempt_DBWriteFailure_NoopNoPanic verifies that when the DB is
+// closed before finishAttempt (so both the UPDATE and fallback INSERT fail),
+// the function logs and returns without panicking.
+func TestFinishAttempt_DBWriteFailure_NoopNoPanic(t *testing.T) {
+	db := openAttemptTestDB(t)
+	ac := newTestAC("u1", "linkedin")
+	beginAttempt(db, ac)
+	_ = db.Close() // close before finishAttempt — simulates DB going away mid-attempt
+
+	// Neither the UPDATE nor the fallback INSERT will succeed, but there must be no panic.
+	assert.NotPanics(t, func() {
+		finishAttempt(db, ac, OutcomeFailed, "apply", "apply_error", "something")
+	})
+}
+
+// ── queue outcome routing invariant ───────────────────────────────────────
+
+// TestQueueOutcomeRouting_ErrorsMapToCorrectOutcomes encodes the error→outcome
+// routing table that processApprovedQueue implements. The full path cannot be
+// exercised without a browser, so this test validates the routing conditions
+// directly — ensuring no future refactor silently changes the mapping.
+func TestQueueOutcomeRouting_ErrorsMapToCorrectOutcomes(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		outcome AttemptOutcome
+	}{
+		{"already applied", errAlreadyApplied, OutcomeAlreadyApplied},
+		{"seek submit unconfirmed", errSeekSubmitUnconfirmed, OutcomeSubmissionUnknown},
+		{"context cancelled", context.Canceled, OutcomeCancelled},
+		{"deadline exceeded", context.DeadlineExceeded, OutcomeTimedOut},
+		{"wrapped cancel", fmt.Errorf("browser: %w", context.Canceled), OutcomeCancelled},
+		{"wrapped timeout", fmt.Errorf("navigate: %w", context.DeadlineExceeded), OutcomeTimedOut},
+		{"plain error", errors.New("ATS blocked"), OutcomeFailed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got AttemptOutcome
+			if errors.Is(tc.err, errAlreadyApplied) {
+				got = OutcomeAlreadyApplied
+			} else if isSeekSubmitUnconfirmedError(tc.err) {
+				got = OutcomeSubmissionUnknown
+			} else {
+				got = classifyApplyOutcome(tc.err)
+			}
+			assert.Equal(t, tc.outcome, got)
+		})
+	}
+}
+
+// TestFinishAttempt_AlreadyAppliedAndSubmissionUnknownPersist verifies the DB
+// persistence of the two queue-specific outcomes: already_applied and
+// submission_unknown. These are the outcomes the queue path writes for the
+// errAlreadyApplied and errSeekSubmitUnconfirmed sentinels.
+func TestFinishAttempt_AlreadyAppliedAndSubmissionUnknownPersist(t *testing.T) {
+	db := openAttemptTestDB(t)
+
+	acAA := newTestAC("u1", "linkedin")
+	beginAttempt(db, acAA)
+	finishAttempt(db, acAA, OutcomeAlreadyApplied, "already_applied", "already_applied", "")
+
+	var outcome string
+	require.NoError(t, db.QueryRow(`SELECT outcome FROM apply_attempts WHERE id = ?`, acAA.AttemptID).Scan(&outcome))
+	assert.Equal(t, "already_applied", outcome)
+
+	acSU := newTestAC("u1", "seek")
+	beginAttempt(db, acSU)
+	finishAttempt(db, acSU, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed", "timeout")
+
+	require.NoError(t, db.QueryRow(`SELECT outcome FROM apply_attempts WHERE id = ?`, acSU.AttemptID).Scan(&outcome))
+	assert.Equal(t, "submission_unknown", outcome)
 }

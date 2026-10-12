@@ -1277,7 +1277,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	if err != nil {
 		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: open job page")
 		b.recordSeekSkipped(job, "seek apply: open job page: "+err.Error(), score, reasoning, halalVerdict)
-		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "open_page", "browser_error", err.Error())
+		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
 		return seekSubmitCannotApply
 	}
 	defer func() { _ = jobPage.Close() }()
@@ -1302,7 +1302,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 			log.Error().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
 		}
 		b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
-		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", err.Error())
+		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "apply", "apply_error", err.Error())
 		return seekSubmitCannotApply
 	}
 	resume, cover := lazy.get()
