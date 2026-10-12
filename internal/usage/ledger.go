@@ -21,8 +21,8 @@ type QuotaRecorder interface {
 
 // TxQuotaBurner supports quota deduction inside the billing transaction.
 type TxQuotaBurner interface {
-	PrepareTransactionalBurn(userID string, credits int64) (quota.BurnPrepare, error)
-	CommitTransactionalBurn(tx *sql.Tx, userID string, credits int64, prep quota.BurnPrepare) error
+	PrepareTransactionalBurnStrict(userID string, credits int64) (quota.BurnPrepare, error)
+	CommitTransactionalBurn(tx *sql.Tx, userID string, credits int64, prep quota.BurnPrepare) (int64, error)
 }
 
 // Ledger persists LLM usage events and keeps legacy aggregates in sync.
@@ -161,7 +161,7 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 			return fmt.Errorf("quota service does not support transactional burn")
 		}
 		var prepErr error
-		burnPrep, prepErr = tb.PrepareTransactionalBurn(userID, credits)
+		burnPrep, prepErr = tb.PrepareTransactionalBurnStrict(userID, credits)
 		if prepErr != nil {
 			return prepErr
 		}
@@ -178,15 +178,13 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 		tb := l.Quota.(TxQuotaBurner)
 		prep := burnPrep
 		quotaFn = func(tx *sql.Tx, uid string, c int64) error {
-			return tb.CommitTransactionalBurn(tx, uid, c, prep)
+			_, err := tb.CommitTransactionalBurn(tx, uid, c, prep)
+			return err
 		}
 	}
 
 	_, err = db.RecordBillingTx(tx, event, credits, quotaFn)
 	if errors.Is(err, db.ErrIdempotencyConflict) {
-		if commitErr := tx.Commit(); commitErr != nil {
-			return commitErr
-		}
 		return nil
 	}
 	if err != nil {

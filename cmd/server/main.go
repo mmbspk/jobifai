@@ -29,6 +29,7 @@ import (
 	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/usage"
+	"github.com/user/jobifai/internal/resource"
 	"github.com/user/jobifai/internal/resume"
 	jobws "github.com/user/jobifai/internal/ws"
 	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
@@ -338,6 +339,7 @@ func main() {
 		Documents: docSvc,
 		Retention: retentionSvc,
 		LLMReuseMetrics: llmReuseStore,
+		Resource: resource.NewService(database, cfgStore, quotaSvc, quotaSvc.LoadDefaults),
 		AppBaseURL:  appBaseURL,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
 			_, _, _, client, _ := buildLLMDeps(userID, userTypeChecker, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
