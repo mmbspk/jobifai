@@ -1149,14 +1149,14 @@ func extractLinkedInJob(el *rod.Element) linkedInJob {
 // ── Job processing ─────────────────────────────────────────────────────────
 
 func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) bool {
-	log.Info().Msgf("linkedin: processing, %q @ %s", job.Title, job.Company)
+	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msg("linkedin: processing")
 
 	if reason := b.alreadyAppliedReason(job.ID); reason != "" {
-		log.Info().Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
 	if b.alreadyQueued(ctx, job.Company, job.Title) {
-		log.Info().Msgf("linkedin: skip, duplicate listing already queued: %q @ %s", job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, duplicate listing already queued: %q @ %s", job.Title, job.Company)
 		return false
 	}
 	// Card-level applied indicator (LinkedIn shows "Applied" badge on already-applied cards).
@@ -1164,17 +1164,17 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	// This also avoids false positives from browser crashes leaving phantom "Applied" badges.
 	if job.AlreadyApplied {
 		b.recordSkipped(job, "already_applied_indicator", 0, "", nil)
-		log.Info().Str("company", job.Company).Str("title", job.Title).Msg("linkedin: card shows applied badge, recording to skipped")
+		log.Info().Str("company", job.Company).Str("role", job.Title).Str("job_id", job.ID).Msg("linkedin: card shows applied badge, recording to skipped")
 		return false
 	}
 	if b.isBlacklisted(job) {
 		b.recordSkipped(job, "blacklisted", 0, "", nil)
-		log.Info().Msgf("linkedin: skip, blacklisted: %q @ %s", job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, blacklisted: %q @ %s", job.Title, job.Company)
 		return false
 	}
 	if !b.cfg.Preferences.ExperienceLevel.MatchesExperienceTitle(job.Title) {
 		b.recordSkipped(job, "experience_level", 0, "", nil)
-		log.Info().Msgf("linkedin: skip, experience level: %q @ %s", job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, experience level: %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -1602,13 +1602,13 @@ func (b *Bot) queueForReview(ctx context.Context, p *domain.PendingReview) {
 func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
-		log.Warn().Err(err).Msg("linkedin: document work guard")
+		log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: document work guard")
 		return false
 	}
 	defer release()
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		log.Error().Err(err).Msg("linkedin: open job page")
+		log.Error().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: open job page")
 		return false
 	}
 	defer func() { _ = jobPage.Close() }()
@@ -1617,10 +1617,10 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 		if errors.Is(err, errAlreadyApplied) {
 			resume, cover := lazy.get()
 			b.recordApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
-			log.Info().Str("company", job.Company).Str("title", job.Title).Msg("linkedin: already applied, recorded ✓")
+			log.Info().Str("job_id", job.ID).Str("company", job.Company).Str("role", job.Title).Msg("linkedin: already applied, recorded ✓")
 			return true
 		}
-		log.Error().Err(err).Str("job", job.Title).Msg("linkedin: easy apply failed")
+		log.Error().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: easy apply failed")
 		reason := "easy apply: " + err.Error()
 		if skipReasonBelongsInTopMatches(reason) {
 			b.savePendingReview(ctx, &domain.PendingReview{
@@ -1636,7 +1636,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 				HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 				CreatedAt:            time.Now(),
 			})
-			log.Info().Str("reason", reason).Msgf("linkedin: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
+			log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("reason", reason).Msgf("linkedin: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
 			return false
 		}
 		b.recordSkipped(job, reason, score, reasoning, nil)
@@ -1766,11 +1766,11 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		].map(b => (b.getAttribute('aria-label') || b.textContent || '').trim().substring(0, 60))
 		 .filter(t => t).slice(0, 30)`
 		if diag, err := page.Eval(jsDiag); err == nil {
-			log.Warn().Str("buttons", diag.Value.String()).Msg("easy apply: buttons found on page")
+			log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("buttons", diag.Value.String()).Msg("easy apply: buttons found on page")
 		}
 		if shot, err := page.Screenshot(false, nil); err == nil {
 			_ = os.WriteFile("debug_easy_apply.png", shot, 0o644)
-			log.Warn().Msg("easy apply: screenshot saved to debug_easy_apply.png")
+			log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("easy apply: screenshot saved to debug_easy_apply.png")
 		}
 		return fmt.Errorf("easy apply button not found after 30s")
 	}

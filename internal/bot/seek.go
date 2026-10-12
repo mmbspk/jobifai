@@ -845,33 +845,33 @@ func searchArrangementLabel(target domain.SearchTarget) string {
 // ── Per-job pipeline ──────────────────────────────────────────────────────
 
 func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) bool {
-	log.Info().Msgf("seek: processing, %q @ %s", job.Title, job.Company)
+	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msg("seek: processing")
 
 	if reason := b.alreadyAppliedReason(job.ID); reason != "" {
-		log.Info().Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
 	// Card-level applied indicator.
 	if job.AlreadyApplied {
 		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
-		log.Info().Msgf("seek: skip, already applied badge on card: %q @ %s", job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied badge on card: %q @ %s", job.Title, job.Company)
 		return false
 	}
 	if b.isSeekJobBlacklisted(job) {
 		b.recordSeekSkipped(job, "blacklisted", 0, "", nil)
-		log.Info().Msgf("seek: skip, blacklisted: %q @ %s", job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Msgf("seek: skip, blacklisted: %q @ %s", job.Title, job.Company)
 		return false
 	}
 
 	details := b.fetchSeekJobDetails(ctx, br, &job)
 	if b.isSeekSessionExpired() {
-		log.Error().Msgf("seek: aborting %q @ %s — session expired", job.Title, job.Company)
+		log.Error().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: aborting %q @ %s — session expired", job.Title, job.Company)
 		return false
 	}
 	// Detail page may have updated AlreadyApplied (covers manual applications).
 	if job.AlreadyApplied {
 		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
-		log.Info().Msgf("seek: skip, already applied (page indicator): %q @ %s", job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied (page indicator): %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -922,12 +922,12 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 			CreatedAt:            time.Now(),
 		})
-		log.Info().Msgf("seek: routed to Top Matches (not Quick Apply): %q @ %s", job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: routed to Top Matches (not Quick Apply): %q @ %s", job.Title, job.Company)
 		return false
 	}
 
 	// Docs generated lazily at the file-upload step, only when toggle is on.
-	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: job.ID, Company: job.Company, Title: job.Title}, jobDesc: details.Description}
+	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: job.ID, Company: job.Company, Title: job.Title, URL: job.URL}, jobDesc: details.Description}
 	return b.submitSeekApplication(ctx, br, job, lazy, score, reasoning, halalVerdict, llmBefore) == seekSubmitApplied
 }
 
@@ -946,7 +946,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 	}
 	if result.Score < minScore {
 		b.recordSeekSkipped(job, fmt.Sprintf("score %d < %d", result.Score, minScore), result.Score, result.Reasoning, nil)
-		log.Info().Msgf("seek: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
+		log.Info().Str("job_id", job.ID).Int("score", result.Score).Int("min_score", minScore).Msgf("seek: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
 		return result.Score, result.Reasoning, nil, false
 	}
 	log.Info().Msgf("seek: score %d/10, %q @ %s", result.Score, job.Title, job.Company)
@@ -981,7 +981,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *seekJob) scraper.JobDetails {
 	page, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		log.Warn().Err(err).Str("job", job.ID).Msg("seek: open job page for details")
+		log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: open job page for details")
 		return scraper.JobDetails{Description: job.Title + " at " + job.Company, PostedDate: job.PostedDate}
 	}
 	defer func() { _ = page.Close() }()
@@ -1190,7 +1190,7 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 		jobDetails := scraper.ParseHTML(rawHTML)
 
 		job := seekJob{ID: p.jobID, Company: p.company, Title: p.role, Location: p.location, URL: p.link, EasyApply: true}
-		lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: p.company, Title: p.role}, jobDesc: jobDetails.Description}
+		lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: p.jobID, Company: p.company, Title: p.role, URL: p.link}, jobDesc: jobDetails.Description}
 
 		outcome := b.submitSeekApplication(ctx, br, job, lazy, p.score, "", p.halalVerdict, b.llmSnapshot())
 		switch outcome {
@@ -1247,34 +1247,34 @@ func (b *Bot) routeSeekToTopMatches(ctx context.Context, job seekJob, score int,
 func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job seekJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) seekSubmitOutcome {
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
-		log.Warn().Err(err).Msg("seek: document work guard")
+		log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: document work guard")
 		return seekSubmitCannotApply
 	}
 	defer release()
 	if !job.EasyApply {
-		log.Warn().Str("job", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
+		log.Warn().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
 		b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
 		return seekSubmitTopMatches
 	}
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		log.Error().Err(err).Msg("seek: open job page")
+		log.Error().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: open job page")
 		b.recordSeekSkipped(job, "seek apply: open job page: "+err.Error(), score, reasoning, halalVerdict)
 		return seekSubmitCannotApply
 	}
 	defer func() { _ = jobPage.Close() }()
 
 	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
-		log.Error().Err(err).Str("job", job.Title).Msg("seek: apply failed")
+		log.Error().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: apply failed")
 		if isSeekApplyBlockedError(err) {
-			log.Warn().Err(err).Str("job", job.Title).Msg("seek: not automatable — routing to Top Matches")
+			log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: not automatable — routing to Top Matches")
 			b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
 			return seekSubmitTopMatches
 		}
 		if isSeekSessionExpiredError(err) {
 			b.markSeekSessionExpired()
 			seekDumpUploadDebug(jobPage, "stepup_auth")
-			log.Error().Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
+			log.Error().Str("job_id", job.ID).Str("url", job.URL).Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
 		}
 		b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
 		return seekSubmitCannotApply

@@ -247,6 +247,7 @@ func (h *BotHandlers) ReviewReject(w http.ResponseWriter, r *http.Request) {
 		log.Error().Err(err).Str("job_id", jobID).Msg("review reject: failed to delete pending review")
 	}
 
+	log.Info().Str("user_id", userID).Str("job_id", jobID).Str("company", company).Str("role", role).Msg("review reject: job manually rejected and moved to Cannot Apply")
 	okMsg(w, "rejected, job will not be reprocessed")
 }
 
@@ -266,6 +267,7 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "url is required"})
 		return
 	}
+	log.Info().Str("user_id", userID).Str("url", req.URL).Msg("apply-url: starting AI Apply")
 	// Bound total AI Apply time so the UI cannot sit on "Submitting…" forever
 	// (browser hangs, LLM stalls, or form loops).
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
@@ -273,16 +275,19 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 	res, err := h.svc.Bot.ApplyFromURL(ctx, userID, req.URL, req.Market, req.Force)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			log.Info().Str("user_id", userID).Str("url", req.URL).Msg("apply-url: AI Apply cancelled")
 			writeJSON(w, http.StatusOK, map[string]string{"message": "AI Apply cancelled"})
 			return
 		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			log.Warn().Str("user_id", userID).Str("url", req.URL).Msg("apply-url: AI Apply timed out after 4 minutes")
 			writeJSON(w, http.StatusGatewayTimeout, map[string]string{
 				"message": "AI Apply timed out after 4 minutes — try again, or confirm the job has Easy Apply / Quick Apply",
 			})
 			return
 		}
 		if errors.Is(err, bot.ErrNotEasyApply) {
+			log.Info().Str("user_id", userID).Str("url", req.URL).Str("company", res.Company).Str("role", res.Role).Msg("apply-url: not Easy Apply, added to Top Matches")
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":  "not_easy_apply",
 				"message": "This job does not have Easy Apply / Quick Apply. It has been added to your Top Matches for manual application.",
@@ -292,6 +297,7 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, bot.ErrAlreadyApplied) {
+			log.Info().Str("user_id", userID).Str("url", req.URL).Str("company", res.Company).Str("role", res.Role).Msg("apply-url: already applied")
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":  "already_applied",
 				"company": res.Company,
@@ -299,10 +305,12 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		log.Error().Err(err).Str("user_id", userID).Str("url", req.URL).Str("company", res.Company).Str("role", res.Role).Msg("apply-url: AI Apply failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
 	if res.ScoreWarning {
+		log.Info().Str("user_id", userID).Str("url", req.URL).Str("job_id", res.JobID).Int("score", res.Score).Msg("apply-url: score below threshold, not applying")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":    "score_warning",
 			"score":     res.Score,
@@ -313,6 +321,7 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	log.Info().Str("user_id", userID).Str("url", req.URL).Str("job_id", res.JobID).Str("company", res.Company).Str("role", res.Role).Msg("apply-url: submitted ✓")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "applied",
 		"message": "Application submitted",
