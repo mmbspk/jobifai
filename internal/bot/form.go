@@ -987,7 +987,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				return filled, true, qErr
 			}
 			if answer == fallback && raw == "" && fallback != "" {
-				log.Warn().Str("question", f.Question).Str("fallback", fallback).Msg("form: radio fallback to first option")
+				log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("fallback", fallback).Msg("form: radio fallback to first option")
 			}
 			if answer == "" {
 				continue
@@ -1033,7 +1033,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				return filled, true, qErr
 			}
 			if answer == fallback && raw == "" && fallback != "" {
-				log.Warn().Str("question", f.Question).Str("fallback", fallback).Msg("form: checkbox fallback to first option")
+				log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("fallback", fallback).Msg("form: checkbox fallback to first option")
 			}
 			var targetID string
 			for _, opt := range f.Options {
@@ -1349,7 +1349,7 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 
 	// ── Last resort: first option or empty ────────────────────────────────────
 	if len(options) > 0 {
-		log.Warn().Str("question", question).Str("fallback", options[0]).Msg("form: answered via last-resort fallback")
+		log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Str("fallback", options[0]).Msg("form: answered via last-resort fallback")
 		return options[0], nil
 	}
 	return "", nil

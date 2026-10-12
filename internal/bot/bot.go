@@ -1149,7 +1149,7 @@ func extractLinkedInJob(el *rod.Element) linkedInJob {
 // ── Job processing ─────────────────────────────────────────────────────────
 
 func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) bool {
-	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msg("linkedin: processing")
+	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: processing, %q @ %s", job.Title, job.Company)
 
 	if reason := b.alreadyAppliedReason(job.ID); reason != "" {
 		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)

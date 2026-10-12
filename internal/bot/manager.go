@@ -1398,7 +1398,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: delete pending review failed")
 	}
 	log.Info().Str("job_id", jobID).Str("url", jobURL).Str("role", role).Str("company", company).Msg("ai apply: submitted ✓")
-	return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason}, nil
+	return ApplyFromURLResult{JobID: jobID, Company: company, Role: role, Score: score, ScoreReason: scoreReason}, nil
 }
 
 func newJobID() string {

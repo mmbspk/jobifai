@@ -845,7 +845,7 @@ func searchArrangementLabel(target domain.SearchTarget) string {
 // ── Per-job pipeline ──────────────────────────────────────────────────────
 
 func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) bool {
-	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msg("seek: processing")
+	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("seek: processing, %q @ %s", job.Title, job.Company)
 
 	if reason := b.alreadyAppliedReason(job.ID); reason != "" {
 		log.Info().Str("job_id", job.ID).Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
@@ -1381,7 +1381,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 		log.Info().Msg("seek: possible silent Quick Apply success page — verifying on job page")
 		if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err != nil {
-			log.Warn().Err(err).Msg("seek: success-page signal without job-page Applied confirmation")
+			log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: success-page signal without job-page Applied confirmation")
 			return fmt.Errorf("seek showed a possible success page but the job page does not confirm the application — try again or apply manually on Seek")
 		}
 		log.Info().Msg("seek: Quick Apply submitted silently (pre-filled) ✓")
@@ -1431,7 +1431,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 		if hasFields && !filled {
 			if msgs := b.seekValidationMessages(page); len(msgs) > 0 {
-				log.Warn().Strs("errors", msgs).Int("step", step+1).Msg("seek: validation errors with unfilled fields")
+				log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Strs("errors", msgs).Int("step", step+1).Msg("seek: validation errors with unfilled fields")
 			}
 			if shot, err := page.Screenshot(false, nil); err == nil {
 				_ = os.WriteFile(fmt.Sprintf("debug_seek_step_%d_unfilled.png", step+1), shot, 0o644)
@@ -1447,7 +1447,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			// Save a debug snapshot to help diagnose what's on the page.
 			if shot, err := page.Screenshot(false, nil); err == nil {
 				_ = os.WriteFile("debug_seek_apply_stuck.png", shot, 0o644)
-				log.Warn().Msg("seek: screenshot saved to debug_seek_apply_stuck.png")
+				log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: screenshot saved to debug_seek_apply_stuck.png")
 			}
 			return fmt.Errorf("no continue or submit button found at form step %d", step+1)
 		}
@@ -1479,7 +1479,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			log.Info().Msgf("seek: submit clicked (%q), verifying confirmation", btnText)
 			if err := b.seekWaitSubmitConfirmation(page, jobURL); err != nil {
 				// Retry once: consent checkbox or validation may have blocked submit.
-				log.Warn().Err(err).Msg("seek: first submit unconfirmed, retrying consent+submit")
+				log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: first submit unconfirmed, retrying consent+submit")
 				if b.seekEnsureConsentChecked(page) {
 					if _, _, refillErr := b.fillFormStep(ctx, page, lazy); refillErr != nil {
 						if isFormFillFatalLLM(refillErr) {
