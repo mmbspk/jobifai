@@ -1,9 +1,6 @@
 package bot
 
-import (
-	"errors"
-	"strings"
-)
+import "strings"
 
 // skipReasonIsApplyFailure reports whether a skip reason came from an Easy/Quick Apply attempt.
 func skipReasonIsApplyFailure(reason string) bool {
@@ -49,10 +46,4 @@ func queueApplyOutcome(err error) (outcome AttemptOutcome, stage, reasonCode str
 		return OutcomeBlocked, "apply", "not_automatable"
 	}
 	return classifyApplyOutcome(err), "apply", "apply_error"
-}
-
-// queueErrAlreadyApplied is a typed check used by processApprovedQueue so that
-// callers remain decoupled from the sentinel value.
-func queueErrAlreadyApplied(err error) bool {
-	return errors.Is(err, errAlreadyApplied)
 }
