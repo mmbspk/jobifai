@@ -11,12 +11,15 @@ import (
 // ErrResourceIdempotencyConflict indicates this resource event was already recorded.
 var ErrResourceIdempotencyConflict = errors.New("resource usage idempotency key already recorded")
 
-// RecordResourceBillingTx atomically inserts a resource usage event and applies quota burn.
+// RecordResourceBillingTx atomically burns quota credits and inserts a resource usage event.
+// Quota burn happens FIRST so that credits_burned in the event row reflects the actual
+// deduction (0 for admin/enforcement-disabled paths, not the requested amount).
+//
 // If idempotency_key is non-empty and already recorded, returns ErrResourceIdempotencyConflict
 // so the caller can commit a no-op (credits were already burned on the first call).
 //
-// Invariant: either both the event insert and the quota update commit, or neither does.
-func RecordResourceBillingTx(tx *sql.Tx, e domain.ResourceUsageEvent, quotaBurnCredits int64, quotaUpdate func(*sql.Tx, string, int64) error) (string, error) {
+// Invariant: either both the quota update and the event insert commit, or neither does.
+func RecordResourceBillingTx(tx *sql.Tx, e domain.ResourceUsageEvent, quotaBurnCredits int64, quotaUpdate func(*sql.Tx, string, int64) (int64, error)) (string, error) {
 	if e.UserID == "" {
 		return "", errors.New("resource billing: missing user_id")
 	}
@@ -33,6 +36,24 @@ func RecordResourceBillingTx(tx *sql.Tx, e domain.ResourceUsageEvent, quotaBurnC
 			return "", err
 		}
 	}
+
+	// Quota burn first: actualBurn is what actually came out of the user's balance.
+	// For admin/enforcement-disabled paths this is 0 even when quotaBurnCredits > 0.
+	actualBurn := int64(0)
+	if e.Success && quotaBurnCredits > 0 && quotaUpdate != nil {
+		var err error
+		actualBurn, err = quotaUpdate(tx, e.UserID, quotaBurnCredits)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	// Store loaded cost only when credits were actually burned.
+	loadedMicro := int64(0)
+	if actualBurn > 0 {
+		loadedMicro = e.LoadedCostUSDMicro
+	}
+
 	success := 0
 	if e.Success {
 		success = 1
@@ -48,7 +69,7 @@ func RecordResourceBillingTx(tx *sql.Tx, e domain.ResourceUsageEvent, quotaBurnC
 		e.ID, e.UserID, string(e.ResourceType), e.OperationID, e.IdempotencyKey,
 		e.AutomationRunID, e.ApplicationID, e.JobID,
 		e.Quantity, e.Unit, e.DurationMS,
-		e.RawCostUSDMicro, e.LoadedCostUSDMicro, e.CreditsBurned,
+		e.RawCostUSDMicro, loadedMicro, actualBurn,
 		success, e.ErrorCode, resourceMetadataOrEmpty(e.MetadataJSON),
 	)
 	if err != nil {
@@ -56,11 +77,6 @@ func RecordResourceBillingTx(tx *sql.Tx, e domain.ResourceUsageEvent, quotaBurnC
 			return "", ErrResourceIdempotencyConflict
 		}
 		return "", err
-	}
-	if e.Success && quotaBurnCredits > 0 && quotaUpdate != nil {
-		if err := quotaUpdate(tx, e.UserID, quotaBurnCredits); err != nil {
-			return "", err
-		}
 	}
 	return e.ID, nil
 }

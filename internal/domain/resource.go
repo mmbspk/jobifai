@@ -46,11 +46,11 @@ type ResourceMeteringDefaults struct {
 type BrowserMeteringConfig struct {
 	// Enabled gates browser automation billing independently of the master toggle.
 	Enabled bool `json:"enabled"`
-	// RawCostUSDPerHour is the raw infrastructure cost assumption per browser-hour.
-	// Loaded cost = RawCostUSDPerHour × (1 + ServiceMarkup).
-	// Credits = loaded cost × CreditsPerUSD.
-	// PerCallFeeUSD is NOT applied.
-	RawCostUSDPerHour float64 `json:"raw_cost_usd_per_hour"`
+	// RawCostUSDMicroPerHour is the raw infrastructure cost in micro-USD per browser-hour
+	// (1 USD = 1_000_000 micro-USD). Loaded cost = rawMicro × (1 + ServiceMarkup).
+	// Credits = loaded cost (micro-USD) × CreditsPerUSD / 1_000_000.
+	// PerCallFeeUSD is NOT applied to resource billing.
+	RawCostUSDMicroPerHour int64 `json:"raw_cost_usd_micro_per_hour"`
 	// BillingIncrementSecs is how often a new billable bucket is opened (5–300).
 	BillingIncrementSecs int `json:"billing_increment_seconds"`
 }
@@ -59,8 +59,9 @@ type BrowserMeteringConfig struct {
 type RenderMeteringConfig struct {
 	// Enabled gates render billing independently of the master toggle.
 	Enabled bool `json:"enabled"`
-	// RawCostUSDPerRender is the raw infrastructure cost per successful new PDF render.
-	// Loaded cost = RawCostUSDPerRender × (1 + ServiceMarkup).
-	// Credits = loaded cost × CreditsPerUSD.
-	RawCostUSDPerRender float64 `json:"raw_cost_usd_per_render"`
+	// RawCostUSDMicroPerRender is the raw infrastructure cost in micro-USD per successful
+	// new PDF render (1 USD = 1_000_000 micro-USD).
+	// Loaded cost = rawMicro × (1 + ServiceMarkup).
+	// Credits = loaded cost (micro-USD) × CreditsPerUSD / 1_000_000.
+	RawCostUSDMicroPerRender int64 `json:"raw_cost_usd_micro_per_render"`
 }

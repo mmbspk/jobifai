@@ -215,7 +215,7 @@ type QuotaService interface {
 
 // ResourceService meters non-AI resource consumption against the shared credit balance.
 type ResourceService interface {
-	LoadDefaults() domain.ResourceMeteringDefaults
+	LoadDefaults() (domain.ResourceMeteringDefaults, error)
 	SaveDefaults(d domain.ResourceMeteringDefaults) error
 	EstimateRenderCredits() int64
 	EstimateBrowserIncrementCredits() int64

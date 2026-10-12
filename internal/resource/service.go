@@ -12,11 +12,11 @@ import (
 )
 
 // quotaBurner is the subset of quota.Service needed by the resource billing service.
-// quota.Service satisfies this interface.
 type quotaBurner interface {
 	BeforeCreditUse(ctx context.Context, userID string, credits int64) error
 	PrepareTransactionalBurn(userID string, credits int64) (quota.BurnPrepare, error)
-	CommitTransactionalBurn(tx *sql.Tx, userID string, credits int64, prep quota.BurnPrepare) error
+	PrepareTransactionalBurnStrict(userID string, credits int64) (quota.BurnPrepare, error)
+	CommitTransactionalBurn(tx *sql.Tx, userID string, credits int64, prep quota.BurnPrepare) (int64, error)
 }
 
 // Service meters non-AI resource consumption against the shared credit balance.
@@ -24,17 +24,18 @@ type Service struct {
 	db    *sql.DB
 	store settingsKV
 	quota quotaBurner
-	// quotaDefaults is the shared economic configuration (ServiceMarkup, CreditsPerUSD).
-	quotaDefaults func() domain.QuotaDefaults
+	// quotaDefaultsFn is the shared economic configuration (ServiceMarkup, CreditsPerUSD).
+	quotaDefaultsFn func() domain.QuotaDefaults
 }
 
 // NewService constructs a resource billing service.
 func NewService(db *sql.DB, store settingsKV, q quotaBurner, quotaDefaults func() domain.QuotaDefaults) *Service {
-	return &Service{db: db, store: store, quota: q, quotaDefaults: quotaDefaults}
+	return &Service{db: db, store: store, quota: q, quotaDefaultsFn: quotaDefaults}
 }
 
 // LoadDefaults returns the current resource metering configuration.
-func (s *Service) LoadDefaults() domain.ResourceMeteringDefaults {
+// Fail-closed: returns an error for any storage failure other than "not found".
+func (s *Service) LoadDefaults() (domain.ResourceMeteringDefaults, error) {
 	return LoadDefaults(s.store)
 }
 
@@ -45,17 +46,24 @@ func (s *Service) SaveDefaults(d domain.ResourceMeteringDefaults) error {
 
 // EstimateRenderCredits returns the credit cost for one new PDF render at current rates.
 func (s *Service) EstimateRenderCredits() int64 {
-	return EstimateRenderCredits(s.LoadDefaults(), s.quotaDefaults())
+	cfg, err := s.LoadDefaults()
+	if err != nil {
+		return 0
+	}
+	return EstimateRenderCredits(cfg, s.quotaDefaultsFn())
 }
 
 // EstimateBrowserIncrementCredits returns the credit cost for one billing increment of
 // active browser automation at current rates.
 func (s *Service) EstimateBrowserIncrementCredits() int64 {
-	return EstimateBrowserIncrementCredits(s.LoadDefaults(), s.quotaDefaults())
+	cfg, err := s.LoadDefaults()
+	if err != nil {
+		return 0
+	}
+	return EstimateBrowserIncrementCredits(cfg, s.quotaDefaultsFn())
 }
 
 // Before checks whether a resource operation costing the given credits may proceed.
-// Returns ErrMeteringDisabled when metering is off (caller may treat as no-op).
 // Returns quota.ErrExceeded when balance is insufficient.
 func (s *Service) Before(ctx context.Context, userID string, credits int64) error {
 	if credits <= 0 {
@@ -64,7 +72,27 @@ func (s *Service) Before(ctx context.Context, userID string, credits int64) erro
 	return s.quota.BeforeCreditUse(ctx, userID, credits)
 }
 
+// BeforeResource resolves the price for a resource type and performs a preflight balance check.
+// Returns (ErrMeteringDisabled, zero ResourcePricing) when metering is off.
+// Returns (quota.ErrExceeded, zero ResourcePricing) when the balance is insufficient.
+func (s *Service) BeforeResource(ctx context.Context, userID string, rt domain.ResourceType) (ResourcePricing, error) {
+	cfg, err := s.LoadDefaults()
+	if err != nil {
+		return ResourcePricing{}, err
+	}
+	pricing := PriceResource(cfg, s.quotaDefaultsFn(), rt)
+	if pricing.Credits == 0 {
+		return ResourcePricing{}, ErrMeteringDisabled
+	}
+	if err := s.quota.BeforeCreditUse(ctx, userID, pricing.Credits); err != nil {
+		return ResourcePricing{}, err
+	}
+	return pricing, nil
+}
+
 // RecordInput describes a resource consumption event to be billed atomically.
+// Pricing is computed internally from the current metering configuration —
+// do NOT supply cost or credit fields.
 type RecordInput struct {
 	UserID          string
 	ResourceType    domain.ResourceType
@@ -76,21 +104,20 @@ type RecordInput struct {
 	Quantity        float64
 	Unit            string
 	DurationMS      int64
-	// RawCostUSDMicro and LoadedCostUSDMicro are provided by the caller after computing
-	// with EstimateCredits / rate helpers. CreditsBurned must match.
-	RawCostUSDMicro    int64
-	LoadedCostUSDMicro int64
-	CreditsBurned      int64
-	Success            bool
-	ErrorCode          string
-	MetadataJSON       string
+	Success         bool
+	ErrorCode       string
+	MetadataJSON    string
 }
 
 // RecordOnce atomically writes a resource_usage_events row and burns credits from the user's
 // shared balance (trial / monthly / top-up). Idempotent: a duplicate IdempotencyKey is
 // silently ignored and returns nil (credits were already burned on the first call).
 //
-// No credits are burned for failed operations (Success=false) or disabled meters (CreditsBurned=0).
+// Pricing is resolved from the current admin configuration; credits_burned in the ledger
+// reflects the actual deduction (0 for failed ops, admin-exempt users, and disabled enforcement).
+//
+// For resource billing, the quota burn is strict: if the balance is insufficient at
+// transaction time, returns quota.ErrExceeded without writing any event.
 func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 	if in.UserID == "" {
 		return errors.New("resource billing: missing user_id")
@@ -99,30 +126,45 @@ func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 		in.IdempotencyKey = uuid.NewString()
 	}
 
-	credits := in.CreditsBurned
-	prep, err := s.quota.PrepareTransactionalBurn(in.UserID, credits)
+	cfg, err := s.LoadDefaults()
 	if err != nil {
 		return err
 	}
+	pricing := PriceResource(cfg, s.quotaDefaultsFn(), in.ResourceType)
+
+	var burnCredits int64
+	var prep quota.BurnPrepare
+	if in.Success && pricing.Credits > 0 {
+		burnCredits = pricing.Credits
+		prep, err = s.quota.PrepareTransactionalBurnStrict(in.UserID, burnCredits)
+		if err != nil {
+			return err
+		}
+	} else {
+		prep, err = s.quota.PrepareTransactionalBurn(in.UserID, 0)
+		if err != nil {
+			return err
+		}
+	}
 
 	event := domain.ResourceUsageEvent{
-		ID:                 uuid.NewString(),
-		UserID:             in.UserID,
-		ResourceType:       in.ResourceType,
-		OperationID:        in.OperationID,
-		IdempotencyKey:     in.IdempotencyKey,
-		AutomationRunID:    in.AutomationRunID,
-		ApplicationID:      in.ApplicationID,
-		JobID:              in.JobID,
-		Quantity:           in.Quantity,
-		Unit:               in.Unit,
-		DurationMS:         in.DurationMS,
-		RawCostUSDMicro:    in.RawCostUSDMicro,
-		LoadedCostUSDMicro: in.LoadedCostUSDMicro,
-		CreditsBurned:      in.CreditsBurned,
-		Success:            in.Success,
-		ErrorCode:          in.ErrorCode,
-		MetadataJSON:       in.MetadataJSON,
+		ID:              uuid.NewString(),
+		UserID:          in.UserID,
+		ResourceType:    in.ResourceType,
+		OperationID:     in.OperationID,
+		IdempotencyKey:  in.IdempotencyKey,
+		AutomationRunID: in.AutomationRunID,
+		ApplicationID:   in.ApplicationID,
+		JobID:           in.JobID,
+		Quantity:        in.Quantity,
+		Unit:            in.Unit,
+		DurationMS:      in.DurationMS,
+		RawCostUSDMicro: pricing.RawCostUSDMicro,
+		// LoadedCostUSDMicro and CreditsBurned are set by RecordResourceBillingTx
+		// using the actual burn amount returned by CommitTransactionalBurn.
+		Success:      in.Success,
+		ErrorCode:    in.ErrorCode,
+		MetadataJSON: in.MetadataJSON,
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -131,13 +173,12 @@ func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	quotaUpdate := func(tx *sql.Tx, userID string, burnCredits int64) error {
-		return s.quota.CommitTransactionalBurn(tx, userID, burnCredits, prep)
+	quotaUpdate := func(tx *sql.Tx, userID string, credits int64) (int64, error) {
+		return s.quota.CommitTransactionalBurn(tx, userID, credits, prep)
 	}
-	_, err = resourcedb.RecordResourceBillingTx(tx, event, credits, quotaUpdate)
+	_, err = resourcedb.RecordResourceBillingTx(tx, event, burnCredits, quotaUpdate)
 	if err != nil {
 		if errors.Is(err, resourcedb.ErrResourceIdempotencyConflict) {
-			// Already recorded — commit the empty tx and return nil.
 			_ = tx.Commit()
 			return nil
 		}

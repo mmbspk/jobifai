@@ -22,7 +22,7 @@ type QuotaRecorder interface {
 // TxQuotaBurner supports quota deduction inside the billing transaction.
 type TxQuotaBurner interface {
 	PrepareTransactionalBurn(userID string, credits int64) (quota.BurnPrepare, error)
-	CommitTransactionalBurn(tx *sql.Tx, userID string, credits int64, prep quota.BurnPrepare) error
+	CommitTransactionalBurn(tx *sql.Tx, userID string, credits int64, prep quota.BurnPrepare) (int64, error)
 }
 
 // Ledger persists LLM usage events and keeps legacy aggregates in sync.
@@ -178,7 +178,8 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 		tb := l.Quota.(TxQuotaBurner)
 		prep := burnPrep
 		quotaFn = func(tx *sql.Tx, uid string, c int64) error {
-			return tb.CommitTransactionalBurn(tx, uid, c, prep)
+			_, err := tb.CommitTransactionalBurn(tx, uid, c, prep)
+			return err
 		}
 	}
 

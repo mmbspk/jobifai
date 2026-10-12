@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"strings"
 
 	"github.com/user/jobifai/internal/domain"
 )
@@ -15,7 +16,11 @@ func (h *AdminHandlers) ResourceMeteringDefaultsGet(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "resource service unavailable"})
 		return
 	}
-	def := h.svc.Resource.LoadDefaults()
+	def, err := h.svc.Resource.LoadDefaults()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "failed to load resource metering defaults"})
+		return
+	}
 	writeJSON(w, http.StatusOK, buildResourceMeteringResponse(def, h.svc))
 }
 
@@ -36,10 +41,25 @@ func (h *AdminHandlers) ResourceMeteringDefaultsSet(w http.ResponseWriter, r *ht
 		incoming.Browser.BillingIncrementSecs = 30
 	}
 	if err := h.svc.Resource.SaveDefaults(incoming); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		if isResourceValidationError(err) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "failed to save resource metering defaults"})
+		}
 		return
 	}
-	writeJSON(w, http.StatusOK, buildResourceMeteringResponse(incoming, h.svc))
+	def, err := h.svc.Resource.LoadDefaults()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "failed to load resource metering defaults after save"})
+		return
+	}
+	writeJSON(w, http.StatusOK, buildResourceMeteringResponse(def, h.svc))
+}
+
+// isResourceValidationError returns true when err is a validation error from
+// the resource metering package (distinguished by its "resource_metering: " prefix).
+func isResourceValidationError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), "resource_metering: ")
 }
 
 // resourceMeteringResponse is the admin API response for resource metering defaults.

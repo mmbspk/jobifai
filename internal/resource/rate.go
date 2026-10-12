@@ -6,85 +6,86 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
-// EstimateCredits converts a raw USD cost (in micro-USD, i.e. 1 USD = 1_000_000) to credits
-// using the existing economic formula:
-//
-//	loaded_usd = raw_usd × (1 + serviceMarkup)
-//	credits    = ceil(loaded_usd × creditsPerUSD)
-//
-// PerCallFeeUSD is intentionally NOT applied here — it is an AI-call-specific charge.
-// Returns at least 1 credit when rawCostUSDMicro > 0 and the meter is enabled.
-func EstimateCredits(rawCostUSDMicro int64, serviceMarkup, creditsPerUSD float64) int64 {
-	if rawCostUSDMicro <= 0 || creditsPerUSD <= 0 {
-		return 0
+// ResourcePricing holds the computed cost for one resource event.
+// Zero value means metering is disabled or not applicable for this resource type.
+type ResourcePricing struct {
+	RawCostUSDMicro    int64
+	LoadedCostUSDMicro int64
+	Credits            int64
+}
+
+// PriceResource is the single authoritative function for computing resource costs.
+// Returns a zero ResourcePricing when metering is disabled or the resource type is unknown.
+// PerCallFeeUSD is intentionally NOT applied — it is an AI-call-specific charge.
+func PriceResource(cfg domain.ResourceMeteringDefaults, qd domain.QuotaDefaults, rt domain.ResourceType) ResourcePricing {
+	if !cfg.Enabled {
+		return ResourcePricing{}
 	}
-	rawUSD := float64(rawCostUSDMicro) / 1_000_000
-	loadedUSD := rawUSD * (1 + serviceMarkup)
-	credits := math.Ceil(loadedUSD * creditsPerUSD)
+	switch rt {
+	case domain.ResourceTypeDocumentRender:
+		return priceRender(cfg.Render, qd)
+	case domain.ResourceTypeBrowserAutomation:
+		return priceBrowserIncrement(cfg.Browser, qd)
+	default:
+		return ResourcePricing{}
+	}
+}
+
+func priceRender(r domain.RenderMeteringConfig, qd domain.QuotaDefaults) ResourcePricing {
+	if !r.Enabled || r.RawCostUSDMicroPerRender <= 0 {
+		return ResourcePricing{}
+	}
+	return pricingFromRaw(r.RawCostUSDMicroPerRender, qd)
+}
+
+func priceBrowserIncrement(b domain.BrowserMeteringConfig, qd domain.QuotaDefaults) ResourcePricing {
+	if !b.Enabled || b.RawCostUSDMicroPerHour <= 0 {
+		return ResourcePricing{}
+	}
+	inc := b.BillingIncrementSecs
+	if inc <= 0 {
+		inc = 30
+	}
+	// Integer arithmetic: rawMicro = rawMicroPerHour × inc / 3600.
+	// Truncation is intentional — it avoids sub-increment accumulation.
+	raw := b.RawCostUSDMicroPerHour * int64(inc) / 3600
+	if raw <= 0 {
+		return ResourcePricing{}
+	}
+	return pricingFromRaw(raw, qd)
+}
+
+func pricingFromRaw(rawMicro int64, qd domain.QuotaDefaults) ResourcePricing {
+	if qd.CreditsPerUSD <= 0 {
+		return ResourcePricing{}
+	}
+	markup := qd.ServiceMarkup
+	if markup < 0 {
+		markup = 0
+	}
+	loadedMicro := int64(math.Round(float64(rawMicro) * (1 + markup)))
+	if loadedMicro <= 0 {
+		loadedMicro = rawMicro
+	}
+	// credits = ceil(loadedMicro × creditsPerUSD / 1_000_000); minimum 1.
+	credits := int64(math.Ceil(float64(loadedMicro) * qd.CreditsPerUSD / 1_000_000))
 	if credits < 1 {
-		return 1
+		credits = 1
 	}
-	return int64(credits)
+	return ResourcePricing{
+		RawCostUSDMicro:    rawMicro,
+		LoadedCostUSDMicro: loadedMicro,
+		Credits:            credits,
+	}
 }
 
-// LoadedCostMicro converts a raw micro-USD cost to the loaded micro-USD cost.
-func LoadedCostMicro(rawCostUSDMicro int64, serviceMarkup float64) int64 {
-	if rawCostUSDMicro <= 0 {
-		return 0
-	}
-	return int64(math.Round(float64(rawCostUSDMicro) * (1 + serviceMarkup)))
-}
-
-// EstimateRenderCredits returns the credit cost for one successful PDF render using
-// the current admin configuration.
+// EstimateRenderCredits returns the credit cost for one new PDF render at current rates.
 func EstimateRenderCredits(res domain.ResourceMeteringDefaults, quota domain.QuotaDefaults) int64 {
-	if !res.Enabled || !res.Render.Enabled || res.Render.RawCostUSDPerRender <= 0 {
-		return 0
-	}
-	rawMicro := int64(math.Round(res.Render.RawCostUSDPerRender * 1_000_000))
-	return EstimateCredits(rawMicro, quota.ServiceMarkup, quota.CreditsPerUSD)
+	return PriceResource(res, quota, domain.ResourceTypeDocumentRender).Credits
 }
 
-// EstimateBrowserIncrementCredits returns the credit cost for one configured billing
-// increment of active browser automation.
+// EstimateBrowserIncrementCredits returns the credit cost for one billing increment of
+// active browser automation.
 func EstimateBrowserIncrementCredits(res domain.ResourceMeteringDefaults, quota domain.QuotaDefaults) int64 {
-	if !res.Enabled || !res.Browser.Enabled || res.Browser.RawCostUSDPerHour <= 0 {
-		return 0
-	}
-	inc := res.Browser.BillingIncrementSecs
-	if inc <= 0 {
-		inc = 30
-	}
-	rawPerHour := res.Browser.RawCostUSDPerHour
-	rawPerIncrement := rawPerHour * (float64(inc) / 3600)
-	rawMicro := int64(math.Round(rawPerIncrement * 1_000_000))
-	if rawMicro <= 0 {
-		return 0
-	}
-	return EstimateCredits(rawMicro, quota.ServiceMarkup, quota.CreditsPerUSD)
-}
-
-// RenderCostMicros returns (rawMicro, loadedMicro) for one PDF render.
-func RenderCostMicros(res domain.ResourceMeteringDefaults) (raw, loaded int64) {
-	if !res.Enabled || !res.Render.Enabled || res.Render.RawCostUSDPerRender <= 0 {
-		return 0, 0
-	}
-	raw = int64(math.Round(res.Render.RawCostUSDPerRender * 1_000_000))
-	loaded = LoadedCostMicro(raw, 0) // caller applies markup via EstimateCredits
-	return raw, raw
-}
-
-// BrowserIncrementCostMicros returns (rawMicro, loadedMicro) for one billing increment.
-func BrowserIncrementCostMicros(res domain.ResourceMeteringDefaults) (raw, loaded int64) {
-	if !res.Enabled || !res.Browser.Enabled || res.Browser.RawCostUSDPerHour <= 0 {
-		return 0, 0
-	}
-	inc := res.Browser.BillingIncrementSecs
-	if inc <= 0 {
-		inc = 30
-	}
-	rawPerHour := res.Browser.RawCostUSDPerHour
-	rawPerIncrement := rawPerHour * (float64(inc) / 3600)
-	raw = int64(math.Round(rawPerIncrement * 1_000_000))
-	return raw, raw
+	return PriceResource(res, quota, domain.ResourceTypeBrowserAutomation).Credits
 }
