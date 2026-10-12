@@ -2534,6 +2534,15 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		queueLazy.attemptID = ac.AttemptID
 		if err := b.platformApply(ctx, jobPage, queueLazy); err != nil {
 			_ = jobPage.Close()
+			if errors.Is(err, errAlreadyApplied) {
+				log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).
+					Str("company", j.Company).Str("role", j.Role).Msg("approved queue: already applied, skipping ✓")
+				_, _ = appdb.ExecWithRetry(b.cfg.DB,
+					`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
+				finishAttempt(b.cfg.DB, ac, OutcomeAlreadyApplied, "already_applied", "already_applied", "")
+				applied++
+				continue
+			}
 			log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: apply failed")
 			var score int
 			_ = b.cfg.DB.QueryRow(
@@ -2544,7 +2553,9 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			_, _ = appdb.ExecWithRetry(b.cfg.DB,
 				`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
 			reason := err.Error()
-			if skipReasonBelongsInTopMatches("approved queue: " + reason) {
+			if isSeekSubmitUnconfirmedError(err) {
+				finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed", reason)
+			} else if skipReasonBelongsInTopMatches("approved queue: " + reason) {
 				finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "not_automatable", reason)
 			} else {
 				finishAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", reason)

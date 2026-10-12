@@ -94,15 +94,17 @@ func beginAttempt(db *sql.DB, ac *AttemptContext) {
 // finishAttempt updates the in-progress row with the terminal outcome.
 // It also refreshes job_id, url, role, company so fields that were empty at
 // beginAttempt time (e.g. applyFromURL before newJobID()) are persisted correctly.
+// If the UPDATE matches zero rows (beginAttempt was skipped or failed silently),
+// a fallback INSERT OR IGNORE writes the terminal outcome directly.
 func finishAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage, reasonCode, reasonText string) {
 	if db == nil || ac == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	elapsedMS := time.Since(ac.StartedAt).Milliseconds()
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.ExecContext(ctx,
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := db.ExecContext(ctx,
 		`UPDATE apply_attempts
 		 SET job_id=?, url=?, role=?, company=?,
 		     outcome=?, stage=?, reason_code=?, reason_text=?,
@@ -114,13 +116,25 @@ func finishAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage
 	)
 	if err != nil {
 		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", ac.JobID).Msg("attempt: failed to update attempt outcome")
+		return
 	}
-}
-
-// recordAttempt is a one-shot convenience for fast paths where there is no
-// meaningful in-flight state: it writes the in-progress marker and immediately
-// updates it to the final outcome.
-func recordAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage, reasonCode, reasonText string) {
-	beginAttempt(db, ac)
-	finishAttempt(db, ac, outcome, stage, reasonCode, reasonText)
+	if n, _ := res.RowsAffected(); n > 0 {
+		return
+	}
+	log.Warn().Str("attempt_id", ac.AttemptID).Str("outcome", string(outcome)).
+		Msg("attempt: in-progress row missing, writing direct fallback record")
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	_, err = db.ExecContext(ctx2,
+		`INSERT OR IGNORE INTO apply_attempts
+		 (id,user_id,platform,job_id,url,role,company,entry_point,outcome,stage,reason_code,reason_text,started_at,finished_at,elapsed_ms)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		ac.AttemptID, ac.UserID, ac.Platform, ac.JobID, ac.URL,
+		ac.Role, ac.Company, ac.EntryPoint,
+		string(outcome), stage, reasonCode, reasonText,
+		ac.StartedAt.UTC().Format(time.RFC3339), now, elapsedMS,
+	)
+	if err != nil {
+		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Msg("attempt: fallback INSERT also failed — outcome not persisted")
+	}
 }

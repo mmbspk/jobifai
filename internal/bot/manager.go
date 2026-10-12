@@ -1069,18 +1069,33 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 // ApplyFromURL opens a browser at jobURL, scores the job, checks for Easy/Quick Apply,
 // and either applies immediately (background goroutine) or routes to the appropriate queue.
 func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market string, force bool) (ApplyFromURLResult, error) {
+	// Detect platform first so an unrecognised URL never writes an attempt row.
+	platform, err := detectPlatformFromURL(jobURL)
+	if err != nil {
+		return ApplyFromURLResult{}, err
+	}
+
+	// Begin attempt before any guard so every subsequent failure is captured.
+	// jobID and meta are unknown until the page loads — they are filled in below.
+	ac := newAttemptContext(userID, string(platform), "", jobURL, "", "", "applyFromURL")
+	beginAttempt(m.db, ac)
+
 	if m.submitWorkGuard != nil {
 		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
+			finishAttempt(m.db, ac, OutcomeFailed, "work_guard", "begin_work_failed", err.Error())
 			return ApplyFromURLResult{}, err
 		}
 		defer m.submitWorkGuard.EndWork(userID)
 	}
+
 	// Prevent concurrent AI Apply calls for the same user — a second call arriving
 	// while the first is still in-flight (browser open, LLMs running) would open a
 	// second browser session and apply twice to the same job.
 	m.applyMu.Lock()
 	if m.applyInProgress[userID] {
 		m.applyMu.Unlock()
+		finishAttempt(m.db, ac, OutcomeBlocked, "concurrency", "already_in_progress",
+			"another apply is already running for this user")
 		return ApplyFromURLResult{}, fmt.Errorf("an AI Apply is already in progress — please wait for it to finish")
 	}
 	m.applyInProgress[userID] = true
@@ -1091,23 +1106,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		m.applyMu.Unlock()
 	}()
 
-	platform, err := detectPlatformFromURL(jobURL)
-	if err != nil {
-		return ApplyFromURLResult{}, err
-	}
-
-	b, gs, err := m.setupBot(userID, platform, market)
-	if err != nil {
-		return ApplyFromURLResult{}, err
-	}
-
-	// Attempt context is created before browser opens so any early exit is captured.
-	// jobID is unknown until the page loads — it is set below after newJobID().
-	ac := newAttemptContext(userID, string(platform), "", jobURL, "", "", "applyFromURL")
-	beginAttempt(m.db, ac)
-
-	// Fast path: check our own DB before opening a browser.
-	// If we already have a record for this URL the user doesn't need to re-apply.
+	// Fast path: check our own DB before setting up the bot or opening a browser.
 	// Skip when force=true — let the DOM check (detectSeekPageApplied) be authoritative.
 	if !force {
 		var dbApplied int
@@ -1123,6 +1122,12 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 			finishAttempt(m.db, ac, OutcomeAlreadyApplied, "already_applied", "already_applied", "")
 			return ApplyFromURLResult{Company: company, Role: role}, ErrAlreadyApplied
 		}
+	}
+
+	b, gs, err := m.setupBot(userID, platform, market)
+	if err != nil {
+		finishAttempt(m.db, ac, OutcomeFailed, "setup", "bot_setup_failed", err.Error())
+		return ApplyFromURLResult{}, err
 	}
 
 	// Open browser and navigate — use persistent browsers for LinkedIn and Seek

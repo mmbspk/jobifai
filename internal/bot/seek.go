@@ -1505,25 +1505,8 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if isSubmit {
 			log.Info().Msgf("seek: submit clicked (%q), verifying confirmation", btnText)
 			if err := b.seekWaitSubmitConfirmation(page, lazy.job.ID, jobURL); err != nil {
-				// Retry once: consent checkbox or validation may have blocked submit.
-				log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: first submit unconfirmed, retrying consent+submit")
-				if b.seekEnsureConsentChecked(page) {
-					if _, _, refillErr := b.fillFormStep(ctx, page, lazy); refillErr != nil {
-						if isFormFillFatalLLM(refillErr) {
-							b.abortOnLLMFailure(refillErr)
-						}
-						return fmt.Errorf("seek apply: form fill aborted: %w", refillErr)
-					}
-				}
-				if retryBtn, retrySubmit := b.seekFindActionButton(page); retryBtn != nil && retrySubmit {
-					if rtxt, _ := retryBtn.Text(); retryBtn.Click(proto.InputMouseButtonLeft, 1) == nil {
-						log.Info().Str("btn", stripInvisible(strings.TrimSpace(rtxt))).Msg("seek: retry submit")
-						if err2 := b.seekWaitSubmitConfirmation(page, lazy.job.ID, jobURL); err2 == nil {
-							return nil
-						}
-					}
-				}
-				// Submit was clicked at least once but no confirmation received after retry.
+				log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).
+					Msg("seek: submit confirmation failed — outcome unknown, manual reconciliation required")
 				return fmt.Errorf("%w: %w", errSeekSubmitUnconfirmed, err)
 			}
 			return nil
