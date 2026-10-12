@@ -198,6 +198,8 @@ func main() {
 		log.Fatal().Err(err).Str("root", docStorageRoot).Msg("document blob storage")
 	}
 	docStore := documents.NewStore(database)
+	// Create resource service early so it can be wired into docSvc.Biller.
+	resourceSvc := resource.NewService(database, cfgStore, quotaSvc, quotaSvc.LoadDefaults)
 	docSvc := &documents.Service{
 		Store:     docStore,
 		Blobs:     docBlobs,
@@ -230,6 +232,7 @@ func main() {
 	retentionCoord := &retention.ActivityCoordinator{}
 	docSvc.WorkGuard = retentionCoord
 	docSvc.Metrics = &documents.ServiceMetrics{}
+	docSvc.Biller = resourceSvc
 	botMgr.SetDocuments(docSvc)
 	botMgr.SetSubmitWorkGuard(retentionCoord)
 	retentionSvc := &retention.Service{
@@ -339,7 +342,7 @@ func main() {
 		Documents: docSvc,
 		Retention: retentionSvc,
 		LLMReuseMetrics: llmReuseStore,
-		Resource: resource.NewService(database, cfgStore, quotaSvc, quotaSvc.LoadDefaults),
+		Resource: resourceSvc,
 		AppBaseURL:  appBaseURL,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
 			_, _, _, client, _ := buildLLMDeps(userID, userTypeChecker, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)

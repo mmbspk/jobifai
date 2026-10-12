@@ -3,10 +3,12 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/resume"
@@ -148,10 +150,24 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Preflight quota before launching Chrome (legacy endpoint — no persisted version).
+	opID := uuid.NewString()
+	if h.svc.Resource != nil {
+		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
+			writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+			return
+		}
+	}
 	pdf, err := h.svc.Renderer.RenderResume(r.Context(), profile, r.FormValue("style"), h.marketCSSFile(r), h.marketRenderOptions(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
+	}
+	if h.svc.Resource != nil {
+		if err := h.svc.Resource.RecordRender(r.Context(), userID, "document-render:"+opID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": fmt.Sprintf("render billing: %v", err)})
+			return
+		}
 	}
 	writePDF(w, "resume.pdf", pdf)
 }
@@ -218,10 +234,24 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Preflight quota before launching Chrome (AI tailored — no persisted version).
+	opID := uuid.NewString()
+	if h.svc.Resource != nil {
+		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
+			writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+			return
+		}
+	}
 	pdf, err := h.svc.Renderer.RenderResume(r.Context(), tailored, r.FormValue("style"), h.marketCSSFile(r), h.marketRenderOptions(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
+	}
+	if h.svc.Resource != nil {
+		if err := h.svc.Resource.RecordRender(r.Context(), userID, "document-render:"+opID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": fmt.Sprintf("render billing: %v", err)})
+			return
+		}
 	}
 	writePDF(w, "resume_tailored.pdf", pdf)
 }
@@ -341,10 +371,24 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Preflight quota before launching Chrome (AI cover letter — no persisted version).
+	opID := uuid.NewString()
+	if h.svc.Resource != nil {
+		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
+			writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+			return
+		}
+	}
 	pdf, err := h.svc.Renderer.RenderCoverLetter(r.Context(), body, r.FormValue("style"), h.marketCSSFile(r))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
+	}
+	if h.svc.Resource != nil {
+		if err := h.svc.Resource.RecordRender(r.Context(), userID, "document-render:"+opID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": fmt.Sprintf("render billing: %v", err)})
+			return
+		}
 	}
 	writePDF(w, "cover_letter.pdf", pdf)
 }

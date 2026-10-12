@@ -51,8 +51,17 @@ type ReviewDocumentAction struct {
 	Action            string  `json:"action"` // policy | reuse | render | tailor | generate | site | skip | hold | unknown
 	UsesAI            bool    `json:"uses_ai"`
 	CreditsEstimate   *int64  `json:"credits_estimate,omitempty"` // nil when unknown; 0 for reuse/render
+	// CreditBreakdown splits CreditsEstimate into AI and compute components.
+	// Present whenever CreditsEstimate is non-nil.
+	CreditBreakdown   *CreditBreakdown `json:"credit_breakdown,omitempty"`
 	HoldReason        string  `json:"hold_reason,omitempty"`
 	VersionID         string  `json:"version_id,omitempty"`
+}
+
+// CreditBreakdown splits a credit estimate into AI and compute (document render) components.
+type CreditBreakdown struct {
+	AI      int64 `json:"ai"`
+	Compute int64 `json:"compute"`
 }
 
 // ReviewDocumentPreflight is shown before/after prepare in Review.
@@ -127,7 +136,7 @@ var DefaultAITokenEstimates = map[string][2]int{
 	AITaskGenerateCover: {8000, 2048},
 }
 
-func actionForResolved(r ResolvedDocument, capsKnown bool, est ReviewCreditEstimator) ReviewDocumentAction {
+func actionForResolved(r ResolvedDocument, capsKnown bool, est ReviewCreditEstimator, renderCredits int64) ReviewDocumentAction {
 	a := ReviewDocumentAction{Kind: r.Kind, Mode: r.PolicyMode}
 	switch {
 	case r.Outcome == domain.DocumentOutcomeHoldReview:
@@ -137,16 +146,20 @@ func actionForResolved(r ResolvedDocument, capsKnown bool, est ReviewCreditEstim
 		a.Action = "site"
 		z := int64(0)
 		a.CreditsEstimate = &z
+		a.CreditBreakdown = &CreditBreakdown{}
 	case r.Skip || r.Outcome == domain.DocumentOutcomeSkipped:
 		a.Action = "skip"
 		z := int64(0)
 		a.CreditsEstimate = &z
+		a.CreditBreakdown = &CreditBreakdown{}
 	case r.NeedTailor:
 		a.Action = "tailor"
 		a.UsesAI = true
 		if capsKnown && est != nil {
 			if c, ok := est(AITaskTailorResume); ok {
-				a.CreditsEstimate = &c
+				total := c + renderCredits
+				a.CreditsEstimate = &total
+				a.CreditBreakdown = &CreditBreakdown{AI: c, Compute: renderCredits}
 			}
 		}
 	case r.NeedGenerateCover:
@@ -154,7 +167,9 @@ func actionForResolved(r ResolvedDocument, capsKnown bool, est ReviewCreditEstim
 		a.UsesAI = true
 		if capsKnown && est != nil {
 			if c, ok := est(AITaskGenerateCover); ok {
-				a.CreditsEstimate = &c
+				total := c + renderCredits
+				a.CreditsEstimate = &total
+				a.CreditBreakdown = &CreditBreakdown{AI: c, Compute: renderCredits}
 			}
 		}
 	case r.NeedDefaultUpload || r.VersionID != "":
@@ -162,6 +177,7 @@ func actionForResolved(r ResolvedDocument, capsKnown bool, est ReviewCreditEstim
 		a.VersionID = r.VersionID
 		z := int64(0)
 		a.CreditsEstimate = &z
+		a.CreditBreakdown = &CreditBreakdown{}
 	default:
 		a.Action = "unknown"
 	}
@@ -176,6 +192,7 @@ func BuildReviewPreflight(
 	pack ApplicationDocumentPack,
 	res ResolveResult,
 	est ReviewCreditEstimator,
+	renderCredits int64,
 ) ReviewDocumentPreflight {
 	capsKnown := caps.Detected || pack.Prepared
 	pf := ReviewDocumentPreflight{
@@ -185,8 +202,8 @@ func BuildReviewPreflight(
 		Capabilities:      caps,
 		CapabilitiesKnown: capsKnown,
 		Prepared:          pack.Prepared,
-		Resume:            actionForResolved(res.Resume, capsKnown, est),
-		Cover:             actionForResolved(res.Cover, capsKnown, est),
+		Resume:            actionForResolved(res.Resume, capsKnown, est, renderCredits),
+		Cover:             actionForResolved(res.Cover, capsKnown, est, renderCredits),
 		PackHoldReason:    pack.HoldReason,
 	}
 	if !capsKnown {
@@ -201,12 +218,14 @@ func BuildReviewPreflight(
 			pf.Resume.VersionID = pack.Resume.ContentVersionID
 			z := int64(0)
 			pf.Resume.CreditsEstimate = &z
+			pf.Resume.CreditBreakdown = &CreditBreakdown{}
 		}
 		if pack.Cover.Outcome != "" {
 			pf.Cover.Action = string(pack.Cover.Outcome)
 			pf.Cover.VersionID = pack.Cover.ContentVersionID
 			z := int64(0)
 			pf.Cover.CreditsEstimate = &z
+			pf.Cover.CreditBreakdown = &CreditBreakdown{}
 		}
 	}
 	return pf
@@ -244,6 +263,9 @@ type ResolveReviewInput struct {
 	DefaultResumeExists      bool
 	DefaultCoverExists       bool
 	CreditEstimator          ReviewCreditEstimator
+	// RenderCredits is the compute estimate for one new PDF render.
+	// 0 means metering is disabled or unavailable.
+	RenderCredits int64
 }
 
 // ResolveReviewPreflight resolves policies + selection for the review UI.
@@ -259,6 +281,6 @@ func ResolveReviewPreflight(in ResolveReviewInput) (ReviewDocumentPreflight, Res
 		DefaultResumeExists:      in.DefaultResumeExists,
 		DefaultCoverExists:       in.DefaultCoverExists,
 	})
-	pf := BuildReviewPreflight(in.Policies, in.Selection, in.Caps, in.Pack, res, in.CreditEstimator)
+	pf := BuildReviewPreflight(in.Policies, in.Selection, in.Caps, in.Pack, res, in.CreditEstimator, in.RenderCredits)
 	return pf, res
 }

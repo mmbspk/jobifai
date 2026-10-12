@@ -91,6 +91,31 @@ func (s *Service) BeforeResource(ctx context.Context, userID string, rt domain.R
 	return pricing, nil
 }
 
+// BeforeRender is a convenience preflight for exactly one document_render unit.
+// Returns nil when metering is disabled (no-op path). Returns quota.ErrExceeded
+// when the balance is insufficient.
+func (s *Service) BeforeRender(ctx context.Context, userID string) error {
+	_, err := s.BeforeResource(ctx, userID, domain.ResourceTypeDocumentRender)
+	if errors.Is(err, ErrMeteringDisabled) {
+		return nil
+	}
+	return err
+}
+
+// RecordRender atomically commits one document_render billing event.
+// idempotencyKey must be "document-render:<versionID_or_operationID>" to prevent
+// double-billing on retries. Duplicate keys are silently ignored (returns nil).
+func (s *Service) RecordRender(ctx context.Context, userID, idempotencyKey string) error {
+	return s.RecordOnce(ctx, RecordInput{
+		UserID:         userID,
+		ResourceType:   domain.ResourceTypeDocumentRender,
+		IdempotencyKey: idempotencyKey,
+		Quantity:       1,
+		Unit:           "render",
+		Success:        true,
+	})
+}
+
 // RecordInput describes a resource consumption event to be billed atomically.
 // Pricing is computed internally from the current metering configuration —
 // do NOT supply cost or credit fields.

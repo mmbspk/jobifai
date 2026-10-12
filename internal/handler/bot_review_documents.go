@@ -111,8 +111,22 @@ func (h *BotHandlers) reviewResolveContext(r *http.Request, userID string, resum
 		DefaultResumeExists:      hasResumeDefault,
 		DefaultCoverExists:       hasCoverDefault,
 		CreditEstimator:          h.reviewCreditEstimator(r, userID),
+		RenderCredits:            h.reviewRenderCredits(),
 	}
 	return in, opts, nil
+}
+
+// reviewRenderCredits returns the configured credit cost for one new PDF render,
+// or 0 when the resource service is unavailable.
+func (h *BotHandlers) reviewRenderCredits() int64 {
+	if h.svc.Resource == nil {
+		return 0
+	}
+	credits, err := h.svc.Resource.EstimateRenderCredits()
+	if err != nil {
+		return 0
+	}
+	return credits
 }
 
 // GET /api/bot/review/{job_id}/documents

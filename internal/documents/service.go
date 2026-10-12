@@ -31,6 +31,18 @@ type UserWorkGuard interface {
 	EndWork(userID string)
 }
 
+// RenderBiller meters a new PDF render against the user's shared credit balance.
+// Implemented by resource.Service — kept minimal to simplify testing.
+type RenderBiller interface {
+	// BeforeRender preflight-checks one document_render unit.
+	// Returns nil when metering is disabled. Returns quota.ErrExceeded on exhaustion.
+	BeforeRender(ctx context.Context, userID string) error
+	// RecordRender atomically commits one document_render billing event.
+	// idempotencyKey must be "document-render:<versionID_or_operationID>".
+	// Duplicate keys are silently ignored.
+	RecordRender(ctx context.Context, userID, idempotencyKey string) error
+}
+
 type Service struct {
 	Store            *Store
 	Blobs            BlobStore
@@ -41,6 +53,8 @@ type Service struct {
 	DefaultsMeta     func(userID string) (DefaultsMeta, error)
 	SaveDefaultsMeta func(userID string, m DefaultsMeta) error
 	WorkGuard        UserWorkGuard
+	// Biller meters new PDF renders. Nil disables billing (dev/test with no resource service).
+	Biller RenderBiller
 	// Metrics accumulates reuse/reconstruction counters.  Nil disables tracking.
 	Metrics *ServiceMetrics
 }
@@ -485,29 +499,68 @@ func (s *Service) ensureDocument(ctx context.Context, userID, documentID, kind, 
 }
 
 func (s *Service) renderAndPersistPDF(ctx context.Context, userID, versionID string, profile *domain.ResumeProfile, styleName, cssSnap string, opts *resume.RenderOptions) ([]byte, error) {
+	// 1. Preflight quota before launching Chrome.
+	if s.Biller != nil {
+		if err := s.Biller.BeforeRender(ctx, userID); err != nil {
+			return nil, err
+		}
+	}
 	cssOverride, cleanup, err := writeTempCSS(cssSnap)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
+	// 2. Render.
 	pdf, err := s.Renderer.RenderResume(ctx, profile, styleName, cssOverride, opts)
 	if err != nil {
 		return nil, err
 	}
-	return pdf, s.persistArtifact(ctx, userID, versionID, pdf, cssSnap)
+	// 3. Persist artifact.
+	if err := s.persistArtifact(ctx, userID, versionID, pdf, cssSnap); err != nil {
+		return nil, err
+	}
+	// 4. Commit billing. Fail the operation (return error) if accounting cannot persist,
+	//    so the caller receives no "success" for an unaccounted render.
+	if s.Biller != nil {
+		if err := s.Biller.RecordRender(ctx, userID, renderIdempotencyKey(versionID)); err != nil {
+			return nil, fmt.Errorf("document render billing: %w", err)
+		}
+	}
+	return pdf, nil
 }
 
 func (s *Service) renderCoverPDF(ctx context.Context, userID, versionID, body, styleName, cssSnap string) ([]byte, error) {
+	// 1. Preflight quota before launching Chrome.
+	if s.Biller != nil {
+		if err := s.Biller.BeforeRender(ctx, userID); err != nil {
+			return nil, err
+		}
+	}
 	cssOverride, cleanup, err := writeTempCSS(cssSnap)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
+	// 2. Render.
 	pdf, err := s.Renderer.RenderCoverLetter(ctx, body, styleName, cssOverride)
 	if err != nil {
 		return nil, err
 	}
-	return pdf, s.persistArtifact(ctx, userID, versionID, pdf, cssSnap)
+	// 3. Persist artifact.
+	if err := s.persistArtifact(ctx, userID, versionID, pdf, cssSnap); err != nil {
+		return nil, err
+	}
+	// 4. Commit billing.
+	if s.Biller != nil {
+		if err := s.Biller.RecordRender(ctx, userID, renderIdempotencyKey(versionID)); err != nil {
+			return nil, fmt.Errorf("document render billing: %w", err)
+		}
+	}
+	return pdf, nil
+}
+
+func renderIdempotencyKey(versionID string) string {
+	return "document-render:" + versionID
 }
 
 func (s *Service) renderResumeWithSnapshot(ctx context.Context, profile *domain.ResumeProfile, style, cssSnap string, opts *resume.RenderOptions) ([]byte, error) {
