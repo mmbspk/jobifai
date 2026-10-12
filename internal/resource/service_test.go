@@ -505,8 +505,9 @@ func TestRecordOnce_StrictAffordabilityConcurrentKeys(t *testing.T) {
 	assert.Equal(t, int64(2), row.TrialRemainingCredits, "only 3 credits burned from 5-credit balance")
 }
 
-// TestRecordOnce_SubscriberGraceStillWorks verifies the subscriber grace window
-// allows the pre-call BeforeCreditUse to pass even when period is exhausted (Finding #5).
+// TestRecordOnce_SubscriberGraceStillWorks verifies that an exhausted subscriber inside a
+// grace session can RecordOnce (strict commit), and that EndSubscriberSession settles the
+// correct OverageDebtCredits (Blocker 3 regression).
 func TestRecordOnce_SubscriberGraceStillWorks(t *testing.T) {
 	t.Parallel()
 	db := testDB(t)
@@ -515,7 +516,7 @@ func TestRecordOnce_SubscriberGraceStillWorks(t *testing.T) {
 		EnforcementDefault: true, CreditsPerUSD: 1000, ServiceMarkup: 0.5,
 		StarterCreditsMonthly: 10, SubscriberGraceCredits: 20,
 	}))
-	enableResourceMetering(t, cfg)
+	enableResourceMetering(t, cfg) // render = 3 credits
 	userID := "grace-" + t.Name()
 	_, err := db.Exec(
 		`INSERT INTO users (id, email, password_hash, display_name, is_admin, created_at) VALUES (?, ?, 'x', 'G', 0, CURRENT_TIMESTAMP)`,
@@ -529,14 +530,33 @@ func TestRecordOnce_SubscriberGraceStillWorks(t *testing.T) {
 		Plan: domain.QuotaPlanStarter, Status: "active",
 		AllowanceCredits: 10, PeriodStartUnix: 1700000000, PeriodEndUnix: 1702592000,
 	}))
-	// Exhaust the period allowance.
+	// (1) Active paid subscriber, (2) exhaust ordinary allowance.
 	require.NoError(t, quotaSvc.RecordLLMBurn(context.Background(), userID, 10))
-	// Open grace session.
+	// (3) Open grace session (sufficient: 20 credits, render costs 3).
 	quotaSvc.BeginSubscriberSession(userID)
 
 	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
-	// Before should succeed within the grace window.
-	assert.NoError(t, svc.Before(context.Background(), userID, 3), "grace session must allow Before")
+
+	// (4) RecordOnce must succeed within the grace window.
+	require.NoError(t, svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID:         userID,
+		ResourceType:   domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "grace:render",
+		Success:        true,
+	}), "RecordOnce must succeed when grace session is active and sufficient")
+
+	// (5) Accounting: row shows overage (PeriodUsedCredits pushed past allowance by deductPaid).
+	row, err := quotaSvc.RowForUser(userID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(13), row.PeriodUsedCredits, "3 grace credits pushed past 10-credit allowance")
+
+	// Settle grace debt.
+	quotaSvc.EndSubscriberSession(userID)
+
+	// (5) EndSubscriberSession must record OverageDebtCredits = 3 (the grace overage).
+	row, err = quotaSvc.RowForUser(userID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), row.OverageDebtCredits, "EndSubscriberSession must settle 3 grace credits as debt")
 }
 
 // TestRecordOnce_ConcurrentSameKey verifies exactly one burn under concurrent retries.
@@ -645,4 +665,245 @@ func TestRecordOnce_EnforcementDisabled(t *testing.T) {
 	require.NoError(t, err)
 	// No enforcement → no deduction
 	assert.Equal(t, int64(500), row.TrialRemainingCredits)
+}
+
+// ledgerRow holds the three cost/credit columns from resource_usage_events.
+type ledgerRow struct{ raw, loaded, credits int64 }
+
+// readLedgerRow reads raw_cost_usd_micro, loaded_cost_usd_micro, and credits_burned for
+// the event identified by idempotency_key.
+func readLedgerRow(t *testing.T, db *sql.DB, idemKey string) ledgerRow {
+	t.Helper()
+	var r ledgerRow
+	err := db.QueryRow(
+		`SELECT raw_cost_usd_micro, loaded_cost_usd_micro, credits_burned FROM resource_usage_events WHERE idempotency_key = ?`,
+		idemKey,
+	).Scan(&r.raw, &r.loaded, &r.credits)
+	require.NoError(t, err, "event not found for idem key %q", idemKey)
+	return r
+}
+
+// TestRecordOnce_LoadedCostLedgerNormalSuccess verifies all three cost columns for a normal
+// successful render: raw=2000, loaded=3000 (×1.5 markup), credits=3 (Blocker 2 regression).
+func TestRecordOnce_LoadedCostLedgerNormalSuccess(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	quotaSvc, userID := testQuotaService(t, db)
+	cfg := config.NewStore(db)
+	enableResourceMetering(t, cfg)
+	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
+
+	require.NoError(t, svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID: userID, ResourceType: domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "cols:success", Success: true,
+	}))
+	r := readLedgerRow(t, db, "cols:success")
+	assert.Equal(t, int64(2_000), r.raw, "raw_cost_usd_micro must match config")
+	assert.Equal(t, int64(3_000), r.loaded, "loaded_cost_usd_micro = raw × 1.5 markup")
+	assert.Equal(t, int64(3), r.credits, "credits_burned = loaded × 1000 c/$ / 1_000_000")
+}
+
+// TestRecordOnce_LoadedCostLedgerAdminPath verifies that admin events store the raw cost
+// for audit but loaded_cost_usd_micro=0 and credits_burned=0 (no economic transaction).
+func TestRecordOnce_LoadedCostLedgerAdminPath(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	cfg := config.NewStore(db)
+	require.NoError(t, cfg.Set(domain.SystemUserID, "quota_defaults", domain.QuotaDefaults{
+		EnforcementDefault: true, CreditsPerUSD: 1000, ServiceMarkup: 0.5,
+		TrialCredits: 500, TrialDays: 7,
+	}))
+	enableResourceMetering(t, cfg)
+	adminID := "admin-cols-" + t.Name()
+	_, err := db.Exec(
+		`INSERT INTO users (id, email, password_hash, display_name, is_admin, created_at) VALUES (?, ?, 'x', 'A', 1, CURRENT_TIMESTAMP)`,
+		adminID, adminID+"@test.com",
+	)
+	require.NoError(t, err)
+	userStore := auth.NewUserStore(db)
+	quotaSvc := quota.NewService(db, cfg, userStore)
+	require.NoError(t, quotaSvc.InitTrial(context.Background(), adminID))
+
+	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
+	require.NoError(t, svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID: adminID, ResourceType: domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "cols:admin", Success: true,
+	}))
+	r := readLedgerRow(t, db, "cols:admin")
+	assert.Equal(t, int64(2_000), r.raw, "raw_cost_usd_micro stored for audit even for admin")
+	assert.Equal(t, int64(0), r.loaded, "loaded_cost_usd_micro=0: no economic transaction for admin")
+	assert.Equal(t, int64(0), r.credits, "credits_burned=0 for admin")
+}
+
+// TestRecordOnce_LoadedCostLedgerEnforcementDisabled verifies that enforcement-disabled events
+// store raw cost for audit but loaded=0 and credits=0.
+func TestRecordOnce_LoadedCostLedgerEnforcementDisabled(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	cfg := config.NewStore(db)
+	require.NoError(t, cfg.Set(domain.SystemUserID, "quota_defaults", domain.QuotaDefaults{
+		EnforcementDefault: false, CreditsPerUSD: 1000, ServiceMarkup: 0.5,
+		TrialCredits: 500, TrialDays: 7,
+	}))
+	enableResourceMetering(t, cfg)
+	userID := "noenforce-cols-" + t.Name()
+	_, err := db.Exec(
+		`INSERT INTO users (id, email, password_hash, display_name, is_admin, created_at) VALUES (?, ?, 'x', 'N', 0, CURRENT_TIMESTAMP)`,
+		userID, userID+"@test.com",
+	)
+	require.NoError(t, err)
+	quotaSvc := quota.NewService(db, cfg, nil)
+	require.NoError(t, quotaSvc.InitTrial(context.Background(), userID))
+
+	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
+	require.NoError(t, svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID: userID, ResourceType: domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "cols:noenforce", Success: true,
+	}))
+	r := readLedgerRow(t, db, "cols:noenforce")
+	assert.Equal(t, int64(2_000), r.raw, "raw stored for audit even when enforcement disabled")
+	assert.Equal(t, int64(0), r.loaded, "loaded=0 when no actual burn occurred")
+	assert.Equal(t, int64(0), r.credits, "credits=0 when enforcement is disabled")
+}
+
+// TestRecordOnce_LoadedCostLedgerFailedOp verifies failed operations store raw for audit but
+// loaded=0 and credits=0.
+func TestRecordOnce_LoadedCostLedgerFailedOp(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	quotaSvc, userID := testQuotaService(t, db)
+	cfg := config.NewStore(db)
+	enableResourceMetering(t, cfg)
+	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
+
+	require.NoError(t, svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID: userID, ResourceType: domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "cols:failed", ErrorCode: "render_failed", Success: false,
+	}))
+	r := readLedgerRow(t, db, "cols:failed")
+	assert.Equal(t, int64(2_000), r.raw, "raw stored for audit even on failure")
+	assert.Equal(t, int64(0), r.loaded, "loaded=0 for failed op (no economic transaction)")
+	assert.Equal(t, int64(0), r.credits, "credits=0 for failed op")
+}
+
+// TestRecordOnce_GraceExhaustedFails verifies that RecordOnce returns ErrExceeded when the
+// grace allowance is insufficient for the requested render cost (Blocker 3 regression, case 6).
+func TestRecordOnce_GraceExhaustedFails(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	cfg := config.NewStore(db)
+	// Grace=2 credits, render costs 3 → grace is insufficient.
+	require.NoError(t, cfg.Set(domain.SystemUserID, "quota_defaults", domain.QuotaDefaults{
+		EnforcementDefault: true, CreditsPerUSD: 1000, ServiceMarkup: 0.5,
+		StarterCreditsMonthly: 10, SubscriberGraceCredits: 2,
+	}))
+	enableResourceMetering(t, cfg) // render = 3 credits
+	userID := "grace-exceeded-" + t.Name()
+	_, err := db.Exec(
+		`INSERT INTO users (id, email, password_hash, display_name, is_admin, created_at) VALUES (?, ?, 'x', 'G', 0, CURRENT_TIMESTAMP)`,
+		userID, userID+"@test.com",
+	)
+	require.NoError(t, err)
+	quotaSvc := quota.NewService(db, cfg, nil)
+	require.NoError(t, quotaSvc.InitTrial(context.Background(), userID))
+	require.NoError(t, quotaSvc.ApplyStripeSubscription(quota.StripeSubscriptionUpdate{
+		UserID: userID, EventID: "ev_g_exceed", EventCreatedUnix: 100,
+		Plan: domain.QuotaPlanStarter, Status: "active",
+		AllowanceCredits: 10, PeriodStartUnix: 1700000000, PeriodEndUnix: 1702592000,
+	}))
+	require.NoError(t, quotaSvc.RecordLLMBurn(context.Background(), userID, 10))
+	quotaSvc.BeginSubscriberSession(userID)
+	defer quotaSvc.EndSubscriberSession(userID)
+
+	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
+	err = svc.RecordOnce(context.Background(), resource.RecordInput{
+		UserID: userID, ResourceType: domain.ResourceTypeDocumentRender,
+		IdempotencyKey: "grace:exceeded", Success: true,
+	})
+	require.Error(t, err, "3-credit render against 2-credit grace must be rejected")
+	assert.True(t, errors.Is(err, quota.ErrExceeded), "must be quota.ErrExceeded")
+
+	// Balance unchanged — no partial deduction.
+	row, err := quotaSvc.RowForUser(userID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(10), row.PeriodUsedCredits, "no deduction on grace-exceeded rejection")
+}
+
+// TestRecordOnce_ConcurrentAIAndResource verifies that a concurrent LLM-path burn and a
+// resource-path burn against the same near-exhausted balance cannot together overspend.
+// Combined cost (3+3=6) exceeds balance (5): exactly one must commit (Blocker 4 regression).
+func TestRecordOnce_ConcurrentAIAndResource(t *testing.T) {
+	t.Parallel()
+	db := testDB(t)
+	cfg := config.NewStore(db)
+	require.NoError(t, cfg.Set(domain.SystemUserID, "quota_defaults", domain.QuotaDefaults{
+		EnforcementDefault: true, CreditsPerUSD: 1000, ServiceMarkup: 0.5,
+		TrialCredits: 5, TrialDays: 7,
+	}))
+	// render = 3 credits; combined 3+3=6 > 5
+	require.NoError(t, cfg.Set(domain.SystemUserID, "resource_metering_defaults", domain.ResourceMeteringDefaults{
+		Enabled: true,
+		Render:  domain.RenderMeteringConfig{Enabled: true, RawCostUSDMicroPerRender: 2_000},
+	}))
+	userID := "conc-ai-resource-" + t.Name()
+	_, err := db.Exec(
+		`INSERT INTO users (id, email, password_hash, display_name, is_admin, created_at) VALUES (?, ?, 'x', 'C', 0, CURRENT_TIMESTAMP)`,
+		userID, userID+"@test.com",
+	)
+	require.NoError(t, err)
+	quotaSvc := quota.NewService(db, cfg, nil)
+	require.NoError(t, quotaSvc.InitTrial(context.Background(), userID))
+
+	svc := resource.NewService(db, cfg, quotaSvc, quotaSvc.LoadDefaults)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+
+	// Goroutine 0: resource billing path (uses PrepareTransactionalBurnStrict via RecordOnce).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		errs[0] = svc.RecordOnce(context.Background(), resource.RecordInput{
+			UserID: userID, ResourceType: domain.ResourceTypeDocumentRender,
+			IdempotencyKey: "conc:resource", Success: true,
+		})
+	}()
+
+	// Goroutine 1: LLM billing path simulation — PrepareTransactionalBurnStrict + manual TX,
+	// mirroring what internal/usage/ledger.go does (prepare outside TX, commit inside TX).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		prep, prepErr := quotaSvc.PrepareTransactionalBurnStrict(userID, 3)
+		if prepErr != nil {
+			errs[1] = prepErr
+			return
+		}
+		tx, txErr := db.BeginTx(context.Background(), nil)
+		if txErr != nil {
+			errs[1] = txErr
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, commitErr := quotaSvc.CommitTransactionalBurn(tx, userID, 3, prep); commitErr != nil {
+			errs[1] = commitErr
+			return
+		}
+		errs[1] = tx.Commit()
+	}()
+
+	wg.Wait()
+
+	successes := 0
+	for _, e := range errs {
+		if e == nil {
+			successes++
+		}
+	}
+	assert.Equal(t, 1, successes, "exactly one of AI and resource burns must commit from 5-credit balance")
+
+	row, rowErr := quotaSvc.RowForUser(userID)
+	require.NoError(t, rowErr)
+	assert.Equal(t, int64(2), row.TrialRemainingCredits, "3 credits burned, 2 remaining")
+	assert.GreaterOrEqual(t, row.TrialRemainingCredits, int64(0), "balance must never go negative")
 }

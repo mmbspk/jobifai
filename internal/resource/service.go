@@ -159,9 +159,8 @@ func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 		Quantity:        in.Quantity,
 		Unit:            in.Unit,
 		DurationMS:      in.DurationMS,
-		RawCostUSDMicro: pricing.RawCostUSDMicro,
-		// LoadedCostUSDMicro and CreditsBurned are set by RecordResourceBillingTx
-		// using the actual burn amount returned by CommitTransactionalBurn.
+		RawCostUSDMicro:    pricing.RawCostUSDMicro,
+		LoadedCostUSDMicro: pricing.LoadedCostUSDMicro,
 		Success:      in.Success,
 		ErrorCode:    in.ErrorCode,
 		MetadataJSON: in.MetadataJSON,

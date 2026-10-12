@@ -348,10 +348,17 @@ func (s *Service) deductPaid(row *domain.UserQuotaRow, burn int64) {
 		row.PeriodUsedCredits += monthlyLeft
 		burn -= monthlyLeft
 	}
-	row.TopUpCreditsRemaining -= burn
-	if row.TopUpCreditsRemaining < 0 {
+	if row.TopUpCreditsRemaining >= burn {
+		row.TopUpCreditsRemaining -= burn
+		return
+	}
+	if row.TopUpCreditsRemaining > 0 {
+		burn -= row.TopUpCreditsRemaining
 		row.TopUpCreditsRemaining = 0
 	}
+	// Grace overage: record in PeriodUsedCredits so EndSubscriberSession
+	// can detect and settle the debt into OverageDebtCredits.
+	row.PeriodUsedCredits += burn
 }
 
 // RecordLLMBurn deducts a pre-calculated credit amount (from usage ledger).

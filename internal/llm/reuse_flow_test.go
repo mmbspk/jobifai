@@ -31,9 +31,9 @@ func (q *reuseQuota) RecordLLMBurn(_ context.Context, _ string, credits int64) e
 func (q *reuseQuota) PrepareTransactionalBurn(_ string, _ int64) (quota.BurnPrepare, error) {
 	return quota.BurnPrepare{}, nil
 }
-func (q *reuseQuota) CommitTransactionalBurn(_ *sql.Tx, _ string, credits int64, _ quota.BurnPrepare) error {
+func (q *reuseQuota) CommitTransactionalBurn(_ *sql.Tx, _ string, credits int64, _ quota.BurnPrepare) (int64, error) {
 	q.credits.Add(credits)
-	return nil
+	return credits, nil
 }
 
 type reuseFixture struct {

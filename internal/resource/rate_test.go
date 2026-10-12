@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/quota"
 )
 
 // helper to build a fully-enabled ResourceMeteringDefaults with one render config.
@@ -166,6 +167,53 @@ func TestEstimateBrowserIncrementCredits_ExactArithmetic(t *testing.T) {
 	p := PriceResource(res, q1000, domain.ResourceTypeBrowserAutomation)
 	assert.Equal(t, int64(166), p.RawCostUSDMicro,
 		"F2: integer truncation gives 20000×30/3600=166, not rounded 167")
+}
+
+// TestPriceResource_CreditsParityWithAIBilling proves that for the same loaded micro-USD,
+// resource billing produces the same credit count as quota.CreditsFromLoadedUSD (the AI path).
+// This verifies the unified conversion model — one rounding rule for all billing.
+func TestPriceResource_CreditsParityWithAIBilling(t *testing.T) {
+	qd := domain.QuotaDefaults{ServiceMarkup: 0.5, CreditsPerUSD: 1000}
+	cases := []struct {
+		name    string
+		rawMicro int64
+	}{
+		{"exact 3 credits", 2_000},       // loaded=3000 → credits=3
+		{"minimum 1 credit", 166},        // loaded=249 → credits=0 → min 1
+		{"large render", 10_000},         // loaded=15_000 → credits=15
+		{"awkward: 3.3 credits", 2_200},  // loaded=3300 → credits=3 (truncate, not ceil)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := enabledRender(tc.rawMicro)
+			p := PriceResource(res, qd, domain.ResourceTypeDocumentRender)
+			// Compute loaded micro-USD the same way pricingFromRaw does.
+			markup := qd.ServiceMarkup
+			loadedMicro := int64(float64(tc.rawMicro) / 1_000_000 * (1 + markup) * 1_000_000)
+			if loadedMicro <= 0 {
+				loadedMicro = tc.rawMicro
+			}
+			want := quota.CreditsFromLoadedUSD(qd, loadedMicro)
+			assert.Equal(t, want, p.Credits,
+				"resource credits must equal quota.CreditsFromLoadedUSD for same loaded cost")
+		})
+	}
+}
+
+// TestPriceResource_AwkwardRateCreditsMatchAI proves a non-round rate doesn't diverge
+// from the AI-billing conversion path (truncation in both, no separate rounding rules).
+func TestPriceResource_AwkwardRateCreditsMatchAI(t *testing.T) {
+	qd := domain.QuotaDefaults{ServiceMarkup: 0.5, CreditsPerUSD: 1000}
+	// 2201 micro-USD raw × 1.5 = 3301.5 loaded → loadedMicro=3301 (float64 truncation)
+	// CreditsFromLoadedUSD(3301): loadedUSD=0.003301, credits=int64(0.003301*1000)=3
+	rawMicro := int64(2_201)
+	res := enabledRender(rawMicro)
+	p := PriceResource(res, qd, domain.ResourceTypeDocumentRender)
+
+	loadedMicro := int64(float64(rawMicro) / 1_000_000 * 1.5 * 1_000_000)
+	want := quota.CreditsFromLoadedUSD(qd, loadedMicro)
+	assert.Equal(t, want, p.Credits, "awkward rate must use same truncation as AI billing")
+	assert.Equal(t, loadedMicro, p.LoadedCostUSDMicro, "loaded micro must match parity derivation")
 }
 
 // TestEstimateBrowserIncrementCredits_AwkwardRate proves that an uncommon rate that is not

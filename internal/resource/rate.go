@@ -1,9 +1,8 @@
 package resource
 
 import (
-	"math"
-
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/quota"
 )
 
 // ResourcePricing holds the computed cost for one resource event.
@@ -63,15 +62,17 @@ func pricingFromRaw(rawMicro int64, qd domain.QuotaDefaults) ResourcePricing {
 	if markup < 0 {
 		markup = 0
 	}
-	loadedMicro := int64(math.Round(float64(rawMicro) * (1 + markup)))
+	// Mirror BurnCreditsFromRawMicro (minus PerCallFeeUSD, which is AI-call-specific).
+	// float64 throughout matches the AI-billing pipeline; CreditsFromLoadedUSD is shared.
+	loadedUSD := float64(rawMicro) / 1_000_000 * (1 + markup)
+	if loadedUSD <= 0 {
+		loadedUSD = float64(rawMicro) / 1_000_000
+	}
+	loadedMicro := int64(loadedUSD * 1_000_000)
 	if loadedMicro <= 0 {
 		loadedMicro = rawMicro
 	}
-	// credits = ceil(loadedMicro × creditsPerUSD / 1_000_000); minimum 1.
-	credits := int64(math.Ceil(float64(loadedMicro) * qd.CreditsPerUSD / 1_000_000))
-	if credits < 1 {
-		credits = 1
-	}
+	credits := quota.CreditsFromLoadedUSD(qd, loadedMicro)
 	return ResourcePricing{
 		RawCostUSDMicro:    rawMicro,
 		LoadedCostUSDMicro: loadedMicro,
