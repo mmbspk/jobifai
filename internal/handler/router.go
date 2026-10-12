@@ -240,6 +240,8 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/api/usage/totals", usage.Totals)
 			r.Get("/api/admin/quota/defaults", adminH.QuotaDefaultsGet)
 			r.Put("/api/admin/quota/defaults", adminH.QuotaDefaultsSet)
+			r.Get("/api/admin/resource-metering/defaults", adminH.ResourceMeteringDefaultsGet)
+			r.Put("/api/admin/resource-metering/defaults", adminH.ResourceMeteringDefaultsSet)
 			r.Get("/api/admin/retention/defaults", adminH.RetentionDefaultsGet)
 			r.Put("/api/admin/retention/defaults", adminH.RetentionDefaultsSet)
 			r.Get("/api/admin/retention/audit", adminH.RetentionAuditList)

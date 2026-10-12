@@ -67,6 +67,9 @@ type Services struct {
 	UsageStore UsageStore
 	// Quota enforces cost-based trial and subscription AI limits (nil disables enforcement wiring).
 	Quota QuotaService
+	// Resource meters non-AI resource consumption (browser automation, PDF rendering) against
+	// the same shared credit balance. Nil disables resource metering endpoints.
+	Resource ResourceService
 	// StartedAt is set when the HTTP server boots (admin overview uptime).
 	StartedAt time.Time
 	// HTTPClient is used for outbound HTTP requests (e.g. location suggestions).
@@ -208,6 +211,14 @@ type QuotaService interface {
 	ApplyStripeSubscription(in quota.StripeSubscriptionUpdate) error
 	RepairReconcileAllowance(userID, plan string) error
 	GrantTopUpOnce(userID, eventID, checkoutSessionID string, credits int64) error
+}
+
+// ResourceService meters non-AI resource consumption against the shared credit balance.
+type ResourceService interface {
+	LoadDefaults() domain.ResourceMeteringDefaults
+	SaveDefaults(d domain.ResourceMeteringDefaults) error
+	EstimateRenderCredits() int64
+	EstimateBrowserIncrementCredits() int64
 }
 
 // UsageStore provides per-user LLM token usage snapshots.

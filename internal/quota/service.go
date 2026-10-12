@@ -210,6 +210,62 @@ func (s *Service) Status(_ context.Context, userID string) (domain.QuotaStatus, 
 	return st, nil
 }
 
+// BeforeCreditUse checks whether a generic credit deduction of the given amount may proceed.
+// It enforces the same trial / subscription / balance rules as BeforeLLM but accepts
+// pre-computed credits directly, making it suitable for non-LLM resource gates.
+func (s *Service) BeforeCreditUse(_ context.Context, userID string, credits int64) error {
+	if credits <= 0 {
+		return nil
+	}
+	if s.isAdmin(userID) {
+		return nil
+	}
+	row, err := s.getOrCreateRow(userID)
+	if err != nil {
+		return err
+	}
+	if !row.EnforcementEnabled {
+		return nil
+	}
+	if row.Plan == domain.QuotaPlanTrial {
+		if s.trialExpired(row) {
+			return &ExceededError{Code: "trial_exhausted", Scope: "trial"}
+		}
+		if row.TrialRemainingCredits < credits {
+			return &ExceededError{Code: "trial_exhausted", Scope: "trial"}
+		}
+		return nil
+	}
+	if row.Plan == domain.QuotaPlanExpired {
+		return &ExceededError{Code: "subscription_expired", Scope: "period"}
+	}
+	if row.Plan == domain.QuotaPlanStarter || row.Plan == domain.QuotaPlanPro {
+		if !SubscriptionAllowsUsage(row) {
+			return &ExceededError{Code: "subscription_inactive", Scope: "period"}
+		}
+	}
+	if s.totalRemaining(row) >= credits {
+		return nil
+	}
+	s.mu.Lock()
+	sess, inGrace := s.sessions[userID]
+	s.mu.Unlock()
+	if !inGrace {
+		return &ExceededError{Code: "period_exhausted", Scope: "period"}
+	}
+	needOver := credits - s.totalRemaining(row)
+	if needOver < 0 {
+		needOver = 0
+	}
+	if sess.usedCredits+needOver > sess.allowedCredits {
+		return &ExceededError{Code: "grace_exceeded", Scope: "period"}
+	}
+	s.mu.Lock()
+	sess.usedCredits += needOver
+	s.mu.Unlock()
+	return nil
+}
+
 // EstimateLLMCredits returns pre-call burn credits for a model using the same rules as BeforeLLM.
 func (s *Service) EstimateLLMCredits(model string, estInput, estOutput int) int64 {
 	def := loadDefaults(s.cfg)
