@@ -286,6 +286,16 @@ func isSeekApplyBlockedError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "seek apply blocked:")
 }
 
+// errSeekSubmitUnconfirmed is returned by seekApply when Submit was clicked but
+// the confirmation screen or Applied indicator never appeared. The application
+// outcome is genuinely unknown and must be recorded as submission_unknown.
+var errSeekSubmitUnconfirmed = fmt.Errorf("seek: submit clicked but confirmation not received")
+
+// isSeekSubmitUnconfirmedError reports whether seekApply returned an unconfirmed-submit error.
+func isSeekSubmitUnconfirmedError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "seek: submit clicked but confirmation not received")
+}
+
 // isSeekSessionExpiredError reports session / login failures during Quick Apply.
 func isSeekSessionExpiredError(err error) bool {
 	if err == nil || isSeekApplyBlockedError(err) {
@@ -1246,10 +1256,11 @@ func (b *Bot) routeSeekToTopMatches(ctx context.Context, job seekJob, score int,
 
 func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job seekJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) seekSubmitOutcome {
 	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformSeek), job.ID, job.URL, job.Title, job.Company, "automated_seek")
+	beginAttempt(b.cfg.DB, ac)
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
 		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: document work guard")
-		recordAttempt(b.cfg.DB, ac, OutcomeFailed, "document_work_guard", "begin_work_failed", err.Error())
+		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "document_work_guard", "begin_work_failed", err.Error())
 		return seekSubmitCannotApply
 	}
 	defer release()
@@ -1259,24 +1270,30 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	if !job.EasyApply {
 		log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
 		b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
-		recordAttempt(b.cfg.DB, ac, OutcomeSkipped, "routing", "not_quick_apply", "routed to Top Matches")
+		finishAttempt(b.cfg.DB, ac, OutcomeSkipped, "routing", "not_quick_apply", "routed to Top Matches")
 		return seekSubmitTopMatches
 	}
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
 		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: open job page")
 		b.recordSeekSkipped(job, "seek apply: open job page: "+err.Error(), score, reasoning, halalVerdict)
-		recordAttempt(b.cfg.DB, ac, OutcomeFailed, "open_page", "browser_error", err.Error())
+		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "open_page", "browser_error", err.Error())
 		return seekSubmitCannotApply
 	}
 	defer func() { _ = jobPage.Close() }()
 
 	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
 		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: apply failed")
+		if isSeekSubmitUnconfirmedError(err) {
+			log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: submit clicked but outcome unconfirmed — recording submission_unknown")
+			b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
+			finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed", err.Error())
+			return seekSubmitCannotApply
+		}
 		if isSeekApplyBlockedError(err) {
 			log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: not automatable — routing to Top Matches")
 			b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
-			recordAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "ats_blocked", err.Error())
+			finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "ats_blocked", err.Error())
 			return seekSubmitTopMatches
 		}
 		if isSeekSessionExpiredError(err) {
@@ -1285,13 +1302,13 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 			log.Error().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
 		}
 		b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
-		recordAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", err.Error())
+		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", err.Error())
 		return seekSubmitCannotApply
 	}
 	resume, cover := lazy.get()
 	b.recordSeekApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
-	b.logApplied(job.ID, job.Title, job.Company, domain.PlatformSeek, llmBefore)
-	recordAttempt(b.cfg.DB, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
+	b.logApplied(ac.AttemptID, job.ID, job.Title, job.Company, domain.PlatformSeek, llmBefore)
+	finishAttempt(b.cfg.DB, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
 	return seekSubmitApplied
 }
 
@@ -1506,7 +1523,8 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 						}
 					}
 				}
-				return err
+				// Submit was clicked at least once but no confirmation received after retry.
+				return fmt.Errorf("%w: %w", errSeekSubmitUnconfirmed, err)
 			}
 			return nil
 		}

@@ -14,15 +14,16 @@ import (
 type AttemptOutcome string
 
 const (
+	OutcomeInProgress        AttemptOutcome = "in_progress"
 	OutcomeSubmittedConfirmed AttemptOutcome = "submitted_confirmed"
-	OutcomeAlreadyApplied     AttemptOutcome = "already_applied"
-	OutcomeFailed             AttemptOutcome = "failed"
-	OutcomeCancelled          AttemptOutcome = "cancelled"
-	OutcomeTimedOut           AttemptOutcome = "timed_out"
-	OutcomeBlocked            AttemptOutcome = "blocked"
-	OutcomeSkipped            AttemptOutcome = "skipped"
-	OutcomeSubmissionUnknown  AttemptOutcome = "submission_unknown"
-	OutcomeInterrupted        AttemptOutcome = "interrupted"
+	OutcomeAlreadyApplied    AttemptOutcome = "already_applied"
+	OutcomeFailed            AttemptOutcome = "failed"
+	OutcomeCancelled         AttemptOutcome = "cancelled"
+	OutcomeTimedOut          AttemptOutcome = "timed_out"
+	OutcomeBlocked           AttemptOutcome = "blocked"
+	OutcomeSkipped           AttemptOutcome = "skipped"
+	OutcomeSubmissionUnknown AttemptOutcome = "submission_unknown"
+	OutcomeInterrupted       AttemptOutcome = "interrupted"
 )
 
 // AttemptContext carries diagnostic identity for one application attempt.
@@ -35,7 +36,7 @@ type AttemptContext struct {
 	URL        string
 	Role       string
 	Company    string
-	EntryPoint string // "runSubmit", "applyFromURL", "automated_linkedin", "automated_seek"
+	EntryPoint string // "runSubmit", "applyFromURL", "automated_linkedin", "automated_seek", "automated_queue"
 	StartedAt  time.Time
 }
 
@@ -67,25 +68,59 @@ func newAttemptID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// recordAttempt inserts a completed attempt record into apply_attempts.
-// It is non-fatal: a DB error is logged at Warn level but does not affect
-// the caller's return path.
-func recordAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage, reasonCode, reasonText string) {
+// beginAttempt writes an in-progress marker the moment an attempt starts.
+// Call this immediately after newAttemptContext, before any browser or network I/O.
+// Any attempt with outcome='in_progress' and finished_at IS NULL after a restart
+// was interrupted by a crash or kill signal.
+func beginAttempt(db *sql.DB, ac *AttemptContext) {
 	if db == nil || ac == nil {
 		return
 	}
-	elapsedMS := time.Since(ac.StartedAt).Milliseconds()
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := db.ExecContext(context.Background(),
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO apply_attempts
-		 (id,user_id,platform,job_id,url,role,company,entry_point,outcome,stage,reason_code,reason_text,started_at,finished_at,elapsed_ms)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 (id,user_id,platform,job_id,url,role,company,entry_point,outcome,started_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		ac.AttemptID, ac.UserID, ac.Platform, ac.JobID, ac.URL,
-		ac.Role, ac.Company, ac.EntryPoint,
-		string(outcome), stage, reasonCode, reasonText,
-		ac.StartedAt.UTC().Format(time.RFC3339), now, elapsedMS,
+		ac.Role, ac.Company, ac.EntryPoint, string(OutcomeInProgress),
+		ac.StartedAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
-		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", ac.JobID).Msg("attempt: failed to record attempt outcome")
+		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Msg("attempt: failed to write in-progress marker")
 	}
+}
+
+// finishAttempt updates the in-progress row with the terminal outcome.
+// It also refreshes job_id, url, role, company so fields that were empty at
+// beginAttempt time (e.g. applyFromURL before newJobID()) are persisted correctly.
+func finishAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage, reasonCode, reasonText string) {
+	if db == nil || ac == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	elapsedMS := time.Since(ac.StartedAt).Milliseconds()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := db.ExecContext(ctx,
+		`UPDATE apply_attempts
+		 SET job_id=?, url=?, role=?, company=?,
+		     outcome=?, stage=?, reason_code=?, reason_text=?,
+		     finished_at=?, elapsed_ms=?
+		 WHERE id=?`,
+		ac.JobID, ac.URL, ac.Role, ac.Company,
+		string(outcome), stage, reasonCode, reasonText,
+		now, elapsedMS, ac.AttemptID,
+	)
+	if err != nil {
+		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", ac.JobID).Msg("attempt: failed to update attempt outcome")
+	}
+}
+
+// recordAttempt is a one-shot convenience for fast paths where there is no
+// meaningful in-flight state: it writes the in-progress marker and immediately
+// updates it to the final outcome.
+func recordAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage, reasonCode, reasonText string) {
+	beginAttempt(db, ac)
+	finishAttempt(db, ac, outcome, stage, reasonCode, reasonText)
 }

@@ -1501,9 +1501,10 @@ func (b *Bot) llmSnapshot() llm.UsageSnapshot {
 	return b.cfg.LLMTracker.Snapshot()
 }
 
-func (b *Bot) logApplied(jobID, title, company string, platform domain.Platform, before llm.UsageSnapshot) {
+func (b *Bot) logApplied(attemptID, jobID, title, company string, platform domain.Platform, before llm.UsageSnapshot) {
 	ev := log.Info().
 		Str("event", "applied").
+		Str("attempt_id", attemptID).
 		Str("job_id", jobID).
 		Str("title", title).
 		Str("company", company).
@@ -1603,10 +1604,11 @@ func (b *Bot) queueForReview(ctx context.Context, p *domain.PendingReview) {
 
 func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
 	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformLinkedIn), job.ID, job.URL, job.Title, job.Company, "automated_linkedin")
+	beginAttempt(b.cfg.DB, ac)
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
 		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: document work guard")
-		recordAttempt(b.cfg.DB, ac, OutcomeFailed, "document_work_guard", "begin_work_failed", err.Error())
+		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "document_work_guard", "begin_work_failed", err.Error())
 		return false
 	}
 	defer release()
@@ -1616,7 +1618,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
 		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: open job page")
-		recordAttempt(b.cfg.DB, ac, OutcomeFailed, "open_page", "browser_error", err.Error())
+		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "open_page", "browser_error", err.Error())
 		return false
 	}
 	defer func() { _ = jobPage.Close() }()
@@ -1626,7 +1628,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			resume, cover := lazy.get()
 			b.recordApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
 			log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("company", job.Company).Str("role", job.Title).Msg("linkedin: already applied, recorded ✓")
-			recordAttempt(b.cfg.DB, ac, OutcomeAlreadyApplied, "already_applied", "already_applied", "")
+			finishAttempt(b.cfg.DB, ac, OutcomeAlreadyApplied, "already_applied", "already_applied", "")
 			return true
 		}
 		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: easy apply failed")
@@ -1646,17 +1648,17 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 				CreatedAt:            time.Now(),
 			})
 			log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("reason", reason).Msgf("linkedin: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
-			recordAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "not_automatable", reason)
+			finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "not_automatable", reason)
 			return false
 		}
 		b.recordSkipped(job, reason, score, reasoning, nil)
-		recordAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", err.Error())
+		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", err.Error())
 		return false
 	}
 	resume, cover := lazy.get()
 	b.recordApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
-	b.logApplied(job.ID, job.Title, job.Company, domain.PlatformLinkedIn, llmBefore)
-	recordAttempt(b.cfg.DB, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
+	b.logApplied(ac.AttemptID, job.ID, job.Title, job.Company, domain.PlatformLinkedIn, llmBefore)
+	finishAttempt(b.cfg.DB, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
 	return true
 }
 
@@ -2510,19 +2512,29 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		if jobPlatform != platform {
 			continue // wait for the matching platform bot run
 		}
-		log.Info().Str("company", j.Company).Str("title", j.Role).Msg("approved queue: submitting")
+		log.Info().Str("job_id", j.JobID).Str("company", j.Company).Str("title", j.Role).Msg("approved queue: submitting")
 		b.humanPause()
+
+		ac := newAttemptContext(b.cfg.UserID, platform, j.JobID, j.Link, j.Role, j.Company, "automated_queue")
+		beginAttempt(b.cfg.DB, ac)
 
 		jobPage, err := br.Page(proto.TargetCreateTarget{URL: j.Link})
 		if err != nil {
-			log.Error().Err(err).Str("job", j.Role).Msg("approved queue: open job page")
+			log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: open job page")
+			finishAttempt(b.cfg.DB, ac, OutcomeFailed, "open_page", "browser_error", err.Error())
 			continue
 		}
-		queueDetails := b.fetchJob(ctx, linkedInJob{URL: j.Link, Company: j.Company, Title: j.Role})
-		queueLazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{Company: j.Company, Title: j.Role}, jobDesc: queueDetails.Description}
+		queueDetails := b.fetchJob(ctx, linkedInJob{ID: j.JobID, URL: j.Link, Company: j.Company, Title: j.Role})
+		queueLazy := &lazyDocGen{
+			b:       b,
+			ctx:     ctx,
+			job:     linkedInJob{ID: j.JobID, URL: j.Link, Company: j.Company, Title: j.Role},
+			jobDesc: queueDetails.Description,
+		}
+		queueLazy.attemptID = ac.AttemptID
 		if err := b.platformApply(ctx, jobPage, queueLazy); err != nil {
 			_ = jobPage.Close()
-			log.Error().Err(err).Str("job", j.Role).Msg("approved queue: apply failed")
+			log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: apply failed")
 			var score int
 			_ = b.cfg.DB.QueryRow(
 				`SELECT COALESCE(suitability_score,0) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
@@ -2531,6 +2543,12 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			b.recordApplyFailure(j, score, err)
 			_, _ = appdb.ExecWithRetry(b.cfg.DB,
 				`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
+			reason := err.Error()
+			if skipReasonBelongsInTopMatches("approved queue: " + reason) {
+				finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "not_automatable", reason)
+			} else {
+				finishAttempt(b.cfg.DB, ac, OutcomeFailed, "apply", "apply_error", reason)
+			}
 			continue
 		}
 		_ = jobPage.Close()
@@ -2554,7 +2572,8 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		if _, err := appdb.ExecWithRetry(b.cfg.DB, `DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID); err != nil {
 			log.Error().Err(err).Str("job_id", j.JobID).Msg("approved queue: failed to delete from queue")
 		}
-		log.Info().Str("job_id", j.JobID).Str("company", j.Company).Str("role", j.Role).Msg("approved queue: submitted ✓")
+		log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("company", j.Company).Str("role", j.Role).Msg("approved queue: submitted ✓")
+		finishAttempt(b.cfg.DB, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
 		applied++
 	}
 	return applied
