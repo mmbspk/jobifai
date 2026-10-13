@@ -33,6 +33,9 @@ func NewService(db *sql.DB, store settingsKV, q quotaBurner, quotaDefaults func(
 	return &Service{db: db, store: store, quota: q, quotaDefaultsFn: quotaDefaults}
 }
 
+// DB returns the underlying database handle. Intended for testing only.
+func (s *Service) DB() *sql.DB { return s.db }
+
 // LoadDefaults returns the current resource metering configuration.
 // Fail-closed: returns an error for any storage failure other than "not found".
 func (s *Service) LoadDefaults() (domain.ResourceMeteringDefaults, error) {
@@ -130,16 +133,28 @@ func (s *Service) BeforeBrowserIncrement(ctx context.Context, userID string) err
 
 // RecordBrowserIncrement atomically commits one browser_automation billing increment.
 // idempotencyKey must be "browser-automation:<userID>:<runID>:<bucketIndex>".
+// durationMS is the length of the billed interval (the configured billing period).
+// jobID may be empty for multi-application runs.
 // Duplicate keys are silently ignored (returns nil).
-func (s *Service) RecordBrowserIncrement(ctx context.Context, userID, idempotencyKey, automationRunID string) error {
+// Returns nil immediately when browser automation metering is disabled — no event is written.
+func (s *Service) RecordBrowserIncrement(ctx context.Context, userID, idempotencyKey, automationRunID, jobID string, durationMS int64) error {
+	cfg, err := s.LoadDefaults()
+	if err != nil {
+		return err
+	}
+	if !cfg.Enabled || !cfg.Browser.Enabled {
+		return nil // true no-op — do not write an event row when metering is off
+	}
 	return s.RecordOnce(ctx, RecordInput{
 		UserID:          userID,
 		ResourceType:    domain.ResourceTypeBrowserAutomation,
 		IdempotencyKey:  idempotencyKey,
 		AutomationRunID: automationRunID,
+		JobID:           jobID,
 		Quantity:        1,
 		Unit:            "increment",
 		Success:         true,
+		DurationMS:      durationMS,
 	})
 }
 

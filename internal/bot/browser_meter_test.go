@@ -52,7 +52,7 @@ func (s *stubMeterSvc) BeforeBrowserIncrement(_ context.Context, _ string) error
 	return nil
 }
 
-func (s *stubMeterSvc) RecordBrowserIncrement(_ context.Context, _, key, _ string) error {
+func (s *stubMeterSvc) RecordBrowserIncrement(_ context.Context, _, key, _, _ string, _ int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.checkFail(); err != nil {

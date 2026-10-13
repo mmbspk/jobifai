@@ -437,6 +437,17 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		location = req.Location
 	}
 
+	// Activate browser billing. SetJobID correlates billing events with this job.
+	// ErrExceeded must return immediately — job stays in pending_review for retry after top-up.
+	if b.cfg.BrowserMeter != nil {
+		b.cfg.BrowserMeter.SetJobID(req.JobID)
+		defer b.cfg.BrowserMeter.Stop()
+		if meterErr := b.cfg.BrowserMeter.Activate(ctx); meterErr != nil {
+			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", meterErr.Error())
+			return meterErr
+		}
+	}
+
 	var applyErr error
 	if req.Platform == "seek" {
 		applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
@@ -1255,9 +1266,9 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	// Stop is deferred so billing terminates regardless of apply outcome.
 	if b.cfg.BrowserMeter != nil {
 		defer b.cfg.BrowserMeter.Stop()
-		if meterErr := b.cfg.BrowserMeter.Activate(ctx); meterErr != nil && !errors.Is(meterErr, quota.ErrExceeded) {
-			finishAttempt(m.db, ac, OutcomeFailed, "billing", "meter_activation_failed", meterErr.Error())
-			return ApplyFromURLResult{}, fmt.Errorf("browser billing: %w", meterErr)
+		if meterErr := b.cfg.BrowserMeter.Activate(ctx); meterErr != nil {
+			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", meterErr.Error())
+			return ApplyFromURLResult{}, meterErr
 		}
 	}
 
@@ -1305,6 +1316,10 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	ac.JobID = jobID
 	ac.Role = role
 	ac.Company = company
+
+	if b.cfg.BrowserMeter != nil {
+		b.cfg.BrowserMeter.SetJobID(jobID)
+	}
 
 	applyLabel := "easy apply"
 	if platform == domain.PlatformSeek {

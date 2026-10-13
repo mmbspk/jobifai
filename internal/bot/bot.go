@@ -263,7 +263,11 @@ var authRefreshPollInterval = 5 * time.Second
 // updated (user re-authenticated via Connect browser) or until the timeout
 // elapses. During the wait the bot state is user_action_required. Returns nil
 // when a fresh session is detected, error on timeout or bot stop.
-func (b *Bot) waitForSessionRefresh(userID, platform string, timeout time.Duration) error {
+//
+// If browser billing was previously active it is deactivated before the wait
+// (no charge during the idle wait) and reactivated after successful re-auth.
+// Failed re-auth does not reactivate billing.
+func (b *Bot) waitForSessionRefresh(ctx context.Context, userID, platform string, timeout time.Duration) error {
 	if b.cfg.Sessions == nil {
 		return fmt.Errorf("no session store available")
 	}
@@ -272,11 +276,18 @@ func (b *Bot) waitForSessionRefresh(userID, platform string, timeout time.Durati
 		return fmt.Errorf("read session status: %w", err)
 	}
 
+	// Suspend billing during the wait (no charge for idle time).
+	meterWasActive := b.cfg.BrowserMeter != nil && b.cfg.BrowserMeter.WasActivated()
+	if b.cfg.BrowserMeter != nil {
+		b.cfg.BrowserMeter.Deactivate()
+	}
+
 	b.mu.Lock()
 	b.state = domain.BotStateUserActionRequired
 	b.mu.Unlock()
 
 	deadline := time.Now().Add(timeout)
+	refreshed := false
 	for time.Now().Before(deadline) {
 		select {
 		case <-b.stopCh:
@@ -288,10 +299,21 @@ func (b *Bot) waitForSessionRefresh(userID, platform string, timeout time.Durati
 			continue
 		}
 		if current.UpdatedAt.After(initial.UpdatedAt) {
-			return nil
+			refreshed = true
+			break
 		}
 	}
-	return fmt.Errorf("timed out waiting for %s authentication", platform)
+	if !refreshed {
+		return fmt.Errorf("timed out waiting for %s authentication", platform)
+	}
+	// Reactivate billing now that a fresh session has been confirmed —
+	// only if billing was previously active (initial auth remains free).
+	if meterWasActive {
+		if activateErr := b.cfg.BrowserMeter.Activate(ctx); activateErr != nil {
+			return fmt.Errorf("browser billing reactivation after session refresh: %w", activateErr)
+		}
+	}
+	return nil
 }
 
 // startProfileBrowser launches a fresh Chrome process from the persistent profile,
@@ -352,7 +374,7 @@ func (b *Bot) startProfileBrowser() (br *rod.Browser, page *rod.Page, err error)
 // Running before a fully-verified browser is in hand.
 //
 // All four operations are injectable via b.seekSeams for unit testing without Chrome.
-func (b *Bot) seekRecoverAuth(page *rod.Page, closeFn func()) (newBr *rod.Browser, newPage *rod.Page, err error) {
+func (b *Bot) seekRecoverAuth(ctx context.Context, page *rod.Page, closeFn func()) (newBr *rod.Browser, newPage *rod.Page, err error) {
 	ensureLoggedIn := func(p *rod.Page) error { return b.seekEnsureLoggedIn(p) }
 	relaunch := func() (*rod.Browser, *rod.Page, error) { return b.startProfileBrowser() }
 	checkState := func(p *rod.Page) (browser.LoginState, error) {
@@ -386,7 +408,7 @@ func (b *Bot) seekRecoverAuth(page *rod.Page, closeFn func()) (newBr *rod.Browse
 	log.Warn().Msg("seek: auth required — releasing Chrome profile for Connect browser; waiting up to 5 min")
 	closeFn()
 
-	if waitErr := b.waitForSessionRefresh(b.cfg.UserID, "seek", 5*time.Minute); waitErr != nil {
+	if waitErr := b.waitForSessionRefresh(ctx, b.cfg.UserID, "seek", 5*time.Minute); waitErr != nil {
 		return nil, nil, fmt.Errorf("seek: %w", waitErr)
 	}
 
@@ -665,14 +687,12 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 		}
 	}
 
-	// Auth verified — activate browser billing.
+	// Auth verified — activate browser billing. Stop immediately on ErrExceeded
+	// so the user gets a clear quota error rather than continuing with no billing.
 	if b.cfg.BrowserMeter != nil {
 		if err := b.cfg.BrowserMeter.Activate(ctx); err != nil {
 			log.Error().Err(err).Msg("linkedin: browser billing activation failed")
-			if !errors.Is(err, quota.ErrExceeded) {
-				return
-			}
-			// ErrExceeded: stopReason fires at next job boundary.
+			return
 		}
 	}
 
@@ -845,7 +865,7 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 		if b.seekSeams != nil && b.seekSeams.closeBrowser != nil {
 			closeFn = b.seekSeams.closeBrowser
 		}
-		recoveredBr, recoveredPage, recovErr := b.seekRecoverAuth(page, closeFn)
+		recoveredBr, recoveredPage, recovErr := b.seekRecoverAuth(ctx, page, closeFn)
 		if recovErr != nil {
 			return nil, nil, recovErr
 		}
@@ -2302,6 +2322,11 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			return ctx.Err()
 		default:
 		}
+		if b.cfg.BrowserMeter != nil {
+			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
+				return fmt.Errorf("easy apply: %w", meterErr)
+			}
+		}
 
 		b.interactionPause()
 
@@ -2538,6 +2563,13 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 	for _, j := range jobs {
 		if b.stopped(ctx) || applied >= remaining {
 			return applied
+		}
+		// Respect billing quota: stop if a mid-run bucket charge failed.
+		if b.cfg.BrowserMeter != nil {
+			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
+				log.Warn().Err(meterErr).Msg("approved queue: browser quota exceeded, stopping")
+				return applied
+			}
 		}
 		jobPlatform := j.Platform
 		if jobPlatform == "" {
