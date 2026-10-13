@@ -83,6 +83,26 @@ func seedLLMEvent(t *testing.T, db *sql.DB, userID, createdAt string, credits in
 	require.NoError(t, err)
 }
 
+// seedLLMEventNative inserts an LLM event binding createdAt as a time.Time value,
+// matching how production RecordBillingTx writes to llm_usage_events.created_at.
+func seedLLMEventNative(t *testing.T, db *sql.DB, userID string, createdAt time.Time, credits int64, personalProvider bool) {
+	t.Helper()
+	pp := 0
+	if personalProvider {
+		pp = 1
+	}
+	_, err := db.Exec(`
+		INSERT INTO llm_usage_events
+			(id, created_at, user_id, task, provider, requested_model, actual_model, actual_model_verified,
+			 input_tokens, output_tokens, raw_cost_usd_micro, loaded_cost_usd_micro, credits_burned,
+			 latency_ms, success, personal_provider)
+		VALUES (?, ?, ?, 'job_scoring', 'claude', 'claude-haiku-4-5-20251001', 'claude-haiku-4-5-20251001', 1,
+			100, 20, 10, 15, ?, 50, 1, ?)`,
+		uuid.NewString(), createdAt, userID, credits, pp,
+	)
+	require.NoError(t, err)
+}
+
 func seedResourceEvent(t *testing.T, db *sql.DB, userID, resType, createdAt string, credits, durationMS int64, success bool) {
 	t.Helper()
 	s := 1
@@ -131,7 +151,7 @@ func TestUsageSummary_NilQuotaService(t *testing.T) {
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	assert.Equal(t, "billing_period", resp["period"])
 	assert.NotEmpty(t, resp["period_start"])
-	assert.Nil(t, resp["period_end"], "fallback case must omit period_end")
+	assert.NotEmpty(t, resp["period_end"], "fallback case must always include period_end")
 	assert.EqualValues(t, 0, resp["total_credits_used"])
 }
 
@@ -161,8 +181,8 @@ func TestUsageSummary_AICredits(t *testing.T) {
 	userID := userIDFromToken(t, router, tok)
 
 	now := time.Now().UTC()
-	seedLLMEvent(t, db, userID, isoFmt(now.Add(-1*time.Hour)), 5, false)
-	seedLLMEvent(t, db, userID, isoFmt(now.Add(-2*time.Hour)), 3, false)
+	seedLLMEventNative(t, db, userID, now.Add(-1*time.Hour), 5, false)
+	seedLLMEventNative(t, db, userID, now.Add(-2*time.Hour), 3, false)
 
 	w := authGet(t, router, "/api/usage/summary", tok)
 	require.Equal(t, http.StatusOK, w.Code)
@@ -182,8 +202,8 @@ func TestUsageSummary_PersonalProviderExcluded(t *testing.T) {
 	userID := userIDFromToken(t, router, tok)
 
 	now := time.Now().UTC()
-	seedLLMEvent(t, db, userID, isoFmt(now.Add(-1*time.Hour)), 10, false) // platform → counted
-	seedLLMEvent(t, db, userID, isoFmt(now.Add(-2*time.Hour)), 5, true)   // personal → excluded
+	seedLLMEventNative(t, db, userID, now.Add(-1*time.Hour), 10, false) // platform → counted
+	seedLLMEventNative(t, db, userID, now.Add(-2*time.Hour), 5, true)   // personal → excluded
 
 	w := authGet(t, router, "/api/usage/summary", tok)
 	require.Equal(t, http.StatusOK, w.Code)
@@ -203,7 +223,7 @@ func TestUsageSummary_TotalInvariant(t *testing.T) {
 	userID := userIDFromToken(t, router, tok)
 
 	now := time.Now().UTC()
-	seedLLMEvent(t, db, userID, isoFmt(now.Add(-1*time.Hour)), 7, false)
+	seedLLMEventNative(t, db, userID, now.Add(-1*time.Hour), 7, false)
 	seedResourceEvent(t, db, userID, "browser_automation", isoFmt(now.Add(-2*time.Hour)), 3, 30000, true)
 	seedResourceEvent(t, db, userID, "document_render", isoFmt(now.Add(-3*time.Hour)), 2, 0, true)
 
@@ -330,4 +350,59 @@ func TestUsageSummary_BrowserActiveMinutes(t *testing.T) {
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	assert.EqualValues(t, 60000, resp["browser_active_ms"])
 	assert.InDelta(t, 1.0, resp["browser_active_minutes"].(float64), 0.01)
+}
+
+// TestUsageSummary_LLMTimestampNative verifies that period boundary filtering works
+// when LLM events are inserted with a time.Time value (matching production
+// RecordBillingTx), not a pre-formatted RFC3339 string.
+func TestUsageSummary_LLMTimestampNative(t *testing.T) {
+	svc, db := newTestServices(t)
+
+	periodStart := time.Now().UTC().Add(-10 * 24 * time.Hour).Truncate(time.Second)
+	periodEnd := time.Now().UTC().Add(10 * 24 * time.Hour).Truncate(time.Second)
+	svc.Quota = &summaryQuotaStub{
+		row: domain.UserQuotaRow{
+			Plan:        "starter",
+			PeriodStart: &periodStart,
+			PeriodEnd:   &periodEnd,
+		},
+	}
+
+	router := handler.NewRouter(svc)
+	tok := registerAndLogin(t, router, "summary-ts-native@example.com", "pass1234")
+	userID := userIDFromToken(t, router, tok)
+
+	// Inside period: inserted as time.Time (production-style).
+	seedLLMEventNative(t, db, userID, time.Now().UTC(), 7, false)
+	// Before period boundary — must be excluded.
+	seedLLMEventNative(t, db, userID, periodStart.Add(-time.Second), 999, false)
+
+	w := authGet(t, router, "/api/usage/summary", tok)
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.EqualValues(t, 7, resp["ai_credits"],
+		"time.Time-inserted LLM events must respect period boundaries")
+}
+
+// TestUsageSummary_UserIDInjection verifies that a user_id query parameter is
+// ignored and only the authenticated caller's data is returned.
+func TestUsageSummary_UserIDInjection(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+	tokA := registerAndLogin(t, router, "summary-inject-a@example.com", "pass1234")
+	tokB := registerAndLogin(t, router, "summary-inject-b@example.com", "pass1234")
+	userIDA := userIDFromToken(t, router, tokA)
+
+	// Give user A a large credit balance.
+	now := time.Now().UTC()
+	seedLLMEvent(t, db, userIDA, isoFmt(now.Add(-1*time.Hour)), 100, false)
+
+	// Authenticate as user B but pass user A's ID as a query param.
+	w := authGet(t, router, "/api/usage/summary?user_id="+userIDA, tokB)
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.EqualValues(t, 0, resp["ai_credits"],
+		"user_id query param must be ignored; only caller's data returned")
 }

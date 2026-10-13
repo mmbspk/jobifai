@@ -93,7 +93,7 @@ func (h *AdminHandlers) EconomicsOverview(w http.ResponseWriter, r *http.Request
 		FROM resource_usage_events
 		WHERE `+economicsTimeWhere(allTime)+`
 		GROUP BY resource_type`,
-		economicsTimeArg(since, allTime)...,
+		resourceTimeArg(since, allTime)...,
 	)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
@@ -204,6 +204,16 @@ func economicsTimeArg(since time.Time, allTime bool) []any {
 		return nil
 	}
 	return []any{since}
+}
+
+// resourceTimeArg returns the time bound for resource_usage_events queries.
+// resource_usage_events.created_at is stored as RFC3339 via strftime(), so the
+// bound must be a string, not time.Time, to guarantee format-compatible comparison.
+func resourceTimeArg(since time.Time, allTime bool) []any {
+	if allTime {
+		return nil
+	}
+	return []any{since.UTC().Format(time.RFC3339)}
 }
 
 // GET /api/admin/economics/models?period=30d

@@ -51,7 +51,7 @@ func (h *AdminHandlers) ResourceUsageSummary(w http.ResponseWriter, r *http.Requ
 	since, allTime := adminSince(period)
 
 	timeWhere := economicsTimeWhere(allTime)
-	timeArgs := economicsTimeArg(since, allTime)
+	timeArgs := resourceTimeArg(since, allTime)
 
 	rows, err := h.svc.DB.QueryContext(r.Context(), `
 		SELECT resource_type,
@@ -119,7 +119,7 @@ func (h *AdminHandlers) ResourceUsageEvents(w http.ResponseWriter, r *http.Reque
 	typeFilter := r.URL.Query().Get("resource_type")
 
 	timeWhere := economicsTimeWhere(allTime)
-	timeArgs := economicsTimeArg(since, allTime)
+	timeArgs := resourceTimeArg(since, allTime)
 
 	baseWhere := timeWhere + ` AND (?='' OR user_id=?) AND (?='' OR resource_type=?)`
 	baseArgs := append(timeArgs, userFilter, userFilter, typeFilter, typeFilter)

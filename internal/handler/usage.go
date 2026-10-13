@@ -93,7 +93,7 @@ func (h *UsageHandlers) Session(w http.ResponseWriter, r *http.Request) {
 type usageSummaryResponse struct {
 	Period                   string  `json:"period"`
 	PeriodStart              string  `json:"period_start"`
-	PeriodEnd                string  `json:"period_end,omitempty"`
+	PeriodEnd                string  `json:"period_end"`
 	TotalCreditsUsed         int64   `json:"total_credits_used"`
 	AICredits                int64   `json:"ai_credits"`
 	BrowserAutomationCredits int64   `json:"browser_automation_credits"`
@@ -108,8 +108,7 @@ type usageSummaryResponse struct {
 //
 // Subscription users use PeriodStart/PeriodEnd.
 // Trial users use TrialEndsAt as end, computing start = TrialEndsAt - TrialDays.
-// Fallback is now-30d/now (no official period). In all cases end is non-zero (used in SQL).
-// periodEndStr is empty for fallback (omitted from the JSON response via omitempty).
+// Fallback is now-30d/now (no official period). period_end is always returned.
 //
 // Limitation: trial_start is computed (TrialEndsAt − TrialDays), not stored. If
 // TrialDays defaults change after trial creation the displayed start may be approximate.
@@ -123,6 +122,7 @@ func usagePeriodForUser(row domain.UserQuotaRow, defaults domain.QuotaDefaults) 
 			periodEndStr = end.Format(time.RFC3339)
 		} else {
 			end = now
+			periodEndStr = end.Format(time.RFC3339)
 		}
 		return start, end, periodEndStr
 	}
@@ -138,8 +138,9 @@ func usagePeriodForUser(row domain.UserQuotaRow, defaults domain.QuotaDefaults) 
 		return start, end, periodEndStr
 	}
 
-	// Fallback: rolling 30-day window. period_end omitted from response (no official end).
-	return now.AddDate(0, 0, -30), now, ""
+	// Fallback: rolling 30-day window. Always include period_end.
+	end = now
+	return now.AddDate(0, 0, -30), end, end.Format(time.RFC3339)
 }
 
 // GET /api/usage/summary — credit breakdown for the calling user's billing period.
@@ -176,13 +177,15 @@ func (h *UsageHandlers) Summary(w http.ResponseWriter, r *http.Request) {
 
 	// AI credits: sum credits_burned (authoritative); count only successful calls.
 	// Exclude personal_provider rows (those burn 0 platform credits).
+	// Bind periodStart/periodEnd as time.Time — llm_usage_events.created_at is inserted
+	// as time.Time by RecordBillingTx, so bounds must match that stored format.
 	if err := h.svc.DB.QueryRowContext(r.Context(), `
 		SELECT
 			COALESCE(SUM(credits_burned), 0),
 			COALESCE(SUM(CASE WHEN success=1 THEN 1 ELSE 0 END), 0)
 		FROM llm_usage_events
 		WHERE user_id=? AND personal_provider=0 AND created_at>=? AND created_at<?`,
-		userID, since, until,
+		userID, periodStart, periodEnd,
 	).Scan(&resp.AICredits, &resp.AICalls); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
 		return
