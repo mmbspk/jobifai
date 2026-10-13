@@ -57,8 +57,6 @@ const maxIdempotencyKeyLen = 128
 // When no Idempotency-Key header is present a UUID is generated; retries without the
 // header will always be treated as new operations.
 //
-// Callers must invoke validateIdempotencyKey first; legacyOpID panics if the key exceeds
-// maxIdempotencyKeyLen (the validate step returns a 400 before we get here).
 func legacyOpID(r *http.Request, userID, operation string) string {
 	if k := strings.TrimSpace(r.Header.Get("Idempotency-Key")); k != "" {
 		return "document-render:" + userID + ":" + operation + ":" + k
@@ -143,6 +141,10 @@ func (h *ResumeHandlers) marketRenderOptions(r *http.Request) *resume.RenderOpti
 // POST /api/resume/generate
 func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
+	if err := validateIdempotencyKey(r); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
 	if h.svc.Renderer == nil {
 		unprocessable(w, msgNoRenderer)
 		return
@@ -191,10 +193,6 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 	// Preflight quota before launching Chrome (legacy endpoint — no persisted version).
 	// Idempotency key: client-supplied Idempotency-Key header scoped to user+operation
 	// so the same client key on different endpoints stays independent.
-	if err := validateIdempotencyKey(r); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
-		return
-	}
 	opID := legacyOpID(r, userID, "resume-generate")
 	if h.svc.Resource != nil {
 		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
@@ -223,6 +221,10 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 // POST /api/resume/generate-tailored
 func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
+	if err := validateIdempotencyKey(r); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
 	if h.svc.Renderer == nil {
 		unprocessable(w, msgNoRenderer)
 		return
@@ -284,10 +286,6 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 
 	// Preflight quota before launching Chrome (AI tailored — no persisted version).
 	// Idempotency key: client-supplied Idempotency-Key header scoped to user+operation.
-	if err := validateIdempotencyKey(r); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
-		return
-	}
 	opID := legacyOpID(r, userID, "resume-tailored")
 	if h.svc.Resource != nil {
 		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
@@ -368,6 +366,10 @@ func (h *ResumeHandlers) EvaluateJob(w http.ResponseWriter, r *http.Request) {
 }
 func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
+	if err := validateIdempotencyKey(r); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
 	if h.svc.Renderer == nil {
 		unprocessable(w, msgNoRenderer)
 		return
@@ -430,10 +432,6 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 
 	// Preflight quota before launching Chrome (AI cover letter — no persisted version).
 	// Idempotency key: client-supplied Idempotency-Key header scoped to user+operation.
-	if err := validateIdempotencyKey(r); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
-		return
-	}
 	opID := legacyOpID(r, userID, "cover-generate")
 	if h.svc.Resource != nil {
 		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
