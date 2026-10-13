@@ -76,6 +76,7 @@ type Manager struct {
 	llmReuse         *llmreuse.Store
 	submitWorkGuard  documents.UserWorkGuard
 	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
+	browserMeterSvc  MeterService // optional browser automation billing service
 }
 
 type retentionAfterSubmit interface {
@@ -129,6 +130,12 @@ func (m *Manager) SetLLMBilling(store *llmpolicy.Store, catalog *pricing.Catalog
 // used to decide whether their personal LLM API key is eligible during automation.
 func (m *Manager) SetUserTypeChecker(fn func(userID string) (isAdmin, isTester bool)) {
 	m.userTypeChecker = fn
+}
+
+// SetBrowserMeter wires browser automation billing into the bot manager.
+// resource.Service satisfies MeterService and should be passed directly.
+func (m *Manager) SetBrowserMeter(svc MeterService) {
+	m.browserMeterSvc = svc
 }
 
 func NewManager(
@@ -430,6 +437,19 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		location = req.Location
 	}
 
+	// Activate browser billing. SetJobID correlates billing events with this job.
+	// Use m.ctx (not the HTTP request ctx) so billing and automation share the same
+	// lifecycle — an HTTP disconnect does not leave automation running unmetered.
+	// ErrExceeded returns immediately — job stays in pending_review for retry after top-up.
+	if b.cfg.BrowserMeter != nil {
+		b.cfg.BrowserMeter.SetJobID(req.JobID)
+		defer b.cfg.BrowserMeter.Stop()
+		if meterErr := b.cfg.BrowserMeter.Activate(m.ctx); meterErr != nil {
+			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", meterErr.Error())
+			return meterErr
+		}
+	}
+
 	var applyErr error
 	if req.Platform == "seek" {
 		applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
@@ -440,6 +460,12 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		if errors.Is(applyErr, errAlreadyApplied) {
 			log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("company", req.Company).Str("role", req.Role).Msg("approve: already applied, recording ✓")
 			// fall through to success path so queues are cleaned up; finishAttempt below uses OutcomeAlreadyApplied
+		} else if errors.Is(applyErr, quota.ErrExceeded) {
+			// Quota exhausted mid-run: preserve pending_review state for retry after top-up.
+			// Do NOT increment attempt_count or insert into jobs_skipped.
+			log.Warn().Err(applyErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("company", req.Company).Str("role", req.Role).Msg("approve: browser quota exceeded mid-run — job preserved in pending review")
+			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", applyErr.Error())
+			return applyErr
 		} else {
 			applyLabel := "easy apply"
 			if req.Platform == "seek" {
@@ -851,6 +877,14 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	}
 
 	config.EnsureDocumentPolicies(&gs)
+	var browserMeter BrowserUsageMeter
+	if m.browserMeterSvc != nil {
+		inc, incErr := m.browserMeterSvc.BrowserIncrementDuration()
+		if incErr != nil || inc <= 0 {
+			inc = 30 * time.Second
+		}
+		browserMeter = NewLiveBrowserMeter(m.browserMeterSvc, userID, runID, inc, nil)
+	}
 	cfg := &Config{
 		Platform:    resolved,
 		Settings:    gs,
@@ -880,8 +914,9 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
 			}
 		},
-		LLMTracker:    tracker,
-		Sessions:      m.sessions,
+		LLMTracker:   tracker,
+		Sessions:     m.sessions,
+		BrowserMeter: browserMeter,
 	}
 
 	if platform == domain.PlatformSeek {
@@ -1044,6 +1079,13 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		},
 		state:  domain.BotStateIdle,
 		stopCh: make(chan struct{}),
+	}
+	if m.browserMeterSvc != nil {
+		inc, incErr := m.browserMeterSvc.BrowserIncrementDuration()
+		if incErr != nil || inc <= 0 {
+			inc = 30 * time.Second
+		}
+		b.cfg.BrowserMeter = NewLiveBrowserMeter(m.browserMeterSvc, userID, runID, inc, nil)
 	}
 	if platform == domain.PlatformSeek {
 		if raw, err := m.secrets.Get(userID, "cred:seek"); err == nil {
@@ -1228,6 +1270,21 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	}
 	location := extractJobLocation(jobPage, platform)
 
+	// Create the job ID now so all billing buckets from Activate onward carry the
+	// correct job_id correlation. SetJobID must be called before Activate.
+	jobID := newJobID()
+
+	// Page loaded and auth confirmed — activate browser billing for this apply run.
+	// Stop is deferred so billing terminates regardless of apply outcome.
+	if b.cfg.BrowserMeter != nil {
+		defer b.cfg.BrowserMeter.Stop()
+		b.cfg.BrowserMeter.SetJobID(jobID)
+		if meterErr := b.cfg.BrowserMeter.Activate(ctx); meterErr != nil {
+			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", meterErr.Error())
+			return ApplyFromURLResult{}, meterErr
+		}
+	}
+
 	// DOM check: page itself shows a prior application (handles jobs applied outside this app).
 	var pageApplied bool
 	switch platform {
@@ -1268,7 +1325,6 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		return ApplyFromURLResult{Company: company, Role: role}, ErrAlreadyApplied
 	}
 
-	jobID := newJobID()
 	ac.JobID = jobID
 	ac.Role = role
 	ac.Company = company
@@ -1383,6 +1439,12 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	}
 
 	if applyErr != nil && !errors.Is(applyErr, errAlreadyApplied) {
+		// Quota exhausted mid-run: do not write jobs_skipped and do not consume an attempt.
+		if errors.Is(applyErr, quota.ErrExceeded) {
+			log.Warn().Err(applyErr).Str("job_id", jobID).Str("url", jobURL).Msg("ai apply: browser quota exceeded mid-run")
+			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", applyErr.Error())
+			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, applyErr
+		}
 		log.Error().Err(applyErr).Str("job_id", jobID).Str("url", jobURL).Str("role", role).Msg("ai apply: failed")
 		fullReason := applyLabel + ": " + applyErr.Error()
 		if skipReasonBelongsInTopMatches(fullReason) {

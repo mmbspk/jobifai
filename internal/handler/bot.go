@@ -15,6 +15,7 @@ import (
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/quota"
 )
 
 // BotHandlers groups bot lifecycle and review-gate handlers.
@@ -208,6 +209,11 @@ func (h *BotHandlers) ReviewApprove(w http.ResponseWriter, r *http.Request) {
 	req.FrozenDocuments = true
 
 	if err := h.svc.Bot.SubmitSync(r.Context(), userID, req); err != nil {
+		if errors.Is(err, quota.ErrExceeded) {
+			log.Warn().Str("user_id", userID).Str("job_id", jobID).Msg("review approve: quota exceeded")
+			writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits — top up your balance and try again"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
@@ -303,6 +309,11 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 				"company": res.Company,
 				"role":    res.Role,
 			})
+			return
+		}
+		if errors.Is(err, quota.ErrExceeded) {
+			log.Warn().Str("user_id", userID).Str("url", req.URL).Msg("apply-url: quota exceeded")
+			writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits — top up your balance and try again"})
 			return
 		}
 		log.Error().Err(err).Str("user_id", userID).Str("url", req.URL).Str("company", res.Company).Str("role", res.Role).Msg("apply-url: AI Apply failed")

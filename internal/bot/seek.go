@@ -318,6 +318,11 @@ func runSeek(ctx context.Context, b *Bot) {
 		return
 	}
 	defer func() { _ = br.Close() }()
+	defer func() {
+		if b.cfg.BrowserMeter != nil {
+			b.cfg.BrowserMeter.Stop()
+		}
+	}()
 
 	b.mu.Lock()
 	b.seekSessionExpired = false
@@ -332,6 +337,14 @@ func runSeek(ctx context.Context, b *Bot) {
 		b.state = domain.BotStateError
 		b.mu.Unlock()
 		return
+	}
+
+	// Auth verified — activate browser billing. Stop immediately on ErrExceeded.
+	if b.cfg.BrowserMeter != nil {
+		if err := b.cfg.BrowserMeter.Activate(ctx); err != nil {
+			log.Error().Err(err).Msg("seek: browser billing activation failed")
+			return
+		}
 	}
 
 	limit := b.cfg.Settings.HumanBehavior.DailyApplicationLimit
@@ -390,6 +403,7 @@ func runSeek(ctx context.Context, b *Bot) {
 		}
 
 		for _, keyword := range b.cfg.Preferences.Positions {
+			b.waitIfPaused(ctx)
 			if reason := b.stopReason(ctx); reason != "" {
 				log.Info().Str("keyword", keyword).Msgf("seek: stopped, %s", reason)
 				return
@@ -1156,6 +1170,12 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 		if ctx.Err() != nil {
 			break
 		}
+		if b.cfg.BrowserMeter != nil {
+			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
+				log.Warn().Err(meterErr).Msg("seek top-matches: browser quota exceeded, stopping")
+				return applied
+			}
+		}
 
 		page, err := br.Page(proto.TargetCreateTarget{URL: p.link})
 		if err != nil {
@@ -1429,6 +1449,14 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 
 	// Multi-step form: click Continue/Next until we reach and complete the review page.
 	for step := 0; step < 10; step++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if b.cfg.BrowserMeter != nil {
+			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
+				return fmt.Errorf("seek apply: %w", meterErr)
+			}
+		}
 		// Scroll before scan so below-the-fold consent checkboxes are visible.
 		_, _ = page.Eval(`() => {
 			const form = document.querySelector("[data-testid='quick-apply-form'], [data-automation='apply-form']");
@@ -1483,6 +1511,12 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		btnText = stripInvisible(strings.TrimSpace(btnText))
 
 		if isSubmit {
+			// Guard: quota must not be exhausted mid-run — reject the final submit click.
+			if b.cfg.BrowserMeter != nil {
+				if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
+					return fmt.Errorf("seek apply: quota exhausted before submit: %w", meterErr)
+				}
+			}
 			// Final step: ensure consent/terms checkboxes are ticked before submit.
 			if b.seekEnsureConsentChecked(page) {
 				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)

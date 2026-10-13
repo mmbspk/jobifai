@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -66,7 +67,7 @@ func TestErrAuthRequired_IsSentinel(t *testing.T) {
 
 func TestWaitForSessionRefresh_NoSessionStore(t *testing.T) {
 	b := newAuthTestBot(t, nil)
-	err := b.waitForSessionRefresh("u1", "seek", 5*time.Second)
+	err := b.waitForSessionRefresh(context.Background(), "u1", "seek", 5*time.Second)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no session store")
 }
@@ -80,7 +81,7 @@ func TestWaitForSessionRefresh_Timeout(t *testing.T) {
 	seedSession(t, store, "u1", "seek")
 
 	b := newAuthTestBot(t, store)
-	err := b.waitForSessionRefresh("u1", "seek", 200*time.Millisecond)
+	err := b.waitForSessionRefresh(context.Background(), "u1", "seek", 200*time.Millisecond)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")
 	// waitForSessionRefresh does NOT transition to Running on timeout.
@@ -107,7 +108,7 @@ func TestWaitForSessionRefresh_SessionUpdated(t *testing.T) {
 		advanceSession(t, store, "u1", "seek")
 	}()
 
-	err := b.waitForSessionRefresh("u1", "seek", 10*time.Second)
+	err := b.waitForSessionRefresh(context.Background(), "u1", "seek", 10*time.Second)
 	require.NoError(t, err)
 
 	// State must remain user_action_required — Running is only set by
@@ -134,12 +135,39 @@ func TestWaitForSessionRefresh_BotStop(t *testing.T) {
 	}()
 
 	start := time.Now()
-	err := b.waitForSessionRefresh("u1", "seek", 30*time.Second)
+	err := b.waitForSessionRefresh(context.Background(), "u1", "seek", 30*time.Second)
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stopped")
 	assert.Less(t, elapsed, 2*time.Second, "stop channel must exit wait quickly")
+}
+
+// TestWaitForSessionRefresh_ContextCancelled verifies that ctx cancellation exits
+// the polling loop immediately, before the timeout elapses.
+func TestWaitForSessionRefresh_ContextCancelled(t *testing.T) {
+	orig := authRefreshPollInterval
+	authRefreshPollInterval = 50 * time.Millisecond
+	t.Cleanup(func() { authRefreshPollInterval = orig })
+
+	store := newAuthTestSessionStore(t)
+	seedSession(t, store, "u1", "seek")
+
+	b := newAuthTestBot(t, store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := b.waitForSessionRefresh(ctx, "u1", "seek", 30*time.Second)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, elapsed, 2*time.Second, "ctx cancellation must exit wait quickly")
 }
 
 // TestWaitForSessionRefresh_TransitionsState verifies mid-wait state is
@@ -164,7 +192,7 @@ func TestWaitForSessionRefresh_TransitionsState(t *testing.T) {
 		advanceSession(t, store, "u1", "seek")
 	}()
 
-	err := b.waitForSessionRefresh("u1", "seek", 10*time.Second)
+	err := b.waitForSessionRefresh(context.Background(), "u1", "seek", 10*time.Second)
 	require.NoError(t, err)
 
 	assert.Equal(t, domain.BotStateUserActionRequired, <-stateDuring, "state mid-wait")
@@ -184,7 +212,7 @@ func TestSeekRecoverAuth_NoAuthError_NoRecovery(t *testing.T) {
 		ensureLoggedIn: func(*rod.Page) error { return nil },
 	}
 
-	newBr, newPage, err := b.seekRecoverAuth(nil, func() {})
+	newBr, newPage, err := b.seekRecoverAuth(context.Background(), nil, func() {})
 	require.NoError(t, err)
 	assert.Nil(t, newBr)
 	assert.Nil(t, newPage)
@@ -209,7 +237,7 @@ func TestSeekRecoverAuth_NonAuthRequired_ImmediatePropagation(t *testing.T) {
 	closeCalled := false
 	closeFn := func() { closeCalled = true }
 
-	_, _, err := b.seekRecoverAuth(nil, closeFn)
+	_, _, err := b.seekRecoverAuth(context.Background(), nil, closeFn)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "network error")
 	assert.True(t, closeCalled, "browser must be closed even on non-auth error")
@@ -246,7 +274,7 @@ func TestSeekRecoverAuth_ErrAuthRequired_ClosesBrowserFirst(t *testing.T) {
 		advanceSession(t, store, "u1", "seek")
 	}()
 
-	_, _, err := b.seekRecoverAuth(nil, closeFn)
+	_, _, err := b.seekRecoverAuth(context.Background(), nil, closeFn)
 	require.NoError(t, err)
 	assert.True(t, closeCalled,
 		"closeFn must be called to release the Chrome profile before waiting for reconnect")
@@ -281,7 +309,7 @@ func TestSeekRecoverAuth_SessionRefresh_TriggersRelaunch(t *testing.T) {
 		advanceSession(t, store, "u1", "seek")
 	}()
 
-	_, _, err := b.seekRecoverAuth(nil, func() {})
+	_, _, err := b.seekRecoverAuth(context.Background(), nil, func() {})
 	require.NoError(t, err)
 	assert.True(t, relaunchCalled, "relaunchBrowser must be called after session refresh")
 }
@@ -312,7 +340,7 @@ func TestSeekRecoverAuth_SuccessRunningSetByCallerNotHere(t *testing.T) {
 		advanceSession(t, store, "u1", "seek")
 	}()
 
-	newBr, newPage, err := b.seekRecoverAuth(nil, func() {})
+	newBr, newPage, err := b.seekRecoverAuth(context.Background(), nil, func() {})
 	require.NoError(t, err)
 	assert.Nil(t, newBr, "seam returns nil browser — caller adopts it")
 	assert.Nil(t, newPage)
@@ -358,7 +386,7 @@ func TestSeekRecoverAuth_RelaunchFailure_ErrorReturned(t *testing.T) {
 		advanceSession(t, store, "u1", "seek")
 	}()
 
-	_, _, err := b.seekRecoverAuth(nil, func() {})
+	_, _, err := b.seekRecoverAuth(context.Background(), nil, func() {})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "relaunch after re-auth")
 	assert.Contains(t, err.Error(), "chrome: no display")
@@ -394,7 +422,7 @@ func TestSeekRecoverAuth_StillUnauthAfterRelaunch_FailsCleanly(t *testing.T) {
 		advanceSession(t, store, "u1", "seek")
 	}()
 
-	_, _, err := b.seekRecoverAuth(nil, func() {})
+	_, _, err := b.seekRecoverAuth(context.Background(), nil, func() {})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not authenticated after re-auth")
 
@@ -435,7 +463,7 @@ func TestSeekRecoverAuth_NormalHandoff_UsesRelaunchNotForceUnlock(t *testing.T) 
 		advanceSession(t, store, "u1", "seek")
 	}()
 
-	_, _, err := b.seekRecoverAuth(nil, func() {})
+	_, _, err := b.seekRecoverAuth(context.Background(), nil, func() {})
 	require.NoError(t, err)
 	assert.Equal(t, 1, relaunchCallCount,
 		"relaunchBrowser (not ForceUnlock) must be called exactly once")

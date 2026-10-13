@@ -245,6 +245,7 @@ func main() {
 	botMgr.SetRetention(retentionSvc)
 	botMgr.SetLLMReuse(llmReuseStore)
 	botMgr.SetUserTypeChecker(userTypeChecker)
+	botMgr.SetBrowserMeter(resourceSvc)
 
 	// ── Router ──────────────────────────────────────────────────────────
 	rawAppBaseURL := os.Getenv("APP_BASE_URL")
