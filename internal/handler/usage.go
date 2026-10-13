@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/db"
@@ -82,6 +83,149 @@ func (h *UsageHandlers) Session(w http.ResponseWriter, r *http.Request) {
 			float64(snap.OutputTokens)/1_000_000*c.OutputPerM
 		resp.EstimatedCostUSD = &cost
 	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// usageSummaryResponse is the customer-facing credit breakdown for the calling user's
+// current billing period. USD cost fields are intentionally omitted — customers see
+// credits only.
+type usageSummaryResponse struct {
+	Period                   string  `json:"period"`
+	PeriodStart              string  `json:"period_start"`
+	PeriodEnd                string  `json:"period_end,omitempty"`
+	TotalCreditsUsed         int64   `json:"total_credits_used"`
+	AICredits                int64   `json:"ai_credits"`
+	BrowserAutomationCredits int64   `json:"browser_automation_credits"`
+	DocumentRenderCredits    int64   `json:"document_render_credits"`
+	AICalls                  int64   `json:"ai_calls"`
+	BrowserActiveMS          int64   `json:"browser_active_ms"`
+	BrowserActiveMinutes     float64 `json:"browser_active_minutes"`
+	DocumentRenders          int64   `json:"document_renders"`
+}
+
+// usagePeriodForUser derives the billing period boundaries from the user's quota row.
+//
+// Subscription users use PeriodStart/PeriodEnd.
+// Trial users use TrialEndsAt as end, computing start = TrialEndsAt - TrialDays.
+// Fallback is now-30d/now (no official period). In all cases end is non-zero (used in SQL).
+// periodEndStr is empty for fallback (omitted from the JSON response via omitempty).
+//
+// Limitation: trial_start is computed (TrialEndsAt − TrialDays), not stored. If
+// TrialDays defaults change after trial creation the displayed start may be approximate.
+func usagePeriodForUser(row domain.UserQuotaRow, defaults domain.QuotaDefaults) (start, end time.Time, periodEndStr string) {
+	now := time.Now().UTC()
+
+	if row.PeriodStart != nil {
+		start = row.PeriodStart.UTC()
+		if row.PeriodEnd != nil {
+			end = row.PeriodEnd.UTC()
+			periodEndStr = end.Format(time.RFC3339)
+		} else {
+			end = now
+		}
+		return start, end, periodEndStr
+	}
+
+	if row.Plan == "trial" && row.TrialEndsAt != nil {
+		trialDays := defaults.TrialDays
+		if trialDays <= 0 {
+			trialDays = 7
+		}
+		end = row.TrialEndsAt.UTC()
+		start = end.AddDate(0, 0, -trialDays)
+		periodEndStr = end.Format(time.RFC3339)
+		return start, end, periodEndStr
+	}
+
+	// Fallback: rolling 30-day window. period_end omitted from response (no official end).
+	return now.AddDate(0, 0, -30), now, ""
+}
+
+// GET /api/usage/summary — credit breakdown for the calling user's billing period.
+// Available to any authenticated user (not admin-only). Never accepts a user_id param —
+// always scoped to the authenticated caller for isolation.
+func (h *UsageHandlers) Summary(w http.ResponseWriter, r *http.Request) {
+	userID := auth.UserIDFromCtx(r.Context())
+
+	// Derive billing period from quota row. Never let one user see another's data.
+	var row domain.UserQuotaRow
+	if h.svc.Quota != nil {
+		var err error
+		row, err = h.svc.Quota.RowForUser(userID)
+		if err != nil {
+			// Row may not exist yet for a newly registered user — treat as empty trial.
+			row = domain.UserQuotaRow{Plan: "trial"}
+		}
+	}
+
+	var defaults domain.QuotaDefaults
+	if h.svc.Quota != nil {
+		defaults = h.svc.Quota.LoadDefaults()
+	}
+
+	periodStart, periodEnd, periodEndStr := usagePeriodForUser(row, defaults)
+	since := periodStart.Format(time.RFC3339)
+	until := periodEnd.Format(time.RFC3339)
+
+	resp := usageSummaryResponse{
+		Period:      "billing_period",
+		PeriodStart: since,
+		PeriodEnd:   periodEndStr,
+	}
+
+	// AI credits: sum credits_burned (authoritative); count only successful calls.
+	// Exclude personal_provider rows (those burn 0 platform credits).
+	if err := h.svc.DB.QueryRowContext(r.Context(), `
+		SELECT
+			COALESCE(SUM(credits_burned), 0),
+			COALESCE(SUM(CASE WHEN success=1 THEN 1 ELSE 0 END), 0)
+		FROM llm_usage_events
+		WHERE user_id=? AND personal_provider=0 AND created_at>=? AND created_at<?`,
+		userID, since, until,
+	).Scan(&resp.AICredits, &resp.AICalls); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
+		return
+	}
+
+	// Resource credits: sum credits_burned; count events and duration from successful rows only.
+	resRows, err := h.svc.DB.QueryContext(r.Context(), `
+		SELECT resource_type,
+			COALESCE(SUM(CASE WHEN success=1 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(credits_burned), 0),
+			COALESCE(SUM(CASE WHEN success=1 THEN duration_ms ELSE 0 END), 0)
+		FROM resource_usage_events
+		WHERE user_id=? AND created_at>=? AND created_at<?
+		GROUP BY resource_type`,
+		userID, since, until,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
+		return
+	}
+	defer func() { _ = resRows.Close() }()
+	for resRows.Next() {
+		var rt string
+		var successfulEvents, credits, durationMS int64
+		if err := resRows.Scan(&rt, &successfulEvents, &credits, &durationMS); err != nil {
+			continue
+		}
+		switch rt {
+		case string(domain.ResourceTypeBrowserAutomation):
+			resp.BrowserAutomationCredits = credits
+			resp.BrowserActiveMS = durationMS
+			resp.BrowserActiveMinutes = float64(durationMS) / 60_000
+		case string(domain.ResourceTypeDocumentRender):
+			resp.DocumentRenderCredits = credits
+			resp.DocumentRenders = successfulEvents
+		}
+	}
+	if err := resRows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
+		return
+	}
+
+	resp.TotalCreditsUsed = resp.AICredits + resp.BrowserAutomationCredits + resp.DocumentRenderCredits
 
 	writeJSON(w, http.StatusOK, resp)
 }
