@@ -10,9 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/user/jobifai/internal/auth"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
-	"github.com/user/jobifai/internal/quota"
-	"github.com/user/jobifai/internal/resume"
 )
 
 const (
@@ -45,7 +44,7 @@ func writePDF(w http.ResponseWriter, filename string, data []byte) {
 // storing arbitrarily large strings in the resource ledger.
 const maxIdempotencyKeyLen = 128
 
-// legacyOpID builds a fully-qualified idempotency key for legacy (response-only) render
+// legacyOpID builds a fully-qualified idempotency key for Generate render
 // endpoints. The key is structured as:
 //
 //	document-render:<userID>:<operation>:<clientKey>
@@ -56,7 +55,6 @@ const maxIdempotencyKeyLen = 128
 //
 // When no Idempotency-Key header is present a UUID is generated; retries without the
 // header will always be treated as new operations.
-//
 func legacyOpID(r *http.Request, userID, operation string) string {
 	if k := strings.TrimSpace(r.Header.Get("Idempotency-Key")); k != "" {
 		return "document-render:" + userID + ":" + operation + ":" + k
@@ -117,27 +115,6 @@ func (h *ResumeHandlers) marketPrefix(r *http.Request, section string) string {
 	return strings.TrimSpace(raw) + "\n\n"
 }
 
-// marketCSSFile returns the CSS file path for the selected market, or empty string.
-func (h *ResumeHandlers) marketCSSFile(r *http.Request) string {
-	market := strings.TrimSpace(r.FormValue("market"))
-	if market == "" || h.svc.MarketDir == "" || h.svc.MarketCSSFileLookup == nil {
-		return ""
-	}
-	return h.svc.MarketCSSFileLookup(h.svc.MarketDir, market)
-}
-
-func (h *ResumeHandlers) marketRenderOptions(r *http.Request) *resume.RenderOptions {
-	market := strings.TrimSpace(r.FormValue("market"))
-	if market == "" || h.svc.MarketDir == "" {
-		return nil
-	}
-	m := resume.LoadMarketByName(h.svc.MarketDir, market)
-	if m == nil {
-		return nil
-	}
-	return &resume.RenderOptions{SectionLabels: m.LabelsOrDefault()}
-}
-
 // POST /api/resume/generate
 func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
@@ -147,6 +124,10 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.svc.Renderer == nil {
 		unprocessable(w, msgNoRenderer)
+		return
+	}
+	if h.svc.Documents == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "documents service unavailable"})
 		return
 	}
 	if err := r.ParseMultipartForm(16 << 20); err != nil {
@@ -160,6 +141,8 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	source := documents.SourceProfileRender
+
 	// Optional: override profile with uploaded file (uses LLM if configured)
 	if f, fh, ferr := r.FormFile("resume_file"); ferr == nil {
 		defer func() { _ = f.Close() }()
@@ -168,6 +151,7 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 			text, _ := h.svc.FileToText(f, fh.Filename)
 			if extracted, llmErr := extractor.ExtractFromText(r.Context(), text); llmErr == nil {
 				profile = extracted
+				source = documents.SourceAIImprove
 			}
 		} else {
 			_, _ = io.Copy(io.Discard, f)
@@ -186,36 +170,12 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 		if _, tailor := h.svc.LLMFactory(userID); tailor != nil {
 			if tailored, err := tailor.TailorProfile(r.Context(), profile, combinedCtx); err == nil {
 				profile = tailored
+				source = documents.SourceAIImprove
 			}
 		}
 	}
 
-	// Preflight quota before launching Chrome (legacy endpoint — no persisted version).
-	// Idempotency key: client-supplied Idempotency-Key header scoped to user+operation
-	// so the same client key on different endpoints stays independent.
-	opID := legacyOpID(r, userID, "resume-generate")
-	if h.svc.Resource != nil {
-		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
-			if errors.Is(err, quota.ErrExceeded) {
-				writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
-			} else {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "resource check unavailable"})
-			}
-			return
-		}
-	}
-	pdf, err := h.svc.Renderer.RenderResume(r.Context(), profile, r.FormValue("style"), h.marketCSSFile(r), h.marketRenderOptions(r))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	if h.svc.Resource != nil {
-		if err := h.svc.Resource.RecordRender(r.Context(), userID, opID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": fmt.Sprintf("render billing: %v", err)})
-			return
-		}
-	}
-	writePDF(w, "resume.pdf", pdf)
+	h.saveGeneratedResume(w, r, profile, source, "Generated resume", "resume-generate", "resume.pdf")
 }
 
 // POST /api/resume/generate-tailored
@@ -227,6 +187,10 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 	}
 	if h.svc.Renderer == nil {
 		unprocessable(w, msgNoRenderer)
+		return
+	}
+	if h.svc.Documents == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "documents service unavailable"})
 		return
 	}
 	if err := r.ParseMultipartForm(16 << 20); err != nil {
@@ -284,31 +248,7 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Preflight quota before launching Chrome (AI tailored — no persisted version).
-	// Idempotency key: client-supplied Idempotency-Key header scoped to user+operation.
-	opID := legacyOpID(r, userID, "resume-tailored")
-	if h.svc.Resource != nil {
-		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
-			if errors.Is(err, quota.ErrExceeded) {
-				writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
-			} else {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "resource check unavailable"})
-			}
-			return
-		}
-	}
-	pdf, err := h.svc.Renderer.RenderResume(r.Context(), tailored, r.FormValue("style"), h.marketCSSFile(r), h.marketRenderOptions(r))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	if h.svc.Resource != nil {
-		if err := h.svc.Resource.RecordRender(r.Context(), userID, opID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": fmt.Sprintf("render billing: %v", err)})
-			return
-		}
-	}
-	writePDF(w, "resume_tailored.pdf", pdf)
+	h.saveGeneratedResume(w, r, tailored, documents.SourceAIImprove, "Tailored resume", "resume-tailored", "resume_tailored.pdf")
 }
 
 // POST /api/resume/evaluate
@@ -374,6 +314,10 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 		unprocessable(w, msgNoRenderer)
 		return
 	}
+	if h.svc.Documents == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "documents service unavailable"})
+		return
+	}
 	if err := r.ParseMultipartForm(16 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": msgBadMultipart})
 		return
@@ -430,31 +374,7 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Preflight quota before launching Chrome (AI cover letter — no persisted version).
-	// Idempotency key: client-supplied Idempotency-Key header scoped to user+operation.
-	opID := legacyOpID(r, userID, "cover-generate")
-	if h.svc.Resource != nil {
-		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
-			if errors.Is(err, quota.ErrExceeded) {
-				writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
-			} else {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "resource check unavailable"})
-			}
-			return
-		}
-	}
-	pdf, err := h.svc.Renderer.RenderCoverLetter(r.Context(), body, r.FormValue("style"), h.marketCSSFile(r))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	if h.svc.Resource != nil {
-		if err := h.svc.Resource.RecordRender(r.Context(), userID, opID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": fmt.Sprintf("render billing: %v", err)})
-			return
-		}
-	}
-	writePDF(w, "cover_letter.pdf", pdf)
+	h.saveGeneratedCover(w, r, body)
 }
 
 // POST /api/resume/check-halal

@@ -34,7 +34,7 @@ resume_prompt: |
   - Do NOT use a fixed list of categories, derive them from the candidate's actual skills and background.
   - Each category is a single flat string. Do NOT use bullet sub-lists.
   - Keep each category string to 8 items or fewer.
-  - If the candidate lists spoken languages, include them as the last category: "Languages: English (Fluent), ..."
+  - Keep spoken languages only in the structured "languages" field, never in "skills". Programming languages may remain in skill categories.
 
 tailored_prompt: |
   You are a professional resume writer targeting the Australian job market, tailoring the resume to a specific role.
@@ -64,7 +64,7 @@ tailored_prompt: |
   - Do NOT use a fixed list of categories, derive them from the candidate's actual skills and background.
   - Each category is a single flat string. Do NOT use bullet sub-lists.
   - Keep each category string to 8 items or fewer.
-  - If the candidate lists spoken languages, include them as the last category: "Languages: English (Fluent), ..."
+  - Keep spoken languages only in the structured "languages" field, never in "skills". Programming languages may remain in skill categories.
 
 cover_letter_prompt: |
   You are writing a professional cover letter for an Australian job application.

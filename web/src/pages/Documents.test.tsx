@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { Documents } from './Documents'
 import { settingsApi } from '../api/settings'
 import { documentsApi } from '../api/documents'
-import type { ResumeStyle } from '../types'
+import type { DocumentsListResponse } from '../api/documents'
+import type { ResumeProfile, ResumeStyle } from '../types'
 
 vi.mock('../hooks/useQuota', () => ({
   useQuota: () => ({ aiDisabled: false, data: null }),
@@ -12,7 +13,7 @@ vi.mock('../hooks/useQuota', () => ({
 
 vi.mock('../api/documents', () => ({
   documentsApi: {
-    list: vi.fn(async () => ({ documents: [], defaults: {} })),
+    list: vi.fn(async (): Promise<DocumentsListResponse> => ({ documents: [], defaults: {} })),
     getVersion: vi.fn(),
     createResumeFromProfile: vi.fn(),
     appendResumeVersion: vi.fn(),
@@ -61,4 +62,57 @@ describe('Documents page', () => {
 
     expect(await screen.findByText(/No saved documents yet/i)).toBeInTheDocument()
   })
+})
+
+const savedProfile: ResumeProfile = {
+  summary: 'Original summary', skills: ['Go', 'Operations'],
+  personal_information: { name: 'Sam' },
+  experience_details: [{ position: 'Lead', company: 'Acme', employment_period: '2020–2024',
+    key_responsibilities: ['Delivered the project'], skills_acquired: ['Planning'] }],
+  languages: [{ language: 'English', proficiency: 'Fluent' }],
+  projects: [{ name: 'Unchanged project' }],
+}
+
+function mockSavedDocument(kind: 'resume' | 'cover_letter') {
+  vi.mocked(documentsApi.list).mockResolvedValueOnce({
+    documents: [{ id: 'doc1', kind, title: 'Saved document', created_at: '', updated_at: '', versions: [{
+      id: 'v1', version_number: 1, source: 'user_edit', content_kind: kind === 'resume' ? 'resume_json' : 'cover_text',
+      reconstructible: true, has_pdf: true, created_at: '',
+    }] }], defaults: {},
+  })
+  vi.mocked(documentsApi.getVersion).mockResolvedValueOnce({
+    id: 'v1', document_id: 'doc1', content_kind: kind === 'resume' ? 'resume_json' : 'cover_text', version_number: 1,
+    content_json: JSON.stringify(kind === 'resume' ? { profile: savedProfile } : { body: 'Complete original cover body' }),
+  })
+}
+
+it('edits skills and role content in a new version, preserving untouched fields', async () => {
+  mockSavedDocument('resume')
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={qc}><Documents /></QueryClientProvider>)
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit → new version' }))
+  expect(await screen.findByText('Edit content — saves as a new version')).toBeInTheDocument()
+  expect(screen.getByLabelText('Summary')).toHaveValue('Original summary')
+  expect(screen.getByLabelText(/Skills \(one per line\)/)).toHaveValue('Go\nOperations')
+  expect(screen.getByLabelText(/Responsibilities and achievements/)).toHaveValue('Delivered the project')
+  expect(screen.getByLabelText('Job title')).toHaveValue('Lead')
+  fireEvent.change(screen.getByLabelText(/Skills \(one per line\)/), { target: { value: 'Go\nLeadership' } })
+  fireEvent.change(screen.getByLabelText(/Responsibilities and achievements/), { target: { value: 'Delivered the project\nReduced costs by 20%' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save new version' }))
+  await waitFor(() => expect(documentsApi.appendResumeVersion).toHaveBeenCalledWith('doc1', expect.objectContaining({
+    profile: { ...savedProfile, skills: ['Go', 'Leadership'], experience_details: [{ ...savedProfile.experience_details![0],
+      key_responsibilities: ['Delivered the project', 'Reduced costs by 20%'] }] },
+  })))
+  expect(savedProfile.skills).toEqual(['Go', 'Operations'])
+})
+
+it('keeps the full cover body editor and saves a new cover version', async () => {
+  mockSavedDocument('cover_letter')
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={qc}><Documents /></QueryClientProvider>)
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit → new version' }))
+  const body = await screen.findByDisplayValue('Complete original cover body')
+  fireEvent.change(body, { target: { value: 'Updated full cover body' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save new version' }))
+  await waitFor(() => expect(documentsApi.appendCoverVersion).toHaveBeenCalledWith('doc1', expect.objectContaining({ body: 'Updated full cover body' })))
 })

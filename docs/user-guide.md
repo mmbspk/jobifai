@@ -188,6 +188,10 @@ For any tab that takes a job as input, you can provide:
 
 **Target Market**: select a market preset (e.g. Australia) to apply region-specific resume formatting and prompting rules.
 
+Successful resume and cover-letter generation automatically saves the content and PDF as a version in **Documents**. Click **Saved to Documents** to find it again, preview or download it, or explicitly choose it as a default. Saving does not run AI a second time. The Generate page's Download button remains available.
+
+In **Documents**, choose **Edit → new version** on a resume to edit its summary, skills, and work experience (including responsibilities and achievements). Lists use one item per line. **Save new version** preserves the original version and leaves untouched fields unchanged. Cover letters retain their full-body editor.
+
 If Job Fit is enabled together with HalalJobFilter, evaluating a role shows both the score and an Islamic ethics assessment side by side.
 
 For the Questions tab, type each question into a field (add more with the **+** button) and click **Answer Questions**. Each answer is shown with a one-click copy button.

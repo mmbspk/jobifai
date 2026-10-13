@@ -81,6 +81,8 @@ func newResumeRouterWithBillingStub(t *testing.T) (http.Handler, *handler.Servic
 	svc, _ := newTestServices(t)
 	llm, eval, halal, answerer := stubLLMFactories()
 	svc.Renderer = stubRenderer{}
+	wireDocumentService(t, svc)
+	svc.Documents.Renderer = svc.Renderer
 	svc.LLMFactory = llm
 	svc.EvaluatorFactory = eval
 	svc.HalalCheckerFactory = halal
@@ -272,4 +274,3 @@ func TestResume_Idempotency_OverlongKey_Rejected(t *testing.T) {
 	// Neither request must have triggered a billing call.
 	assert.Empty(t, stub.distinctKeys(), "rejected requests must not produce any billing events")
 }
-

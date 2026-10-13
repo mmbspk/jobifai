@@ -112,6 +112,8 @@ func newEarlyValidationRouter(t *testing.T) earlyValidationRouterParts {
 	resource := newCountingResourceStub()
 
 	svc.Renderer = renderer
+	wireDocumentService(t, svc)
+	svc.Documents.Renderer = svc.Renderer
 	svc.LLMFactory = func(string) (handler.ResumeExtractor, handler.ResumeTailor) {
 		return extractor, tailor
 	}
