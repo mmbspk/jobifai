@@ -11,6 +11,29 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
+func TestRegionalDefault_DeletedDocumentIsNotSelectedForNewApplications(t *testing.T) {
+	b := testBotWithProfile()
+	b.cfg.UserID = "regional-delete"
+	b.cfg.Settings.DefaultResumeMarket = "Australia"
+	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	store := documents.NewStore(db)
+	b.cfg.Documents = &documents.Service{Store: store}
+	docID, err := store.CreateDocument(t.Context(), b.cfg.UserID, documents.KindResume, "Regional resume")
+	require.NoError(t, err)
+	versionID, _, err := store.InsertVersion(t.Context(), documents.InsertVersionParams{
+		DocumentID: docID, UserID: b.cfg.UserID, Source: documents.SourceProfileRender,
+		ContentKind: documents.ContentResumeJSON, ContentJSON: `{}`,
+	})
+	require.NoError(t, err)
+	b.cfg.Settings.DocumentPolicies.RegionalDefaults = map[string]string{"Australia": versionID}
+	def := documents.DefaultsView{ResumeVersionID: "global-default"}
+	require.Equal(t, versionID, b.effectiveResumeVersionID(def))
+	require.NoError(t, b.cfg.Documents.DeleteDocument(t.Context(), b.cfg.UserID, docID))
+	require.Equal(t, "global-default", b.effectiveResumeVersionID(def))
+}
+
 // TestPrepareResolution_UsesSiteSkipFromStoredPack verifies unfrozen prepare reads picker flags.
 func TestPrepareResolution_UsesSiteSkipFromStoredPack(t *testing.T) {
 	t.Parallel()
@@ -43,7 +66,7 @@ func TestPickerChangeThenMaterialize_ReadyForSubmit(t *testing.T) {
 	}))
 	l := &lazyDocGen{
 		b: b, ctx: context.Background(),
-		job: linkedInJob{ID: "job-hold-clear", Title: "Role", Company: "Co"},
+		job:      linkedInJob{ID: "job-hold-clear", Title: "Role", Company: "Co"},
 		refsJSON: packJSON, jobDesc: "Role at Co",
 	}
 	l.applyStoredPackMetadata()

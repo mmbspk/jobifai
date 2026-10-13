@@ -164,6 +164,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/originals", documentsH.UploadOriginal)
 			r.Put("/defaults", documentsH.SetDefault)
 			r.Put("/preferred-style", documentsH.SetPreferredStyle)
+			r.Delete("/{document_id}", documentsH.Delete)
 			r.Post("/{document_id}/resume-versions", documentsH.AppendResumeVersion)
 			r.Post("/{document_id}/cover-versions", documentsH.AppendCoverVersion)
 			r.Get("/versions/{version_id}/pdf", documentsH.DownloadPDF)

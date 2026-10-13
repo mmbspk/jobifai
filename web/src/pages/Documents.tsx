@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { AlertTriangle, FileText, Loader2, Star } from 'lucide-react'
+import { AlertTriangle, FileText, Loader2, Star, Trash2 } from 'lucide-react'
 import {
   documentsApi,
   fetchDocumentOriginal,
@@ -11,6 +11,7 @@ import {
 import { settingsApi } from '../api/settings'
 import { PageHeader } from '../components/shell/PageHeader'
 import { Button } from '../components/ui/button'
+import { DialogRoot, DialogContent } from '../components/ui/dialog'
 import { inputClassName } from '../components/ui/input'
 import { downloadBlob } from '../lib'
 import { useQuota } from '../hooks/useQuota'
@@ -47,6 +48,7 @@ export function Documents() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [previewVersion, setPreviewVersion] = useState<string | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
+  const [deletingDocument, setDeletingDocument] = useState<UserDocument | null>(null)
   const [editingCover, setEditingCover] = useState<{ docId: string; body: string } | null>(null)
   const [editingResume, setEditingResume] = useState<{ docId: string; versionId: string; profile: ResumeProfile } | null>(null)
 
@@ -112,6 +114,21 @@ export function Documents() {
     mutationFn: wrap(({ kind, id }: { kind: 'resume' | 'cover_letter'; id: string }) =>
       documentsApi.setDefault(kind, id)),
     onSuccess: invalidate,
+  })
+
+  const deleteDocument = useMutation<{ message: string }, Error, UserDocument>({
+    mutationFn: wrap((document: UserDocument) => documentsApi.deleteDocument(document.id)),
+    onSuccess: (_, document) => {
+      setDeletingDocument(null)
+      if (editingResume?.docId === document.id) setEditingResume(null)
+      if (editingCover?.docId === document.id) setEditingCover(null)
+      if (document.versions?.some(version => version.id === previewVersion)) {
+        setPreviewUrl(null)
+        setPreviewVersion(null)
+      }
+      void invalidate()
+      void qc.invalidateQueries({ queryKey: ['review-documents'] })
+    },
   })
 
   async function openPreview(versionId: string) {
@@ -244,6 +261,8 @@ export function Documents() {
         <p className="text-[var(--color-text-muted)] text-sm">No saved documents yet. Create a resume from your profile or upload an original under Settings → Profile.</p>
       )}
 
+      {!isLoading && !error && <h2 className="font-semibold">Saved documents ({documents.length})</h2>}
+
       {documents.map(doc => (
         <DocumentCard
           key={doc.id}
@@ -282,8 +301,28 @@ export function Documents() {
           }}
           onSetDefault={(kind, id) => setDefault.mutate({ kind, id })}
           settingDefault={setDefault.isPending}
+          onDelete={() => { setActionErr(null); deleteDocument.reset(); setDeletingDocument(doc) }}
+          deleting={deleteDocument.isPending}
         />
       ))}
+
+      <DialogRoot open={deletingDocument !== null} onOpenChange={open => {
+        if (!open && !deleteDocument.isPending) setDeletingDocument(null)
+      }}>
+        <DialogContent title="Delete document?" description={`Remove “${deletingDocument?.title ?? 'this document'}” and all its versions from your saved documents. Copies used by applications remain available in application history.`}>
+          {deletingDocument?.versions?.some(version => version.id === defaults?.resume_version_id || version.id === defaults?.cover_letter_version_id) && (
+            <p className="text-sm text-[var(--color-warn)] mb-4">This document is a default. Deleting it clears that default; choose another document for future applications.</p>
+          )}
+          {deleteDocument.isError && <p role="alert" className="text-sm text-[var(--color-danger)] mb-4">{actionError(deleteDocument.error)}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" disabled={deleteDocument.isPending} onClick={() => setDeletingDocument(null)}>Cancel</Button>
+            <Button variant="danger" disabled={deleteDocument.isPending} onClick={() => deletingDocument && deleteDocument.mutate(deletingDocument)}>
+              {deleteDocument.isPending ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+              Delete document
+            </Button>
+          </div>
+        </DialogContent>
+      </DialogRoot>
 
       {previewUrl && (
         <section className="space-y-2">
@@ -308,6 +347,8 @@ function DocumentCard({
   onEditCover,
   onSetDefault,
   settingDefault,
+  onDelete,
+  deleting,
 }: {
   doc: UserDocument
   defaults?: { resume_version_id?: string; cover_letter_version_id?: string }
@@ -317,6 +358,8 @@ function DocumentCard({
   onEditCover: (docId: string, versionId: string) => void
   onSetDefault: (kind: 'resume' | 'cover_letter', id: string) => void
   settingDefault: boolean
+  onDelete: () => void
+  deleting: boolean
 }) {
   const defaultKind: 'resume' | 'cover_letter' | null =
     doc.kind === 'cover_letter' ? 'cover_letter' :
@@ -324,7 +367,12 @@ function DocumentCard({
 
   return (
     <section className="rounded-[var(--radius-lg)] border border-[var(--color-border)] p-4 space-y-2">
-      <h3 className="font-medium">{doc.title} <span className="text-[var(--color-text-dim)] text-sm">({doc.kind.replace(/_/g, ' ')})</span></h3>
+      <div className="flex items-start justify-between gap-3"><h3 className="font-medium">{doc.title} <span className="text-[var(--color-text-dim)] text-sm">({doc.kind.replace(/_/g, ' ')})</span></h3>
+        <Button size="sm" variant="ghost" aria-label={`Delete ${doc.title || 'document'}`} title="Delete document"
+          disabled={deleting} onClick={onDelete} className="text-[var(--color-danger)] shrink-0">
+          <Trash2 size={16} />
+        </Button>
+      </div>
       <ul className="space-y-2 text-sm">
         {(doc.versions ?? []).map(v => {
           const isDefault =

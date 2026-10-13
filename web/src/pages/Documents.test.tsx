@@ -1,11 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Documents } from './Documents'
 import { settingsApi } from '../api/settings'
 import { documentsApi } from '../api/documents'
 import type { DocumentsListResponse } from '../api/documents'
 import type { ResumeProfile, ResumeStyle } from '../types'
+
+beforeEach(() => vi.clearAllMocks())
 
 vi.mock('../hooks/useQuota', () => ({
   useQuota: () => ({ aiDisabled: false, data: null }),
@@ -15,6 +17,7 @@ vi.mock('../api/documents', () => ({
   documentsApi: {
     list: vi.fn(async (): Promise<DocumentsListResponse> => ({ documents: [], defaults: {} })),
     getVersion: vi.fn(),
+    deleteDocument: vi.fn(async () => ({ message: 'document deleted' })),
     createResumeFromProfile: vi.fn(),
     appendResumeVersion: vi.fn(),
     saveCoverLetter: vi.fn(),
@@ -73,12 +76,12 @@ const savedProfile: ResumeProfile = {
   projects: [{ name: 'Unchanged project' }],
 }
 
-function mockSavedDocument(kind: 'resume' | 'cover_letter') {
+function mockSavedDocument(kind: 'resume' | 'cover_letter', isDefault = false) {
   vi.mocked(documentsApi.list).mockResolvedValueOnce({
     documents: [{ id: 'doc1', kind, title: 'Saved document', created_at: '', updated_at: '', versions: [{
       id: 'v1', version_number: 1, source: 'user_edit', content_kind: kind === 'resume' ? 'resume_json' : 'cover_text',
       reconstructible: true, has_pdf: true, created_at: '',
-    }] }], defaults: {},
+    }] }], defaults: isDefault ? { resume_version_id: 'v1' } : {},
   })
   vi.mocked(documentsApi.getVersion).mockResolvedValueOnce({
     id: 'v1', document_id: 'doc1', content_kind: kind === 'resume' ? 'resume_json' : 'cover_text', version_number: 1,
@@ -115,4 +118,36 @@ it('keeps the full cover body editor and saves a new cover version', async () =>
   fireEvent.change(body, { target: { value: 'Updated full cover body' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save new version' }))
   await waitFor(() => expect(documentsApi.appendCoverVersion).toHaveBeenCalledWith('doc1', expect.objectContaining({ body: 'Updated full cover body' })))
+})
+
+
+it('confirms deletion, warns about a default, and refreshes the saved count', async () => {
+  mockSavedDocument('resume', true)
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={qc}><Documents /></QueryClientProvider>)
+  expect(await screen.findByText('Saved documents (1)')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Delete Saved document' }))
+  expect(await screen.findByRole('dialog', { name: 'Delete document?' })).toBeInTheDocument()
+  expect(screen.getByText(/Deleting it clears that default/)).toBeInTheDocument()
+  expect(documentsApi.deleteDocument).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  expect(documentsApi.deleteDocument).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Delete Saved document' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Delete document' }))
+  await waitFor(() => expect(documentsApi.deleteDocument).toHaveBeenCalledWith('doc1'))
+  expect(await screen.findByText('Saved documents (0)')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Delete Saved document' })).not.toBeInTheDocument()
+})
+
+it('keeps the document and shows deletion failures', async () => {
+  mockSavedDocument('cover_letter')
+  vi.mocked(documentsApi.deleteDocument).mockRejectedValueOnce(new Error('Could not delete document'))
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={qc}><Documents /></QueryClientProvider>)
+  fireEvent.click(await screen.findByRole('button', { name: 'Delete Saved document' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Delete document' }))
+  await waitFor(() => expect(screen.getAllByRole('alert').some(el => el.textContent === 'Could not delete document')).toBe(true))
+  expect(screen.getByText('Saved documents (1)')).toBeInTheDocument()
+  expect(screen.getByRole('dialog')).toBeInTheDocument()
 })

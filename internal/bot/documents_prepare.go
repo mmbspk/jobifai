@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 
@@ -44,7 +45,17 @@ func (b *Bot) effectiveResumeVersionID(def documents.DefaultsView) string {
 	market := strings.TrimSpace(b.cfg.Settings.DefaultResumeMarket)
 	if b.cfg.Settings.DocumentPolicies.RegionalDefaults != nil {
 		if vid := strings.TrimSpace(b.cfg.Settings.DocumentPolicies.RegionalDefaults[market]); vid != "" {
-			return vid
+			// A running bot may still hold a regional mapping removed from the
+			// saved library; don't select a deleted document for a new application.
+			if b.cfg.Documents == nil {
+				return vid
+			}
+			err := b.cfg.Documents.Store.ValidateVersionKind(context.Background(), b.cfg.UserID, vid, documents.KindResume)
+			if !errors.Is(err, documents.ErrNotFound) && !errors.Is(err, documents.ErrForbidden) && !errors.Is(err, documents.ErrReviewVersionWrongKind) {
+				// Preserve the configured ID on transient storage errors so
+				// materialization fails rather than silently substituting a default.
+				return vid
+			}
 		}
 	}
 	return def.ResumeVersionID

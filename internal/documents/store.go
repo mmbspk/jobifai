@@ -58,18 +58,24 @@ func (s *Store) InsertVersion(ctx context.Context, p InsertVersionParams) (versi
 	if !p.Reconstructible {
 		rec = 0
 	}
-	_, err = s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO document_content_versions (
 			id, document_id, user_id, version_number, source, content_kind, content_json,
 			profile_snapshot_json, profile_snapshot_hash, market, document_language,
 			style_name, css_file_path, css_snapshot, renderer_version, render_snapshot_json, reconstructible
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM user_documents WHERE id = ? AND user_id = ? AND deleted_at IS NULL)`,
 		versionID, p.DocumentID, p.UserID, versionNum, p.Source, p.ContentKind, p.ContentJSON,
 		nullIfEmpty(p.ProfileSnapshotJSON), nullIfEmpty(p.ProfileSnapshotHash), nullIfEmpty(p.Market),
 		nullIfEmpty(p.DocumentLanguage), nullIfEmpty(p.StyleName), nullIfEmpty(p.CSSFilePath),
-		p.CSSSnapshot, p.RendererVersion, p.RenderSnapshotJSON, rec)
+		p.CSSSnapshot, p.RendererVersion, p.RenderSnapshotJSON, rec, p.DocumentID, p.UserID)
 	if err != nil {
 		return "", 0, err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return "", 0, err
+	} else if n == 0 {
+		return "", 0, ErrNotFound
 	}
 	_, _ = s.db.ExecContext(ctx, `UPDATE user_documents SET updated_at = datetime('now') WHERE id = ?`, p.DocumentID)
 	return versionID, versionNum, nil
@@ -198,8 +204,11 @@ func (s *Store) ValidateVersionKind(ctx context.Context, userID, versionID, expe
 		return err
 	}
 	var docKind string
-	if err := s.db.QueryRowContext(ctx, `SELECT kind FROM user_documents WHERE id = ? AND user_id = ?`, docID, userID).Scan(&docKind); err != nil {
-		return ErrNotFound
+	if err := s.db.QueryRowContext(ctx, `SELECT kind FROM user_documents WHERE id = ? AND user_id = ? AND deleted_at IS NULL`, docID, userID).Scan(&docKind); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
 	}
 	switch expectedKind {
 	case KindResume:
@@ -231,21 +240,31 @@ func (s *Store) SetDefault(ctx context.Context, userID, kind, versionID, profile
 		return err
 	}
 	_ = p
-	_, err = s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO user_document_defaults (user_id, kind, content_version_id, profile_snapshot_hash, market)
-		VALUES (?, ?, ?, ?, ?)
+		SELECT ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM user_documents d JOIN document_content_versions v ON v.document_id = d.id
+			WHERE v.id = ? AND v.user_id = ? AND d.user_id = ? AND d.deleted_at IS NULL)
 		ON CONFLICT(user_id, kind) DO UPDATE SET
 			content_version_id = excluded.content_version_id,
 			profile_snapshot_hash = excluded.profile_snapshot_hash,
 			market = excluded.market,
 			selected_at = datetime('now')`,
-		userID, kind, versionID, nullIfEmpty(profileHash), nullIfEmpty(market))
-	return err
+		userID, kind, versionID, nullIfEmpty(profileHash), nullIfEmpty(market), versionID, userID, userID)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) ListDocuments(ctx context.Context, userID string) ([]Document, DefaultsView, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, kind, title, created_at, updated_at FROM user_documents WHERE user_id = ? ORDER BY updated_at DESC`, userID)
+		SELECT id, kind, title, created_at, updated_at FROM user_documents WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC`, userID)
 	if err != nil {
 		return nil, DefaultsView{}, err
 	}
@@ -288,7 +307,7 @@ func (s *Store) ListDocuments(ctx context.Context, userID string) ([]Document, D
 
 func (s *Store) GetDocument(ctx context.Context, userID, documentID string) (kind, title string, err error) {
 	err = s.db.QueryRowContext(ctx, `
-		SELECT kind, title FROM user_documents WHERE id = ? AND user_id = ?`, documentID, userID).Scan(&kind, &title)
+		SELECT kind, title FROM user_documents WHERE id = ? AND user_id = ? AND deleted_at IS NULL`, documentID, userID).Scan(&kind, &title)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", ErrNotFound
 	}

@@ -190,6 +190,8 @@ For any tab that takes a job as input, you can provide:
 
 Successful resume and cover-letter generation automatically saves the content and PDF as a version in **Documents**. Click **Saved to Documents** to find it again, preview or download it, or explicitly choose it as a default. Saving does not run AI a second time. The Generate page's Download button remains available.
 
+Use the trash icon on a document card to remove it from your saved documents. Confirm before deletion; deleting a default clears that selection. The saved-document count updates immediately. Copies already used by applications remain downloadable from application history. The admin retention setting controls recent application PDF storage, not a hard cap on saved documents.
+
 In **Documents**, choose **Edit → new version** on a resume to edit its summary, skills, and work experience (including responsibilities and achievements). Lists use one item per line. **Save new version** preserves the original version and leaves untouched fields unchanged. Cover letters retain their full-body editor.
 
 If Job Fit is enabled together with HalalJobFilter, evaluating a role shows both the score and an Islamic ethics assessment side by side.
