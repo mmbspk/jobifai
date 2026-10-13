@@ -348,44 +348,50 @@ func TestRenderBilling_CoverLetter_QuotaFailure_NoVersionCreated(t *testing.T) {
 	assert.Empty(t, list.Documents, "quota failure before cover InsertVersion must leave no document rows")
 }
 
-// --- Gap 2 regressions: render/accounting failure must clean up the pending version ---
+// --- Gap 2 regressions: render failure preserves the version; accounting failure deletes it ---
 
-// TestRenderBilling_RenderFailure_VersionCleanedUp verifies that when the PDF renderer fails,
-// the pending version row (inserted with Reconstructible=false) is deleted. A document row
-// may be created but must contain zero versions.
-func TestRenderBilling_RenderFailure_VersionCleanedUp(t *testing.T) {
+// TestRenderBilling_RenderFailure_VersionPreserved verifies that when the PDF renderer fails,
+// the pending version row is preserved (not deleted). The document has a version with valid
+// content but no PDF artifact. The caller receives (versionID, err) — partial success.
+// RecordRender must NOT be called on render failure (billing integrity invariant).
+func TestRenderBilling_RenderFailure_VersionPreserved(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	b := &stubBiller{}
 	svc, userID := newBilledService(t, &failingRenderer{}, b)
 
-	_, err := svc.CreateResumeFromProfile(ctx, userID, "", documents.RenderContext{Language: "en"})
+	versionID, err := svc.CreateResumeFromProfile(ctx, userID, "", documents.RenderContext{Language: "en"})
 	require.Error(t, err)
+	require.NotEmpty(t, versionID, "render failure must return a versionID — partial-success for the handler")
 
-	list, err := svc.List(ctx, userID)
-	require.NoError(t, err)
+	list, listErr := svc.List(ctx, userID)
+	require.NoError(t, listErr)
+	var versions int
 	for _, doc := range list.Documents {
-		assert.Empty(t, doc.Versions,
-			"render failure must delete the pending version — no partial version visible")
+		versions += len(doc.Versions)
 	}
+	assert.Equal(t, 1, versions, "render failure must preserve the version — content is valid, no PDF artifact")
 	assert.Equal(t, int32(0), b.recordN.Load(), "RecordRender must not be called after render failure")
 }
 
-// TestRenderBilling_CoverLetter_RenderFailure_VersionCleanedUp is the cover-letter equivalent.
-func TestRenderBilling_CoverLetter_RenderFailure_VersionCleanedUp(t *testing.T) {
+// TestRenderBilling_CoverLetter_RenderFailure_VersionPreserved is the cover-letter equivalent.
+func TestRenderBilling_CoverLetter_RenderFailure_VersionPreserved(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	b := &stubBiller{}
 	svc, userID := newBilledService(t, &failingRenderer{}, b)
 
-	_, err := svc.SaveCoverLetter(ctx, userID, "", "Body.", documents.RenderContext{Language: "en"})
+	versionID, err := svc.SaveCoverLetter(ctx, userID, "", "Body.", documents.RenderContext{Language: "en"})
 	require.Error(t, err)
+	require.NotEmpty(t, versionID, "render failure must return a versionID for cover letter")
 
-	list, err := svc.List(ctx, userID)
-	require.NoError(t, err)
+	list, listErr := svc.List(ctx, userID)
+	require.NoError(t, listErr)
+	var versions int
 	for _, doc := range list.Documents {
-		assert.Empty(t, doc.Versions, "render failure must delete the pending cover version")
+		versions += len(doc.Versions)
 	}
+	assert.Equal(t, 1, versions, "render failure must preserve the cover version — content is valid, no PDF artifact")
 	assert.Equal(t, int32(0), b.recordN.Load(), "RecordRender must not be called after cover render failure")
 }
 

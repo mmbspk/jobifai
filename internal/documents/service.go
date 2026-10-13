@@ -152,11 +152,18 @@ func (s *Service) saveResumeVersionLocked(ctx context.Context, userID, documentI
 		return "", err
 	}
 
-	// 3. Render → blob → bill → link. Clean up the pending version on any failure so
-	//    a failed/unbilled version cannot be retrieved through PDFBytes or ReconstructPDF.
-	if err := s.resumeBillAndLink(ctx, userID, versionID, canReconstruct, profile, rc.StyleName, cssSnap, RenderOptsFromSnapshot(renderSnap)); err != nil {
-		_ = s.Store.DeleteVersion(ctx, userID, versionID)
-		return "", err
+	// 3. Render → blob → bill → link.
+	// On render/blob failure (needsCleanup=false): content is valid; preserve the version
+	// so the caller can report partial success (render_status: "failed").
+	// On blob-written failure (needsCleanup=true): blob orphaned or billing committed;
+	// delete the version to avoid an inaccessible or billed-but-unlinked artifact.
+	needsCleanup, err := s.resumeBillAndLink(ctx, userID, versionID, canReconstruct, profile, rc.StyleName, cssSnap, RenderOptsFromSnapshot(renderSnap))
+	if err != nil {
+		if needsCleanup {
+			_ = s.Store.DeleteVersion(ctx, userID, versionID)
+			return "", err
+		}
+		return versionID, err
 	}
 	return versionID, nil
 }
@@ -234,10 +241,14 @@ func (s *Service) saveCoverLetterLocked(ctx context.Context, userID, documentID,
 		return "", err
 	}
 
-	// 3. Render → blob → bill → link. Clean up on failure.
-	if err := s.coverBillAndLink(ctx, userID, versionID, canReconstruct, body, rc.StyleName, cssSnap); err != nil {
-		_ = s.Store.DeleteVersion(ctx, userID, versionID)
-		return "", err
+	// 3. Render → blob → bill → link (same partial-success semantics as saveResumeVersionLocked).
+	needsCleanup, err := s.coverBillAndLink(ctx, userID, versionID, canReconstruct, body, rc.StyleName, cssSnap)
+	if err != nil {
+		if needsCleanup {
+			_ = s.Store.DeleteVersion(ctx, userID, versionID)
+			return "", err
+		}
+		return versionID, err
 	}
 	return versionID, nil
 }
@@ -528,44 +539,54 @@ func (s *Service) ensureDocument(ctx context.Context, userID, documentID, kind, 
 	return documentID, nil
 }
 
-// resumeBillAndLink renders a resume PDF, writes the blob, commits billing, links the artifact
-// in DB, and marks the version reconstructible. The caller is responsible for cleaning up the
-// pending version (Store.DeleteVersion) if this returns an error.
+// resumeBillAndLink renders a resume PDF, writes the blob, commits billing, and links the
+// artifact in DB. It returns (needsCleanup, err):
+//
+//   - needsCleanup=false, err!=nil: render or blob failure — nothing was committed externally.
+//     The pending version content is valid; the caller should preserve it and surface partial
+//     success (render_status: "failed") so the client gets a versionID even without a PDF.
+//
+//   - needsCleanup=true, err!=nil: the blob was written (billing may or may not have committed)
+//     but a subsequent step failed. The caller must delete the pending version to avoid an
+//     inaccessible or billed-but-unlinked artifact in the DB.
+//
+//   - needsCleanup=true, err=nil: success (caller does not delete).
 //
 // Order is critical for billing integrity:
-//   1. render  → failure leaves nothing in DB
-//   2. blob    → failure: orphaned blob (GC-able), no DB entry
-//   3. billing → failure: orphaned blob, version cleaned up by caller (no artifact linked)
-//   4. link    → failure: billing committed, blob exists; caller cleans up (version gone)
-//   5. ready   → failure: artifact accessible via direct key; logged but not fatal
-func (s *Service) resumeBillAndLink(ctx context.Context, userID, versionID string, canReconstruct bool, profile *domain.ResumeProfile, styleName, cssSnap string, opts *resume.RenderOptions) error {
+//
+//	1. render  → failure: needsCleanup=false; no external state
+//	2. blob    → failure: needsCleanup=false; blob write is atomic (PutAtomic)
+//	3. billing → failure: needsCleanup=true;  orphaned blob; version cleaned up by caller
+//	4. link    → failure: needsCleanup=true;  billing committed; caller cleans up version
+//	5. ready   → failure: artifact accessible via direct key; logged but not fatal
+func (s *Service) resumeBillAndLink(ctx context.Context, userID, versionID string, canReconstruct bool, profile *domain.ResumeProfile, styleName, cssSnap string, opts *resume.RenderOptions) (needsCleanup bool, err error) {
 	cssOverride, cleanup, err := writeTempCSS(cssSnap)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer cleanup()
 
 	pdf, err := s.Renderer.RenderResume(ctx, profile, styleName, cssOverride, opts)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	key, sha, size, err := s.writeArtifactBlob(userID, pdf)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	// Commit billing BEFORE linking the artifact so a billing failure cannot leave
-	// an accessible unbilled PDF artifact in the DB.
+	// Blob written — any failure from here requires the caller to clean up the version
+	// (the blob is orphaned and/or billing was committed).
 	if s.Biller != nil {
 		if err := s.Biller.RecordRender(ctx, userID, renderIdempotencyKey(versionID)); err != nil {
-			return fmt.Errorf("document render billing: %w", err)
+			return true, fmt.Errorf("document render billing: %w", err)
 		}
 	}
 
 	tid := templateIdentity(cssSnap)
 	if err := s.Store.LinkArtifact(ctx, userID, versionID, key, sha, size, tid); err != nil {
-		return err
+		return true, err
 	}
 
 	// Mark version reconstructible so legitimate retention-eviction followed by
@@ -578,36 +599,39 @@ func (s *Service) resumeBillAndLink(ctx context.Context, userID, versionID strin
 			_ = err // caller receives success; background GC / admin can rectify
 		}
 	}
-	return nil
+	return true, nil
 }
 
 // coverBillAndLink is the cover-letter equivalent of resumeBillAndLink.
-func (s *Service) coverBillAndLink(ctx context.Context, userID, versionID string, canReconstruct bool, body, styleName, cssSnap string) error {
+// Returns (needsCleanup, err) with the same semantics:
+// needsCleanup=false → render/blob failure, caller preserves version;
+// needsCleanup=true  → blob written (billing failure or link failure), caller must delete.
+func (s *Service) coverBillAndLink(ctx context.Context, userID, versionID string, canReconstruct bool, body, styleName, cssSnap string) (needsCleanup bool, err error) {
 	cssOverride, cleanup, err := writeTempCSS(cssSnap)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer cleanup()
 
 	pdf, err := s.Renderer.RenderCoverLetter(ctx, body, styleName, cssOverride)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	key, sha, size, err := s.writeArtifactBlob(userID, pdf)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if s.Biller != nil {
 		if err := s.Biller.RecordRender(ctx, userID, renderIdempotencyKey(versionID)); err != nil {
-			return fmt.Errorf("document render billing: %w", err)
+			return true, fmt.Errorf("document render billing: %w", err)
 		}
 	}
 
 	tid := templateIdentity(cssSnap)
 	if err := s.Store.LinkArtifact(ctx, userID, versionID, key, sha, size, tid); err != nil {
-		return err
+		return true, err
 	}
 
 	if canReconstruct {
@@ -615,7 +639,7 @@ func (s *Service) coverBillAndLink(ctx context.Context, userID, versionID string
 			_ = err
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func renderIdempotencyKey(versionID string) string {

@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 	"github.com/user/jobifai/internal/resume"
 )
+
 
 type stubPDFRenderer struct{}
 
@@ -178,4 +180,80 @@ func TestDocuments_SetDefaultOriginalUploadResume(t *testing.T) {
 
 	w = authGet(t, router, "/api/documents", token)
 	require.Equal(t, http.StatusOK, w.Code)
+}
+
+// failingPDFRenderer returns an error from RenderResume to simulate Chrome being unavailable.
+type failingPDFRenderer struct{}
+
+func (failingPDFRenderer) RenderResume(_ context.Context, _ *domain.ResumeProfile, _, _ string, _ *resume.RenderOptions) ([]byte, error) {
+	return nil, errors.New("renderer unavailable: Chrome not found")
+}
+func (failingPDFRenderer) RenderCoverLetter(_ context.Context, _ string, _, _ string) ([]byte, error) {
+	return nil, errors.New("renderer unavailable: Chrome not found")
+}
+
+// wireDocumentServiceWithRenderer builds a test document service with the given renderer.
+func wireDocumentServiceWithRenderer(t *testing.T, svc *handler.Services, r documents.PDFRenderer) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "doc-blobs")
+	blobs, err := documents.NewLocalBlobStore(root)
+	require.NoError(t, err)
+	svc.Documents = &documents.Service{
+		Store:     documents.NewStore(svc.DB),
+		Blobs:     blobs,
+		Renderer:  r,
+		MarketDir: "resume_markets",
+		StylesDir: filepath.Join("..", "..", documents.StylesDirRelative),
+		LoadProfile: func(userID string) (*domain.ResumeProfile, error) {
+			var p domain.ResumeProfile
+			if err := svc.Config.Get(userID, "resume_profile", &p); errors.Is(err, domain.ErrNotFound) {
+				return nil, nil
+			} else if err != nil {
+				return nil, err
+			}
+			return &p, nil
+		},
+		SaveDefaultsMeta: func(userID string, m documents.DefaultsMeta) error {
+			return svc.Config.Set(userID, "document_defaults_meta", m)
+		},
+		DefaultsMeta: func(userID string) (documents.DefaultsMeta, error) {
+			var m documents.DefaultsMeta
+			if err := svc.Config.Get(userID, "document_defaults_meta", &m); err != nil {
+				return documents.DefaultsMeta{}, nil
+			}
+			return m, nil
+		},
+	}
+}
+
+// TestCreateResumeFromProfile_RenderFails_Returns201 is the regression test for the E2E
+// failure diagnosed in feat/resource-credit-document-rendering: when the PDF renderer is
+// unavailable (Chrome not found in CI), /api/documents/resume/from-profile must still
+// return HTTP 201 with a content_version_id and render_status="failed".
+// The version is preserved because no billing was committed — the caller can set it as
+// a default and the server will render the PDF on the next successful attempt.
+func TestCreateResumeFromProfile_RenderFails_Returns201(t *testing.T) {
+	t.Parallel()
+	svc, _ := newTestServices(t)
+	wireDocumentServiceWithRenderer(t, svc, failingPDFRenderer{})
+	router := handler.NewRouter(svc)
+
+	token := registerAndLogin(t, router, "render-fail@example.com", "password123")
+	authPost(t, router, "/api/settings/resume", token, map[string]any{
+		"personal_information": map[string]string{"name": "Alex Test", "email": "alex@example.com"},
+	})
+
+	w := authPost(t, router, "/api/documents/resume/from-profile", token, map[string]string{
+		"title": "CI render-fail test",
+	})
+	assert.Equal(t, http.StatusCreated, w.Code,
+		"render failure must return 201 (partial success), not 422 — body: %s", w.Body)
+
+	var resp struct {
+		ContentVersionID string `json:"content_version_id"`
+		RenderStatus     string `json:"render_status"`
+	}
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.NotEmpty(t, resp.ContentVersionID, "must include a content_version_id")
+	assert.Equal(t, "failed", resp.RenderStatus, "render_status must be 'failed'")
 }

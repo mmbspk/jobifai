@@ -63,11 +63,35 @@ const abortControllers: Partial<Record<GenTab, AbortController>> = {}
 const pendingKeys: Partial<Record<GenTab, PendingKey>> = {}
 
 /**
- * Stable fingerprint of the inputs that determine billing identity.
- * A materially different job URL or description → different render → new key.
+ * Stable fingerprint of all inputs that materially determine the rendered output.
+ * A change to any of these → different render → new idempotency key.
+ *
+ * Only applied for resume/cover tabs (the tabs that use the pending-key mechanism).
+ * Evaluate and questions tabs never touch pendingKeys.
  */
-function computeFingerprint(tab: GenTab, f: FormState): string {
-  return JSON.stringify({ tab, jobUrl: f.jobUrl.trim(), jobDesc: f.jobDesc.trim() })
+function computeFingerprint(tab: GenTab, f: FormState, skipUrlFetch: boolean): string {
+  const mode = tab === 'resume' || tab === 'cover'
+    ? (() => {
+        const hasDesc = f.jobDesc.trim().length > 20
+        const hasUrl = f.jobUrl.trim().startsWith('http')
+        const useTailored = skipUrlFetch ? hasDesc : (hasUrl || hasDesc)
+        return `${tab}_${useTailored ? 'tailored' : 'base'}`
+      })()
+    : tab
+  const fileId = f.resumeFile
+    ? { name: f.resumeFile.name, size: f.resumeFile.size, type: f.resumeFile.type, lastModified: f.resumeFile.lastModified }
+    : null
+  return JSON.stringify({
+    mode,
+    jobUrl: f.jobUrl.trim(),
+    jobDesc: f.jobDesc.trim(),
+    skipUrlFetch,
+    market: f.market.trim(),
+    promptHint: f.promptHint.trim(),
+    linkedinUrl: f.linkedinUrl.trim(),
+    githubUrl: f.githubUrl.trim(),
+    resumeFile: fileId,
+  })
 }
 
 const listeners = new Set<() => void>()
@@ -128,15 +152,20 @@ export const generationStore = {
     const f = state.form
 
     // Stable idempotency key for billing deduplication.
+    // Only resume and cover tabs use the pending-key mechanism — evaluate and questions
+    // do not have PDF billing and do not need retry-safe idempotency keys.
     // Reuse the key stored from a prior uncertain failure (timeout/abort) when the
     // inputs haven't changed, so a retry doesn't double-bill.
     // Generate a fresh key when the inputs have changed or no prior key exists.
-    const fingerprint = computeFingerprint(tab, f)
-    const prior = pendingKeys[tab]
-    const idempotencyKey = (prior && prior.fingerprint === fingerprint)
-      ? prior.key
-      : crypto.randomUUID()
-    pendingKeys[tab] = { key: idempotencyKey, fingerprint }
+    let idempotencyKey: string = crypto.randomUUID()
+    if (tab === 'resume' || tab === 'cover') {
+      const fingerprint = computeFingerprint(tab, f, skipUrlFetch)
+      const prior = pendingKeys[tab]
+      idempotencyKey = (prior && prior.fingerprint === fingerprint)
+        ? prior.key
+        : crypto.randomUUID()
+      pendingKeys[tab] = { key: idempotencyKey, fingerprint }
+    }
 
     const hasJobInput = f.jobUrl.trim().startsWith('http') || f.jobDesc.trim().length > 20
     const hasDescAsContext = f.jobDesc.trim().length > 20
@@ -228,7 +257,9 @@ export const generationStore = {
         state.outputs = { ...state.outputs, evaluate: { scoreResult, halalResult } }
         succeeded = true
       }
-      if (succeeded) delete pendingKeys[tab]
+      if (succeeded) {
+        if (tab === 'resume' || tab === 'cover') delete pendingKeys[tab]
+      }
     } catch (e: unknown) {
       if (isAbortError(e) || signal.aborted) return
       if (e instanceof ApiError && e.code === 'url_unreachable') {

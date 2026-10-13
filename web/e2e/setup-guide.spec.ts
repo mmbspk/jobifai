@@ -96,7 +96,11 @@ test.describe('Setup guide — account-switch cache isolation', () => {
       headers: { Authorization: `Bearer ${userA.accessToken}` },
       data: { title: 'E2E default resume' },
     })
-    expect(createRes.ok()).toBeTruthy()
+    if (!createRes.ok()) {
+      const body = await createRes.text()
+      console.error(`[DIAG] from-profile failed: HTTP ${createRes.status()} — ${body}`)
+    }
+    expect(createRes.ok(), `from-profile: HTTP ${createRes.status()}`).toBeTruthy()
     const { content_version_id } = await createRes.json() as { content_version_id: string }
 
     // Set the created version as A's default resume

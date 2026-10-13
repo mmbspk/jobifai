@@ -247,3 +247,29 @@ func TestResume_Idempotency_NoHeader_BackwardCompatible(t *testing.T) {
 	assert.True(t, strings.HasPrefix(scopedKey, "document-render:"), "auto-generated key must follow the scoped format")
 	assert.Contains(t, scopedKey, ":resume-generate:", "auto-generated key must encode the operation")
 }
+
+// TestResume_Idempotency_OverlongKey_Rejected proves that an Idempotency-Key header value
+// longer than 128 characters is rejected with HTTP 400 rather than silently truncated.
+// Silent truncation would allow two keys that share the same first 128 chars but differ
+// afterward to collide on the same billing operation — a false-dedup security bug.
+func TestResume_Idempotency_OverlongKey_Rejected(t *testing.T) {
+	t.Parallel()
+	router, _, stub := newResumeRouterWithBillingStub(t)
+	token := registerAndLogin(t, router, "idempotency-overlong@example.com", "pw123456")
+	saveResumeProfile(t, router, token, sampleResumeProfile())
+
+	// Two keys that share the same first 128 chars but differ afterward.
+	base := strings.Repeat("x", 128)
+	keyA := base + "-alpha"
+	keyB := base + "-beta"
+
+	wA := authPostMultipartWithIdempotencyKey(t, router, "/api/resume/generate", token, keyA, nil)
+	assert.Equal(t, http.StatusBadRequest, wA.Code, "overlong key A must be rejected: %s", wA.Body)
+
+	wB := authPostMultipartWithIdempotencyKey(t, router, "/api/resume/generate", token, keyB, nil)
+	assert.Equal(t, http.StatusBadRequest, wB.Code, "overlong key B must be rejected: %s", wB.Body)
+
+	// Neither request must have triggered a billing call.
+	assert.Empty(t, stub.distinctKeys(), "rejected requests must not produce any billing events")
+}
+

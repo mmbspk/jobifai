@@ -178,23 +178,136 @@ describe('generationStore idempotency key lifecycle', () => {
     await flushMicrotasks()
     await flushMicrotasks()
 
-    // Change inputs — triggers a new fingerprint.
-    generationStore.setForm({ jobDesc: 'Senior operations manager needed for logistics team.' })
+    // Change inputs — use a short description so base mode (mockGenerate) is still used.
+    // The fingerprint changes because jobDesc differs; a mode change is not required.
+    generationStore.setForm({ jobDesc: 'Different role.' })
 
     mockGenerate.mockClear()
     resolveRef.current = null
     rejectRef.current = null
 
-    startResume(false)
+    startResume()
     await flushMicrotasks()
 
     const secondKey = getPendingKey('resume')
     expect(secondKey).toBeDefined()
     expect(secondKey).not.toBe(firstKey)
 
-    // cancelGenerate aborts the in-flight request regardless of which API path was taken.
     generationStore.cancelGenerate('resume')
+    rejectRef.current!(new DOMException('AbortError', 'AbortError'))
     await flushMicrotasks()
+    await flushMicrotasks()
+  })
+
+})
+
+// ─── Material-input fingerprint coverage ──────────────────────────────────────
+//
+// Each test confirms that changing a specific input generates a fresh key,
+// verifying the expanded computeFingerprint covers ALL billing-relevant fields.
+// All tests use base mode (empty or short form) so that mockGenerate (not
+// generateTailored) is called — allowing the test to control the promise lifecycle
+// via rejectRef.current.
+
+describe('computeFingerprint covers all material inputs', () => {
+
+  // Start, capture pending key, abort, and return the key.
+  async function captureKeyAfterAbort(skipUrlFetch = true): Promise<string> {
+    startResume(skipUrlFetch)
+    await flushMicrotasks()
+    const key = getPendingKey('resume')!
+    generationStore.cancelGenerate('resume')
+    rejectRef.current!(new DOMException('AbortError', 'AbortError'))
+    await flushMicrotasks()
+    await flushMicrotasks()
+    return key
+  }
+
+  beforeEach(() => {
+    resetStore()
+    mockGenerate.mockClear()
+    resolveRef.current = null
+    rejectRef.current = null
+  })
+
+  it('same inputs → same key on retry', async () => {
+    const k1 = await captureKeyAfterAbort()
+    mockGenerate.mockClear(); resolveRef.current = null; rejectRef.current = null
+    const k2 = await captureKeyAfterAbort()
+    expect(k2).toBe(k1)
+  })
+
+  it('changed jobDesc → new key', async () => {
+    const k1 = await captureKeyAfterAbort()
+    // Keep desc short (≤20 chars) so base mode is used for the second attempt too.
+    generationStore.setForm({ jobDesc: 'short desc' })
+    mockGenerate.mockClear(); resolveRef.current = null; rejectRef.current = null
+    const k2 = await captureKeyAfterAbort()
+    expect(k2).not.toBe(k1)
+  })
+
+  it('changed market → new key', async () => {
+    const k1 = await captureKeyAfterAbort()
+    generationStore.setForm({ market: 'de' })
+    mockGenerate.mockClear(); resolveRef.current = null; rejectRef.current = null
+    const k2 = await captureKeyAfterAbort()
+    expect(k2).not.toBe(k1)
+  })
+
+  it('changed promptHint → new key', async () => {
+    const k1 = await captureKeyAfterAbort()
+    generationStore.setForm({ promptHint: 'Emphasise leadership.' })
+    mockGenerate.mockClear(); resolveRef.current = null; rejectRef.current = null
+    const k2 = await captureKeyAfterAbort()
+    expect(k2).not.toBe(k1)
+  })
+
+  it('changed linkedinUrl → new key', async () => {
+    const k1 = await captureKeyAfterAbort()
+    generationStore.setForm({ linkedinUrl: 'https://linkedin.com/in/alex' })
+    mockGenerate.mockClear(); resolveRef.current = null; rejectRef.current = null
+    const k2 = await captureKeyAfterAbort()
+    expect(k2).not.toBe(k1)
+  })
+
+  it('changed githubUrl → new key', async () => {
+    const k1 = await captureKeyAfterAbort()
+    generationStore.setForm({ githubUrl: 'https://github.com/alex' })
+    mockGenerate.mockClear(); resolveRef.current = null; rejectRef.current = null
+    const k2 = await captureKeyAfterAbort()
+    expect(k2).not.toBe(k1)
+  })
+
+  it('changed skipUrlFetch → new key (skipUrlFetch is part of fingerprint)', async () => {
+    // With empty form both skipUrlFetch=true and skipUrlFetch=false use base mode
+    // (no desc → no tailored), but the fingerprint includes the skipUrlFetch value.
+    const k1 = await captureKeyAfterAbort(true)
+    mockGenerate.mockClear(); resolveRef.current = null; rejectRef.current = null
+    const k2 = await captureKeyAfterAbort(false)
+    expect(k2).not.toBe(k1)
+  })
+
+  it('changed resumeFile identity → new key', async () => {
+    const k1 = await captureKeyAfterAbort()
+    // Simulate attaching a file (only identity matters — name/size/type/lastModified).
+    const fakeFile = { name: 'cv.pdf', size: 12345, type: 'application/pdf', lastModified: 1700000000000 } as File
+    generationStore.setForm({ resumeFile: fakeFile })
+    mockGenerate.mockClear(); resolveRef.current = null; rejectRef.current = null
+    const k2 = await captureKeyAfterAbort()
+    expect(k2).not.toBe(k1)
+  })
+
+  it('success → key cleared; evaluate/questions tabs never get pending keys', async () => {
+    startResume()
+    await flushMicrotasks()
+    resolveRef.current!(new Blob(['%PDF'], { type: 'application/pdf' }))
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(getPendingKey('resume')).toBeUndefined()
+
+    // evaluate and questions tabs must never have a pending key stored.
+    expect(getPendingKey('evaluate')).toBeUndefined()
+    expect(getPendingKey('questions')).toBeUndefined()
   })
 
 })
