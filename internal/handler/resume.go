@@ -41,15 +41,29 @@ func writePDF(w http.ResponseWriter, filename string, data []byte) {
 	_, _ = w.Write(data)
 }
 
-// legacyOpID returns a stable idempotency operation ID for legacy (response-only) render
-// endpoints. If the caller sends an Idempotency-Key header the key is scoped to the user
-// so different users can use the same client-side key independently. When absent a fresh
-// UUID is generated; retries of the same HTTP request will be billed separately.
-func legacyOpID(r *http.Request, userID string) string {
+// maxIdempotencyKeyLen caps the client-provided Idempotency-Key header value to prevent
+// storing arbitrarily large strings in the resource ledger.
+const maxIdempotencyKeyLen = 128
+
+// legacyOpID builds a fully-qualified idempotency key for legacy (response-only) render
+// endpoints. The key is structured as:
+//
+//	document-render:<userID>:<operation>:<clientKey>
+//
+// This scoping ensures:
+//   - different users cannot collide on the same client key
+//   - the same client key sent to resume-generate vs cover-generate are independent
+//
+// When no Idempotency-Key header is present a UUID is generated; retries without the
+// header will always be treated as new operations.
+func legacyOpID(r *http.Request, userID, operation string) string {
 	if k := strings.TrimSpace(r.Header.Get("Idempotency-Key")); k != "" {
-		return userID + ":" + k
+		if len(k) > maxIdempotencyKeyLen {
+			k = k[:maxIdempotencyKeyLen]
+		}
+		return "document-render:" + userID + ":" + operation + ":" + k
 	}
-	return uuid.NewString()
+	return "document-render:" + userID + ":" + operation + ":" + uuid.NewString()
 }
 
 // loadProfile loads the stored resume profile for userID, returning nil if none is saved.
@@ -163,9 +177,9 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Preflight quota before launching Chrome (legacy endpoint — no persisted version).
-	// Idempotency key: use client-supplied Idempotency-Key header scoped to user if present,
-	// otherwise generate a UUID. The key is stable across retries when the header is sent.
-	opID := legacyOpID(r, userID)
+	// Idempotency key: client-supplied Idempotency-Key header scoped to user+operation
+	// so the same client key on different endpoints stays independent.
+	opID := legacyOpID(r, userID, "resume-generate")
 	if h.svc.Resource != nil {
 		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
 			if errors.Is(err, quota.ErrExceeded) {
@@ -182,7 +196,7 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.svc.Resource != nil {
-		if err := h.svc.Resource.RecordRender(r.Context(), userID, "document-render:"+opID); err != nil {
+		if err := h.svc.Resource.RecordRender(r.Context(), userID, opID); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": fmt.Sprintf("render billing: %v", err)})
 			return
 		}
@@ -253,8 +267,8 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 	}
 
 	// Preflight quota before launching Chrome (AI tailored — no persisted version).
-	// Idempotency key: client-supplied Idempotency-Key header or UUID fallback.
-	opID := legacyOpID(r, userID)
+	// Idempotency key: client-supplied Idempotency-Key header scoped to user+operation.
+	opID := legacyOpID(r, userID, "resume-tailored")
 	if h.svc.Resource != nil {
 		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
 			if errors.Is(err, quota.ErrExceeded) {
@@ -271,7 +285,7 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if h.svc.Resource != nil {
-		if err := h.svc.Resource.RecordRender(r.Context(), userID, "document-render:"+opID); err != nil {
+		if err := h.svc.Resource.RecordRender(r.Context(), userID, opID); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": fmt.Sprintf("render billing: %v", err)})
 			return
 		}
@@ -395,8 +409,8 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Preflight quota before launching Chrome (AI cover letter — no persisted version).
-	// Idempotency key: client-supplied Idempotency-Key header or UUID fallback.
-	opID := legacyOpID(r, userID)
+	// Idempotency key: client-supplied Idempotency-Key header scoped to user+operation.
+	opID := legacyOpID(r, userID, "cover-generate")
 	if h.svc.Resource != nil {
 		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
 			if errors.Is(err, quota.ErrExceeded) {
@@ -413,7 +427,7 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if h.svc.Resource != nil {
-		if err := h.svc.Resource.RecordRender(r.Context(), userID, "document-render:"+opID); err != nil {
+		if err := h.svc.Resource.RecordRender(r.Context(), userID, opID); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": fmt.Sprintf("render billing: %v", err)})
 			return
 		}

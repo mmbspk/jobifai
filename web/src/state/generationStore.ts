@@ -5,6 +5,9 @@ import type { HalalVerdict, QuestionAnswer } from '../types'
 
 export type GenTab = 'resume' | 'cover' | 'evaluate' | 'questions'
 
+/** Held per-tab between network attempts so retries reuse the same billing key. */
+type PendingKey = { key: string; fingerprint: string }
+
 export const STEPS: Record<string, string[]> = {
   resume_tailored: ['Fetching job description…', 'Analysing requirements…', 'Tailoring your profile…', 'Rendering PDF…'],
   resume_base:     ['Loading profile…', 'Rendering PDF…'],
@@ -56,6 +59,16 @@ let state: GenerationState = {
 }
 
 const abortControllers: Partial<Record<GenTab, AbortController>> = {}
+/** Survives across startGenerate calls so retries reuse the same billing key. */
+const pendingKeys: Partial<Record<GenTab, PendingKey>> = {}
+
+/**
+ * Stable fingerprint of the inputs that determine billing identity.
+ * A materially different job URL or description → different render → new key.
+ */
+function computeFingerprint(tab: GenTab, f: FormState): string {
+  return JSON.stringify({ tab, jobUrl: f.jobUrl.trim(), jobDesc: f.jobDesc.trim() })
+}
 
 const listeners = new Set<() => void>()
 function emit() {
@@ -112,10 +125,19 @@ export const generationStore = {
     abortControllers[tab] = controller
     const signal = controller.signal
 
-    // Stable key for this specific user action — retries of the same fetch won't double-bill.
-    const idempotencyKey = crypto.randomUUID()
-
     const f = state.form
+
+    // Stable idempotency key for billing deduplication.
+    // Reuse the key stored from a prior uncertain failure (timeout/abort) when the
+    // inputs haven't changed, so a retry doesn't double-bill.
+    // Generate a fresh key when the inputs have changed or no prior key exists.
+    const fingerprint = computeFingerprint(tab, f)
+    const prior = pendingKeys[tab]
+    const idempotencyKey = (prior && prior.fingerprint === fingerprint)
+      ? prior.key
+      : crypto.randomUUID()
+    pendingKeys[tab] = { key: idempotencyKey, fingerprint }
+
     const hasJobInput = f.jobUrl.trim().startsWith('http') || f.jobDesc.trim().length > 20
     const hasDescAsContext = f.jobDesc.trim().length > 20
 
@@ -162,6 +184,7 @@ export const generationStore = {
     }
 
     try {
+      let succeeded = false
       if (tab === 'resume') {
         const useTailored = skipUrlFetch ? hasDescAsContext : hasJobInput
         const blob = useTailored
@@ -176,9 +199,11 @@ export const generationStore = {
             idempotencyKey,
           )
         state.outputs = { ...state.outputs, resume: { pdfUrl: URL.createObjectURL(blob) } }
+        succeeded = true
       } else if (tab === 'cover') {
         const blob = await resumeApi.generateCoverLetter(opts)
         state.outputs = { ...state.outputs, cover: { pdfUrl: URL.createObjectURL(blob) } }
+        succeeded = true
       } else if (tab === 'questions') {
         const nonEmpty = f.questions.filter(q => q.value.trim()).map(q => q.value.trim())
         const answers = await resumeApi.answerQuestions({
@@ -188,6 +213,7 @@ export const generationStore = {
           signal,
         })
         state.outputs = { ...state.outputs, questions: { answers } }
+        succeeded = true
       } else {
         const halalOpts = {
           jobUrl: f.jobUrl || undefined,
@@ -200,7 +226,9 @@ export const generationStore = {
           halalFilter ? resumeApi.checkHalal(halalOpts).catch(e => (isAbortError(e) ? Promise.reject(e) : null)) : Promise.resolve(null),
         ])
         state.outputs = { ...state.outputs, evaluate: { scoreResult, halalResult } }
+        succeeded = true
       }
+      if (succeeded) delete pendingKeys[tab]
     } catch (e: unknown) {
       if (isAbortError(e) || signal.aborted) return
       if (e instanceof ApiError && e.code === 'url_unreachable') {
@@ -221,4 +249,16 @@ export const generationStore = {
 
 export function useGenerationState(): GenerationState {
   return useSyncExternalStore(generationStore.subscribe, generationStore.getSnapshot, generationStore.getSnapshot)
+}
+
+/** Returns the pending idempotency key for a tab, or undefined if none is stored. For testing only. */
+export function getPendingKey(tab: GenTab): string | undefined {
+  return pendingKeys[tab]?.key
+}
+
+/** Clears all pending keys. For testing only. */
+export function clearPendingKeys(): void {
+  for (const tab of Object.keys(pendingKeys) as GenTab[]) {
+    delete pendingKeys[tab]
+  }
 }
