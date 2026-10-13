@@ -230,8 +230,8 @@ func wireDocumentServiceWithRenderer(t *testing.T, svc *handler.Services, r docu
 // failure diagnosed in feat/resource-credit-document-rendering: when the PDF renderer is
 // unavailable (Chrome not found in CI), /api/documents/resume/from-profile must still
 // return HTTP 201 with a content_version_id and render_status="failed".
-// The version is preserved because no billing was committed — the caller can set it as
-// a default and the server will render the PDF on the next successful attempt.
+// The version is preserved (content survives; no PDF artifact) because no billing was
+// committed. The caller may set it as the default even without a PDF.
 func TestCreateResumeFromProfile_RenderFails_Returns201(t *testing.T) {
 	t.Parallel()
 	svc, _ := newTestServices(t)
