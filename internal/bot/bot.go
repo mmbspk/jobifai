@@ -290,6 +290,8 @@ func (b *Bot) waitForSessionRefresh(ctx context.Context, userID, platform string
 	refreshed := false
 	for time.Now().Before(deadline) {
 		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waitForSessionRefresh: %w", ctx.Err())
 		case <-b.stopCh:
 			return fmt.Errorf("bot stopped while waiting for %s authentication", platform)
 		case <-time.After(authRefreshPollInterval):
@@ -2395,6 +2397,13 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			}
 		}`); isCDPFatal(err) {
 			return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
+		}
+
+		// Final pre-click guard: reject if quota expired during form-fill phase.
+		if b.cfg.BrowserMeter != nil {
+			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
+				return fmt.Errorf("easy apply: %w", meterErr)
+			}
 		}
 
 		label, ok, err := clickEasyApplyPrimary()

@@ -143,6 +143,33 @@ func TestWaitForSessionRefresh_BotStop(t *testing.T) {
 	assert.Less(t, elapsed, 2*time.Second, "stop channel must exit wait quickly")
 }
 
+// TestWaitForSessionRefresh_ContextCancelled verifies that ctx cancellation exits
+// the polling loop immediately, before the timeout elapses.
+func TestWaitForSessionRefresh_ContextCancelled(t *testing.T) {
+	orig := authRefreshPollInterval
+	authRefreshPollInterval = 50 * time.Millisecond
+	t.Cleanup(func() { authRefreshPollInterval = orig })
+
+	store := newAuthTestSessionStore(t)
+	seedSession(t, store, "u1", "seek")
+
+	b := newAuthTestBot(t, store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	err := b.waitForSessionRefresh(ctx, "u1", "seek", 30*time.Second)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, elapsed, 2*time.Second, "ctx cancellation must exit wait quickly")
+}
+
 // TestWaitForSessionRefresh_TransitionsState verifies mid-wait state is
 // user_action_required, and that it stays user_action_required after success
 // (not Running — Running is the caller's responsibility).

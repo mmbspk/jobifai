@@ -427,3 +427,34 @@ func TestLiveBrowserMeter_ContextCancelledStopsGoroutine(t *testing.T) {
 	cancel() // cancel the run context
 	require.Eventually(t, func() bool { return stopCalled.Load() > 0 }, 2*time.Second, 10*time.Millisecond)
 }
+
+// TestLiveBrowserMeter_PreClickGuardSignal verifies the property that the easyApply
+// pre-click guard (b.cfg.BrowserMeter.Err()) depends on: after a tick triggers quota
+// exhaustion, Err() must return ErrExceeded synchronously before the next Apply-loop
+// iteration. This ensures the guard can intercept before clickEasyApplyPrimary is called.
+func TestLiveBrowserMeter_PreClickGuardSignal(t *testing.T) {
+	t.Parallel()
+	// Allow 2 buckets, fail on the 3rd (simulates mid-loop exhaustion after form-fill).
+	svc := &stubMeterSvc{failAt: 2}
+	ch, advance, stopFn := fakeTicker()
+	meter := newMeter(svc, fakeTickerFactory(ch, stopFn))
+
+	// Activate (first bucket — OK).
+	require.NoError(t, meter.Activate(context.Background()))
+	assert.Nil(t, meter.Err(), "no error after first bucket")
+
+	// First tick (second bucket — OK).
+	advance()
+	require.Eventually(t, func() bool { return svc.recordCount() == 2 }, 2*time.Second, 10*time.Millisecond)
+	assert.Nil(t, meter.Err(), "no error after second bucket")
+
+	// Second tick (third bucket — quota exhausted).
+	advance()
+	require.Eventually(t, func() bool { return meter.Err() != nil }, 2*time.Second, 10*time.Millisecond,
+		"Err() must become non-nil after quota exhaustion")
+	assert.True(t, errors.Is(meter.Err(), quota.ErrExceeded),
+		"Err() must wrap ErrExceeded so easyApply pre-click guard fires")
+	assert.Equal(t, 2, svc.recordCount(), "only 2 buckets charged (3rd was rejected)")
+
+	meter.Stop()
+}
