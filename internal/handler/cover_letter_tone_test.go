@@ -91,6 +91,8 @@ func TestResume_GenerateCoverLetter_TonePropagation(t *testing.T) {
 	svc, _ := newTestServices(t)
 	ct := &capturingTailor{}
 	svc.Renderer = stubRenderer{}
+	wireDocumentService(t, svc)
+	svc.Documents.Renderer = svc.Renderer
 	svc.LLMFactory = func(string) (handler.ResumeExtractor, handler.ResumeTailor) {
 		return stubExtractor{}, ct
 	}
@@ -143,6 +145,8 @@ func TestResume_GenerateCoverLetter_SettingsReadError_Returns500(t *testing.T) {
 	svc, _ := newTestServices(t)
 	ct := &capturingTailor{}
 	svc.Renderer = stubRenderer{}
+	wireDocumentService(t, svc)
+	svc.Documents.Renderer = svc.Renderer
 	errCfg := &errConfigStore{ConfigStore: svc.Config}
 	svc.Config = errCfg
 	svc.LLMFactory = func(string) (handler.ResumeExtractor, handler.ResumeTailor) {

@@ -17,6 +17,7 @@ import { useQuota } from '../hooks/useQuota'
 import { QuotaLimitNotice } from '../components/quota/QuotaLimitNotice'
 import { ApiError } from '../api/client'
 import type { ResumeProfile } from '../types'
+import { ResumeVersionEditor } from '../components/documents/ResumeVersionEditor'
 
 function actionError(e: unknown): string {
   if (e instanceof ApiError) return e.message
@@ -47,7 +48,7 @@ export function Documents() {
   const [previewVersion, setPreviewVersion] = useState<string | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
   const [editingCover, setEditingCover] = useState<{ docId: string; body: string } | null>(null)
-  const [editingResume, setEditingResume] = useState<{ docId: string; profile: ResumeProfile } | null>(null)
+  const [editingResume, setEditingResume] = useState<{ docId: string; versionId: string; profile: ResumeProfile } | null>(null)
 
   useEffect(() => () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl)
@@ -208,18 +209,12 @@ export function Documents() {
 
       {editingResume && (
         <section className="rounded-[var(--radius-lg)] border border-[var(--color-accent)]/30 p-4 space-y-3">
-          <h3 className="font-medium">New resume version</h3>
-          <label className="block text-sm">
-            Summary
-            <textarea
-              className={inputClassName + ' min-h-[120px] mt-1'}
-              value={editingResume.profile.summary ?? ''}
-              onChange={e => setEditingResume({
-                ...editingResume,
-                profile: { ...editingResume.profile, summary: e.target.value },
-              })}
-            />
-          </label>
+          <h3 className="font-medium">Edit content — saves as a new version</h3>
+          <ResumeVersionEditor
+            key={editingResume.versionId}
+            profile={editingResume.profile}
+            onChange={profile => setEditingResume({ ...editingResume, profile })}
+          />
           <div className="flex gap-2">
             <Button disabled={saveResumeEdit.isPending} onClick={() => saveResumeEdit.mutate()}>Save new version</Button>
             <Button variant="ghost" onClick={() => setEditingResume(null)}>Cancel</Button>
@@ -270,7 +265,7 @@ export function Documents() {
               const v = await documentsApi.getVersion(versionId)
               const parsed = JSON.parse(v.content_json) as { profile?: ResumeProfile }
               if (!parsed.profile) throw new Error('invalid resume version')
-              setEditingResume({ docId, profile: parsed.profile })
+              setEditingResume({ docId, versionId, profile: parsed.profile })
             } catch (e: unknown) {
               setActionErr(actionError(e))
             }

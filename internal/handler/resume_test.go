@@ -19,6 +19,8 @@ func newResumeRouter(t *testing.T) (http.Handler, *handler.Services, string) {
 	svc, _ := newTestServices(t)
 	llm, eval, halal, answerer := stubLLMFactories()
 	svc.Renderer = stubRenderer{}
+	wireDocumentService(t, svc)
+	svc.Documents.Renderer = svc.Renderer
 	svc.LLMFactory = llm
 	svc.EvaluatorFactory = eval
 	svc.HalalCheckerFactory = halal
@@ -45,6 +47,8 @@ func TestResume_Generate_NoRenderer_Returns422(t *testing.T) {
 func TestResume_Generate_NoProfile_Returns422(t *testing.T) {
 	svc, _ := newTestServices(t)
 	svc.Renderer = stubRenderer{}
+	wireDocumentService(t, svc)
+	svc.Documents.Renderer = svc.Renderer
 	router := handler.NewRouter(svc)
 	token := registerAndLogin(t, router, "resume-noprofile@example.com", "password123")
 
@@ -130,6 +134,8 @@ func newResumeRouterWithMockLLM(t *testing.T, llmResponse string) (http.Handler,
 
 	svc, _ := newTestServices(t)
 	svc.Renderer = stubRenderer{}
+	wireDocumentService(t, svc)
+	svc.Documents.Renderer = svc.Renderer
 	svc.FetchJobPage = func(_ context.Context, url string) (string, error) {
 		return "Job listing text from " + url, nil
 	}
@@ -186,6 +192,8 @@ func TestResume_GenerateTailored_MockLLMAndFetchJobPage(t *testing.T) {
 func TestResume_Generate_RequiresAuth(t *testing.T) {
 	svc, _ := newTestServices(t)
 	svc.Renderer = stubRenderer{}
+	wireDocumentService(t, svc)
+	svc.Documents.Renderer = svc.Renderer
 	router := handler.NewRouter(svc)
 
 	w := authPostMultipart(t, router, "/api/resume/generate", "", nil)

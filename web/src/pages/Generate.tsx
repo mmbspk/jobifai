@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useRef, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { FileText, Download, Loader2, Upload, X, AlertTriangle, ChevronDown, ArrowRight, Plus, Trash2, Copy, Check } from 'lucide-react'
 import { cn, downloadBlob } from '../lib'
 import { isAbortError } from '../api/client'
@@ -92,6 +92,11 @@ export function Generate() {
 
   // AI Apply tab state — persisted to localStorage so it survives tab switches and refreshes
   const qc = useQueryClient()
+  const resumePdf = state.outputs.resume?.pdfUrl
+  const coverPdf = state.outputs.cover?.pdfUrl
+  useEffect(() => {
+    if (resumePdf || coverPdf) void qc.invalidateQueries({ queryKey: ['documents'] })
+  }, [qc, resumePdf, coverPdf])
   const [applyLoading, setApplyLoading] = useState(false)
   const [applyStep, setApplyStep] = useState(0)
   const [applyError, setApplyError] = useState<string | null>(null)
@@ -695,7 +700,10 @@ export function Generate() {
       {pdfUrl && !loading && (
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-emerald-400 font-medium">Generated successfully</span>
+            <div className="text-sm">
+              <span className="text-emerald-400 font-medium">Generated successfully</span>
+              <Link to="/documents" className="block text-[var(--color-accent)] underline">Saved to Documents</Link>
+            </div>
             <button
               onClick={() => fetch(pdfUrl).then(r => r.blob()).then(b => downloadBlob(b, filename))}
               className="flex items-center gap-1.5 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] px-3 py-1.5 rounded-lg hover:bg-[var(--color-surface-2)]"
