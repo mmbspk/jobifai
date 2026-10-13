@@ -185,6 +185,7 @@ type Config struct {
 	LinkedInEmail    string
 	LinkedInPassword string
 	Sessions         *browser.SessionStore // if set, updated with fresh cookies after each auth
+	BrowserMeter     BrowserUsageMeter     // optional; meters active automation against credit balance
 }
 
 // SubmitRequest bundles the fields needed to submit a single approved job.
@@ -522,6 +523,7 @@ func (b *Bot) IsPaused() bool {
 }
 
 // waitIfPaused blocks at a job boundary until resumed, stopped, or ctx cancelled.
+// Deactivates browser billing during the wait and reactivates it on resume.
 func (b *Bot) waitIfPaused(ctx context.Context) {
 	b.pauseMu.Lock()
 	ch := b.pauseCh
@@ -529,11 +531,21 @@ func (b *Bot) waitIfPaused(ctx context.Context) {
 	if ch == nil {
 		return
 	}
+	if b.cfg.BrowserMeter != nil {
+		b.cfg.BrowserMeter.Deactivate()
+	}
 	log.Info().Msg("bot: paused — waiting for resume")
+	var resumed bool
 	select {
 	case <-ch:
+		resumed = true
 	case <-b.stopCh:
 	case <-ctx.Done():
+	}
+	if resumed && b.cfg.BrowserMeter != nil {
+		if err := b.cfg.BrowserMeter.Activate(ctx); err != nil {
+			log.Warn().Err(err).Msg("bot: browser meter reactivation after resume failed")
+		}
 	}
 }
 
@@ -631,6 +643,11 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 		return
 	}
 	defer func() { _ = br.Close() }()
+	defer func() {
+		if b.cfg.BrowserMeter != nil {
+			b.cfg.BrowserMeter.Stop()
+		}
+	}()
 
 	b.warmSeenCache()
 
@@ -645,6 +662,17 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 				b.mu.Unlock()
 				return
 			}
+		}
+	}
+
+	// Auth verified — activate browser billing.
+	if b.cfg.BrowserMeter != nil {
+		if err := b.cfg.BrowserMeter.Activate(ctx); err != nil {
+			log.Error().Err(err).Msg("linkedin: browser billing activation failed")
+			if !errors.Is(err, quota.ErrExceeded) {
+				return
+			}
+			// ErrExceeded: stopReason fires at next job boundary.
 		}
 	}
 
@@ -938,6 +966,7 @@ func (b *Bot) stopped(ctx context.Context) bool {
 }
 
 // stopReason returns a human-readable reason the bot should stop, or "".
+// Also returns non-empty when the browser billing quota is exhausted.
 func (b *Bot) stopReason(ctx context.Context) string {
 	select {
 	case <-b.stopCh:
@@ -945,8 +974,13 @@ func (b *Bot) stopReason(ctx context.Context) string {
 	case <-ctx.Done():
 		return "context cancelled: " + ctx.Err().Error()
 	default:
-		return ""
 	}
+	if b.cfg.BrowserMeter != nil {
+		if err := b.cfg.BrowserMeter.Err(); err != nil {
+			return "browser automation quota exceeded"
+		}
+	}
+	return ""
 }
 
 // ── Job scraping ───────────────────────────────────────────────────────────

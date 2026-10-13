@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/scraper"
 )
 
@@ -318,6 +320,11 @@ func runSeek(ctx context.Context, b *Bot) {
 		return
 	}
 	defer func() { _ = br.Close() }()
+	defer func() {
+		if b.cfg.BrowserMeter != nil {
+			b.cfg.BrowserMeter.Stop()
+		}
+	}()
 
 	b.mu.Lock()
 	b.seekSessionExpired = false
@@ -332,6 +339,17 @@ func runSeek(ctx context.Context, b *Bot) {
 		b.state = domain.BotStateError
 		b.mu.Unlock()
 		return
+	}
+
+	// Auth verified — activate browser billing.
+	if b.cfg.BrowserMeter != nil {
+		if err := b.cfg.BrowserMeter.Activate(ctx); err != nil {
+			log.Error().Err(err).Msg("seek: browser billing activation failed")
+			if !errors.Is(err, quota.ErrExceeded) {
+				return
+			}
+			// ErrExceeded: stopReason fires at next job boundary.
+		}
 	}
 
 	limit := b.cfg.Settings.HumanBehavior.DailyApplicationLimit

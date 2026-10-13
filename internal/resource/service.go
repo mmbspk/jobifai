@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	resourcedb "github.com/user/jobifai/internal/db"
@@ -114,6 +115,46 @@ func (s *Service) RecordRender(ctx context.Context, userID, idempotencyKey strin
 		Unit:           "render",
 		Success:        true,
 	})
+}
+
+// BeforeBrowserIncrement is a preflight for one browser_automation billing increment.
+// Returns nil when metering is disabled (no-op path). Returns quota.ErrExceeded
+// when the balance is insufficient.
+func (s *Service) BeforeBrowserIncrement(ctx context.Context, userID string) error {
+	_, err := s.BeforeResource(ctx, userID, domain.ResourceTypeBrowserAutomation)
+	if errors.Is(err, ErrMeteringDisabled) {
+		return nil
+	}
+	return err
+}
+
+// RecordBrowserIncrement atomically commits one browser_automation billing increment.
+// idempotencyKey must be "browser-automation:<userID>:<runID>:<bucketIndex>".
+// Duplicate keys are silently ignored (returns nil).
+func (s *Service) RecordBrowserIncrement(ctx context.Context, userID, idempotencyKey, automationRunID string) error {
+	return s.RecordOnce(ctx, RecordInput{
+		UserID:          userID,
+		ResourceType:    domain.ResourceTypeBrowserAutomation,
+		IdempotencyKey:  idempotencyKey,
+		AutomationRunID: automationRunID,
+		Quantity:        1,
+		Unit:            "increment",
+		Success:         true,
+	})
+}
+
+// BrowserIncrementDuration returns the configured billing increment as a Duration.
+// Returns 30 s when metering is disabled or the increment is unset.
+func (s *Service) BrowserIncrementDuration() (time.Duration, error) {
+	cfg, err := s.LoadDefaults()
+	if err != nil {
+		return 0, err
+	}
+	inc := cfg.Browser.BillingIncrementSecs
+	if inc <= 0 {
+		inc = 30
+	}
+	return time.Duration(inc) * time.Second, nil
 }
 
 // RecordInput describes a resource consumption event to be billed atomically.

@@ -76,6 +76,7 @@ type Manager struct {
 	llmReuse         *llmreuse.Store
 	submitWorkGuard  documents.UserWorkGuard
 	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
+	browserMeterSvc  MeterService // optional browser automation billing service
 }
 
 type retentionAfterSubmit interface {
@@ -129,6 +130,12 @@ func (m *Manager) SetLLMBilling(store *llmpolicy.Store, catalog *pricing.Catalog
 // used to decide whether their personal LLM API key is eligible during automation.
 func (m *Manager) SetUserTypeChecker(fn func(userID string) (isAdmin, isTester bool)) {
 	m.userTypeChecker = fn
+}
+
+// SetBrowserMeter wires browser automation billing into the bot manager.
+// resource.Service satisfies MeterService and should be passed directly.
+func (m *Manager) SetBrowserMeter(svc MeterService) {
+	m.browserMeterSvc = svc
 }
 
 func NewManager(
@@ -851,6 +858,14 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	}
 
 	config.EnsureDocumentPolicies(&gs)
+	var browserMeter BrowserUsageMeter
+	if m.browserMeterSvc != nil {
+		inc, incErr := m.browserMeterSvc.BrowserIncrementDuration()
+		if incErr != nil || inc <= 0 {
+			inc = 30 * time.Second
+		}
+		browserMeter = NewLiveBrowserMeter(m.browserMeterSvc, userID, runID, inc, nil)
+	}
 	cfg := &Config{
 		Platform:    resolved,
 		Settings:    gs,
@@ -880,8 +895,9 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
 			}
 		},
-		LLMTracker:    tracker,
-		Sessions:      m.sessions,
+		LLMTracker:   tracker,
+		Sessions:     m.sessions,
+		BrowserMeter: browserMeter,
 	}
 
 	if platform == domain.PlatformSeek {
@@ -1044,6 +1060,13 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		},
 		state:  domain.BotStateIdle,
 		stopCh: make(chan struct{}),
+	}
+	if m.browserMeterSvc != nil {
+		inc, incErr := m.browserMeterSvc.BrowserIncrementDuration()
+		if incErr != nil || inc <= 0 {
+			inc = 30 * time.Second
+		}
+		b.cfg.BrowserMeter = NewLiveBrowserMeter(m.browserMeterSvc, userID, runID, inc, nil)
 	}
 	if platform == domain.PlatformSeek {
 		if raw, err := m.secrets.Get(userID, "cred:seek"); err == nil {
@@ -1227,6 +1250,16 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		role = "Unknown Role"
 	}
 	location := extractJobLocation(jobPage, platform)
+
+	// Page loaded and auth confirmed — activate browser billing for this apply run.
+	// Stop is deferred so billing terminates regardless of apply outcome.
+	if b.cfg.BrowserMeter != nil {
+		defer b.cfg.BrowserMeter.Stop()
+		if meterErr := b.cfg.BrowserMeter.Activate(ctx); meterErr != nil && !errors.Is(meterErr, quota.ErrExceeded) {
+			finishAttempt(m.db, ac, OutcomeFailed, "billing", "meter_activation_failed", meterErr.Error())
+			return ApplyFromURLResult{}, fmt.Errorf("browser billing: %w", meterErr)
+		}
+	}
 
 	// DOM check: page itself shows a prior application (handles jobs applied outside this app).
 	var pageApplied bool
