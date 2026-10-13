@@ -219,6 +219,12 @@ type ResourceService interface {
 	SaveDefaults(d domain.ResourceMeteringDefaults) error
 	EstimateRenderCredits() (int64, error)
 	EstimateBrowserIncrementCredits() (int64, error)
+	// BeforeRender preflight-checks one document_render unit. Returns nil when
+	// metering is disabled. Returns quota.ErrExceeded on exhaustion.
+	BeforeRender(ctx context.Context, userID string) error
+	// RecordRender atomically commits one document_render billing event.
+	// idempotencyKey must be "document-render:<versionID_or_operationID>".
+	RecordRender(ctx context.Context, userID, idempotencyKey string) error
 }
 
 // UsageStore provides per-user LLM token usage snapshots.

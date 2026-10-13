@@ -15,6 +15,10 @@ export class ApiError extends Error {
 export type ApiRequestOpts = {
   signal?: AbortSignal
   timeoutMs?: number
+  /** Stable idempotency key sent as Idempotency-Key header. Server scopes it to the user to
+   *  prevent cross-user collisions. Pass a UUID generated once per logical user action so that
+   *  retries of the same request are not double-billed. */
+  idempotencyKey?: string
 }
 
 function mergeSignals(opts?: number | ApiRequestOpts): AbortSignal | undefined {
@@ -92,11 +96,14 @@ export async function apiDeleteWithBody<T>(path: string, body?: unknown): Promis
 export async function apiPostForm<T>(path: string, form: FormData, opts?: ApiRequestOpts): Promise<T> {
   const token = getToken()
   const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
+  const idempotencyHeader: Record<string, string> = opts?.idempotencyKey
+    ? { 'Idempotency-Key': opts.idempotencyKey }
+    : {}
   const signal = mergeSignals(opts)
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
     body: form,
-    headers: authHeader,
+    headers: { ...authHeader, ...idempotencyHeader },
     signal,
   })
   if (!res.ok) {

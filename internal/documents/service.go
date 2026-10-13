@@ -31,6 +31,18 @@ type UserWorkGuard interface {
 	EndWork(userID string)
 }
 
+// RenderBiller meters a new PDF render against the user's shared credit balance.
+// Implemented by resource.Service — kept minimal to simplify testing.
+type RenderBiller interface {
+	// BeforeRender preflight-checks one document_render unit.
+	// Returns nil when metering is disabled. Returns quota.ErrExceeded on exhaustion.
+	BeforeRender(ctx context.Context, userID string) error
+	// RecordRender atomically commits one document_render billing event.
+	// idempotencyKey must be "document-render:<versionID_or_operationID>".
+	// Duplicate keys are silently ignored.
+	RecordRender(ctx context.Context, userID, idempotencyKey string) error
+}
+
 type Service struct {
 	Store            *Store
 	Blobs            BlobStore
@@ -41,6 +53,8 @@ type Service struct {
 	DefaultsMeta     func(userID string) (DefaultsMeta, error)
 	SaveDefaultsMeta func(userID string, m DefaultsMeta) error
 	WorkGuard        UserWorkGuard
+	// Biller meters new PDF renders. Nil disables billing (dev/test with no resource service).
+	Biller RenderBiller
 	// Metrics accumulates reuse/reconstruction counters.  Nil disables tracking.
 	Metrics *ServiceMetrics
 }
@@ -97,10 +111,6 @@ func (s *Service) saveResumeVersion(ctx context.Context, userID, documentID, tit
 }
 
 func (s *Service) saveResumeVersionLocked(ctx context.Context, userID, documentID, title, source string, profile *domain.ResumeProfile, rc RenderContext) (string, error) {
-	docID, err := s.ensureDocument(ctx, userID, documentID, KindResume, defaultTitle(title, "Default resume"))
-	if err != nil {
-		return "", err
-	}
 	cssPath, cssSnap, renderSnap, err := s.prepareRenderSnapshot(rc.Market, rc.StyleName)
 	if err != nil {
 		return "", err
@@ -114,18 +124,45 @@ func (s *Service) saveResumeVersionLocked(ctx context.Context, userID, documentI
 	if err != nil {
 		return "", err
 	}
+	canReconstruct := cssSnap != "" && renderJSON != ""
+
+	// 1. Preflight quota BEFORE touching the DB so a quota failure leaves nothing to clean up.
+	if s.Biller != nil {
+		if err := s.Biller.BeforeRender(ctx, userID); err != nil {
+			return "", err
+		}
+	}
+
+	docID, err := s.ensureDocument(ctx, userID, documentID, KindResume, defaultTitle(title, "Default resume"))
+	if err != nil {
+		return "", err
+	}
+
+	// 2. Insert version with Reconstructible=false. The version becomes reconstructible
+	//    only after render + artifact persistence + billing all succeed.
 	versionID, _, err := s.Store.InsertVersion(ctx, InsertVersionParams{
 		DocumentID: docID, UserID: userID, Source: source,
 		ContentKind: ContentResumeJSON, ContentJSON: string(content),
 		ProfileSnapshotJSON: string(snapJSON), ProfileSnapshotHash: ProfileSnapshotHash(profile),
 		Market: rc.Market, DocumentLanguage: rc.Language, StyleName: rc.StyleName,
 		CSSFilePath: cssPath, CSSSnapshot: cssSnap, RendererVersion: RendererVersion,
-		RenderSnapshotJSON: renderJSON, Reconstructible: cssSnap != "" && renderJSON != "",
+		RenderSnapshotJSON: renderJSON, Reconstructible: false,
 	})
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.renderAndPersistPDF(ctx, userID, versionID, profile, rc.StyleName, cssSnap, RenderOptsFromSnapshot(renderSnap)); err != nil {
+
+	// 3. Render → blob → bill → link.
+	// On render/blob failure (needsCleanup=false): content is valid; preserve the version
+	// so the caller can report partial success (render_status: "failed").
+	// On blob-written failure (needsCleanup=true): blob orphaned or billing committed;
+	// delete the version to avoid an inaccessible or billed-but-unlinked artifact.
+	needsCleanup, err := s.resumeBillAndLink(ctx, userID, versionID, canReconstruct, profile, rc.StyleName, cssSnap, RenderOptsFromSnapshot(renderSnap))
+	if err != nil {
+		if needsCleanup {
+			_ = s.Store.DeleteVersion(ctx, userID, versionID)
+			return "", err
+		}
 		return versionID, err
 	}
 	return versionID, nil
@@ -161,10 +198,6 @@ func (s *Service) saveCoverLetterLocked(ctx context.Context, userID, documentID,
 	if source == "" {
 		source = SourceUserEdit
 	}
-	docID, err := s.ensureDocument(ctx, userID, documentID, KindCoverLetter, defaultTitle(title, "General cover letter"))
-	if err != nil {
-		return "", err
-	}
 	profile, _ := s.LoadProfile(userID)
 	cssPath, cssSnap, renderSnap, err := s.prepareRenderSnapshot(rc.Market, rc.StyleName)
 	if err != nil {
@@ -181,18 +214,40 @@ func (s *Service) saveCoverLetterLocked(ctx context.Context, userID, documentID,
 	if err != nil {
 		return "", err
 	}
+	canReconstruct := cssSnap != "" && renderJSON != ""
+
+	// 1. Preflight quota BEFORE touching the DB so a quota failure leaves nothing to clean up.
+	if s.Biller != nil {
+		if err := s.Biller.BeforeRender(ctx, userID); err != nil {
+			return "", err
+		}
+	}
+
+	docID, err := s.ensureDocument(ctx, userID, documentID, KindCoverLetter, defaultTitle(title, "General cover letter"))
+	if err != nil {
+		return "", err
+	}
+
+	// 2. Insert version with Reconstructible=false.
 	versionID, _, err := s.Store.InsertVersion(ctx, InsertVersionParams{
 		DocumentID: docID, UserID: userID, Source: source,
 		ContentKind: ContentCoverText, ContentJSON: string(content),
 		ProfileSnapshotJSON: snapJSON, ProfileSnapshotHash: hash,
 		Market: rc.Market, DocumentLanguage: rc.Language, StyleName: rc.StyleName,
 		CSSFilePath: cssPath, CSSSnapshot: cssSnap, RendererVersion: RendererVersion,
-		RenderSnapshotJSON: renderJSON, Reconstructible: cssSnap != "" && renderJSON != "",
+		RenderSnapshotJSON: renderJSON, Reconstructible: false,
 	})
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.renderCoverPDF(ctx, userID, versionID, body, rc.StyleName, cssSnap); err != nil {
+
+	// 3. Render → blob → bill → link (same partial-success semantics as saveResumeVersionLocked).
+	needsCleanup, err := s.coverBillAndLink(ctx, userID, versionID, canReconstruct, body, rc.StyleName, cssSnap)
+	if err != nil {
+		if needsCleanup {
+			_ = s.Store.DeleteVersion(ctx, userID, versionID)
+			return "", err
+		}
 		return versionID, err
 	}
 	return versionID, nil
@@ -484,30 +539,124 @@ func (s *Service) ensureDocument(ctx context.Context, userID, documentID, kind, 
 	return documentID, nil
 }
 
-func (s *Service) renderAndPersistPDF(ctx context.Context, userID, versionID string, profile *domain.ResumeProfile, styleName, cssSnap string, opts *resume.RenderOptions) ([]byte, error) {
+// resumeBillAndLink renders a resume PDF, writes the blob, commits billing, and links the
+// artifact in DB. It returns (needsCleanup, err):
+//
+//   - needsCleanup=false, err!=nil: render or blob failure — nothing was committed externally.
+//     The pending version content is valid; the caller should preserve it and surface partial
+//     success (render_status: "failed") so the client gets a versionID even without a PDF.
+//
+//   - needsCleanup=true, err!=nil: the blob was written (billing may or may not have committed)
+//     but a subsequent step failed. The caller must delete the pending version to avoid an
+//     inaccessible or billed-but-unlinked artifact in the DB.
+//
+//   - needsCleanup=true, err=nil: success (caller does not delete).
+//
+// Order is critical for billing integrity:
+//
+//	1. render  → failure: needsCleanup=false; no external state
+//	2. blob    → failure: needsCleanup=false; blob write is atomic (PutAtomic)
+//	3. billing → failure: needsCleanup=true;  orphaned blob; version cleaned up by caller
+//	4. link    → failure: needsCleanup=true;  billing committed; caller cleans up version
+//	5. ready   → failure: artifact accessible via direct key; logged but not fatal
+func (s *Service) resumeBillAndLink(ctx context.Context, userID, versionID string, canReconstruct bool, profile *domain.ResumeProfile, styleName, cssSnap string, opts *resume.RenderOptions) (needsCleanup bool, err error) {
 	cssOverride, cleanup, err := writeTempCSS(cssSnap)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	defer cleanup()
+
 	pdf, err := s.Renderer.RenderResume(ctx, profile, styleName, cssOverride, opts)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	return pdf, s.persistArtifact(ctx, userID, versionID, pdf, cssSnap)
+
+	key, sha, size, err := s.writeArtifactBlob(userID, pdf)
+	if err != nil {
+		return false, err
+	}
+
+	// Blob written — any failure from here requires the caller to clean up the version
+	// (the blob is orphaned and/or billing was committed).
+	if s.Biller != nil {
+		if err := s.Biller.RecordRender(ctx, userID, renderIdempotencyKey(versionID)); err != nil {
+			return true, fmt.Errorf("document render billing: %w", err)
+		}
+	}
+
+	tid := templateIdentity(cssSnap)
+	if err := s.Store.LinkArtifact(ctx, userID, versionID, key, sha, size, tid); err != nil {
+		return true, err
+	}
+
+	// Mark version reconstructible so legitimate retention-eviction followed by
+	// ReconstructPDF works for free. Non-fatal: artifact is already accessible via direct key.
+	if canReconstruct {
+		if err := s.Store.MarkVersionReady(ctx, userID, versionID); err != nil {
+			// Artifact and billing are both committed; the version is accessible.
+			// Log but do not fail — a MarkVersionReady failure means reconstruction after
+			// eviction won't work, but the user can still download the current artifact.
+			_ = err // caller receives success; background GC / admin can rectify
+		}
+	}
+	return true, nil
 }
 
-func (s *Service) renderCoverPDF(ctx context.Context, userID, versionID, body, styleName, cssSnap string) ([]byte, error) {
+// coverBillAndLink is the cover-letter equivalent of resumeBillAndLink.
+// Returns (needsCleanup, err) with the same semantics:
+// needsCleanup=false → render/blob failure, caller preserves version;
+// needsCleanup=true  → blob written (billing failure or link failure), caller must delete.
+func (s *Service) coverBillAndLink(ctx context.Context, userID, versionID string, canReconstruct bool, body, styleName, cssSnap string) (needsCleanup bool, err error) {
 	cssOverride, cleanup, err := writeTempCSS(cssSnap)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	defer cleanup()
+
 	pdf, err := s.Renderer.RenderCoverLetter(ctx, body, styleName, cssOverride)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	return pdf, s.persistArtifact(ctx, userID, versionID, pdf, cssSnap)
+
+	key, sha, size, err := s.writeArtifactBlob(userID, pdf)
+	if err != nil {
+		return false, err
+	}
+
+	if s.Biller != nil {
+		if err := s.Biller.RecordRender(ctx, userID, renderIdempotencyKey(versionID)); err != nil {
+			return true, fmt.Errorf("document render billing: %w", err)
+		}
+	}
+
+	tid := templateIdentity(cssSnap)
+	if err := s.Store.LinkArtifact(ctx, userID, versionID, key, sha, size, tid); err != nil {
+		return true, err
+	}
+
+	if canReconstruct {
+		if err := s.Store.MarkVersionReady(ctx, userID, versionID); err != nil {
+			_ = err
+		}
+	}
+	return true, nil
+}
+
+func renderIdempotencyKey(versionID string) string {
+	return "document-render:" + versionID
+}
+
+// writeArtifactBlob stores the PDF bytes in content-addressed blob storage and returns
+// the storage key, hex SHA-256, and byte size. The returned key is not yet linked in DB;
+// callers must call Store.LinkArtifact after committing billing.
+func (s *Service) writeArtifactBlob(userID string, pdf []byte) (key, sha string, size int64, err error) {
+	sum := sha256.Sum256(pdf)
+	shaHex := hex.EncodeToString(sum[:])
+	k := filepath.ToSlash(filepath.Join(userID, "pdf", shaHex[:2], shaHex+".pdf"))
+	if _, _, err := s.Blobs.PutAtomic(k, bytes.NewReader(pdf)); err != nil {
+		return "", "", 0, err
+	}
+	return k, shaHex, int64(len(pdf)), nil
 }
 
 func (s *Service) renderResumeWithSnapshot(ctx context.Context, profile *domain.ResumeProfile, style, cssSnap string, opts *resume.RenderOptions) ([]byte, error) {
@@ -543,17 +692,6 @@ func writeTempCSS(css string) (path string, cleanup func(), err error) {
 		return "", func() {}, err
 	}
 	return f.Name(), func() { _ = os.Remove(f.Name()) }, nil
-}
-
-func (s *Service) persistArtifact(ctx context.Context, userID, versionID string, pdf []byte, cssSnap string) error {
-	sum := sha256.Sum256(pdf)
-	sha := hex.EncodeToString(sum[:])
-	tid := templateIdentity(cssSnap)
-	key := filepath.ToSlash(filepath.Join(userID, "pdf", sha[:2], sha+".pdf"))
-	if _, _, err := s.Blobs.PutAtomic(key, bytes.NewReader(pdf)); err != nil {
-		return err
-	}
-	return s.Store.LinkArtifact(ctx, userID, versionID, key, sha, int64(len(pdf)), tid)
 }
 
 func templateIdentity(cssSnap string) string {

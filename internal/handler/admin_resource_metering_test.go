@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -35,6 +36,8 @@ func (s *stubResourceService) SaveDefaults(d domain.ResourceMeteringDefaults) er
 }
 func (s *stubResourceService) EstimateRenderCredits() (int64, error)    { return s.renderCredits, nil }
 func (s *stubResourceService) EstimateBrowserIncrementCredits() (int64, error) { return s.browserCredits, nil }
+func (s *stubResourceService) BeforeRender(_ context.Context, _ string) error   { return nil }
+func (s *stubResourceService) RecordRender(_ context.Context, _, _ string) error { return nil }
 
 // newServicesWithResource returns a Services bag with a real resource.Service attached.
 func newServicesWithResource(t *testing.T) (*handler.Services, func() string) {
