@@ -112,6 +112,9 @@ export const generationStore = {
     abortControllers[tab] = controller
     const signal = controller.signal
 
+    // Stable key for this specific user action — retries of the same fetch won't double-bill.
+    const idempotencyKey = crypto.randomUUID()
+
     const f = state.form
     const hasJobInput = f.jobUrl.trim().startsWith('http') || f.jobDesc.trim().length > 20
     const hasDescAsContext = f.jobDesc.trim().length > 20
@@ -155,6 +158,7 @@ export const generationStore = {
       resumeFile: f.resumeFile || undefined,
       market: f.market || undefined,
       signal,
+      idempotencyKey,
     }
 
     try {
@@ -169,6 +173,7 @@ export const generationStore = {
             f.githubUrl || undefined,
             f.market || undefined,
             signal,
+            idempotencyKey,
           )
         state.outputs = { ...state.outputs, resume: { pdfUrl: URL.createObjectURL(blob) } }
       } else if (tab === 'cover') {

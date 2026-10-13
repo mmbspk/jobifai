@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
 )
 
@@ -38,6 +39,17 @@ func writePDF(w http.ResponseWriter, filename string, data []byte) {
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+// legacyOpID returns a stable idempotency operation ID for legacy (response-only) render
+// endpoints. If the caller sends an Idempotency-Key header the key is scoped to the user
+// so different users can use the same client-side key independently. When absent a fresh
+// UUID is generated; retries of the same HTTP request will be billed separately.
+func legacyOpID(r *http.Request, userID string) string {
+	if k := strings.TrimSpace(r.Header.Get("Idempotency-Key")); k != "" {
+		return userID + ":" + k
+	}
+	return uuid.NewString()
 }
 
 // loadProfile loads the stored resume profile for userID, returning nil if none is saved.
@@ -151,10 +163,16 @@ func (h *ResumeHandlers) Generate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Preflight quota before launching Chrome (legacy endpoint — no persisted version).
-	opID := uuid.NewString()
+	// Idempotency key: use client-supplied Idempotency-Key header scoped to user if present,
+	// otherwise generate a UUID. The key is stable across retries when the header is sent.
+	opID := legacyOpID(r, userID)
 	if h.svc.Resource != nil {
 		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
-			writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+			if errors.Is(err, quota.ErrExceeded) {
+				writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+			} else {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "resource check unavailable"})
+			}
 			return
 		}
 	}
@@ -235,10 +253,15 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 	}
 
 	// Preflight quota before launching Chrome (AI tailored — no persisted version).
-	opID := uuid.NewString()
+	// Idempotency key: client-supplied Idempotency-Key header or UUID fallback.
+	opID := legacyOpID(r, userID)
 	if h.svc.Resource != nil {
 		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
-			writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+			if errors.Is(err, quota.ErrExceeded) {
+				writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+			} else {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "resource check unavailable"})
+			}
 			return
 		}
 	}
@@ -372,10 +395,15 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Preflight quota before launching Chrome (AI cover letter — no persisted version).
-	opID := uuid.NewString()
+	// Idempotency key: client-supplied Idempotency-Key header or UUID fallback.
+	opID := legacyOpID(r, userID)
 	if h.svc.Resource != nil {
 		if err := h.svc.Resource.BeforeRender(r.Context(), userID); err != nil {
-			writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+			if errors.Is(err, quota.ErrExceeded) {
+				writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+			} else {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "resource check unavailable"})
+			}
 			return
 		}
 	}

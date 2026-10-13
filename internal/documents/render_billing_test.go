@@ -310,3 +310,156 @@ func TestRenderBilling_ReconstructPDF_ZeroCredits(t *testing.T) {
 	assert.Equal(t, int32(0), b.beforeN.Load(), "ReconstructPDF must not check quota")
 	assert.Equal(t, int32(0), b.recordN.Load(), "ReconstructPDF must not bill")
 }
+
+// --- Gap 1 regressions: preflight quota failure must leave no version row ---
+
+// TestRenderBilling_QuotaFailure_NoVersionCreated verifies that a quota preflight failure
+// (BeforeRender → ErrExceeded) leaves no version row in the DB. Because the quota check runs
+// before InsertVersion, there is nothing to clean up; the assert checks that List returns
+// an empty document set.
+func TestRenderBilling_QuotaFailure_NoVersionCreated(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := &stubBiller{beforeErr: fmt.Errorf("balance exhausted: %w", quota.ErrExceeded)}
+	svc, userID := newBilledService(t, &countingRenderer{}, b)
+
+	_, err := svc.CreateResumeFromProfile(ctx, userID, "", documents.RenderContext{Language: "en"})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, quota.ErrExceeded))
+
+	list, err := svc.List(ctx, userID)
+	require.NoError(t, err)
+	assert.Empty(t, list.Documents, "quota failure before InsertVersion must leave no document rows")
+}
+
+// TestRenderBilling_CoverLetter_QuotaFailure_NoVersionCreated is the cover-letter equivalent.
+func TestRenderBilling_CoverLetter_QuotaFailure_NoVersionCreated(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := &stubBiller{beforeErr: fmt.Errorf("balance exhausted: %w", quota.ErrExceeded)}
+	svc, userID := newBilledService(t, &countingRenderer{}, b)
+
+	_, err := svc.SaveCoverLetter(ctx, userID, "", "Dear team.", documents.RenderContext{Language: "en"})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, quota.ErrExceeded))
+
+	list, err := svc.List(ctx, userID)
+	require.NoError(t, err)
+	assert.Empty(t, list.Documents, "quota failure before cover InsertVersion must leave no document rows")
+}
+
+// --- Gap 2 regressions: render/accounting failure must clean up the pending version ---
+
+// TestRenderBilling_RenderFailure_VersionCleanedUp verifies that when the PDF renderer fails,
+// the pending version row (inserted with Reconstructible=false) is deleted. A document row
+// may be created but must contain zero versions.
+func TestRenderBilling_RenderFailure_VersionCleanedUp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := &stubBiller{}
+	svc, userID := newBilledService(t, &failingRenderer{}, b)
+
+	_, err := svc.CreateResumeFromProfile(ctx, userID, "", documents.RenderContext{Language: "en"})
+	require.Error(t, err)
+
+	list, err := svc.List(ctx, userID)
+	require.NoError(t, err)
+	for _, doc := range list.Documents {
+		assert.Empty(t, doc.Versions,
+			"render failure must delete the pending version — no partial version visible")
+	}
+	assert.Equal(t, int32(0), b.recordN.Load(), "RecordRender must not be called after render failure")
+}
+
+// TestRenderBilling_CoverLetter_RenderFailure_VersionCleanedUp is the cover-letter equivalent.
+func TestRenderBilling_CoverLetter_RenderFailure_VersionCleanedUp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := &stubBiller{}
+	svc, userID := newBilledService(t, &failingRenderer{}, b)
+
+	_, err := svc.SaveCoverLetter(ctx, userID, "", "Body.", documents.RenderContext{Language: "en"})
+	require.Error(t, err)
+
+	list, err := svc.List(ctx, userID)
+	require.NoError(t, err)
+	for _, doc := range list.Documents {
+		assert.Empty(t, doc.Versions, "render failure must delete the pending cover version")
+	}
+	assert.Equal(t, int32(0), b.recordN.Load(), "RecordRender must not be called after cover render failure")
+}
+
+// TestRenderBilling_AccountingFailure_VersionCleanedUp verifies the critical billing-integrity
+// invariant: if RecordRender fails, the version is deleted so there is no accessible unbilled
+// artifact. A prior successfully-rendered version remains intact.
+func TestRenderBilling_AccountingFailure_VersionCleanedUp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := &stubBiller{}
+	svc, userID := newBilledService(t, &countingRenderer{}, b)
+
+	// First version succeeds.
+	v1, err := svc.CreateResumeFromProfile(ctx, userID, "First", documents.RenderContext{Language: "en"})
+	require.NoError(t, err)
+
+	// Now make RecordRender fail for all subsequent calls.
+	b.recordErr = errors.New("db write timeout — cannot commit billing")
+
+	// Retrieve document ID to append a second version.
+	list, err := svc.List(ctx, userID)
+	require.NoError(t, err)
+	require.Len(t, list.Documents, 1)
+	docID := list.Documents[0].ID
+
+	profile := &domain.ResumeProfile{
+		PersonalInformation: domain.PersonalInformation{Name: "Alex Example", Email: "alex@example.com"},
+	}
+	_, err = svc.AppendResumeVersion(ctx, userID, docID, "Second", documents.SourceUserEdit, profile, documents.RenderContext{Language: "en"})
+	require.Error(t, err, "accounting failure must surface as an error")
+
+	// The failed second version must not appear in the list.
+	list2, err := svc.List(ctx, userID)
+	require.NoError(t, err)
+	require.Len(t, list2.Documents, 1, "document count must not change after failed version")
+	require.Len(t, list2.Documents[0].Versions, 1, "failed version must be cleaned up — only v1 visible")
+	assert.Equal(t, v1, list2.Documents[0].Versions[0].ID, "surviving version must be v1")
+
+	// The deleted version's ID is not accessible (we don't have it since the call failed,
+	// but we can verify v1 remains downloadable and reconstructible via PDFBytes).
+	pdf, _, _, err := svc.PDFBytes(ctx, userID, v1)
+	require.NoError(t, err, "the prior successful version must remain accessible")
+	require.NotEmpty(t, pdf)
+}
+
+// TestRenderBilling_CoverLetter_AccountingFailure_VersionCleanedUp is the cover-letter equivalent.
+func TestRenderBilling_CoverLetter_AccountingFailure_VersionCleanedUp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	b := &stubBiller{}
+	svc, userID := newBilledService(t, &countingRenderer{}, b)
+
+	// First cover letter succeeds.
+	v1, err := svc.SaveCoverLetter(ctx, userID, "First", "Original body.", documents.RenderContext{Language: "en"})
+	require.NoError(t, err)
+
+	// Make billing fail for subsequent calls.
+	b.recordErr = errors.New("billing failure")
+
+	list, err := svc.List(ctx, userID)
+	require.NoError(t, err)
+	require.Len(t, list.Documents, 1)
+	docID := list.Documents[0].ID
+
+	_, err = svc.AppendCoverVersion(ctx, userID, docID, "Second", "Updated body.", documents.SourceUserEdit, documents.RenderContext{Language: "en"})
+	require.Error(t, err, "cover accounting failure must propagate as error")
+
+	list2, err := svc.List(ctx, userID)
+	require.NoError(t, err)
+	require.Len(t, list2.Documents, 1)
+	require.Len(t, list2.Documents[0].Versions, 1, "failed cover version must be deleted")
+	assert.Equal(t, v1, list2.Documents[0].Versions[0].ID)
+
+	pdf, _, _, err := svc.PDFBytes(ctx, userID, v1)
+	require.NoError(t, err, "first successful cover version must remain accessible")
+	require.NotEmpty(t, pdf)
+}

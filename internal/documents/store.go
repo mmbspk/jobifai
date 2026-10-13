@@ -360,6 +360,26 @@ func (s *Store) MarshalMeta(m DefaultsMeta) ([]byte, error) {
 	return json.Marshal(m)
 }
 
+// DeleteVersion removes a version and its dependent rows (ON DELETE CASCADE propagates
+// to document_version_artifact_refs). Used for cleanup when a new-version render or
+// billing step fails before the version becomes externally usable.
+func (s *Store) DeleteVersion(ctx context.Context, userID, versionID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM document_content_versions WHERE id = ? AND user_id = ?`,
+		versionID, userID)
+	return err
+}
+
+// MarkVersionReady sets reconstructible=true after a successful render + artifact
+// persistence + billing cycle. Until this is called the version's PDF cannot be
+// reconstructed via ReconstructPDF.
+func (s *Store) MarkVersionReady(ctx context.Context, userID, versionID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE document_content_versions SET reconstructible = 1 WHERE id = ? AND user_id = ?`,
+		versionID, userID)
+	return err
+}
+
 func isSQLiteUnique(err error) bool {
 	if err == nil {
 		return false

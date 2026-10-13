@@ -12,6 +12,9 @@ export interface TailoredOptions {
   resumeFile?: File
   market?: string
   signal?: AbortSignal
+  /** Stable idempotency key for billing deduplication. Generate once per user action (e.g. on
+   *  component mount) and reuse on retries so the server does not double-bill. */
+  idempotencyKey?: string
 }
 
 function buildTailoredForm(opts: TailoredOptions): FormData {
@@ -27,28 +30,29 @@ function buildTailoredForm(opts: TailoredOptions): FormData {
   return form
 }
 
-function formOpts(signal?: AbortSignal): ApiRequestOpts | undefined {
-  return signal ? { signal } : undefined
+function formOpts(signal?: AbortSignal, idempotencyKey?: string): ApiRequestOpts | undefined {
+  if (!signal && !idempotencyKey) return undefined
+  return { signal, idempotencyKey }
 }
 
 export const resumeApi = {
-  generate: (resumeFile?: File, promptHint?: string, linkedinUrl?: string, githubUrl?: string, market?: string, signal?: AbortSignal) => {
+  generate: (resumeFile?: File, promptHint?: string, linkedinUrl?: string, githubUrl?: string, market?: string, signal?: AbortSignal, idempotencyKey?: string) => {
     const form = new FormData()
     if (resumeFile) form.set('resume_file', resumeFile)
     if (promptHint) form.set('prompt_hint', promptHint)
     if (linkedinUrl) form.set('linkedin_url', linkedinUrl)
     if (githubUrl) form.set('github_url', githubUrl)
     if (market) form.set('market', market)
-    return apiPostForm<Blob>('/resume/generate', form, formOpts(signal))
+    return apiPostForm<Blob>('/resume/generate', form, formOpts(signal, idempotencyKey))
   },
   generateTailored: (opts: TailoredOptions) =>
-    apiPostForm<Blob>('/resume/generate-tailored', buildTailoredForm(opts), formOpts(opts.signal)),
+    apiPostForm<Blob>('/resume/generate-tailored', buildTailoredForm(opts), formOpts(opts.signal, opts.idempotencyKey)),
 
   generateCoverLetter: (opts: TailoredOptions) =>
-    apiPostForm<Blob>('/resume/generate-cover-letter', buildTailoredForm(opts), formOpts(opts.signal)),
+    apiPostForm<Blob>('/resume/generate-cover-letter', buildTailoredForm(opts), formOpts(opts.signal, opts.idempotencyKey)),
 
   evaluate: (opts: TailoredOptions) =>
-    apiPostForm<{ score: number; reasoning: string }>('/resume/evaluate', buildTailoredForm(opts), formOpts(opts.signal)),
+    apiPostForm<{ score: number; reasoning: string }>('/resume/evaluate', buildTailoredForm(opts), formOpts(opts.signal, opts.idempotencyKey)),
 
   checkHalal: (opts: { jobUrl?: string; jobDescription?: string; skipUrlFetch?: boolean; title?: string; company?: string; signal?: AbortSignal }) => {
     const form = new FormData()
