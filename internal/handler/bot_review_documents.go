@@ -81,6 +81,8 @@ func (h *BotHandlers) reviewResolveContext(r *http.Request, userID string, resum
 			if err := h.svc.Documents.Store.ValidateVersionKind(r.Context(), userID, vid, documents.KindResume); err == nil {
 				effectiveResume = vid
 			} else if !errors.Is(err, documents.ErrNotFound) && !errors.Is(err, documents.ErrForbidden) {
+				// Unlike the bot's settings-only fallback, interactive preflight
+				// reports wrong-kind mappings as configuration errors (HTTP 500).
 				return documents.ResolveReviewInput{}, documents.ReviewDocumentOptions{}, err
 			}
 		}

@@ -50,6 +50,11 @@ func (b *Bot) effectiveResumeVersionID(def documents.DefaultsView) string {
 			if b.cfg.Documents == nil {
 				return vid
 			}
+			// This settings-only helper has no caller context. Validation therefore
+			// cannot be canceled with the bot operation; pass a context if this path
+			// is unified with HTTP preflight in the future.
+			// Missing/foreign/wrong-kind mappings fall back to the global default.
+			// HTTP preflight instead surfaces wrong-kind mappings as configuration errors.
 			err := b.cfg.Documents.Store.ValidateVersionKind(context.Background(), b.cfg.UserID, vid, documents.KindResume)
 			if !errors.Is(err, documents.ErrNotFound) && !errors.Is(err, documents.ErrForbidden) && !errors.Is(err, documents.ErrReviewVersionWrongKind) {
 				// Preserve the configured ID on transient storage errors so
