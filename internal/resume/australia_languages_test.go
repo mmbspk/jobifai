@@ -23,6 +23,9 @@ func TestAustralia_LanguagesHaveOneSection(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, strings.Count(html, "English"))
 	require.Equal(t, 1, strings.Count(html, `id="skills-languages"`))
+	// This extraction depends on resumeTempl's skills-technical ID and closing section tag.
+	// Update it if the template changes its section structure.
+	require.Contains(t, html, `id="skills-technical"`)
 	skills := strings.Split(strings.Split(html, `id="skills-technical"`)[1], "</section>")[0]
 	require.NotContains(t, skills, "English")
 	require.Contains(t, skills, "Go, React", "programming languages still belong in skills")

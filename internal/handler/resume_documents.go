@@ -57,14 +57,14 @@ func (h *ResumeHandlers) saveGeneratedCover(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *ResumeHandlers) writeGeneratedDocument(w http.ResponseWriter, r *http.Request, svc *documents.Service, versionID, filename string, err error) {
+	if errors.Is(err, quota.ErrExceeded) {
+		writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
+		return
+	}
 	if versionID != "" {
 		w.Header().Set("X-Jobifai-Document-Version", versionID)
 	}
 	if err != nil {
-		if errors.Is(err, quota.ErrExceeded) {
-			writeJSON(w, http.StatusPaymentRequired, map[string]string{"message": "insufficient credits for document render"})
-			return
-		}
 		if versionID != "" {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
 				"message":            "Content saved to Documents, but PDF creation failed: " + err.Error(),

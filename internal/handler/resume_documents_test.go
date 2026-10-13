@@ -130,6 +130,7 @@ func TestGenerate_RealLedgerRecordsOneRenderAndDeduplicatesRetry(t *testing.T) {
 	var events, credits int
 	require.NoError(t, svc.DB.QueryRow(`SELECT COUNT(*), COALESCE(SUM(credits_burned), 0) FROM resource_usage_events WHERE user_id=?`, userID).Scan(&events, &credits))
 	require.Equal(t, 1, events, "saving must not add a second render event")
+	// $0.002 per render × (1 + 0.5 service markup) × 1000 credits/USD = 3 credits.
 	require.Equal(t, 3, credits, "retry uses the existing user/endpoint-scoped billing key")
 }
 
