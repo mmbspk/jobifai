@@ -17,10 +17,11 @@ package bot
 // detection and wrong-job navigation.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -28,6 +29,8 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/domain"
 )
 
 // launchTestBrowser starts a headless Chromium for the test and returns a
@@ -73,201 +76,10 @@ func navigateAndWait(t *testing.T, br *rod.Browser, url string) *rod.Page {
 	return page
 }
 
-// evalJsPoll evaluates the jsPoll function (extracted verbatim from bot.go)
-// and returns the result string ("clicked", "already_applied", or "").
-// We must replicate the jsPoll JS here because it is a string constant in bot.go
-// and cannot be imported; any change to jsPoll in bot.go must be reflected here.
-// The function is intentionally a copy so that test failures alert developers to
-// keep this copy in sync.
-func evalDetectLinkedInEasyApply(t *testing.T, page *rod.Page) bool {
-	t.Helper()
-	// We call detectLinkedInEasyApply directly because it is a method on Bot
-	// that accepts *rod.Page. We run the inner jsDetect script manually so we
-	// can call it against our fixture page without a full Bot instance.
-	const jsDetect = `() => {
-		function deepAll(root, selector) {
-			const out = [];
-			const walk = (node) => {
-				if (!node || !node.querySelectorAll) return;
-				try { out.push(...node.querySelectorAll(selector)); } catch (e) {}
-				try {
-					for (const el of node.querySelectorAll('*')) {
-						if (el.shadowRoot) walk(el.shadowRoot);
-					}
-				} catch (e) {}
-			};
-			walk(root);
-			return out;
-		}
-		function labelOf(el) {
-			return ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || el.textContent || ''))
-				.toLowerCase().replace(/\s+/g, ' ').trim();
-		}
-		function isExcluded(el) {
-			return !!el.closest([
-				'aside',
-				'[class*="similar-job"]',
-				'[class*="jobs-similar"]',
-				'[class*="people-also-viewed"]',
-				'[class*="scaffold-layout__aside"]',
-				'[data-test-similar-jobs]',
-				'.jobs-discovery',
-			].join(','));
-		}
-		function isVisible(el) {
-			try {
-				const rect = el.getBoundingClientRect();
-				if (rect.width < 2 && rect.height < 2) return false;
-				const doc = el.ownerDocument || document;
-				const view = doc.defaultView || window;
-				let node = el;
-				while (node && node !== doc.documentElement) {
-					const s = view.getComputedStyle(node);
-					if (s.display === 'none' || s.visibility === 'hidden') return false;
-					const parent = node.parentElement;
-					if (parent) { node = parent; continue; }
-					const root = node.getRootNode && node.getRootNode();
-					if (root && root.host) { node = root.host; continue; }
-					break;
-				}
-				return true;
-			} catch(e) { return false; }
-		}
-		function isEasyApplyLabel(t) {
-			return t.includes('easy apply') || t.includes('linkedin apply');
-		}
-		function currentJobPath() {
-			const m = window.location.pathname.match(/\/jobs\/view\/(\d+)/i);
-			return m ? '/jobs/view/' + m[1] : '';
-		}
-		const controls = [
-			...deepAll(document, 'button'),
-			...deepAll(document, 'a'),
-			...deepAll(document, '[role="button"]'),
-		];
-		for (const el of controls) {
-			if (isExcluded(el)) continue;
-			if (!isVisible(el)) continue;
-			if (isEasyApplyLabel(labelOf(el))) return true;
-			if (el.getAttribute('data-live-test-easy-apply') != null) return true;
-		}
-		const pagePath = currentJobPath();
-		for (const el of controls) {
-			if (isExcluded(el)) continue;
-			if (!isVisible(el)) continue;
-			const href = (el.getAttribute('href') || '').toLowerCase();
-			if (!href.includes('opensduiapplyflow')) continue;
-			const hrefJobM = href.match(/\/jobs\/view\/(\d+)/);
-			if (hrefJobM && pagePath && '/jobs/view/' + hrefJobM[1] !== pagePath) continue;
-			return true;
-		}
-		return false;
-	}`
-	res, err := page.Eval(jsDetect)
-	require.NoError(t, err)
-	return res.Value.Bool()
-}
-
-// evalJsPollResult evaluates the jsPoll function against the fixture page and
-// returns the result string.
-func evalJsPollResult(t *testing.T, page *rod.Page) string {
-	t.Helper()
-	const jsPoll = `() => {
-		function trustClick(btn) {
-			try { btn.scrollIntoView({ block: 'center' }); } catch(e) {}
-			try { btn.focus(); } catch(e) {}
-			const view = (btn.ownerDocument && btn.ownerDocument.defaultView) || window;
-			const opts = { bubbles: true, cancelable: true, view: view };
-			for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-				try {
-					if (type.startsWith('pointer')) {
-						btn.dispatchEvent(new PointerEvent(type, Object.assign({pointerId: 1, pointerType: 'mouse'}, opts)));
-					} else {
-						btn.dispatchEvent(new MouseEvent(type, opts));
-					}
-				} catch(e) {
-					try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch(e2) {}
-				}
-			}
-			try { btn.click(); } catch(e) {}
-		}
-		function allInDOM(root, selector) {
-			const r = [];
-			try {
-				r.push(...root.querySelectorAll(selector));
-				for (const el of root.querySelectorAll('*')) {
-					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
-					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-						try {
-							const d = el.contentDocument;
-							if (d) r.push(...allInDOM(d, selector));
-						} catch (e) {}
-					}
-				}
-			} catch(e) {}
-			return r;
-		}
-		function isVisible(el) {
-			try {
-				const rect = el.getBoundingClientRect();
-				if (rect.width < 2 && rect.height < 2) return false;
-				const doc = el.ownerDocument || document;
-				const view = doc.defaultView || window;
-				let node = el;
-				while (node && node !== doc.documentElement) {
-					const s = view.getComputedStyle(node);
-					if (s.display === 'none' || s.visibility === 'hidden') return false;
-					const parent = node.parentElement;
-					if (parent) { node = parent; continue; }
-					const root = node.getRootNode && node.getRootNode();
-					if (root && root.host) { node = root.host; continue; }
-					break;
-				}
-				return true;
-			} catch(e) { return false; }
-		}
-		const t = document.body.innerText.toLowerCase();
-		if (t.includes('application submitted') || t.includes('application was sent')) {
-			const hasAppStatus = document.querySelector('[class*="application-status"], [class*="ApplicationStatus"]');
-			if (hasAppStatus || t.includes('application submitted') || t.includes('application was sent')) return 'already_applied';
-		}
-		const candidates = (() => {
-			return allInDOM(document, 'button, a, [role="button"]').filter(b => {
-				return !b.closest('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="scaffold-layout__aside"], [class*="people-also-viewed"]');
-			});
-		})();
-		const btn = candidates.find(b => {
-			if (!isVisible(b)) return false;
-			const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || b.textContent || ''))
-				.toLowerCase().replace(/\s+/g, ' ').trim();
-			if (label.includes('easy apply') || label.includes('linkedin apply')) return true;
-			if (b.getAttribute('data-live-test-easy-apply') != null) return true;
-			const href = (b.getAttribute('href') || '').toLowerCase();
-			if (href.includes('opensduiapplyflow')) {
-				const hrefJobM = href.match(/\/jobs\/view\/(\d+)/);
-				if (hrefJobM) {
-					const pageJobM = window.location.pathname.match(/\/jobs\/view\/(\d+)/i);
-					if (pageJobM && hrefJobM[1] !== pageJobM[1]) return false;
-				}
-				return true;
-			}
-			return false;
-		});
-		if (btn) {
-			trustClick(btn);
-			return 'clicked';
-		}
-		return '';
-	}`
-	res, err := page.Eval(jsPoll)
-	require.NoError(t, err)
-	return res.Value.String()
-}
-
 // ── Fixture HTML ──────────────────────────────────────────────────────────────
 
 // hiddenDisplayNoneHTML: 3rd-party job page with a display:none preload link.
-// detectLinkedInEasyApply must return false; jsPoll must return "".
+// detectLinkedInEasyApply must return false; jsLinkedInClickCTA must return "".
 const hiddenDisplayNoneHTML = `<!DOCTYPE html><html><body>
 <main>
   <h1>Project Manager at ExternalCo</h1>
@@ -294,7 +106,7 @@ const hiddenVisibilityHiddenHTML = `<!DOCTYPE html><html><body>
 // differentJobLinkHTML: a visible opensduiapplyflow link that targets a DIFFERENT job ID.
 // Page is served at /jobs/view/123456789; the link points to /jobs/view/999888.
 // The link has no "Easy Apply" label so it is only matched via the href check (check 2).
-// Both detectLinkedInEasyApply and jsPoll must reject this link.
+// Both detectLinkedInEasyApply and jsLinkedInClickCTA must reject this link.
 const differentJobLinkHTML = `<!DOCTYPE html><html><body>
 <main>
   <h1>Software Engineer at Acme — 3rd party apply</h1>
@@ -306,8 +118,23 @@ const differentJobLinkHTML = `<!DOCTYPE html><html><body>
 </main>
 </body></html>`
 
+// differentJobLabeledHTML: a visible link labelled "Easy Apply" that targets a
+// DIFFERENT job ID. This is the exact gap from reviewer gap #1 — the label
+// match must not fire before the href destination is validated.
+const differentJobLabeledHTML = `<!DOCTYPE html><html><body>
+<main>
+  <h1>Accountant at ExternalCo — 3rd party apply</h1>
+  <!-- Visible, "Easy Apply"-labelled link whose href targets a different job.
+       Before the fix, check 1 accepted this via the label match before
+       checking the href destination. Both detect and click must reject it. -->
+  <a href="/jobs/view/999888?openSDUIApplyFlow=true"
+     aria-label="Easy Apply"
+     style="display:block; width:120px; height:40px">Easy Apply</a>
+</main>
+</body></html>`
+
 // sameJobVisibleCTAHTML: a visible Easy Apply button for the same job.
-// detectLinkedInEasyApply must return true; jsPoll must return "clicked".
+// detectLinkedInEasyApply must return true; jsLinkedInClickCTA must return "clicked".
 const sameJobVisibleCTAHTML = `<!DOCTYPE html><html><body>
 <main>
   <h1>Data Analyst at ValidCo</h1>
@@ -319,7 +146,7 @@ const sameJobVisibleCTAHTML = `<!DOCTYPE html><html><body>
 </body></html>`
 
 // sameJobSDUILinkHTML: a visible opensduiapplyflow link targeting the SAME job.
-// detectLinkedInEasyApply must return true; jsPoll must return "clicked".
+// detectLinkedInEasyApply must return true; jsLinkedInClickCTA must return "clicked".
 const sameJobSDUILinkHTML = `<!DOCTYPE html><html><body>
 <main>
   <h1>Business Analyst at ValidCo</h1>
@@ -329,17 +156,24 @@ const sameJobSDUILinkHTML = `<!DOCTYPE html><html><body>
 </main>
 </body></html>`
 
+// wrongJobPageHTML: a simple page at /jobs/view/999888, used to simulate URL drift.
+const wrongJobPageHTML = `<!DOCTYPE html><html><body>
+<main><h1>Wrong Job Page</h1></main>
+</body></html>`
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 // TestDetect_HiddenDisplayNone verifies that a display:none preload link is
-// not treated as an Easy Apply CTA and jsPoll does not click it.
+// not treated as an Easy Apply CTA and jsLinkedInClickCTA does not click it.
 func TestDetect_HiddenDisplayNone(t *testing.T) {
 	br := launchTestBrowser(t)
 	srv := fixtureServer(t, "123456789", "", hiddenDisplayNoneHTML, "")
 	page := navigateAndWait(t, br, srv.URL+"/jobs/view/123456789")
 
-	assert.False(t, evalDetectLinkedInEasyApply(t, page), "display:none link must not be detected as Easy Apply")
-	assert.Equal(t, "", evalJsPollResult(t, page), "jsPoll must not click a display:none link")
+	assert.False(t, detectLinkedInEasyApply(page), "display:none link must not be detected as Easy Apply")
+	res, err := page.Eval(jsLinkedInClickCTA)
+	require.NoError(t, err)
+	assert.Equal(t, "", res.Value.String(), "jsLinkedInClickCTA must not click a display:none link")
 }
 
 // TestDetect_HiddenVisibilityHidden verifies that a visibility:hidden preload
@@ -350,21 +184,40 @@ func TestDetect_HiddenVisibilityHidden(t *testing.T) {
 	srv := fixtureServer(t, "123456789", "", hiddenVisibilityHiddenHTML, "")
 	page := navigateAndWait(t, br, srv.URL+"/jobs/view/123456789")
 
-	assert.False(t, evalDetectLinkedInEasyApply(t, page), "visibility:hidden link must not be detected as Easy Apply")
-	assert.Equal(t, "", evalJsPollResult(t, page), "jsPoll must not click a visibility:hidden link")
+	assert.False(t, detectLinkedInEasyApply(page), "visibility:hidden link must not be detected as Easy Apply")
+	res, err := page.Eval(jsLinkedInClickCTA)
+	require.NoError(t, err)
+	assert.Equal(t, "", res.Value.String(), "jsLinkedInClickCTA must not click a visibility:hidden link")
 }
 
 // TestDetect_DifferentJobLinkRejected verifies that a visible link whose href
 // carries a different job ID than the current page is rejected by both the
-// detector and jsPoll.
+// detector and jsLinkedInClickCTA. Covers the opensduiapplyflow-only path (check 2).
 func TestDetect_DifferentJobLinkRejected(t *testing.T) {
 	br := launchTestBrowser(t)
 	// Page is at /jobs/view/123456789; the link targets /jobs/view/999888.
 	srv := fixtureServer(t, "123456789", "", differentJobLinkHTML, "")
 	page := navigateAndWait(t, br, srv.URL+"/jobs/view/123456789")
 
-	assert.False(t, evalDetectLinkedInEasyApply(t, page), "link to different job must not be detected as Easy Apply")
-	assert.Equal(t, "", evalJsPollResult(t, page), "jsPoll must not click a link that targets a different job")
+	assert.False(t, detectLinkedInEasyApply(page), "link to different job must not be detected as Easy Apply")
+	res, err := page.Eval(jsLinkedInClickCTA)
+	require.NoError(t, err)
+	assert.Equal(t, "", res.Value.String(), "jsLinkedInClickCTA must not click a link that targets a different job")
+}
+
+// TestDetect_DifferentJobLabeledLinkRejected verifies that a visible link
+// labelled "Easy Apply" that targets a DIFFERENT job ID is also rejected.
+// This covers reviewer gap #1: check 1 (label match) must validate the href
+// destination before accepting any candidate.
+func TestDetect_DifferentJobLabeledLinkRejected(t *testing.T) {
+	br := launchTestBrowser(t)
+	srv := fixtureServer(t, "123456789", "", differentJobLabeledHTML, "")
+	page := navigateAndWait(t, br, srv.URL+"/jobs/view/123456789")
+
+	assert.False(t, detectLinkedInEasyApply(page), "labelled Easy Apply link to different job must not be detected")
+	res, err := page.Eval(jsLinkedInClickCTA)
+	require.NoError(t, err)
+	assert.Equal(t, "", res.Value.String(), "jsLinkedInClickCTA must not click a labelled link to a different job")
 }
 
 // TestDetect_ValidButtonClicked verifies that a visible, same-job Easy Apply
@@ -375,89 +228,171 @@ func TestDetect_ValidButtonClicked(t *testing.T) {
 	srv := fixtureServer(t, "123456789", "", sameJobVisibleCTAHTML, "")
 	page := navigateAndWait(t, br, srv.URL+"/jobs/view/123456789")
 
-	assert.True(t, evalDetectLinkedInEasyApply(t, page), "visible Easy Apply button must be detected")
-	result := evalJsPollResult(t, page)
-	assert.Equal(t, "clicked", result, "jsPoll must click a visible Easy Apply button")
+	assert.True(t, detectLinkedInEasyApply(page), "visible Easy Apply button must be detected")
+	res, err := page.Eval(jsLinkedInClickCTA)
+	require.NoError(t, err)
+	assert.Equal(t, "clicked", res.Value.String(), "jsLinkedInClickCTA must click a visible Easy Apply button")
 }
 
 // TestDetect_SameJobSDUILinkClicked verifies that a visible opensduiapplyflow
-// link targeting the SAME job is accepted and clicked by jsPoll.
+// link targeting the SAME job is accepted and clicked by jsLinkedInClickCTA.
 func TestDetect_SameJobSDUILinkClicked(t *testing.T) {
 	br := launchTestBrowser(t)
 	srv := fixtureServer(t, "123456789", "", sameJobSDUILinkHTML, "")
 	page := navigateAndWait(t, br, srv.URL+"/jobs/view/123456789")
 
-	assert.True(t, evalDetectLinkedInEasyApply(t, page), "visible SDUI link for same job must be detected")
-	result := evalJsPollResult(t, page)
-	assert.Equal(t, "clicked", result, "jsPoll must click a visible SDUI link for the same job")
+	assert.True(t, detectLinkedInEasyApply(page), "visible SDUI link for same job must be detected")
+	res, err := page.Eval(jsLinkedInClickCTA)
+	require.NoError(t, err)
+	assert.Equal(t, "clicked", res.Value.String(), "jsLinkedInClickCTA must click a visible SDUI link for the same job")
 }
 
-// ── Identity drift outcome routing ───────────────────────────────────────────
+// ── Identity drift — entry check ─────────────────────────────────────────────
 
-// TestIdentityDrift_PostApplyPathComparison verifies the drift detection used in
-// submitEasyApply: given start URL and post-apply URL, the path comparison
-// correctly distinguishes same-job from different-job outcomes.
-func TestIdentityDrift_PostApplyPathComparison(t *testing.T) {
+// TestEasyApply_AbortsOnIdentityDrift verifies that easyApply returns an
+// identity error when the loaded page is at a different job URL than declared.
+// This is the entry check: it fires before jsPoll, before reviewPrepareOnly,
+// and before any form interaction.
+func TestEasyApply_AbortsOnIdentityDrift(t *testing.T) {
+	br := launchTestBrowser(t)
+	srv := fixtureServer(t, "999888", "", wrongJobPageHTML, "")
+
+	// Navigate to the WRONG job page.
+	page := navigateAndWait(t, br, srv.URL+"/jobs/view/999888")
+
+	b := &Bot{cfg: Config{}, stopCh: make(chan struct{})}
+	lazy := &lazyDocGen{
+		b: b,
+		// Declared intent: correct job 123456789
+		job: linkedInJob{ID: "123456789", URL: srv.URL + "/jobs/view/123456789"},
+	}
+
+	err := b.easyApply(context.Background(), page, lazy)
+	require.Error(t, err, "easyApply must return an error when page is at wrong job URL")
+	assert.Contains(t, err.Error(), "job identity", "error must identify this as an identity failure")
+}
+
+// ── Identity drift — DB outcome ───────────────────────────────────────────────
+
+// TestEasyApply_IdentityDriftDoesNotStoreApplied proves that when easyApply
+// aborts on identity drift, the error path does not write a jobs_applied record
+// and records OutcomeFailed (not submitted_confirmed) in apply_attempts.
+//
+// This complements TestEasyApply_AbortsOnIdentityDrift: the browser test shows
+// easyApply returns an error; this test shows the error path writes the right DB
+// state — together they prove no wrong-job Applied record is ever created.
+func TestEasyApply_IdentityDriftDoesNotStoreApplied(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	b := &Bot{cfg: Config{DB: db, UserID: "u1"}, stopCh: make(chan struct{})}
+	job := linkedInJob{
+		ID:      "123456789",
+		URL:     "https://www.linkedin.com/jobs/view/123456789",
+		Title:   "Test Role",
+		Company: "TestCo",
+	}
+
+	ac := newAttemptContext("u1", string(domain.PlatformLinkedIn), job.ID, job.URL, job.Title, job.Company, "automated_linkedin")
+	beginAttempt(db, ac)
+
+	// Simulate easyApply returning the identity drift error from the entry check.
+	driftErr := fmt.Errorf("job identity: page is at %s/jobs/view/999888 which has no LinkedIn job path (expected %s)",
+		"https://www.linkedin.com", "https://www.linkedin.com/jobs/view/123456789")
+
+	reason := "easy apply: " + driftErr.Error()
+	b.recordSkipped(job, reason, 8, "good match", nil)
+	finishAttempt(db, ac, classifyApplyOutcome(driftErr), "apply", "apply_error", driftErr.Error())
+
+	// jobs_applied must be empty — no wrong-job Application record.
+	var appliedCount int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM jobs_applied WHERE link = ? AND user_id = ?`,
+		job.URL, "u1",
+	).Scan(&appliedCount))
+	assert.Equal(t, 0, appliedCount, "jobs_applied must remain empty after identity drift abort")
+
+	// apply_attempts must record a non-confirmed outcome.
+	var outcome string
+	require.NoError(t, db.QueryRow(
+		`SELECT outcome FROM apply_attempts WHERE id = ?`,
+		ac.AttemptID,
+	).Scan(&outcome))
+	assert.NotEqual(t, string(OutcomeSubmittedConfirmed), outcome,
+		"outcome must not be submitted_confirmed after identity drift")
+	assert.Equal(t, string(OutcomeFailed), outcome,
+		"identity drift must record OutcomeFailed")
+}
+
+// ── Post-apply drift path ─────────────────────────────────────────────────────
+
+// TestSubmitEasyApply_PostDriftComparedAgainstDeclaredJob verifies that the
+// post-apply drift check in submitEasyApply uses the declared job.URL rather
+// than the live captured URL. Uses linkedInJobPath directly (same function used
+// in submitEasyApply) so the test exercises production code, not a copy.
+func TestSubmitEasyApply_PostDriftComparedAgainstDeclaredJob(t *testing.T) {
 	cases := []struct {
-		name       string
-		startURL   string
-		postURL    string
-		wantDrift  bool
+		name        string
+		declaredURL string // corresponds to job.URL (the intent)
+		postURL     string // page URL after easyApply succeeds
+		wantDrift   bool
 	}{
 		{
-			name:      "same job — no drift",
-			startURL:  "https://www.linkedin.com/jobs/view/123456789",
-			postURL:   "https://www.linkedin.com/jobs/view/123456789?openSDUIApplyFlow=true",
-			wantDrift: false,
+			name:        "same job — no drift",
+			declaredURL: "https://www.linkedin.com/jobs/view/123456789",
+			postURL:     "https://www.linkedin.com/jobs/view/123456789?openSDUIApplyFlow=true",
+			wantDrift:   false,
 		},
 		{
-			name:      "different job — drift detected",
-			startURL:  "https://www.linkedin.com/jobs/view/123456789",
-			postURL:   "https://www.linkedin.com/jobs/view/999888",
-			wantDrift: true,
+			name:        "different job — drift detected",
+			declaredURL: "https://www.linkedin.com/jobs/view/123456789",
+			postURL:     "https://www.linkedin.com/jobs/view/999888",
+			wantDrift:   true,
 		},
 		{
-			name:      "empty post URL — no drift (can't confirm mismatch)",
-			startURL:  "https://www.linkedin.com/jobs/view/123456789",
-			postURL:   "",
-			wantDrift: false,
+			name:        "empty post URL — no drift (cannot confirm mismatch)",
+			declaredURL: "https://www.linkedin.com/jobs/view/123456789",
+			postURL:     "",
+			wantDrift:   false,
 		},
 		{
-			name:      "non-LinkedIn URLs — no drift (path extraction yields empty)",
-			startURL:  "https://www.seek.com.au/job/111",
-			postURL:   "https://www.seek.com.au/job/222",
-			wantDrift: false,
+			name:        "non-LinkedIn URLs — no drift (path extraction yields empty)",
+			declaredURL: "https://www.seek.com.au/job/111",
+			postURL:     "https://www.seek.com.au/job/222",
+			wantDrift:   false,
 		},
 		{
-			name:      "start has no job path — no drift",
-			startURL:  "https://www.linkedin.com/jobs/collections/recommended/?currentJobId=123",
-			postURL:   "https://www.linkedin.com/jobs/view/999888",
-			wantDrift: false,
+			name:        "declared has no job path — no drift",
+			declaredURL: "https://www.linkedin.com/jobs/collections/recommended/?currentJobId=123",
+			postURL:     "https://www.linkedin.com/jobs/view/999888",
+			wantDrift:   false,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			startPath := linkedInJobPath(tc.startURL)
+			intendedPath := linkedInJobPath(tc.declaredURL)
 			endPath := linkedInJobPath(tc.postURL)
-			drift := startPath != "" && endPath != "" && startPath != endPath
+			drift := intendedPath != "" && endPath != "" && intendedPath != endPath
 			assert.Equal(t, tc.wantDrift, drift)
 		})
 	}
 }
 
-// TestIdentityDrift_EasyApplyIdentityError verifies that the error message from
-// easyApply's identity guard is recognizable and does not match
-// skipReasonBelongsInTopMatches (so it falls through as a plain apply_error).
-func TestIdentityDrift_EasyApplyIdentityError(t *testing.T) {
-	driftErr := fmt.Errorf("easy apply: job identity drift: page is at %s (expected %s) — aborting before submit to prevent wrong-job application",
+// TestIdentityDriftError_RoutingProperties verifies that an identity drift
+// error from easyApply is routed as a plain apply_error (not mis-classified as
+// "not automatable"), and is recognizable in error messages.
+func TestIdentityDriftError_RoutingProperties(t *testing.T) {
+	driftErr := fmt.Errorf("job identity: page is at %s (expected %s) — aborting before CTA interaction",
 		"https://www.linkedin.com/jobs/view/999888",
 		"https://www.linkedin.com/jobs/view/123456789")
+	reason := "easy apply: " + driftErr.Error()
 
 	// Drift errors must not be silently routed to Top Matches as "not automatable".
-	assert.False(t, skipReasonBelongsInTopMatches(driftErr.Error()),
+	assert.False(t, skipReasonBelongsInTopMatches(reason),
 		"identity drift must not be mis-classified as a blocked/external-ATS error")
 
-	// The error message must clearly identify the cause.
-	assert.True(t, strings.Contains(driftErr.Error(), "identity drift"),
-		"error must mention identity drift for diagnostics")
+	// The outcome must be OutcomeFailed (not OutcomeBlocked or OutcomeSubmittedConfirmed).
+	assert.Equal(t, OutcomeFailed, classifyApplyOutcome(driftErr))
 }

@@ -1346,99 +1346,9 @@ func (b *Bot) linkedInPageApplied(page *rod.Page) bool {
 //
 // Only the main job pane is considered (similar-jobs / aside rails are ignored).
 func detectLinkedInEasyApply(page *rod.Page) bool {
-	const jsDetect = `() => {
-		function deepAll(root, selector) {
-			const out = [];
-			const walk = (node) => {
-				if (!node || !node.querySelectorAll) return;
-				try { out.push(...node.querySelectorAll(selector)); } catch (e) {}
-				try {
-					for (const el of node.querySelectorAll('*')) {
-						if (el.shadowRoot) walk(el.shadowRoot);
-					}
-				} catch (e) {}
-			};
-			walk(root);
-			return out;
-		}
-		function labelOf(el) {
-			return ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || el.textContent || ''))
-				.toLowerCase().replace(/\s+/g, ' ').trim();
-		}
-		function isExcluded(el) {
-			return !!el.closest([
-				'aside',
-				'[class*="similar-job"]',
-				'[class*="jobs-similar"]',
-				'[class*="people-also-viewed"]',
-				'[class*="scaffold-layout__aside"]',
-				'[data-test-similar-jobs]',
-				'.jobs-discovery',
-			].join(','));
-		}
-		function isVisible(el) {
-			try {
-				const rect = el.getBoundingClientRect();
-				if (rect.width < 2 && rect.height < 2) return false;
-				const doc = el.ownerDocument || document;
-				const view = doc.defaultView || window;
-				let node = el;
-				while (node && node !== doc.documentElement) {
-					const s = view.getComputedStyle(node);
-					if (s.display === 'none' || s.visibility === 'hidden') return false;
-					const parent = node.parentElement;
-					if (parent) { node = parent; continue; }
-					const root = node.getRootNode && node.getRootNode();
-					if (root && root.host) { node = root.host; continue; }
-					break;
-				}
-				return true;
-			} catch(e) { return false; }
-		}
-		function isEasyApplyLabel(t) {
-			return t.includes('easy apply') || t.includes('linkedin apply');
-		}
-		// currentJobPath extracts /jobs/view/<id> from the current page URL.
-		// Used to reject SDUI links that target a different job than the open listing.
-		function currentJobPath() {
-			const m = window.location.pathname.match(/\/jobs\/view\/(\d+)/i);
-			return m ? '/jobs/view/' + m[1] : '';
-		}
-
-		// 1) Visible Easy Apply control in the main job pane (LinkedIn's standard CTA).
-		const controls = [
-			...deepAll(document, 'button'),
-			...deepAll(document, 'a'),
-			...deepAll(document, '[role="button"]'),
-		];
-		for (const el of controls) {
-			if (isExcluded(el)) continue;
-			if (!isVisible(el)) continue;
-			if (isEasyApplyLabel(labelOf(el))) return true;
-			if (el.getAttribute('data-live-test-easy-apply') != null) return true;
-		}
-
-		// 2) LinkedIn SDUI Easy Apply flag on an in-pane control/link.
-		// Requires full visibility (display + visibility:hidden + ancestor walk) —
-		// hidden SDUI preload/analytics links are present on 3rd-party job pages too.
-		// Also rejects links whose href explicitly targets a different job ID.
-		const pagePath = currentJobPath();
-		for (const el of controls) {
-			if (isExcluded(el)) continue;
-			if (!isVisible(el)) continue;
-			const href = (el.getAttribute('href') || '').toLowerCase();
-			if (!href.includes('opensduiapplyflow')) continue;
-			// Reject if the href targets a different job than the current listing.
-			const hrefJobM = href.match(/\/jobs\/view\/(\d+)/);
-			if (hrefJobM && pagePath && '/jobs/view/' + hrefJobM[1] !== pagePath) continue;
-			return true;
-		}
-
-		return false;
-	}`
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
-		res, err := page.Eval(jsDetect)
+		res, err := page.Eval(jsLinkedInDetectCTA)
 		if err == nil && res.Value.Bool() {
 			return true
 		}
@@ -1709,12 +1619,6 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	}
 	defer func() { _ = jobPage.Close() }()
 
-	// Capture starting URL so we can detect if jsPoll navigated to a different job.
-	startURL := job.URL
-	if info, infoErr := jobPage.Info(); infoErr == nil && info != nil && info.URL != "" {
-		startURL = info.URL
-	}
-
 	if err := b.easyApply(ctx, jobPage, lazy); err != nil {
 		if errors.Is(err, errAlreadyApplied) {
 			resume, cover := lazy.get()
@@ -1748,20 +1652,19 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 		return false
 	}
 	// Check for job identity drift before recording the application.
-	// easyApply aborts on drift during form navigation, but the success signal
-	// may have been detected on the wrong job if the URL fallback
-	// (openSDUIApplyFlow=true) navigated to a different listing.
+	// Compares against the declared job.URL (not the live startURL) so that
+	// any URL transformation during navigation cannot mask a wrong-job submission.
 	var postApplyURL string
 	if info, infoErr := jobPage.Info(); infoErr == nil && info != nil && info.URL != "" {
 		postApplyURL = info.URL
 	}
-	startPath := linkedInJobPath(startURL)
+	intendedPath := linkedInJobPath(job.URL)
 	endPath := linkedInJobPath(postApplyURL)
-	if startPath != "" && endPath != "" && startPath != endPath {
+	if intendedPath != "" && endPath != "" && intendedPath != endPath {
 		log.Error().
 			Str("attempt_id", ac.AttemptID).
 			Str("job_id", job.ID).
-			Str("intended_url", startURL).
+			Str("intended_url", job.URL).
 			Str("actual_url", postApplyURL).
 			Msg("linkedin: submitted to a different job — recording submission_unknown, routing original job to Top Matches")
 		b.savePendingReview(ctx, &domain.PendingReview{
@@ -1777,7 +1680,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 			CreatedAt:            time.Now(),
 		})
-		finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", "submitted to "+postApplyURL+" instead of "+startURL)
+		finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", "submitted to "+postApplyURL+" instead of "+job.URL)
 		return false
 	}
 	resume, cover := lazy.get()
@@ -1802,98 +1705,28 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		log.Info().Str("url", info.Value.String()).Msg("easy apply: page URL after load")
 	}
 
+	// Entry identity check — before any CTA interaction or preparation scan.
+	// Fail closed: if the declared job has a LinkedIn job path but the loaded page
+	// cannot be verified to carry the same path, abort immediately.
+	// This also protects the reviewPrepareOnly branch below.
+	expectedJobPath := linkedInJobPath(lazy.job.URL)
+	if expectedJobPath != "" {
+		info, infoErr := page.Timeout(5 * time.Second).Info()
+		if infoErr != nil || info == nil || info.URL == "" {
+			return fmt.Errorf("job identity: cannot read page URL to verify against declared job %s", lazy.job.URL)
+		}
+		cp := linkedInJobPath(info.URL)
+		if cp == "" {
+			return fmt.Errorf("job identity: page loaded to %s which has no LinkedIn job path (expected %s)", info.URL, lazy.job.URL)
+		}
+		if cp != expectedJobPath {
+			return fmt.Errorf("job identity: page is at %s but declared job is %s — aborting before CTA interaction", info.URL, lazy.job.URL)
+		}
+	}
+
 	// Poll for up to 30s for either an Easy Apply button OR an "already applied" state.
 	// LinkedIn's SPA renders both dynamically after the initial load event.
 	// SDUI apply buttons ignore plain element.click() — use a full pointer lifecycle.
-	const jsPoll = `() => {
-		function trustClick(btn) {
-			try { btn.scrollIntoView({ block: 'center' }); } catch(e) {}
-			try { btn.focus(); } catch(e) {}
-			const view = (btn.ownerDocument && btn.ownerDocument.defaultView) || window;
-			const opts = { bubbles: true, cancelable: true, view: view };
-			for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-				try {
-					if (type.startsWith('pointer')) {
-						btn.dispatchEvent(new PointerEvent(type, Object.assign({pointerId: 1, pointerType: 'mouse'}, opts)));
-					} else {
-						btn.dispatchEvent(new MouseEvent(type, opts));
-					}
-				} catch(e) {
-					try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch(e2) {}
-				}
-			}
-			try { btn.click(); } catch(e) {}
-		}
-		function allInDOM(root, selector) {
-			const r = [];
-			try {
-				r.push(...root.querySelectorAll(selector));
-				for (const el of root.querySelectorAll('*')) {
-					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
-					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-						try {
-							const d = el.contentDocument;
-							if (d) r.push(...allInDOM(d, selector));
-						} catch (e) {}
-					}
-				}
-			} catch(e) {}
-			return r;
-		}
-		function isVisible(el) {
-			try {
-				const rect = el.getBoundingClientRect();
-				if (rect.width < 2 && rect.height < 2) return false;
-				const doc = el.ownerDocument || document;
-				const view = doc.defaultView || window;
-				let node = el;
-				while (node && node !== doc.documentElement) {
-					const s = view.getComputedStyle(node);
-					if (s.display === 'none' || s.visibility === 'hidden') return false;
-					const parent = node.parentElement;
-					if (parent) { node = parent; continue; }
-					const root = node.getRootNode && node.getRootNode();
-					if (root && root.host) { node = root.host; continue; }
-					break;
-				}
-				return true;
-			} catch(e) { return false; }
-		}
-		const t = document.body.innerText.toLowerCase();
-		if (t.includes('application submitted') || t.includes('application was sent')) {
-			const hasAppStatus = document.querySelector('[class*="application-status"], [class*="ApplicationStatus"]');
-			if (hasAppStatus || t.includes('application submitted') || t.includes('application was sent')) return 'already_applied';
-		}
-		const candidates = (() => {
-			return allInDOM(document, 'button, a, [role="button"]').filter(b => {
-				return !b.closest('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="scaffold-layout__aside"], [class*="people-also-viewed"]');
-			});
-		})();
-		const btn = candidates.find(b => {
-			if (!isVisible(b)) return false;
-			const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || b.textContent || ''))
-				.toLowerCase().replace(/\s+/g, ' ').trim();
-			if (label.includes('easy apply') || label.includes('linkedin apply')) return true;
-			if (b.getAttribute('data-live-test-easy-apply') != null) return true;
-			const href = (b.getAttribute('href') || '').toLowerCase();
-			if (href.includes('opensduiapplyflow')) {
-				// Reject if href explicitly targets a different job than the current page.
-				const hrefJobM = href.match(/\/jobs\/view\/(\d+)/);
-				if (hrefJobM) {
-					const pageJobM = window.location.pathname.match(/\/jobs\/view\/(\d+)/i);
-					if (pageJobM && hrefJobM[1] !== pageJobM[1]) return false;
-				}
-				return true;
-			}
-			return false;
-		});
-		if (btn) {
-			trustClick(btn);
-			return 'clicked';
-		}
-		return '';
-	}`
-
 	deadline := time.Now().Add(30 * time.Second)
 	pollResult := ""
 	for pollResult == "" && time.Now().Before(deadline) {
@@ -1902,7 +1735,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			return ctx.Err()
 		default:
 		}
-		if res, err := page.Eval(jsPoll); err == nil {
+		if res, err := page.Eval(jsLinkedInClickCTA); err == nil {
 			pollResult = res.Value.String()
 		}
 		if pollResult == "" {
@@ -2053,7 +1886,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 	}`
 
 	clickEasyApplyAgain := func() {
-		_, _ = page.Eval(jsPoll)
+		_, _ = page.Eval(jsLinkedInClickCTA)
 	}
 
 	modalDeadline := time.Now().Add(25 * time.Second)
@@ -2091,7 +1924,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 			time.Sleep(2 * time.Second)
 			// Also click Easy Apply once more if the forced URL alone is not enough.
-			_, _ = page.Eval(jsPoll)
+			_, _ = page.Eval(jsLinkedInClickCTA)
 			forceDeadline := time.Now().Add(15 * time.Second)
 			for time.Now().Before(forceDeadline) {
 				if res, err := page.Eval(jsModalPresent); err == nil && res.Value.Bool() {
@@ -2415,26 +2248,11 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		return b.scanApplyStepsForPrepare(ctx, page, lazy)
 	}
 
-	// expectedJobPath is derived from the declared job URL (lazy.job.URL) rather
-	// than the live page URL: jsPoll may have already navigated the page to a
-	// different job before easyApply is called, so reading the page URL here would
-	// capture the wrong path and disable the drift guard.
-	expectedJobPath := linkedInJobPath(lazy.job.URL)
-
 	for i := 0; i < 40; i++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-		}
-		// Identity guard: abort before filling or submitting if the page has
-		// navigated to a different job (e.g. jsPoll clicked a hidden preload link).
-		if expectedJobPath != "" {
-			if info, infoErr := page.Timeout(5 * time.Second).Info(); infoErr == nil && info != nil {
-				if cp := linkedInJobPath(info.URL); cp != "" && cp != expectedJobPath {
-					return fmt.Errorf("job identity drift: page is at %s (expected %s) — aborting before submit to prevent wrong-job application", info.URL, lazy.job.URL)
-				}
-			}
 		}
 		if b.cfg.BrowserMeter != nil {
 			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
@@ -2515,6 +2333,17 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		if b.cfg.BrowserMeter != nil {
 			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
 				return fmt.Errorf("easy apply: %w", meterErr)
+			}
+		}
+
+		// Recheck identity immediately before advancing the form — catches any
+		// navigation that occurred after the entry check (e.g. jsPoll following
+		// an SDUI preload link). Explicit mismatch only: allow empty cp (success pages).
+		if expectedJobPath != "" {
+			if info, infoErr := page.Timeout(5 * time.Second).Info(); infoErr == nil && info != nil {
+				if cp := linkedInJobPath(info.URL); cp != "" && cp != expectedJobPath {
+					return fmt.Errorf("job identity drift: page is at %s (expected %s) — aborting before submit to prevent wrong-job application", info.URL, lazy.job.URL)
+				}
 			}
 		}
 
