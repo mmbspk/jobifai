@@ -573,6 +573,25 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		}
 	}
 
+	// Post-apply identity check for LinkedIn — fail-closed before recording as applied.
+	// An unreadable or non-job-view URL after submission is treated as submission-unknown
+	// rather than a confirmed apply. Leaves jobs_pending_review intact so the user can
+	// reconcile the submission manually (the application may have gone through on a different job).
+	if domain.Platform(req.Platform) == domain.PlatformLinkedIn {
+		if err := verifyJobIdentity(jobPage, linkedInJobPath(req.Link)); err != nil {
+			log.Error().Err(err).
+				Str("attempt_id", ac.AttemptID).
+				Str("job_id", req.JobID).
+				Str("url", req.Link).
+				Str("company", req.Company).
+				Str("role", req.Role).
+				Msg("approve: post-apply identity check failed — preserving job for reconciliation")
+			_, _ = m.db.Exec(`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, req.JobID, userID)
+			finishAttempt(m.db, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
+			return fmt.Errorf("approve: post-apply identity verification failed: %w", err)
+		}
+	}
+
 	resumePath, coverPath := managerLazy.peek()
 	packJSON := managerLazy.refsJSON
 	if packJSON == "" {
