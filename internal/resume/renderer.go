@@ -35,10 +35,14 @@ func (r *PDFRenderer) RenderResume(ctx context.Context, profile *domain.ResumePr
 		return nil, err
 	}
 	labels := DefaultSectionLabels()
+	version := PDFRendererVersion
 	if opts != nil {
 		labels = opts.SectionLabels
+		if opts.RendererVersion != "" {
+			version = opts.RendererVersion
+		}
 	}
-	html, err := renderResumeHTML(profile, css, labels)
+	html, err := renderResumeHTMLVersion(profile, css, labels, version)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +101,10 @@ func (r *PDFRenderer) loadCSS(styleName, cssOverride string) (string, error) {
 var resumeTempl = template.Must(
 	template.New("resume").
 		Funcs(template.FuncMap{
-			"join": strings.Join,
+			"join":      strings.Join,
+			"webLink":   profileWebLink,
+			"emailLink": profileEmailLink,
+			"doiLink":   profileDOILink,
 			// skillRow bolds the category label (text before first ':') in a skill string.
 			// e.g. "Cloud & Infrastructure: AWS, K8s" → "<strong>Cloud & Infrastructure:</strong> AWS, K8s"
 			"skillRow": func(s string) template.HTML {
@@ -111,17 +118,20 @@ var resumeTempl = template.Must(
 		}).
 		Parse(`<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><style>{{.CSS}}</style></head>
+<head><meta charset="UTF-8"><style>{{.CSS}}{{if .LinksEnabled}}
+a.profile-link { color: inherit; text-decoration: underline; overflow-wrap: anywhere; }
+.profile-link-line { font-size: 0.9em; margin: 2px 0 6px; overflow-wrap: anywhere; }
+{{end}}</style></head>
 <body>
 <header>
   <h1>{{.P.PersonalInformation.Name}} {{.P.PersonalInformation.Surname}}</h1>
   {{if .P.PersonalInformation.Headline}}<p class="job-title">{{.P.PersonalInformation.Headline}}</p>{{end}}
   <div class="contact-info">
     {{if .P.PersonalInformation.City}}<p>{{.P.PersonalInformation.City}}{{if .P.PersonalInformation.Country}}, {{.P.PersonalInformation.Country}}{{end}}</p>{{end}}
-    {{if .P.PersonalInformation.Email}}<p>{{.P.PersonalInformation.Email}}</p>{{end}}
+    {{if .P.PersonalInformation.Email}}<p>{{if .LinksEnabled}}{{with emailLink .P.PersonalInformation.Email}}<a class="profile-link" href="{{.}}">{{$.P.PersonalInformation.Email}}</a>{{else}}{{.P.PersonalInformation.Email}}{{end}}{{else}}{{.P.PersonalInformation.Email}}{{end}}</p>{{end}}
     {{if .P.PersonalInformation.Phone}}<p>{{.P.PersonalInformation.PhonePrefix}}{{.P.PersonalInformation.Phone}}</p>{{end}}
-    {{if .P.PersonalInformation.LinkedIn}}<p><a href="{{.P.PersonalInformation.LinkedIn}}">{{.P.PersonalInformation.LinkedIn}}</a></p>{{end}}
-    {{if .P.PersonalInformation.GitHub}}<p><a href="{{.P.PersonalInformation.GitHub}}">{{.P.PersonalInformation.GitHub}}</a></p>{{end}}
+    {{if .P.PersonalInformation.LinkedIn}}<p>{{if .LinksEnabled}}LinkedIn: {{with webLink .P.PersonalInformation.LinkedIn}}<a class="profile-link" href="{{.}}">{{$.P.PersonalInformation.LinkedIn}}</a>{{else}}{{.P.PersonalInformation.LinkedIn}}{{end}}{{else}}<a href="{{.P.PersonalInformation.LinkedIn}}">{{.P.PersonalInformation.LinkedIn}}</a>{{end}}</p>{{end}}
+    {{if .P.PersonalInformation.GitHub}}<p>{{if .LinksEnabled}}GitHub: {{with webLink .P.PersonalInformation.GitHub}}<a class="profile-link" href="{{.}}">{{$.P.PersonalInformation.GitHub}}</a>{{else}}{{.P.PersonalInformation.GitHub}}{{end}}{{else}}<a href="{{.P.PersonalInformation.GitHub}}">{{.P.PersonalInformation.GitHub}}</a>{{end}}</p>{{end}}
   </div>
 </header>
 <main>
@@ -144,19 +154,20 @@ var resumeTempl = template.Must(
   {{if .P.Projects}}<section id="side-projects"><h2>{{.L.Projects}}</h2>
   {{range .P.Projects}}
   <div class="entry">
-    <div class="entry-title-line">{{if .Link}}<a href="{{.Link}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}{{if .Technologies}}<span class="entry-tech"> · {{join .Technologies ", "}}</span>{{end}}</div>
+    <div class="entry-title-line">{{if $.LinksEnabled}}{{if webLink .Link}}<a class="profile-link" href="{{webLink .Link}}">{{if .Name}}{{.Name}}{{else}}Project{{end}}</a>{{else}}{{.Name}}{{end}}{{else}}{{if .Link}}<a href="{{.Link}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}{{end}}{{if .Technologies}}<span class="entry-tech"> · {{join .Technologies ", "}}</span>{{end}}</div>
+    {{if $.LinksEnabled}}{{with webLink .Link}}<p class="profile-link-line">View project: <a class="profile-link" href="{{.}}">{{.}}</a></p>{{end}}{{end}}
     {{if .Description}}<p class="entry-desc">{{.Description}}</p>{{end}}
   </div>
   {{end}}</section>{{end}}
 
   {{if .P.Certifications}}<section id="certifications"><h2>{{.L.Certifications}}</h2>
   <ul class="compact-list">
-    {{range .P.Certifications}}<li><strong>{{.Name}}</strong>{{if .Issuer}}, {{.Issuer}}{{end}}{{if .Date}}, {{.Date}}{{end}}</li>{{end}}
+    {{range .P.Certifications}}<li><strong>{{if and $.LinksEnabled (webLink .Link)}}<a class="profile-link" href="{{webLink .Link}}">{{if .Name}}{{.Name}}{{else}}Credential{{end}}</a>{{else}}{{.Name}}{{end}}</strong>{{if .Issuer}}, {{.Issuer}}{{end}}{{if .Date}}, {{.Date}}{{end}}{{if $.LinksEnabled}}{{with webLink .Link}}<div class="profile-link-line">View credential: <a class="profile-link" href="{{.}}">{{.}}</a></div>{{end}}{{end}}</li>{{end}}
   </ul></section>{{end}}
 
   {{if .P.Publications}}<section id="publications"><h2>{{.L.Publications}}</h2>
   <ul class="compact-list">
-    {{range .P.Publications}}<li>{{if .Authors}}{{.Authors}}. {{end}}<strong>{{.Title}}</strong>{{if .Journal}}. <em>{{.Journal}}</em>{{end}}{{if .Year}}, {{.Year}}{{end}}{{if .DOI}}. {{.DOI}}{{end}}{{if .Status}} [{{.Status}}]{{end}}</li>{{end}}
+    {{range .P.Publications}}<li>{{if .Authors}}{{.Authors}}. {{end}}<strong>{{.Title}}</strong>{{if .Journal}}. <em>{{.Journal}}</em>{{end}}{{if .Year}}, {{.Year}}{{end}}{{if .DOI}}. {{if and $.LinksEnabled (doiLink .DOI)}}<a class="profile-link" href="{{doiLink .DOI}}">{{.DOI}}</a>{{else}}{{.DOI}}{{end}}{{end}}{{if .Status}} [{{.Status}}]{{end}}</li>{{end}}
   </ul></section>{{end}}
 
   {{if .P.Presentations}}<section id="presentations"><h2>{{.L.Presentations}}</h2>
@@ -185,12 +196,20 @@ var resumeTempl = template.Must(
 </body></html>`))
 
 func renderResumeHTML(p *domain.ResumeProfile, css string, labels SectionLabels) (string, error) {
+	return renderResumeHTMLVersion(p, css, labels, PDFRendererVersion)
+}
+
+func renderResumeHTMLVersion(p *domain.ResumeProfile, css string, labels SectionLabels, version string) (string, error) {
+	if version != PDFRendererVersion && version != LegacyPDFRendererVersion {
+		return "", fmt.Errorf("unsupported resume renderer version %q", version)
+	}
 	var buf bytes.Buffer
 	data := struct {
-		P   *domain.ResumeProfile
-		L   SectionLabels
-		CSS template.CSS
-	}{P: p, L: labels, CSS: template.CSS(css)}
+		P            *domain.ResumeProfile
+		L            SectionLabels
+		CSS          template.CSS
+		LinksEnabled bool
+	}{P: p, L: labels, CSS: template.CSS(css), LinksEnabled: version == PDFRendererVersion}
 	if err := resumeTempl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("render resume html: %w", err)
 	}

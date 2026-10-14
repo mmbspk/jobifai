@@ -32,6 +32,8 @@ Go to **Settings → Profile**.
   - **YAML re-import**: if you have a previously exported `resume_profile.yaml`, uploading it restores your profile directly without LLM extraction — the structured data is read as-is, and the fields are pre-filled for review.
 - **Manual entry**: fill in the sections directly (Personal Information, Experience, Education, Skills, etc.) and save.
 
+Project/portfolio, certification, LinkedIn, GitHub, and publication DOI fields show **Open link** when a valid web address is provided. Newly generated resume PDFs make project and credential links explicit and clickable, link publication DOIs, and make email addresses clickable. Web addresses without `https://` are supported. PDFs already saved keep their original rendering behaviour when reconstructed.
+
 You can export your saved profile at any time as YAML using the **Export YAML** link.
 
 ### 5. Set your preferences

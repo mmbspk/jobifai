@@ -8,7 +8,7 @@ import (
 )
 
 // SupportedRendererVersions lists renderer_version values this binary can reconstruct.
-var SupportedRendererVersions = []string{RendererVersion}
+var SupportedRendererVersions = []string{RendererVersion, resume.LegacyPDFRendererVersion}
 
 type RenderSnapshot struct {
 	RendererVersion string               `json:"renderer_version"`
@@ -59,5 +59,5 @@ func AssertSupportedRenderer(version string) error {
 }
 
 func RenderOptsFromSnapshot(s RenderSnapshot) *resume.RenderOptions {
-	return &resume.RenderOptions{SectionLabels: s.SectionLabels}
+	return &resume.RenderOptions{SectionLabels: s.SectionLabels, RendererVersion: s.RendererVersion}
 }
