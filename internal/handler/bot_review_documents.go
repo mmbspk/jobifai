@@ -77,8 +77,14 @@ func (h *BotHandlers) reviewResolveContext(r *http.Request, userID string, resum
 	}
 	effectiveResume := def.ResumeVersionID
 	if gs.DocumentPolicies.RegionalDefaults != nil {
-		if vid := strings.TrimSpace(gs.DocumentPolicies.RegionalDefaults[strings.TrimSpace(gs.DefaultResumeMarket)]); vid != "" {
-			effectiveResume = vid
+		if vid := strings.TrimSpace(gs.DocumentPolicies.RegionalDefaults[strings.TrimSpace(gs.DefaultResumeMarket)]); vid != "" && h.svc.Documents != nil {
+			if err := h.svc.Documents.Store.ValidateVersionKind(r.Context(), userID, vid, documents.KindResume); err == nil {
+				effectiveResume = vid
+			} else if !errors.Is(err, documents.ErrNotFound) && !errors.Is(err, documents.ErrForbidden) {
+				// Unlike the bot's settings-only fallback, interactive preflight
+				// reports wrong-kind mappings as configuration errors (HTTP 500).
+				return documents.ResolveReviewInput{}, documents.ReviewDocumentOptions{}, err
+			}
 		}
 	}
 

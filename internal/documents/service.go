@@ -60,9 +60,9 @@ type Service struct {
 }
 
 type RenderContext struct {
-	Market     string
-	StyleName  string
-	Language   string
+	Market    string
+	StyleName string
+	Language  string
 }
 
 func (s *Service) List(ctx context.Context, userID string) (ListResponse, error) {
@@ -77,6 +77,17 @@ func (s *Service) List(ctx context.Context, userID string) (ListResponse, error)
 	}
 	if docs == nil {
 		docs = []Document{}
+	}
+	// Drift flags describe existing defaults; deleting a default leaves no
+	// document to review for that kind, even if older metadata still has a flag.
+	if def.ResumeVersionID == "" {
+		def.ResumeOutdated = false
+	}
+	if def.CoverLetterVersionID == "" {
+		def.CoverOutdated = false
+	}
+	if !def.ResumeOutdated && !def.CoverOutdated {
+		def.OutdatedReason = ""
 	}
 	return ListResponse{Documents: docs, Defaults: def}, nil
 }
@@ -554,11 +565,11 @@ func (s *Service) ensureDocument(ctx context.Context, userID, documentID, kind, 
 //
 // Order is critical for billing integrity:
 //
-//	1. render  → failure: needsCleanup=false; no external state
-//	2. blob    → failure: needsCleanup=false; blob write is atomic (PutAtomic)
-//	3. billing → failure: needsCleanup=true;  orphaned blob; version cleaned up by caller
-//	4. link    → failure: needsCleanup=true;  billing committed; caller cleans up version
-//	5. ready   → failure: artifact accessible via direct key; logged but not fatal
+//  1. render  → failure: needsCleanup=false; no external state
+//  2. blob    → failure: needsCleanup=false; blob write is atomic (PutAtomic)
+//  3. billing → failure: needsCleanup=true;  orphaned blob; version cleaned up by caller
+//  4. link    → failure: needsCleanup=true;  billing committed; caller cleans up version
+//  5. ready   → failure: artifact accessible via direct key; logged but not fatal
 func (s *Service) resumeBillAndLink(ctx context.Context, userID, versionID string, canReconstruct bool, profile *domain.ResumeProfile, styleName, cssSnap string, opts *resume.RenderOptions) (needsCleanup bool, err error) {
 	cssOverride, cleanup, err := writeTempCSS(cssSnap)
 	if err != nil {

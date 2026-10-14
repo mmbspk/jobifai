@@ -1,4 +1,4 @@
-import { ApiError, apiGet, apiPost, apiPut, getToken } from './client'
+import { ApiError, apiDelete, apiGet, apiPost, apiPut, getToken } from './client'
 import type { ResumeProfile } from '../types'
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? '') + '/api'
@@ -52,6 +52,8 @@ export type VersionDetail = {
 
 export const documentsApi = {
   list: () => apiGet<DocumentsListResponse>('/documents'),
+
+  deleteDocument: (documentId: string) => apiDelete<{ message: string }>(`/documents/${documentId}`),
 
   getVersion: (versionId: string) => apiGet<VersionDetail>(`/documents/versions/${versionId}`),
 

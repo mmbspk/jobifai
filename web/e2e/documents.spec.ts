@@ -8,7 +8,8 @@ test.describe('Documents page', () => {
   })
 
   test('shows heading and description', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Documents' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Documents', level: 1, exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Saved documents (0)', level: 2, exact: true })).toBeVisible()
     await expect(page.getByText('Saved resume and cover letter versions')).toBeVisible()
   })
 
@@ -41,7 +42,7 @@ test.describe('Documents page', () => {
     await page.goto('/')
     await page.locator('aside').getByRole('link', { name: 'Documents' }).click()
     await expect(page).toHaveURL('/documents')
-    await expect(page.getByRole('heading', { name: 'Documents' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Documents', level: 1, exact: true })).toBeVisible()
   })
 
   test('navigates to documents from the collapsed sidebar', async ({ page }) => {
@@ -49,7 +50,7 @@ test.describe('Documents page', () => {
     await page.getByRole('button', { name: 'Collapse sidebar' }).click()
     await page.locator('aside').getByRole('link', { name: 'Documents' }).click()
     await expect(page).toHaveURL('/documents')
-    await expect(page.getByRole('heading', { name: 'Documents' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Documents', level: 1, exact: true })).toBeVisible()
   })
 
   test('navigates to documents from the mobile Jobs menu', async ({ page }) => {
@@ -59,7 +60,7 @@ test.describe('Documents page', () => {
     const menu = page.getByRole('dialog', { name: 'Jobs' })
     await menu.getByRole('button', { name: 'Documents', exact: true }).click()
     await expect(page).toHaveURL('/documents')
-    await expect(page.getByRole('heading', { name: 'Documents' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Documents', level: 1, exact: true })).toBeVisible()
     await expect(menu).not.toBeVisible()
   })
 })
