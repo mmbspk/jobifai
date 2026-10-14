@@ -1346,69 +1346,9 @@ func (b *Bot) linkedInPageApplied(page *rod.Page) bool {
 //
 // Only the main job pane is considered (similar-jobs / aside rails are ignored).
 func detectLinkedInEasyApply(page *rod.Page) bool {
-	const jsDetect = `() => {
-		function deepAll(root, selector) {
-			const out = [];
-			const walk = (node) => {
-				if (!node || !node.querySelectorAll) return;
-				try { out.push(...node.querySelectorAll(selector)); } catch (e) {}
-				try {
-					for (const el of node.querySelectorAll('*')) {
-						if (el.shadowRoot) walk(el.shadowRoot);
-					}
-				} catch (e) {}
-			};
-			walk(root);
-			return out;
-		}
-		function labelOf(el) {
-			return ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || el.textContent || ''))
-				.toLowerCase().replace(/\s+/g, ' ').trim();
-		}
-		function isExcluded(el) {
-			return !!el.closest([
-				'aside',
-				'[class*="similar-job"]',
-				'[class*="jobs-similar"]',
-				'[class*="people-also-viewed"]',
-				'[class*="scaffold-layout__aside"]',
-				'[data-test-similar-jobs]',
-				'.jobs-discovery',
-			].join(','));
-		}
-		function isVisible(el) {
-			const r = el.getBoundingClientRect();
-			return r.width > 0 && r.height > 0;
-		}
-		function isEasyApplyLabel(t) {
-			return t.includes('easy apply') || t.includes('linkedin apply');
-		}
-
-		// 1) Visible Easy Apply control in the main job pane (LinkedIn's standard CTA).
-		const controls = [
-			...deepAll(document, 'button'),
-			...deepAll(document, 'a'),
-			...deepAll(document, '[role="button"]'),
-		];
-		for (const el of controls) {
-			if (isExcluded(el)) continue;
-			if (!isVisible(el)) continue;
-			if (isEasyApplyLabel(labelOf(el))) return true;
-			if (el.getAttribute('data-live-test-easy-apply') != null) return true;
-		}
-
-		// 2) LinkedIn SDUI Easy Apply flag on an in-pane control/link.
-		for (const el of controls) {
-			if (isExcluded(el)) continue;
-			const href = (el.getAttribute('href') || '').toLowerCase();
-			if (href.includes('opensduiapplyflow=true') || href.includes('opensduiapplyflow')) return true;
-		}
-
-		return false;
-	}`
 	deadline := time.Now().Add(12 * time.Second)
 	for time.Now().Before(deadline) {
-		res, err := page.Eval(jsDetect)
+		res, err := page.Eval(jsLinkedInDetectCTA)
 		if err == nil && res.Value.Bool() {
 			return true
 		}
@@ -1711,6 +1651,31 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "apply", "apply_error", err.Error())
 		return false
 	}
+	// Post-apply identity check — fail-closed: an unreadable or non-job-view URL after
+	// submission is treated as submission-unknown. Uses declared job.URL (not live URL)
+	// so URL transforms during navigation cannot mask wrong-job submissions.
+	if err := verifyJobIdentity(jobPage, linkedInJobPath(job.URL)); err != nil {
+		log.Error().Err(err).
+			Str("attempt_id", ac.AttemptID).
+			Str("job_id", job.ID).
+			Str("intended_url", job.URL).
+			Msg("linkedin: post-apply identity check failed — recording submission_unknown, routing to Top Matches")
+		b.savePendingReview(ctx, &domain.PendingReview{
+			JobID:                job.ID,
+			Company:              job.Company,
+			Role:                 job.Title,
+			Location:             job.Location,
+			Platform:             domain.PlatformLinkedIn,
+			Link:                 job.URL,
+			SuitabilityScore:     score,
+			SuitabilityReasoning: reasoning,
+			EasyApply:            false,
+			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
+			CreatedAt:            time.Now(),
+		})
+		finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
+		return false
+	}
 	resume, cover := lazy.get()
 	b.recordApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
 	b.logApplied(ac.AttemptID, job.ID, job.Title, job.Company, domain.PlatformLinkedIn, llmBefore)
@@ -1733,70 +1698,16 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		log.Info().Str("url", info.Value.String()).Msg("easy apply: page URL after load")
 	}
 
+	// Entry identity check — before any CTA interaction or preparation scan.
+	// This also protects the reviewPrepareOnly branch below.
+	expectedJobPath := linkedInJobPath(lazy.job.URL)
+	if err := verifyJobIdentity(page, expectedJobPath); err != nil {
+		return err
+	}
+
 	// Poll for up to 30s for either an Easy Apply button OR an "already applied" state.
 	// LinkedIn's SPA renders both dynamically after the initial load event.
 	// SDUI apply buttons ignore plain element.click() — use a full pointer lifecycle.
-	const jsPoll = `() => {
-		function trustClick(btn) {
-			try { btn.scrollIntoView({ block: 'center' }); } catch(e) {}
-			try { btn.focus(); } catch(e) {}
-			const view = (btn.ownerDocument && btn.ownerDocument.defaultView) || window;
-			const opts = { bubbles: true, cancelable: true, view: view };
-			for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-				try {
-					if (type.startsWith('pointer')) {
-						btn.dispatchEvent(new PointerEvent(type, Object.assign({pointerId: 1, pointerType: 'mouse'}, opts)));
-					} else {
-						btn.dispatchEvent(new MouseEvent(type, opts));
-					}
-				} catch(e) {
-					try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch(e2) {}
-				}
-			}
-			try { btn.click(); } catch(e) {}
-		}
-		function allInDOM(root, selector) {
-			const r = [];
-			try {
-				r.push(...root.querySelectorAll(selector));
-				for (const el of root.querySelectorAll('*')) {
-					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
-					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-						try {
-							const d = el.contentDocument;
-							if (d) r.push(...allInDOM(d, selector));
-						} catch (e) {}
-					}
-				}
-			} catch(e) {}
-			return r;
-		}
-		const t = document.body.innerText.toLowerCase();
-		if (t.includes('application submitted') || t.includes('application was sent')) {
-			const hasAppStatus = document.querySelector('[class*="application-status"], [class*="ApplicationStatus"]');
-			if (hasAppStatus || t.includes('application submitted') || t.includes('application was sent')) return 'already_applied';
-		}
-		const candidates = (() => {
-			return allInDOM(document, 'button, a, [role="button"]').filter(b => {
-				return !b.closest('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="scaffold-layout__aside"], [class*="people-also-viewed"]');
-			});
-		})();
-		const btn = candidates.find(b => {
-			const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || b.textContent || ''))
-				.toLowerCase().replace(/\s+/g, ' ').trim();
-			if (label.includes('easy apply') || label.includes('linkedin apply')) return true;
-			if (b.getAttribute('data-live-test-easy-apply') != null) return true;
-			const href = (b.getAttribute('href') || '').toLowerCase();
-			if (href.includes('opensduiapplyflow')) return true;
-			return false;
-		});
-		if (btn) {
-			trustClick(btn);
-			return 'clicked';
-		}
-		return '';
-	}`
-
 	deadline := time.Now().Add(30 * time.Second)
 	pollResult := ""
 	for pollResult == "" && time.Now().Before(deadline) {
@@ -1805,7 +1716,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			return ctx.Err()
 		default:
 		}
-		if res, err := page.Eval(jsPoll); err == nil {
+		if res, err := page.Eval(jsLinkedInClickCTA); err == nil {
 			pollResult = res.Value.String()
 		}
 		if pollResult == "" {
@@ -1956,7 +1867,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 	}`
 
 	clickEasyApplyAgain := func() {
-		_, _ = page.Eval(jsPoll)
+		_, _ = page.Eval(jsLinkedInClickCTA)
 	}
 
 	modalDeadline := time.Now().Add(25 * time.Second)
@@ -1994,7 +1905,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 			time.Sleep(2 * time.Second)
 			// Also click Easy Apply once more if the forced URL alone is not enough.
-			_, _ = page.Eval(jsPoll)
+			_, _ = page.Eval(jsLinkedInClickCTA)
 			forceDeadline := time.Now().Add(15 * time.Second)
 			for time.Now().Before(forceDeadline) {
 				if res, err := page.Eval(jsModalPresent); err == nil && res.Value.Bool() {
@@ -2015,6 +1926,12 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 
 	// Extra settle time after modal appears.
 	time.Sleep(1 * time.Second)
+
+	// Post-modal identity check — verifies the CTA click did not navigate to a different job.
+	// jsSuccess is checked at the top of the form loop, so terminal success pages are handled there.
+	if err := verifyJobIdentity(page, expectedJobPath); err != nil {
+		return err
+	}
 
 	// Diagnostic: log what form inputs exist in the modal at the start.
 	const jsDiagInputs = `() => {
@@ -2406,6 +2323,12 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			}
 		}
 
+		// Identity check immediately before advancing — fail-closed: any unverifiable identity blocks the click.
+		// jsSuccess is checked at the top of this loop, so terminal success pages exit before reaching here.
+		if err := verifyJobIdentity(page, expectedJobPath); err != nil {
+			return err
+		}
+
 		label, ok, err := clickEasyApplyPrimary()
 		if err != nil {
 			if isCDPFatal(err) {
@@ -2630,6 +2553,17 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			outcome, stage, reasonCode := queueApplyOutcome(err)
 			finishAttempt(b.cfg.DB, ac, outcome, stage, reasonCode, err.Error())
 			continue
+		}
+		// Post-apply identity check for LinkedIn — fail-closed before recording as applied.
+		if b.cfg.Platform == domain.PlatformLinkedIn {
+			if err := verifyJobIdentity(jobPage, linkedInJobPath(j.Link)); err != nil {
+				_ = jobPage.Close()
+				log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).
+					Str("company", j.Company).Str("role", j.Role).Msg("approved queue: post-apply identity check failed")
+				_, _ = appdb.ExecWithRetry(b.cfg.DB, `DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
+				finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
+				continue
+			}
 		}
 		_ = jobPage.Close()
 
