@@ -1519,6 +1519,17 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason},
 				fmt.Errorf("%s failed: application was not confirmed on the job page (this may be an external Apply job — only Easy/Quick Apply is supported)", applyLabel)
 		}
+		// Post-apply identity check for LinkedIn — fail-closed: an unreadable or non-job-view
+		// URL after submission is treated as submission-unknown rather than a confirmed apply.
+		if platform == domain.PlatformLinkedIn {
+			if err := verifyJobIdentity(jobPage, linkedInJobPath(jobURL)); err != nil {
+				log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", jobURL).
+					Msg("ai apply: post-apply identity check failed")
+				finishAttempt(m.db, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
+				return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason},
+					fmt.Errorf("easy apply: post-apply identity verification failed: %w", err)
+			}
+		}
 	}
 
 	resumePath, coverPath := lazy.get()

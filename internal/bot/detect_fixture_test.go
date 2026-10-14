@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/llm"
 )
 
 // launchTestBrowser starts a headless Chromium for the test and returns a
@@ -274,56 +275,133 @@ func TestEasyApply_AbortsOnIdentityDrift(t *testing.T) {
 
 // ── Identity drift — DB outcome ───────────────────────────────────────────────
 
-// TestEasyApply_IdentityDriftDoesNotStoreApplied proves that when easyApply
-// aborts on identity drift, the error path does not write a jobs_applied record
-// and records OutcomeFailed (not submitted_confirmed) in apply_attempts.
-//
-// This complements TestEasyApply_AbortsOnIdentityDrift: the browser test shows
-// easyApply returns an error; this test shows the error path writes the right DB
-// state — together they prove no wrong-job Applied record is ever created.
-func TestEasyApply_IdentityDriftDoesNotStoreApplied(t *testing.T) {
+// TestSubmitEasyApply_RedirectDriftNoAppliedRecord proves that when the browser
+// follows a redirect from the declared job URL to a different job's URL,
+// submitEasyApply detects the drift, returns false, and writes no jobs_applied
+// record. The identity check fires at entry (before jsPoll) because the page lands
+// at the wrong job path immediately after navigation.
+func TestSubmitEasyApply_RedirectDriftNoAppliedRecord(t *testing.T) {
+	br := launchTestBrowser(t)
+
+	// Serve the declared job URL as a 302 redirect to the wrong job.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jobs/view/123456789", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/jobs/view/999888", http.StatusFound)
+	})
+	mux.HandleFunc("/jobs/view/999888", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, wrongJobPageHTML)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := appdb.Open(dbPath)
 	require.NoError(t, err)
 	defer db.Close()
 
-	b := &Bot{cfg: Config{DB: db, UserID: "u1"}, stopCh: make(chan struct{})}
+	b := &Bot{
+		cfg:    Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn},
+		stopCh: make(chan struct{}),
+	}
 	job := linkedInJob{
 		ID:      "123456789",
-		URL:     "https://www.linkedin.com/jobs/view/123456789",
+		URL:     srv.URL + "/jobs/view/123456789",
 		Title:   "Test Role",
 		Company: "TestCo",
 	}
+	lazy := &lazyDocGen{b: b, job: job}
 
-	ac := newAttemptContext("u1", string(domain.PlatformLinkedIn), job.ID, job.URL, job.Title, job.Company, "automated_linkedin")
-	beginAttempt(db, ac)
+	result := b.submitEasyApply(context.Background(), br, job, lazy, 8, "good match", nil, llm.UsageSnapshot{})
+	assert.False(t, result, "submitEasyApply must return false when redirect causes drift at entry")
 
-	// Simulate easyApply returning the identity drift error from the entry check.
-	driftErr := fmt.Errorf("job identity: page is at %s/jobs/view/999888 which has no LinkedIn job path (expected %s)",
-		"https://www.linkedin.com", "https://www.linkedin.com/jobs/view/123456789")
-
-	reason := "easy apply: " + driftErr.Error()
-	b.recordSkipped(job, reason, 8, "good match", nil)
-	finishAttempt(db, ac, classifyApplyOutcome(driftErr), "apply", "apply_error", driftErr.Error())
-
-	// jobs_applied must be empty — no wrong-job Application record.
+	// No jobs_applied row must exist — redirect to wrong job must not produce an Applied record.
 	var appliedCount int
 	require.NoError(t, db.QueryRow(
 		`SELECT COUNT(*) FROM jobs_applied WHERE link = ? AND user_id = ?`,
 		job.URL, "u1",
 	).Scan(&appliedCount))
-	assert.Equal(t, 0, appliedCount, "jobs_applied must remain empty after identity drift abort")
+	assert.Equal(t, 0, appliedCount, "jobs_applied must remain empty after redirect drift")
 
-	// apply_attempts must record a non-confirmed outcome.
+	// apply_attempts must record OutcomeFailed.
 	var outcome string
 	require.NoError(t, db.QueryRow(
-		`SELECT outcome FROM apply_attempts WHERE id = ?`,
-		ac.AttemptID,
+		`SELECT outcome FROM apply_attempts WHERE url = ? AND user_id = ?`,
+		job.URL, "u1",
 	).Scan(&outcome))
-	assert.NotEqual(t, string(OutcomeSubmittedConfirmed), outcome,
-		"outcome must not be submitted_confirmed after identity drift")
-	assert.Equal(t, string(OutcomeFailed), outcome,
-		"identity drift must record OutcomeFailed")
+	assert.Equal(t, string(OutcomeFailed), outcome, "outcome must be failed after redirect drift")
+}
+
+// TestSubmitEasyApply_DriftAfterEntry_NoAppliedRecord proves that when the entry
+// check passes (page loads at the declared job URL) but the CTA click navigates to
+// a different job's modal URL, the post-modal identity check catches the drift,
+// submitEasyApply returns false, and no jobs_applied record is written. This covers
+// the SDUI preload link scenario where jsPoll follows an onclick that changes the URL.
+func TestSubmitEasyApply_DriftAfterEntry_NoAppliedRecord(t *testing.T) {
+	br := launchTestBrowser(t)
+
+	// Correct job page: has a data-live-test-easy-apply button whose onclick navigates
+	// to the wrong job URL. Entry check passes; drift is detected post-modal.
+	const correctJobHTML = `<!DOCTYPE html><html><body>
+<main>
+  <h1>Test Role at TestCo</h1>
+  <button data-live-test-easy-apply
+          onclick="window.location.href='/jobs/view/999888'">Easy Apply</button>
+</main>
+</body></html>`
+
+	// Wrong job modal page: satisfies jsModalPresent via data-live-test-easy-apply-next-button.
+	const wrongJobModalHTML = `<!DOCTYPE html><html><body>
+<div role="dialog" aria-label="Easy Apply">
+  <button data-live-test-easy-apply-next-button>Next</button>
+</div>
+</body></html>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jobs/view/123456789", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, correctJobHTML)
+	})
+	mux.HandleFunc("/jobs/view/999888", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, wrongJobModalHTML)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
+
+	b := &Bot{
+		cfg:    Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn},
+		stopCh: make(chan struct{}),
+	}
+	job := linkedInJob{
+		ID:      "123456789",
+		URL:     srv.URL + "/jobs/view/123456789",
+		Title:   "Test Role",
+		Company: "TestCo",
+	}
+	lazy := &lazyDocGen{b: b, job: job}
+
+	result := b.submitEasyApply(context.Background(), br, job, lazy, 8, "good match", nil, llm.UsageSnapshot{})
+	assert.False(t, result, "submitEasyApply must return false when drift occurs after entry")
+
+	var appliedCount int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM jobs_applied WHERE link = ? AND user_id = ?`,
+		job.URL, "u1",
+	).Scan(&appliedCount))
+	assert.Equal(t, 0, appliedCount, "jobs_applied must remain empty after post-entry drift")
+
+	var outcome string
+	require.NoError(t, db.QueryRow(
+		`SELECT outcome FROM apply_attempts WHERE url = ? AND user_id = ?`,
+		job.URL, "u1",
+	).Scan(&outcome))
+	assert.Equal(t, string(OutcomeFailed), outcome, "outcome must be failed after post-entry drift")
 }
 
 // ── Post-apply drift path ─────────────────────────────────────────────────────
@@ -352,10 +430,10 @@ func TestSubmitEasyApply_PostDriftComparedAgainstDeclaredJob(t *testing.T) {
 			wantDrift:   true,
 		},
 		{
-			name:        "empty post URL — no drift (cannot confirm mismatch)",
+			name:        "empty post URL — drift (fail-closed: unreadable URL is treated as drift)",
 			declaredURL: "https://www.linkedin.com/jobs/view/123456789",
 			postURL:     "",
-			wantDrift:   false,
+			wantDrift:   true,
 		},
 		{
 			name:        "non-LinkedIn URLs — no drift (path extraction yields empty)",
@@ -374,7 +452,7 @@ func TestSubmitEasyApply_PostDriftComparedAgainstDeclaredJob(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			intendedPath := linkedInJobPath(tc.declaredURL)
 			endPath := linkedInJobPath(tc.postURL)
-			drift := intendedPath != "" && endPath != "" && intendedPath != endPath
+			drift := intendedPath != "" && (endPath == "" || endPath != intendedPath)
 			assert.Equal(t, tc.wantDrift, drift)
 		})
 	}

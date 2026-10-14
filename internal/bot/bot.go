@@ -1651,22 +1651,15 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "apply", "apply_error", err.Error())
 		return false
 	}
-	// Check for job identity drift before recording the application.
-	// Compares against the declared job.URL (not the live startURL) so that
-	// any URL transformation during navigation cannot mask a wrong-job submission.
-	var postApplyURL string
-	if info, infoErr := jobPage.Info(); infoErr == nil && info != nil && info.URL != "" {
-		postApplyURL = info.URL
-	}
-	intendedPath := linkedInJobPath(job.URL)
-	endPath := linkedInJobPath(postApplyURL)
-	if intendedPath != "" && endPath != "" && intendedPath != endPath {
-		log.Error().
+	// Post-apply identity check — fail-closed: an unreadable or non-job-view URL after
+	// submission is treated as submission-unknown. Uses declared job.URL (not live URL)
+	// so URL transforms during navigation cannot mask wrong-job submissions.
+	if err := verifyJobIdentity(jobPage, linkedInJobPath(job.URL)); err != nil {
+		log.Error().Err(err).
 			Str("attempt_id", ac.AttemptID).
 			Str("job_id", job.ID).
 			Str("intended_url", job.URL).
-			Str("actual_url", postApplyURL).
-			Msg("linkedin: submitted to a different job — recording submission_unknown, routing original job to Top Matches")
+			Msg("linkedin: post-apply identity check failed — recording submission_unknown, routing to Top Matches")
 		b.savePendingReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
 			Company:              job.Company,
@@ -1680,7 +1673,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 			CreatedAt:            time.Now(),
 		})
-		finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", "submitted to "+postApplyURL+" instead of "+job.URL)
+		finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
 		return false
 	}
 	resume, cover := lazy.get()
@@ -1706,22 +1699,10 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 	}
 
 	// Entry identity check — before any CTA interaction or preparation scan.
-	// Fail closed: if the declared job has a LinkedIn job path but the loaded page
-	// cannot be verified to carry the same path, abort immediately.
 	// This also protects the reviewPrepareOnly branch below.
 	expectedJobPath := linkedInJobPath(lazy.job.URL)
-	if expectedJobPath != "" {
-		info, infoErr := page.Timeout(5 * time.Second).Info()
-		if infoErr != nil || info == nil || info.URL == "" {
-			return fmt.Errorf("job identity: cannot read page URL to verify against declared job %s", lazy.job.URL)
-		}
-		cp := linkedInJobPath(info.URL)
-		if cp == "" {
-			return fmt.Errorf("job identity: page loaded to %s which has no LinkedIn job path (expected %s)", info.URL, lazy.job.URL)
-		}
-		if cp != expectedJobPath {
-			return fmt.Errorf("job identity: page is at %s but declared job is %s — aborting before CTA interaction", info.URL, lazy.job.URL)
-		}
+	if err := verifyJobIdentity(page, expectedJobPath); err != nil {
+		return err
 	}
 
 	// Poll for up to 30s for either an Easy Apply button OR an "already applied" state.
@@ -1945,6 +1926,12 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 
 	// Extra settle time after modal appears.
 	time.Sleep(1 * time.Second)
+
+	// Post-modal identity check — verifies the CTA click did not navigate to a different job.
+	// jsSuccess is checked at the top of the form loop, so terminal success pages are handled there.
+	if err := verifyJobIdentity(page, expectedJobPath); err != nil {
+		return err
+	}
 
 	// Diagnostic: log what form inputs exist in the modal at the start.
 	const jsDiagInputs = `() => {
@@ -2336,15 +2323,10 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			}
 		}
 
-		// Recheck identity immediately before advancing the form — catches any
-		// navigation that occurred after the entry check (e.g. jsPoll following
-		// an SDUI preload link). Explicit mismatch only: allow empty cp (success pages).
-		if expectedJobPath != "" {
-			if info, infoErr := page.Timeout(5 * time.Second).Info(); infoErr == nil && info != nil {
-				if cp := linkedInJobPath(info.URL); cp != "" && cp != expectedJobPath {
-					return fmt.Errorf("job identity drift: page is at %s (expected %s) — aborting before submit to prevent wrong-job application", info.URL, lazy.job.URL)
-				}
-			}
+		// Identity check immediately before advancing — fail-closed: any unverifiable identity blocks the click.
+		// jsSuccess is checked at the top of this loop, so terminal success pages exit before reaching here.
+		if err := verifyJobIdentity(page, expectedJobPath); err != nil {
+			return err
 		}
 
 		label, ok, err := clickEasyApplyPrimary()
@@ -2571,6 +2553,17 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			outcome, stage, reasonCode := queueApplyOutcome(err)
 			finishAttempt(b.cfg.DB, ac, outcome, stage, reasonCode, err.Error())
 			continue
+		}
+		// Post-apply identity check for LinkedIn — fail-closed before recording as applied.
+		if b.cfg.Platform == domain.PlatformLinkedIn {
+			if err := verifyJobIdentity(jobPage, linkedInJobPath(j.Link)); err != nil {
+				_ = jobPage.Close()
+				log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).
+					Str("company", j.Company).Str("role", j.Role).Msg("approved queue: post-apply identity check failed")
+				_, _ = appdb.ExecWithRetry(b.cfg.DB, `DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
+				finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
+				continue
+			}
 		}
 		_ = jobPage.Close()
 

@@ -1,9 +1,41 @@
 package bot
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/go-rod/rod"
 )
+
+// verifyJobIdentity checks that the page's current URL carries the expected LinkedIn
+// job path. Returns nil when expectedJobPath is empty (non-LinkedIn URL or no declared
+// intent) or when the URL confirms the same job. Returns an error — and the caller must
+// abort — when:
+//   - the page URL is unreadable
+//   - the URL carries no LinkedIn job path
+//   - the URL carries a different job ID
+//
+// Callers inside the form loop must check for terminal success (jsSuccess) before
+// calling this function; success pages carry no job path and would otherwise be blocked.
+func verifyJobIdentity(page *rod.Page, expectedJobPath string) error {
+	if expectedJobPath == "" {
+		return nil
+	}
+	info, err := page.Timeout(5 * time.Second).Info()
+	if err != nil || info == nil || info.URL == "" {
+		return fmt.Errorf("job identity: cannot read page URL (expected job path %s)", expectedJobPath)
+	}
+	cp := linkedInJobPath(info.URL)
+	if cp == "" {
+		return fmt.Errorf("job identity: page at %s has no LinkedIn job path (expected %s)", info.URL, expectedJobPath)
+	}
+	if cp != expectedJobPath {
+		return fmt.Errorf("job identity drift: page at %s but declared job is %s", info.URL, expectedJobPath)
+	}
+	return nil
+}
 
 // linkedInJobPath returns the canonical path segment that identifies the job
 // within a LinkedIn URL (e.g. "/jobs/view/123456789"). Returns "" for non-job
