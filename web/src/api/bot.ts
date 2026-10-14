@@ -28,6 +28,7 @@ export interface ReviewDocumentAction {
   action: string
   uses_ai: boolean
   credits_estimate?: number | null
+  credit_breakdown?: { ai: number; compute: number } | null
   hold_reason?: string
   version_id?: string
 }

@@ -1,5 +1,6 @@
 import { apiDelete, apiGet, apiPost, apiPut } from './client'
-import type { AdminUserDetail, AdminUserRow, AppSettings, GeneralSettings, LLMOverrides, QuotaUserOverrides } from '../types'
+import type { AdminUserDetail, AdminUserRow, AppSettings, EconomicsOverview, GeneralSettings, LLMOverrides, QuotaUserOverrides, ResourceMeteringDefaults, ResourceUsageEventsResponse, ResourceUsageSummaryResponse } from '../types'
+import type { AdminPeriod } from '../lib/adminFormat'
 
 export interface SystemSecretsStatus {
   has_default_api_key: boolean
@@ -84,6 +85,28 @@ export const adminApi = {
   },
   aiProvider: {
     test: () => apiPost<{ success: boolean; latency_ms: number; provider: string; model: string; error?: string }>('/admin/ai-provider/test', {}),
+  },
+  resourceMetering: {
+    getDefaults: () => apiGet<ResourceMeteringDefaults>('/admin/resource-metering/defaults'),
+    setDefaults: (body: Omit<ResourceMeteringDefaults, 'browser_credits_per_minute' | 'render_credits_per_render' | 'per_call_fee_is_ai_only'>) =>
+      apiPut<ResourceMeteringDefaults>('/admin/resource-metering/defaults', body),
+  },
+  resourceUsage: {
+    summary: (period: AdminPeriod) =>
+      apiGet<ResourceUsageSummaryResponse>(`/admin/resource-usage/summary?period=${period}`),
+    events: (params: { period: AdminPeriod; user_id?: string; resource_type?: string; limit?: number; offset?: number }) => {
+      const q = new URLSearchParams()
+      q.set('period', params.period)
+      if (params.user_id) q.set('user_id', params.user_id)
+      if (params.resource_type) q.set('resource_type', params.resource_type)
+      if (params.limit != null) q.set('limit', String(params.limit))
+      if (params.offset != null) q.set('offset', String(params.offset))
+      return apiGet<ResourceUsageEventsResponse>(`/admin/resource-usage/events?${q.toString()}`)
+    },
+  },
+  economics: {
+    overview: (period: AdminPeriod) =>
+      apiGet<EconomicsOverview>(`/admin/economics/overview?period=${period}`),
   },
 }
 

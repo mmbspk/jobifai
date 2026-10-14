@@ -434,3 +434,116 @@ export interface EmailConfig {
 export interface AppSettings {
   public_app_url?: string
 }
+
+// ── Usage Summary (customer billing period breakdown) ───────────────
+export interface UsageSummary {
+  period: string
+  period_start: string
+  period_end: string
+  total_credits_used: number
+  ai_credits: number
+  browser_automation_credits: number
+  document_render_credits: number
+  ai_calls: number
+  browser_active_ms: number
+  browser_active_minutes: number
+  document_renders: number
+}
+
+// ── Resource Metering Defaults (admin) ──────────────────────────────
+export interface BrowserMeteringConfig {
+  enabled: boolean
+  raw_cost_usd_micro_per_hour: number
+  billing_increment_seconds: number
+}
+
+export interface RenderMeteringConfig {
+  enabled: boolean
+  raw_cost_usd_micro_per_render: number
+}
+
+export interface ResourceMeteringDefaults {
+  enabled: boolean
+  browser_automation: BrowserMeteringConfig
+  document_render: RenderMeteringConfig
+  browser_credits_per_minute: number
+  render_credits_per_render: number
+  per_call_fee_is_ai_only: boolean
+}
+
+// ── Admin Resource Usage ────────────────────────────────────────────
+export interface ResourceTypeSummary {
+  events: number
+  duration_ms?: number
+  duration_minutes?: number
+  credits_burned: number
+  raw_cost_usd_micro: number
+  loaded_cost_usd_micro: number
+}
+
+export interface ResourceUsageSummaryResponse {
+  period: string
+  period_start: string
+  browser_automation?: ResourceTypeSummary
+  document_render?: ResourceTypeSummary
+  total_credits_burned: number
+  total_raw_cost_usd_micro: number
+  total_loaded_cost_usd_micro: number
+}
+
+export interface ResourceUsageEvent {
+  id: string
+  created_at: string
+  user_id: string
+  resource_type: string
+  quantity: number
+  unit: string
+  duration_ms: number
+  credits_burned: number
+  raw_cost_usd_micro: number
+  loaded_cost_usd_micro: number
+  success: boolean
+  error_code: string
+  automation_run_id: string
+  application_id: string
+  job_id: string
+}
+
+export interface ResourceUsageEventsResponse {
+  events: ResourceUsageEvent[]
+  total: number
+  limit: number
+  offset: number
+  period: string
+}
+
+// ── Admin Economics Extended ────────────────────────────────────────
+export interface AIEconomics {
+  credits_burned: number
+  raw_cost_usd_micro: number
+  loaded_cost_usd_micro: number
+}
+
+export interface ResourceEconomics {
+  credits_burned: number
+  raw_cost_usd_micro: number
+  loaded_cost_usd_micro: number
+  browser_duration_ms: number
+  browser_events: number
+  render_events: number
+}
+
+export interface EconomicsOverview {
+  period_start: string
+  raw_cost_usd_micro: number
+  loaded_cost_usd_micro: number
+  credits_burned: number
+  calls: number
+  success_calls: number
+  avg_raw_cost_per_call_usd: number
+  ai?: AIEconomics
+  resource?: ResourceEconomics
+  total_credits_burned: number
+  total_raw_cost_usd_micro: number
+  total_loaded_cost_usd_micro: number
+}

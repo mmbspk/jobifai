@@ -2,38 +2,46 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError } from '../../api/client'
 import { botApi, type ReviewDocumentsResponse } from '../../api/bot'
 
-function actionLabel(action: string, usesAI: boolean): string {
+function actionLabel(action: string): string {
   switch (action) {
     case 'reuse':
-      return 'Reuse saved PDF (0 AI credits)'
+      return 'Reuse saved PDF'
     case 'render':
-      return 'Render saved content (0 AI credits)'
+      return 'Render saved content'
     case 'tailor':
       return 'Tailor with AI'
     case 'generate':
       return 'Generate with AI'
     case 'site':
-      return 'Use job-site resume (0 AI credits)'
+      return 'Use job-site resume'
     case 'skip':
-      return 'Skip cover (0 AI credits)'
+      return 'Skip cover'
     case 'hold':
       return 'Blocked — review required'
     case 'unknown':
       return 'Unknown until Prepare'
     default:
-      return usesAI ? 'Uses AI credits' : action
+      return action
   }
 }
 
-function creditsLine(est: number | null | undefined, usesAI: boolean, capsKnown: boolean): string | null {
-  if (!usesAI) {
-    if (est === 0) return 'Credits: 0 (no LLM)'
-    return 'Credits: 0 (no LLM)'
+function creditsLine(
+  est: number | null | undefined,
+  breakdown: { ai: number; compute: number } | null | undefined,
+  capsKnown: boolean,
+): string | null {
+  if (est == null) {
+    if (!capsKnown) return 'Credits: unavailable until form is scanned'
+    return 'Credits: estimate unavailable (check model billing settings)'
   }
-  if (!capsKnown) return 'Credits: unavailable until form is scanned'
-  if (est == null) return 'Credits: estimate unavailable (check model billing settings)'
-  if (est === 0) return 'Credits: 0 (no LLM)'
-  return `Credits: ~${est} estimated (billing)`
+  if (est === 0) return 'Credits: 0'
+  if (breakdown && (breakdown.ai > 0 || breakdown.compute > 0)) {
+    const parts: string[] = []
+    if (breakdown.ai > 0) parts.push(`${breakdown.ai} AI`)
+    if (breakdown.compute > 0) parts.push(`${breakdown.compute} rendering`)
+    return `Credits: ~${est} estimated (${parts.join(' + ')})`
+  }
+  return `Credits: ~${est} estimated`
 }
 
 function fallbackSummary(fb: ReviewDocumentsResponse['preflight']['fallbacks']): string | null {
@@ -159,7 +167,7 @@ function ReviewDocumentsForm({
         </select>
       </label>
       <p className="text-[11px] text-[var(--color-text-dim)]">
-        {actionLabel(pf.resume.action, pf.resume.uses_ai)} · {creditsLine(pf.resume.credits_estimate ?? undefined, pf.resume.uses_ai, pf.capabilities_known)}
+        {actionLabel(pf.resume.action)} · {creditsLine(pf.resume.credits_estimate ?? undefined, pf.resume.credit_breakdown, pf.capabilities_known)}
       </p>
 
       <label className="block text-xs text-[var(--color-text-muted)]">
@@ -187,7 +195,7 @@ function ReviewDocumentsForm({
         </select>
       </label>
       <p className="text-[11px] text-[var(--color-text-dim)]">
-        {actionLabel(pf.cover.action, pf.cover.uses_ai)} · {creditsLine(pf.cover.credits_estimate ?? undefined, pf.cover.uses_ai, pf.capabilities_known)}
+        {actionLabel(pf.cover.action)} · {creditsLine(pf.cover.credits_estimate ?? undefined, pf.cover.credit_breakdown, pf.capabilities_known)}
       </p>
 
       {(pf.blocking_reasons?.length ?? 0) > 0 && (

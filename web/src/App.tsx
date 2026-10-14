@@ -11,6 +11,7 @@ import { Documents } from './pages/Documents'
 import { ApplicationSettingsPage } from './pages/settings/Application'
 import { SecuritySettingsPage } from './pages/settings/Security'
 import { AccountSettingsPage } from './pages/settings/Account'
+import { UsagePage } from './pages/settings/Usage'
 import { AdminOverviewPage } from './pages/admin/Overview'
 import { AdminAIProviderPage } from './pages/admin/AIProvider'
 import { AdminDefaultsPage } from './pages/admin/Defaults'
@@ -22,6 +23,7 @@ import { AdminEconomicsPage } from './pages/admin/Economics'
 import { AdminModelsPage } from './pages/admin/Models'
 import { AdminLlmUsagePage } from './pages/admin/LlmUsage'
 import { AdminAuditErrorsPage } from './pages/admin/AuditErrors'
+import { AdminResourceUsagePage } from './pages/admin/ResourceUsage'
 import { Preferences } from './pages/settings/Preferences'
 import { Resume } from './pages/settings/Resume'
 import { PlatformsSettingsPage } from './pages/settings/Platforms'
@@ -50,6 +52,7 @@ const SETTINGS_TABS = [
   { to: '/settings/resume',      label: 'Profile' },
   { to: '/settings/platforms',   label: 'Platforms' },
   { to: '/settings/plan',        label: 'Plan' },
+  { to: '/settings/usage',       label: 'Usage' },
   { to: '/settings/security',    label: 'Security' },
 ]
 
@@ -67,10 +70,10 @@ function SettingsLayout() {
           <Route path="resume"      element={<Resume />} />
           <Route path="platforms"   element={<PlatformsSettingsPage />} />
           <Route path="plan"        element={<PlanPage />} />
+          <Route path="usage"       element={<UsagePage />} />
           <Route path="security"    element={<SecuritySettingsPage />} />
           <Route path="general"     element={<Navigate to="/settings/application" replace />} />
           <Route path="secrets"     element={<Navigate to="/settings/platforms" replace />} />
-          <Route path="usage"       element={<Navigate to="/" replace />} />
           <Route index element={<Navigate to="application" replace />} />
         </Routes>
       </div>
@@ -98,7 +101,8 @@ function AdminLayout() {
             <Route path="retention"    element={<AdminRetentionPage />} />
             <Route path="economics"    element={<AdminEconomicsPage />} />
             <Route path="models"       element={<AdminModelsPage />} />
-            <Route path="llm-usage"    element={<AdminLlmUsagePage />} />
+            <Route path="llm-usage"        element={<AdminLlmUsagePage />} />
+            <Route path="resource-usage"   element={<AdminResourceUsagePage />} />
             <Route path="audit"        element={<AdminAuditErrorsPage />} />
             <Route path="usage"        element={<Navigate to="/admin/llm-usage" replace />} />
             <Route path="system"       element={<Navigate to="/admin/ai-provider" replace />} />
