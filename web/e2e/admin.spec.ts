@@ -33,7 +33,7 @@ test.describe('Admin', () => {
     await expect(page.getByText('Effective configuration')).toBeVisible()
 
     await page.goto('/admin/economics')
-    await expect(page.getByRole('heading', { name: 'AI economics', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Economics', exact: true })).toBeVisible()
 
     await page.goto('/admin/llm-usage')
     await expect(page.getByRole('heading', { name: 'AI usage', exact: true })).toBeVisible()
