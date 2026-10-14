@@ -18,6 +18,7 @@ debug_*.html
 *.test
 
 # Node
+node_modules/
 web/node_modules/
 web/dist/
 
