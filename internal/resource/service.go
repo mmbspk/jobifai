@@ -308,5 +308,14 @@ func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 			Msg("resource billing: failed to record billing event")
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		log.Ctx(ctx).Error().
+			Err(err).
+			Str("user_id", in.UserID).
+			Str("resource_type", string(in.ResourceType)).
+			Int64("credits", burnCredits).
+			Msg("resource billing: failed to commit billing transaction")
+		return err
+	}
+	return nil
 }

@@ -405,7 +405,8 @@ func TestHealth_ResourceMetering_StorageError(t *testing.T) {
 	assert.Equal(t, "invalid", rm["status"])
 }
 
-// TestHealth_NoResourceService verifies health works when Resource service is nil.
+// TestHealth_NoResourceService verifies health always includes resource_metering even when
+// the Resource service is nil — it must return fail-closed shape (ready=false, status=invalid).
 func TestHealth_NoResourceService(t *testing.T) {
 	svc, db := newTestServices(t)
 	svc.Resource = nil
@@ -418,6 +419,15 @@ func TestHealth_NoResourceService(t *testing.T) {
 	require.Equal(t, 200, w.Code)
 	var resp map[string]any
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-	// resource_metering must NOT be present when service is nil
-	assert.NotContains(t, resp, "resource_metering")
+	// resource_metering must ALWAYS be present — fail-closed shape
+	require.Contains(t, resp, "resource_metering", "resource_metering must be present even with nil Resource service")
+	rm := resp["resource_metering"].(map[string]any)
+	assert.Equal(t, "invalid", rm["status"])
+	assert.Equal(t, false, rm["ready"])
+	require.Contains(t, rm, "warnings")
+	assert.NotEmpty(t, rm["warnings"])
+	// Structural fields must be present
+	require.Contains(t, rm, "browser_automation")
+	require.Contains(t, rm, "document_render")
+	require.Contains(t, rm, "defaults_persisted")
 }

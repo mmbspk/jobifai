@@ -263,22 +263,37 @@ func (h *AdminHandlers) Health(w http.ResponseWriter, r *http.Request) {
 		"pricing_catalog_source": catSource, "pricing_catalog_last_refresh": catRefresh,
 		"pricing_catalog_last_error": catErr,
 		"stripe_configured": stripeConfigured, "stripe_webhook_configured": webhookConfigured,
-	}
-
-	if h.svc.Resource != nil {
-		rm, err := h.svc.Resource.Readiness()
-		if err != nil {
-			resp["resource_metering"] = map[string]any{
-				"ready":  false,
-				"status": string(domain.ResourceMeteringStatusInvalid),
-				"warnings": []string{"failed to compute resource metering readiness"},
-			}
-		} else {
-			resp["resource_metering"] = rm
-		}
+		"resource_metering": resourceMeteringHealth(h.svc.Resource),
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// resourceMeteringHealth always returns a complete ResourceMeteringReadiness-shaped value.
+// When Resource service is nil or returns an error the response is fail-closed (ready=false,
+// status=invalid) so callers always receive the same JSON structure.
+func resourceMeteringHealth(svc ResourceService) domain.ResourceMeteringReadiness {
+	unavailable := domain.ResourceMeteringReadiness{
+		Ready:    false,
+		Status:   domain.ResourceMeteringStatusInvalid,
+		Warnings: []string{"resource metering service unavailable"},
+		BrowserAutomation: domain.ResourceBrowserReadiness{},
+		DocumentRender:    domain.ResourceRenderReadiness{},
+	}
+	if svc == nil {
+		return unavailable
+	}
+	rm, err := svc.Readiness()
+	if err != nil {
+		return domain.ResourceMeteringReadiness{
+			Ready:    false,
+			Status:   domain.ResourceMeteringStatusInvalid,
+			Warnings: []string{"failed to compute resource metering readiness"},
+			BrowserAutomation: domain.ResourceBrowserReadiness{},
+			DocumentRender:    domain.ResourceRenderReadiness{},
+		}
+	}
+	return rm
 }
 
 // GET /api/admin/models/policy-audit
