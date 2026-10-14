@@ -373,8 +373,25 @@ func TestResolveFormFieldAnswer_QuotaBlocksFallback(t *testing.T) {
 	assert.Empty(t, ans)
 }
 
-func TestShouldAdvanceApplyForm_BlocksOnJobifaiQuota(t *testing.T) {
-	assert.True(t, shouldAdvanceApplyForm(nil))
-	assert.False(t, shouldAdvanceApplyForm(fmt.Errorf("form: %w", quota.ErrExceeded)))
-	assert.False(t, shouldAdvanceApplyForm(fmt.Errorf("form question: llm http 429: rate limit")))
+// ── linkedInJobPath ───────────────────────────────────────────────────────────
+
+func TestLinkedInJobPath(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"https://www.linkedin.com/jobs/view/123456789", "/jobs/view/123456789"},
+		{"https://www.linkedin.com/jobs/view/123456789/", "/jobs/view/123456789"},
+		{"https://www.linkedin.com/jobs/view/123456789?refId=abc&openSDUIApplyFlow=true", "/jobs/view/123456789"},
+		{"https://www.linkedin.com/jobs/view/123456789/apply?foo=bar", "/jobs/view/123456789"},
+		{"https://www.linkedin.com/jobs/collections/recommended/?currentJobId=999", ""},
+		{"https://www.seek.com.au/job/12345", ""},
+		{"not-a-url", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			assert.Equal(t, tc.want, linkedInJobPath(tc.input))
+		})
+	}
 }

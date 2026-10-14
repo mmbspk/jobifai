@@ -1398,8 +1398,12 @@ func detectLinkedInEasyApply(page *rod.Page) bool {
 		}
 
 		// 2) LinkedIn SDUI Easy Apply flag on an in-pane control/link.
+		// Visibility is required here — hidden SDUI preload/analytics links with
+		// opensduiapplyflow in the href are present on 3rd-party job pages too and
+		// must not be treated as evidence of an Easy Apply CTA.
 		for (const el of controls) {
 			if (isExcluded(el)) continue;
+			if (!isVisible(el)) continue;
 			const href = (el.getAttribute('href') || '').toLowerCase();
 			if (href.includes('opensduiapplyflow=true') || href.includes('opensduiapplyflow')) return true;
 		}
@@ -1679,6 +1683,12 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	}
 	defer func() { _ = jobPage.Close() }()
 
+	// Capture starting URL so we can detect if jsPoll navigated to a different job.
+	startURL := job.URL
+	if info, infoErr := jobPage.Info(); infoErr == nil && info != nil && info.URL != "" {
+		startURL = info.URL
+	}
+
 	if err := b.easyApply(ctx, jobPage, lazy); err != nil {
 		if errors.Is(err, errAlreadyApplied) {
 			resume, cover := lazy.get()
@@ -1714,6 +1724,20 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	resume, cover := lazy.get()
 	b.recordApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
 	b.logApplied(ac.AttemptID, job.ID, job.Title, job.Company, domain.PlatformLinkedIn, llmBefore)
+	// Warn if the page drifted to a different job during the apply flow (e.g., jsPoll
+	// followed a link from a recommendation panel instead of the main Easy Apply CTA).
+	if info, infoErr := jobPage.Info(); infoErr == nil && info != nil && info.URL != "" {
+		if endPath := linkedInJobPath(info.URL); endPath != "" {
+			if startPath := linkedInJobPath(startURL); startPath != "" && startPath != endPath {
+				log.Warn().
+					Str("attempt_id", ac.AttemptID).
+					Str("job_id", job.ID).
+					Str("expected_url", startURL).
+					Str("actual_url", info.URL).
+					Msg("linkedin: page navigated to a different job during apply — recorded URL may not match the submitted application")
+			}
+		}
+	}
 	finishAttempt(b.cfg.DB, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
 	return true
 }
@@ -1771,6 +1795,25 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			} catch(e) {}
 			return r;
 		}
+		function isVisible(el) {
+			try {
+				const rect = el.getBoundingClientRect();
+				if (rect.width < 2 && rect.height < 2) return false;
+				const doc = el.ownerDocument || document;
+				const view = doc.defaultView || window;
+				let node = el;
+				while (node && node !== doc.documentElement) {
+					const s = view.getComputedStyle(node);
+					if (s.display === 'none' || s.visibility === 'hidden') return false;
+					const parent = node.parentElement;
+					if (parent) { node = parent; continue; }
+					const root = node.getRootNode && node.getRootNode();
+					if (root && root.host) { node = root.host; continue; }
+					break;
+				}
+				return true;
+			} catch(e) { return false; }
+		}
 		const t = document.body.innerText.toLowerCase();
 		if (t.includes('application submitted') || t.includes('application was sent')) {
 			const hasAppStatus = document.querySelector('[class*="application-status"], [class*="ApplicationStatus"]');
@@ -1782,6 +1825,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			});
 		})();
 		const btn = candidates.find(b => {
+			if (!isVisible(b)) return false;
 			const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || b.textContent || ''))
 				.toLowerCase().replace(/\s+/g, ' ').trim();
 			if (label.includes('easy apply') || label.includes('linkedin apply')) return true;

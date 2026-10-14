@@ -1,6 +1,31 @@
 package bot
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
+
+// linkedInJobPath returns the canonical path segment that identifies the job
+// within a LinkedIn URL (e.g. "/jobs/view/123456789"). Returns "" for non-job
+// URLs or URLs that cannot be parsed. Used to detect same-job vs different-job
+// URL drift during the apply flow.
+func linkedInJobPath(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	p := strings.TrimRight(u.Path, "/")
+	idx := strings.Index(strings.ToLower(p), "/jobs/view/")
+	if idx < 0 {
+		return ""
+	}
+	// Split at most into 5 parts: ["", "jobs", "view", "<id>", "rest..."]
+	parts := strings.SplitN(p[idx:], "/", 5)
+	if len(parts) < 4 || parts[3] == "" {
+		return ""
+	}
+	return "/" + parts[1] + "/" + parts[2] + "/" + parts[3] // "/jobs/view/<id>"
+}
 
 // skipReasonIsApplyFailure reports whether a skip reason came from an Easy/Quick Apply attempt.
 func skipReasonIsApplyFailure(reason string) bool {
