@@ -89,6 +89,10 @@ export function AdminResourceUsagePage() {
         ))}
       </div>
 
+      {summaryQ.isError && (
+        <p className="text-sm text-[var(--color-danger)]">Could not load resource usage summary.</p>
+      )}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard label="Total credits burned" value={s ? s.total_credits_burned.toLocaleString() : '…'} accent />
         <StatCard label="Browser automation credits" value={ba ? ba.credits_burned.toLocaleString() : '0'} />
@@ -137,7 +141,7 @@ export function AdminResourceUsagePage() {
       </details>
 
       <section className="overflow-x-auto rounded-[var(--radius-lg)] border border-[var(--color-border)]">
-        <table className="w-full text-sm min-w-[1000px]">
+        <table className="w-full text-sm min-w-[1100px]">
           <thead className="sticky top-0 bg-[var(--color-surface-2)] text-left text-[var(--color-text-muted)]">
             <tr>
               <th className="px-2 py-2">Time</th>
@@ -151,6 +155,7 @@ export function AdminResourceUsagePage() {
               <th className="px-2 py-2">OK</th>
               <th className="px-2 py-2">Error</th>
               <th className="px-2 py-2">Automation</th>
+              <th className="px-2 py-2">App</th>
               <th className="px-2 py-2">Job</th>
             </tr>
           </thead>
@@ -174,6 +179,9 @@ export function AdminResourceUsagePage() {
                 <td className="px-2 py-1.5 font-mono text-xs max-w-[72px] truncate" title={ev.automation_run_id}>
                   {ev.automation_run_id?.slice(0, 8) || '—'}
                 </td>
+                <td className="px-2 py-1.5 font-mono text-xs max-w-[72px] truncate" title={ev.application_id}>
+                  {ev.application_id?.slice(0, 8) || '—'}
+                </td>
                 <td className="px-2 py-1.5 font-mono text-xs max-w-[72px] truncate" title={ev.job_id}>
                   {ev.job_id?.slice(0, 8) || '—'}
                 </td>
@@ -182,7 +190,8 @@ export function AdminResourceUsagePage() {
           </tbody>
         </table>
         {eventsQ.isLoading && <p className="p-4 text-sm text-[var(--color-text-dim)]">Loading…</p>}
-        {!eventsQ.isLoading && (eventsQ.data?.events?.length ?? 0) === 0 && (
+        {eventsQ.isError && <p className="p-4 text-sm text-[var(--color-danger)]">Could not load resource usage events.</p>}
+        {!eventsQ.isLoading && !eventsQ.isError && (eventsQ.data?.events?.length ?? 0) === 0 && (
           <p className="p-4 text-sm text-[var(--color-text-dim)]">No resource usage events found for this period.</p>
         )}
       </section>

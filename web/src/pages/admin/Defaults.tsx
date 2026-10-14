@@ -26,7 +26,7 @@ export function AdminDefaultsPage() {
   const { data: appData } = useQuery({ queryKey: ['admin-app-settings'], queryFn: adminApi.app.settings.get })
   const { data: system } = useQuery({ queryKey: ['admin-system'], queryFn: adminApi.system.get })
   const { data: emailData } = useQuery({ queryKey: ['admin-email-settings'], queryFn: adminApi.email.settings.get })
-  const { data: meteringData } = useQuery({ queryKey: ['admin-resource-metering'], queryFn: adminApi.resourceMetering.getDefaults })
+  const { data: meteringData, isLoading: meteringLoading, isError: meteringFailed } = useQuery({ queryKey: ['admin-resource-metering'], queryFn: adminApi.resourceMetering.getDefaults })
   const [appCfg, setAppCfg] = useState<AppSettings>({})
   const [appSaved, setAppSaved] = useState(false)
   const [appError, setAppError] = useState<string | null>(null)
@@ -286,7 +286,11 @@ export function AdminDefaultsPage() {
       >
         {!metering ? (
           <p className="text-sm text-[var(--color-text-dim)]">
-            {meteringData === undefined ? 'Loading…' : 'Resource metering service unavailable.'}
+            {meteringFailed
+              ? 'Could not load resource metering settings.'
+              : meteringLoading
+                ? 'Loading…'
+                : 'Resource metering service unavailable.'}
           </p>
         ) : (
           <>

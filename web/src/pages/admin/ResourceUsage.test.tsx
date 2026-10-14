@@ -204,4 +204,44 @@ describe('AdminResourceUsagePage', () => {
       expect(screen.getByText('TIMEOUT')).toBeInTheDocument()
     })
   })
+
+  it('shows Application column header', async () => {
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByRole('columnheader', { name: 'App' })).toBeInTheDocument()
+    })
+  })
+
+  it('renders application_id truncated to 8 chars', async () => {
+    renderPage()
+    await waitFor(() => {
+      // application_id: 'app-00005678' → first 8 chars = 'app-0000'
+      expect(screen.getByText('app-0000')).toBeInTheDocument()
+    })
+  })
+
+  it('shows summary error when summary query fails', async () => {
+    vi.mocked(adminApi.resourceUsage.summary).mockRejectedValue(new Error('server error'))
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByText(/could not load resource usage summary/i)).toBeInTheDocument()
+    })
+  })
+
+  it('shows events error when events query fails', async () => {
+    vi.mocked(adminApi.resourceUsage.events).mockRejectedValue(new Error('server error'))
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByText(/could not load resource usage events/i)).toBeInTheDocument()
+    })
+  })
+
+  it('does not show empty state when events query fails', async () => {
+    vi.mocked(adminApi.resourceUsage.events).mockRejectedValue(new Error('server error'))
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByText(/could not load resource usage events/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/no resource usage events found/i)).not.toBeInTheDocument()
+  })
 })

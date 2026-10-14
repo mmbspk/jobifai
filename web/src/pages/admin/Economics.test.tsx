@@ -156,4 +156,18 @@ describe('AdminEconomicsPage', () => {
     // "Calls" label appears in both stat card and table header
     expect(screen.getAllByText('Calls').length).toBeGreaterThanOrEqual(1)
   })
+
+  it('shows error message when overview query fails', async () => {
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.includes('/admin/economics/overview')) return Promise.reject(new Error('network error'))
+      if (url.includes('/admin/economics/tasks')) return Promise.resolve(TASKS_FIXTURE)
+      if (url.includes('/admin/economics/models')) return Promise.resolve(MODELS_FIXTURE)
+      if (url.includes('/admin/economics/users')) return Promise.resolve(USERS_FIXTURE)
+      return Promise.resolve({})
+    })
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByText(/could not load economics overview/i)).toBeInTheDocument()
+    })
+  })
 })

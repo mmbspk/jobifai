@@ -116,6 +116,15 @@ describe('AdminDefaultsPage — Resource metering section', () => {
       )
     })
   })
+
+  it('shows error message when metering GET fails (not Loading…)', async () => {
+    vi.mocked(adminApi.resourceMetering.getDefaults).mockRejectedValue(new Error('unavailable'))
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByText(/could not load resource metering settings/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/^Loading…$/)).not.toBeInTheDocument()
+  })
 })
 
 describe('AdminDefaultsPage — Application URL section', () => {

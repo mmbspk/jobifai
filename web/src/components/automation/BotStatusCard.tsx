@@ -124,11 +124,18 @@ export function BotStatusCard(props: BotStatusCardProps) {
                 {stateHeadline(state)}
               </h2>
               {state === 'idle' && (
-                <p className="text-sm text-[var(--color-text-dim)] mt-1">
-                  {setupReady
-                    ? 'Choose a platform, then start automation when you are ready.'
-                    : `Complete setup first${setupHint ? `: ${setupHint}` : ''}.`}
-                </p>
+                <>
+                  <p className="text-sm text-[var(--color-text-dim)] mt-1">
+                    {setupReady
+                      ? 'Choose a platform, then start automation when you are ready.'
+                      : `Complete setup first${setupHint ? `: ${setupHint}` : ''}.`}
+                  </p>
+                  {setupReady && (
+                    <p className="text-sm text-[var(--color-text-dim)] mt-1">
+                      Automation uses credits while Jobifai is actively working. Paused and user-wait time is not charged.
+                    </p>
+                  )}
+                </>
               )}
               {state === 'running' && (
                 <p className="text-sm text-[var(--color-text-dim)] mt-1">

@@ -67,6 +67,10 @@ export function AdminEconomicsPage() {
         ))}
       </div>
 
+      {overviewQ.isError && (
+        <p className="text-sm text-[var(--color-danger)]">Could not load economics overview.</p>
+      )}
+
       <section className="space-y-2">
         <h2 className="text-sm font-semibold text-[var(--color-text-muted)]">Totals (AI + resource)</h2>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
