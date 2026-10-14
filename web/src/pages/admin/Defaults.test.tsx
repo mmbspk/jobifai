@@ -125,6 +125,40 @@ describe('AdminDefaultsPage — Resource metering section', () => {
     })
     expect(screen.queryByText(/^Loading…$/)).not.toBeInTheDocument()
   })
+
+  it('shows unreviewed warning when defaults_persisted is false', async () => {
+    vi.mocked(adminApi.resourceMetering.getDefaults).mockResolvedValue({
+      enabled: false,
+      browser_automation: { enabled: false, raw_cost_usd_micro_per_hour: 20000, billing_increment_seconds: 30 },
+      document_render: { enabled: false, raw_cost_usd_micro_per_render: 2000 },
+      browser_credits_per_minute: 0,
+      render_credits_per_render: 0,
+      per_call_fee_is_ai_only: true,
+      defaults_persisted: false,
+    })
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+      expect(screen.getByText(/not yet reviewed/i)).toBeInTheDocument()
+    })
+  })
+
+  it('does not show unreviewed warning when defaults_persisted is true', async () => {
+    vi.mocked(adminApi.resourceMetering.getDefaults).mockResolvedValue({
+      enabled: false,
+      browser_automation: { enabled: false, raw_cost_usd_micro_per_hour: 20000, billing_increment_seconds: 30 },
+      document_render: { enabled: false, raw_cost_usd_micro_per_render: 2000 },
+      browser_credits_per_minute: 0,
+      render_credits_per_render: 0,
+      per_call_fee_is_ai_only: true,
+      defaults_persisted: true,
+    })
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByText(/resource metering/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
 })
 
 describe('AdminDefaultsPage — Application URL section', () => {

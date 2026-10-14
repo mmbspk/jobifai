@@ -6,6 +6,7 @@ import { StatCard } from '../../components/StatCard'
 import { Badge } from '../../components/ui/badge'
 import { pct, usdFromMicro } from '../../lib/adminFormat'
 import { Activity, ArrowUpRight, CircleAlert, CircleCheck, Clock3, Database, Server } from 'lucide-react'
+import type { ResourceMeteringReadiness } from '../../types'
 
 type OverviewResp = {
   system: {
@@ -45,6 +46,7 @@ type HealthResp = {
   stripe_configured: boolean
   stripe_webhook_configured: boolean
   pricing_catalog_source: string
+  resource_metering?: ResourceMeteringReadiness
 }
 
 function formatUptime(sec: number): string {
@@ -52,6 +54,26 @@ function formatUptime(sec: number): string {
   const h = Math.floor(sec / 3600)
   const m = Math.floor((sec % 3600) / 60)
   return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+const RM_STATUS_LABELS: Record<ResourceMeteringReadiness['status'], { label: string; ok: boolean; warn: boolean }> = {
+  ready: { label: 'Ready', ok: true, warn: false },
+  disabled: { label: 'Disabled (intentional)', ok: true, warn: false },
+  unreviewed: { label: 'Not reviewed', ok: false, warn: true },
+  invalid: { label: 'Misconfigured', ok: false, warn: false },
+}
+
+function ResourceMeteringStatusRow({ rm }: { rm: ResourceMeteringReadiness }) {
+  const meta = RM_STATUS_LABELS[rm.status] ?? { label: rm.status, ok: false, warn: false }
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      {meta.ok
+        ? <CircleCheck size={16} className="text-[var(--color-success)]" aria-hidden="true" />
+        : <CircleAlert size={16} className={meta.warn ? "text-[var(--color-warn)]" : "text-[var(--color-danger)]"} aria-hidden="true" />}
+      <span>Resource metering</span>
+      <span className="ml-auto text-xs text-[var(--color-text-dim)]">{meta.label}</span>
+    </div>
+  )
 }
 
 export function AdminOverviewPage() {
@@ -69,10 +91,13 @@ export function AdminOverviewPage() {
   const sys = o?.system
   const ai = o?.ai_today
   const auto = o?.automation ?? {}
+  const rm = h?.resource_metering
+  const rmIssue = rm && !rm.ready && rm.status !== 'disabled'
   const issues = [
     h && !h.api_credential_configured && 'AI API key is missing',
     h && !h.stripe_configured && 'Stripe is not configured',
     h && h.stripe_configured && !h.stripe_webhook_configured && 'Stripe webhook is missing',
+    rmIssue && (rm.status === 'unreviewed' ? 'Resource metering not reviewed' : 'Resource metering misconfigured'),
   ].filter((value): value is string => typeof value === 'string')
 
   return (
@@ -113,6 +138,7 @@ export function AdminOverviewPage() {
               {ok ? <CircleCheck size={16} className="text-[var(--color-success)]" aria-hidden="true" /> : <CircleAlert size={16} className="text-[var(--color-warn)]" aria-hidden="true" />}
               <span>{label}</span><span className="ml-auto text-xs text-[var(--color-text-dim)]">{ok ? 'Configured' : 'Not set'}</span>
             </div>)}
+            {rm && <ResourceMeteringStatusRow rm={rm} />}
             <div className="flex items-center gap-2 text-sm"><Server size={16} className="text-[var(--color-text-muted)]" aria-hidden="true" /><span>Environment</span><span className="ml-auto text-xs text-[var(--color-text-dim)]">{sys?.environment ?? '…'}</span></div>
           </div>}
           {issues.length > 0 && <p className="mt-5 border-t border-[var(--color-border-subtle)] pt-3 text-xs text-[var(--color-text-muted)]">{issues.join(' · ')}</p>}

@@ -74,6 +74,10 @@ func (s *recordingResourceStub) LoadDefaults() (domain.ResourceMeteringDefaults,
 func (s *recordingResourceStub) SaveDefaults(domain.ResourceMeteringDefaults) error { return nil }
 func (s *recordingResourceStub) EstimateRenderCredits() (int64, error)              { return 3, nil }
 func (s *recordingResourceStub) EstimateBrowserIncrementCredits() (int64, error)    { return 1, nil }
+func (s *recordingResourceStub) DefaultsPersisted() (bool, error)                  { return false, nil }
+func (s *recordingResourceStub) Readiness() (domain.ResourceMeteringReadiness, error) {
+	return domain.ResourceMeteringReadiness{}, nil
+}
 
 // newResumeRouterWithBillingStub builds a fully-wired resume router with a recording resource stub.
 func newResumeRouterWithBillingStub(t *testing.T) (http.Handler, *handler.Services, *recordingResourceStub) {

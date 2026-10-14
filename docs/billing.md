@@ -2,6 +2,8 @@
 
 This document describes how Stripe webhooks affect credits and plan entitlement. Price IDs map to plans via admin **Credits & billing** defaults (`stripe_price_starter`, `stripe_price_pro`).
 
+For non-AI resource billing (browser automation, document rendering), see [resource-metering.md](resource-metering.md).
+
 ## Checkout (user-initiated)
 
 | Flow | Route | Stripe mode | Metadata |

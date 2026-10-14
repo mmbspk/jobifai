@@ -22,6 +22,10 @@ type stubResourceService struct {
 	saveErr          error
 	renderCredits    int64
 	browserCredits   int64
+	persisted        bool
+	persistedErr     error
+	readiness        domain.ResourceMeteringReadiness
+	readinessErr     error
 }
 
 func (s *stubResourceService) LoadDefaults() (domain.ResourceMeteringDefaults, error) {
@@ -38,6 +42,12 @@ func (s *stubResourceService) EstimateRenderCredits() (int64, error)    { return
 func (s *stubResourceService) EstimateBrowserIncrementCredits() (int64, error) { return s.browserCredits, nil }
 func (s *stubResourceService) BeforeRender(_ context.Context, _ string) error   { return nil }
 func (s *stubResourceService) RecordRender(_ context.Context, _, _ string) error { return nil }
+func (s *stubResourceService) DefaultsPersisted() (bool, error) {
+	return s.persisted, s.persistedErr
+}
+func (s *stubResourceService) Readiness() (domain.ResourceMeteringReadiness, error) {
+	return s.readiness, s.readinessErr
+}
 
 // newServicesWithResource returns a Services bag with a real resource.Service attached.
 func newServicesWithResource(t *testing.T) (*handler.Services, func() string) {
@@ -239,4 +249,185 @@ func TestResourceMeteringPut_InfraError(t *testing.T) {
 	}
 	w := authPut(t, router, "/api/admin/resource-metering/defaults", tok, body)
 	assert.Equal(t, 500, w.Code, "infra save error must return 500: %s", w.Body)
+}
+
+// TestResourceMeteringGet_DefaultsPersisted_False verifies defaults_persisted=false is returned
+// when the config has never been saved (using the real resource.Service backed by an empty DB).
+func TestResourceMeteringGet_DefaultsPersisted_False(t *testing.T) {
+	svc, getToken := newServicesWithResource(t)
+	router := handler.NewRouter(svc)
+	tok := getToken()
+
+	w := authGet(t, router, "/api/admin/resource-metering/defaults", tok)
+	require.Equal(t, 200, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.Equal(t, false, resp["defaults_persisted"], "fresh DB → defaults_persisted must be false")
+}
+
+// TestResourceMeteringPut_DefaultsPersisted_True verifies defaults_persisted becomes true
+// after a successful PUT.
+func TestResourceMeteringPut_DefaultsPersisted_True(t *testing.T) {
+	svc, getToken := newServicesWithResource(t)
+	router := handler.NewRouter(svc)
+	tok := getToken()
+
+	body := domain.ResourceMeteringDefaults{
+		Enabled: false,
+		Browser: domain.BrowserMeteringConfig{BillingIncrementSecs: 30},
+	}
+	w := authPut(t, router, "/api/admin/resource-metering/defaults", tok, body)
+	require.Equal(t, 200, w.Code, "PUT must succeed: %s", w.Body)
+
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.Equal(t, true, resp["defaults_persisted"], "after PUT → defaults_persisted must be true")
+}
+
+// TestHealth_ResourceMetering_Unreviewed verifies health endpoint returns unreviewed
+// status when Resource service has never been saved.
+func TestHealth_ResourceMetering_Unreviewed(t *testing.T) {
+	svc, getToken := newServicesWithResource(t)
+	router := handler.NewRouter(svc)
+	tok := getToken()
+
+	w := authGet(t, router, "/api/admin/health", tok)
+	require.Equal(t, 200, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	require.Contains(t, resp, "resource_metering", "health response must include resource_metering")
+	rm := resp["resource_metering"].(map[string]any)
+	assert.Equal(t, "unreviewed", rm["status"])
+	assert.Equal(t, false, rm["ready"])
+}
+
+// TestHealth_ResourceMetering_Ready verifies health endpoint returns ready
+// when metering is properly configured.
+func TestHealth_ResourceMetering_Ready(t *testing.T) {
+	svc, db := newTestServices(t)
+	svc.Resource = &stubResourceService{
+		readiness: domain.ResourceMeteringReadiness{
+			DefaultsPersisted: true,
+			MasterEnabled:     true,
+			Ready:             true,
+			Status:            domain.ResourceMeteringStatusReady,
+			Warnings:          []string{},
+		},
+	}
+	router := handler.NewRouter(svc)
+	adminEmail := "health-ready@example.com"
+	tok := registerAndLogin(t, router, adminEmail, "pass1234")
+	setUserAdmin(t, db, adminEmail)
+
+	w := authGet(t, router, "/api/admin/health", tok)
+	require.Equal(t, 200, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	rm := resp["resource_metering"].(map[string]any)
+	assert.Equal(t, "ready", rm["status"])
+	assert.Equal(t, true, rm["ready"])
+}
+
+// TestHealth_ResourceMetering_Disabled verifies disabled status is treated as ready.
+func TestHealth_ResourceMetering_Disabled(t *testing.T) {
+	svc, db := newTestServices(t)
+	svc.Resource = &stubResourceService{
+		persisted: true,
+		readiness: domain.ResourceMeteringReadiness{
+			DefaultsPersisted: true,
+			MasterEnabled:     false,
+			Ready:             true,
+			Status:            domain.ResourceMeteringStatusDisabled,
+			Warnings:          []string{},
+		},
+	}
+	router := handler.NewRouter(svc)
+	adminEmail := "health-disabled@example.com"
+	tok := registerAndLogin(t, router, adminEmail, "pass1234")
+	setUserAdmin(t, db, adminEmail)
+
+	w := authGet(t, router, "/api/admin/health", tok)
+	require.Equal(t, 200, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	rm := resp["resource_metering"].(map[string]any)
+	assert.Equal(t, "disabled", rm["status"])
+	assert.Equal(t, true, rm["ready"])
+}
+
+// TestHealth_ResourceMetering_Invalid verifies invalid status propagates.
+func TestHealth_ResourceMetering_Invalid(t *testing.T) {
+	svc, db := newTestServices(t)
+	svc.Resource = &stubResourceService{
+		persisted: true,
+		readiness: domain.ResourceMeteringReadiness{
+			DefaultsPersisted: true,
+			MasterEnabled:     true,
+			Ready:             false,
+			Status:            domain.ResourceMeteringStatusInvalid,
+			Warnings:          []string{"browser automation produces zero credits"},
+		},
+	}
+	router := handler.NewRouter(svc)
+	adminEmail := "health-invalid@example.com"
+	tok := registerAndLogin(t, router, adminEmail, "pass1234")
+	setUserAdmin(t, db, adminEmail)
+
+	w := authGet(t, router, "/api/admin/health", tok)
+	require.Equal(t, 200, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	rm := resp["resource_metering"].(map[string]any)
+	assert.Equal(t, "invalid", rm["status"])
+	assert.Equal(t, false, rm["ready"])
+	warnings := rm["warnings"].([]any)
+	assert.NotEmpty(t, warnings)
+}
+
+// TestHealth_ResourceMetering_StorageError verifies fail-closed: storage error → invalid status.
+func TestHealth_ResourceMetering_StorageError(t *testing.T) {
+	svc, db := newTestServices(t)
+	svc.Resource = &stubResourceService{
+		readinessErr: errors.New("simulated storage failure"),
+		readiness:    domain.ResourceMeteringReadiness{},
+	}
+	router := handler.NewRouter(svc)
+	adminEmail := "health-storageerr@example.com"
+	tok := registerAndLogin(t, router, adminEmail, "pass1234")
+	setUserAdmin(t, db, adminEmail)
+
+	w := authGet(t, router, "/api/admin/health", tok)
+	require.Equal(t, 200, w.Code) // health always returns 200; error is in the payload
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	rm := resp["resource_metering"].(map[string]any)
+	assert.Equal(t, false, rm["ready"])
+	assert.Equal(t, "invalid", rm["status"])
+}
+
+// TestHealth_NoResourceService verifies health always includes resource_metering even when
+// the Resource service is nil — it must return fail-closed shape (ready=false, status=invalid).
+func TestHealth_NoResourceService(t *testing.T) {
+	svc, db := newTestServices(t)
+	svc.Resource = nil
+	router := handler.NewRouter(svc)
+	adminEmail := "health-noresource@example.com"
+	tok := registerAndLogin(t, router, adminEmail, "pass1234")
+	setUserAdmin(t, db, adminEmail)
+
+	w := authGet(t, router, "/api/admin/health", tok)
+	require.Equal(t, 200, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	// resource_metering must ALWAYS be present — fail-closed shape
+	require.Contains(t, resp, "resource_metering", "resource_metering must be present even with nil Resource service")
+	rm := resp["resource_metering"].(map[string]any)
+	assert.Equal(t, "invalid", rm["status"])
+	assert.Equal(t, false, rm["ready"])
+	require.Contains(t, rm, "warnings")
+	assert.NotEmpty(t, rm["warnings"])
+	// Structural fields must be present
+	require.Contains(t, rm, "browser_automation")
+	require.Contains(t, rm, "document_render")
+	require.Contains(t, rm, "defaults_persisted")
 }

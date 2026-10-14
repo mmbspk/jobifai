@@ -65,3 +65,42 @@ type RenderMeteringConfig struct {
 	// Credits = loaded cost (micro-USD) × CreditsPerUSD / 1_000_000.
 	RawCostUSDMicroPerRender int64 `json:"raw_cost_usd_micro_per_render"`
 }
+
+// ResourceMeteringStatus is a stable label describing the overall resource metering readiness.
+// Values: "unreviewed", "disabled", "ready", "invalid".
+type ResourceMeteringStatus string
+
+const (
+	ResourceMeteringStatusUnreviewed ResourceMeteringStatus = "unreviewed"
+	ResourceMeteringStatusDisabled   ResourceMeteringStatus = "disabled"
+	ResourceMeteringStatusReady      ResourceMeteringStatus = "ready"
+	ResourceMeteringStatusInvalid    ResourceMeteringStatus = "invalid"
+)
+
+// ResourceBrowserReadiness describes the readiness of browser automation metering.
+type ResourceBrowserReadiness struct {
+	Enabled                bool    `json:"enabled"`
+	Ready                  bool    `json:"ready"`
+	RawCostUSDMicroPerHour int64   `json:"raw_cost_usd_micro_per_hour"`
+	BillingIncrementSecs   int     `json:"billing_increment_seconds"`
+	CreditsPerMinute       float64 `json:"credits_per_minute"`
+}
+
+// ResourceRenderReadiness describes the readiness of document render metering.
+type ResourceRenderReadiness struct {
+	Enabled                  bool  `json:"enabled"`
+	Ready                    bool  `json:"ready"`
+	RawCostUSDMicroPerRender int64 `json:"raw_cost_usd_micro_per_render"`
+	CreditsPerRender         int64 `json:"credits_per_render"`
+}
+
+// ResourceMeteringReadiness is the structured readiness contract returned by /api/admin/health.
+type ResourceMeteringReadiness struct {
+	DefaultsPersisted bool                     `json:"defaults_persisted"`
+	MasterEnabled     bool                     `json:"master_enabled"`
+	Ready             bool                     `json:"ready"`
+	Status            ResourceMeteringStatus   `json:"status"`
+	BrowserAutomation ResourceBrowserReadiness `json:"browser_automation"`
+	DocumentRender    ResourceRenderReadiness  `json:"document_render"`
+	Warnings          []string                 `json:"warnings"`
+}
