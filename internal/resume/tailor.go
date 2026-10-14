@@ -37,6 +37,7 @@ Rules:
 - For presentations: include all conference presentations, do not remove any
 - For grants: include all grants and funding entries, do not remove any
 - For projects: reorder to lead with most relevant to the job description
+- Preserve supplied project, portfolio, certification, LinkedIn and GitHub URLs and publication DOIs exactly; never invent, rewrite or remove links for retained entries
 - Return ONLY valid JSON with no markdown fencing, matching the exact ResumeProfile shape provided`))
 
 var tailorUserTempl = template.Must(template.New("tailor-user").Parse(`{{- if .PromptInstructions}}

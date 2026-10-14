@@ -1,20 +1,23 @@
 package documents
 
-import "github.com/user/jobifai/internal/domain"
+import (
+	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/resume"
+)
 
 const (
 	KindResume         = "resume"
 	KindCoverLetter    = "cover_letter"
 	KindOriginalUpload = "original_upload"
 
-	ContentResumeJSON     = "resume_json"
-	ContentCoverText      = "cover_text"
+	ContentResumeJSON      = "resume_json"
+	ContentCoverText       = "cover_text"
 	ContentOriginalFileRef = "original_file_ref"
 
-	SourceProfileRender = "profile_render"
-	SourceUserEdit      = "user_edit"
-	SourceAIGeneral     = "ai_general"
-	SourceAIImprove     = "ai_improve"
+	SourceProfileRender  = "profile_render"
+	SourceUserEdit       = "user_edit"
+	SourceAIGeneral      = "ai_general"
+	SourceAIImprove      = "ai_improve"
 	SourceOriginalUpload = "original_upload"
 
 	ArtifactReady   = "ready"
@@ -22,14 +25,14 @@ const (
 )
 
 // RendererVersion identifies the PDF HTML template + renderer implementation generation.
-const RendererVersion = "jobifai-pdf-v1"
+const RendererVersion = resume.PDFRendererVersion
 
 type Document struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Title     string `json:"title"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID        string           `json:"id"`
+	Kind      string           `json:"kind"`
+	Title     string           `json:"title"`
+	CreatedAt string           `json:"created_at"`
+	UpdatedAt string           `json:"updated_at"`
 	Versions  []VersionSummary `json:"versions,omitempty"`
 }
 
@@ -58,11 +61,11 @@ type ListResponse struct {
 }
 
 type VersionDetail struct {
-	ID           string `json:"id"`
-	DocumentID   string `json:"document_id"`
-	ContentKind  string `json:"content_kind"`
-	ContentJSON  string `json:"content_json"`
-	VersionNumber int   `json:"version_number"`
+	ID            string `json:"id"`
+	DocumentID    string `json:"document_id"`
+	ContentKind   string `json:"content_kind"`
+	ContentJSON   string `json:"content_json"`
+	VersionNumber int    `json:"version_number"`
 }
 
 type ResumeContent struct {

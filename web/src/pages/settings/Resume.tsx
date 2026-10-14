@@ -6,6 +6,7 @@ import { cn } from '../../lib'
 import { Button } from '../../components/Button'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { TagInput } from '../../components/TagInput'
+import { OpenProfileLink } from '../../components/profile/OpenProfileLink'
 import type {
   ResumeProfile, EducationDetail, ExperienceDetail, Language,
   Project, Certification, Publication, Presentation, Grant,
@@ -372,8 +373,8 @@ export function Resume() {
           <Field label="Phone"><Input value={p.phone ?? ''} onChange={v => pi('phone', v)} /></Field>
           <Field label="City"><Input value={p.city ?? ''} onChange={v => pi('city', v)} /></Field>
           <Field label="Country"><Input value={p.country ?? ''} onChange={v => pi('country', v)} /></Field>
-          <Field label="LinkedIn URL"><Input value={p.linkedin ?? ''} onChange={v => pi('linkedin', v)} /></Field>
-          <Field label="GitHub URL"><Input value={p.github ?? ''} onChange={v => pi('github', v)} /></Field>
+          <Field label="LinkedIn URL"><Input value={p.linkedin ?? ''} onChange={v => pi('linkedin', v)} /><OpenProfileLink value={p.linkedin} /></Field>
+          <Field label="GitHub URL"><Input value={p.github ?? ''} onChange={v => pi('github', v)} /><OpenProfileLink value={p.github} /></Field>
         </div>
       </Section>
 
@@ -461,7 +462,7 @@ export function Resume() {
               <CardHeader index={i} label="Project" onRemove={() => removeProject(i)} />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Field label="Name"><Input value={pr.name ?? ''} onChange={v => setProject(i, 'name', v)} /></Field>
-                <Field label="Link / URL"><Input value={pr.link ?? ''} onChange={v => setProject(i, 'link', v)} placeholder="https://…" /></Field>
+                <Field label="Link / URL"><Input value={pr.link ?? ''} onChange={v => setProject(i, 'link', v)} placeholder="https://…" /><OpenProfileLink value={pr.link} /></Field>
               </div>
               <Field label="Description">
                 <Textarea value={pr.description ?? ''} onChange={v => setProject(i, 'description', v)} rows={2} />
@@ -489,7 +490,7 @@ export function Resume() {
                 <Field label="Name / Title"><Input value={c.name ?? ''} onChange={v => setCert(i, 'name', v)} /></Field>
                 <Field label="Issuer / Organisation"><Input value={c.issuer ?? ''} onChange={v => setCert(i, 'issuer', v)} /></Field>
                 <Field label="Date"><Input value={c.date ?? ''} onChange={v => setCert(i, 'date', v)} placeholder="e.g. 2023 or Mar 2023" /></Field>
-                <Field label="Link / URL (optional)"><Input value={c.link ?? ''} onChange={v => setCert(i, 'link', v)} placeholder="https://…" /></Field>
+                <Field label="Link / URL (optional)"><Input value={c.link ?? ''} onChange={v => setCert(i, 'link', v)} placeholder="https://…" /><OpenProfileLink value={c.link} /></Field>
               </div>
             </div>
           ))}
@@ -512,7 +513,7 @@ export function Resume() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <Field label="Journal / Venue"><Input value={pub.journal ?? ''} onChange={v => setPub(i, 'journal', v)} /></Field>
                 <Field label="Year"><Input value={pub.year ?? ''} onChange={v => setPub(i, 'year', v)} placeholder="e.g. 2024" /></Field>
-                <Field label="DOI / Link"><Input value={pub.doi ?? ''} onChange={v => setPub(i, 'doi', v)} placeholder="https://doi.org/…" /></Field>
+                <Field label="DOI / Link"><Input value={pub.doi ?? ''} onChange={v => setPub(i, 'doi', v)} placeholder="https://doi.org/…" /><OpenProfileLink value={pub.doi} doi /></Field>
                 <Field label="Status"><Input value={pub.status ?? ''} onChange={v => setPub(i, 'status', v)} placeholder="Published / In Preparation / Submitted" /></Field>
               </div>
             </div>

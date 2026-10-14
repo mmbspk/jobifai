@@ -1,17 +1,22 @@
 package resume
 
+const (
+	PDFRendererVersion       = "jobifai-pdf-v2"
+	LegacyPDFRendererVersion = "jobifai-pdf-v1"
+)
+
 // SectionLabels are PDF section headings. Defaults are English; markets override via YAML for future locale packs.
 type SectionLabels struct {
-	Summary       string `yaml:"summary"`
-	Skills        string `yaml:"skills"`
-	Experience    string `yaml:"experience"`
-	Projects      string `yaml:"projects"`
+	Summary        string `yaml:"summary"`
+	Skills         string `yaml:"skills"`
+	Experience     string `yaml:"experience"`
+	Projects       string `yaml:"projects"`
 	Certifications string `yaml:"certifications"`
-	Publications  string `yaml:"publications"`
-	Presentations string `yaml:"presentations"`
-	Grants        string `yaml:"grants"`
-	Education     string `yaml:"education"`
-	Languages     string `yaml:"languages"`
+	Publications   string `yaml:"publications"`
+	Presentations  string `yaml:"presentations"`
+	Grants         string `yaml:"grants"`
+	Education      string `yaml:"education"`
+	Languages      string `yaml:"languages"`
 }
 
 // DefaultSectionLabels returns English headings matching the canonical HTML template.
@@ -56,5 +61,6 @@ func (m *MarketPrompts) LabelsOrDefault() SectionLabels {
 
 // RenderOptions optional PDF rendering overrides (market section headings, etc.).
 type RenderOptions struct {
-	SectionLabels SectionLabels
+	SectionLabels   SectionLabels
+	RendererVersion string
 }
