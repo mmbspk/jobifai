@@ -5,15 +5,7 @@ import { apiGet } from '../../api/client'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { StatCard } from '../../components/StatCard'
 import { ADMIN_PERIODS, type AdminPeriod, pct, usdFromMicro } from '../../lib/adminFormat'
-
-type Overview = {
-  raw_cost_usd_micro: number
-  loaded_cost_usd_micro: number
-  credits_burned: number
-  calls: number
-  success_calls: number
-  avg_raw_cost_per_call_usd: number
-}
+import type { EconomicsOverview } from '../../types'
 
 type TaskRow = {
   task: string
@@ -31,7 +23,7 @@ export function AdminEconomicsPage() {
 
   const overviewQ = useQuery({
     queryKey: ['admin-economics-overview', period],
-    queryFn: () => apiGet<Overview>(`/admin/economics/overview?period=${period}`),
+    queryFn: () => apiGet<EconomicsOverview>(`/admin/economics/overview?period=${period}`),
   })
   const tasksQ = useQuery({
     queryKey: ['admin-economics-tasks', period],
@@ -48,12 +40,14 @@ export function AdminEconomicsPage() {
 
   const o = overviewQ.data
   const errRate = o && o.calls > 0 ? 1 - o.success_calls / o.calls : null
+  const res = o?.resource
+  const ai = o?.ai
 
   return (
     <div className="space-y-6">
       <PageHeader
-        title="AI economics"
-        description="Billing-grade LLM usage from the event ledger (no prompt or resume content)."
+        title="Economics"
+        description="Billing-grade usage from the event ledger — AI and resource charges combined (no prompt or resume content)."
       />
 
       <div className="flex flex-wrap gap-2">
@@ -73,14 +67,40 @@ export function AdminEconomicsPage() {
         ))}
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Calls" value={o ? String(o.calls) : '…'} />
-        <StatCard label="Raw AI cost (USD)" value={o ? usdFromMicro(o.raw_cost_usd_micro) : '…'} />
-        <StatCard label="Loaded cost (USD)" value={o ? usdFromMicro(o.loaded_cost_usd_micro) : '…'} />
-        <StatCard label="Credits burned" value={o ? o.credits_burned.toLocaleString() : '…'} />
-        <StatCard label="Avg raw $/call" value={o ? o.avg_raw_cost_per_call_usd.toFixed(6) : '…'} />
-        <StatCard label="Error rate" value={errRate != null ? pct(errRate) : o ? 'No calls' : '…'} />
-      </div>
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold text-[var(--color-text-muted)]">Totals (AI + resource)</h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <StatCard label="Total credits burned" value={o ? (o.total_credits_burned ?? 0).toLocaleString() : '…'} accent />
+          <StatCard label="Total loaded cost (USD)" value={o ? usdFromMicro(o.total_loaded_cost_usd_micro ?? 0) : '…'} />
+          <StatCard label="Total raw cost (USD)" value={o ? usdFromMicro(o.total_raw_cost_usd_micro ?? 0) : '…'} />
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold text-[var(--color-text-muted)]">AI</h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard label="Calls" value={o ? String(o.calls) : '…'} />
+          <StatCard label="Credits" value={ai ? ai.credits_burned.toLocaleString() : (o ? String(o.credits_burned) : '…')} />
+          <StatCard label="Raw cost (USD)" value={ai ? usdFromMicro(ai.raw_cost_usd_micro) : (o ? usdFromMicro(o.raw_cost_usd_micro) : '…')} />
+          <StatCard label="Loaded cost (USD)" value={ai ? usdFromMicro(ai.loaded_cost_usd_micro) : (o ? usdFromMicro(o.loaded_cost_usd_micro) : '…')} />
+          <StatCard label="Avg raw $/call" value={o ? o.avg_raw_cost_per_call_usd.toFixed(6) : '…'} />
+          <StatCard label="Error rate" value={errRate != null ? pct(errRate) : o ? 'No calls' : '…'} />
+        </div>
+      </section>
+
+      {res && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold text-[var(--color-text-muted)]">Resource usage</h2>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard label="Credits" value={res.credits_burned.toLocaleString()} />
+            <StatCard label="Raw cost (USD)" value={usdFromMicro(res.raw_cost_usd_micro)} />
+            <StatCard label="Loaded cost (USD)" value={usdFromMicro(res.loaded_cost_usd_micro)} />
+            <StatCard label="Browser events" value={String(res.browser_events)} />
+            <StatCard label="Browser active time" value={res.browser_duration_ms > 0 ? `${(res.browser_duration_ms / 60_000).toFixed(1)} min` : '0'} />
+            <StatCard label="Render events" value={String(res.render_events)} />
+          </div>
+        </section>
+      )}
 
       <EconomicsTable title="By task" loading={tasksQ.isLoading}>
         <thead className="bg-[var(--color-surface-2)] text-left text-[var(--color-text-muted)]">

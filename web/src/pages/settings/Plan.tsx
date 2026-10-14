@@ -250,7 +250,7 @@ export function PlanPage() {
                   {plan.id === 'pro' && <Badge variant="accent">Recommended</Badge>}
                 </div>
                 <p className="mt-3 text-sm text-[var(--color-text-muted)]">
-                  {fmtCredits(plan.credits)} AI credits each month
+                  {fmtCredits(plan.credits)} credits each month
                 </p>
                 <Button
                   className="mt-4"
@@ -278,7 +278,7 @@ export function PlanPage() {
             <div className="min-w-[180px] flex-1">
               <p className="text-sm font-semibold text-[var(--color-text)]">{planBadgeLabel(data.plan)}</p>
               <p className="mt-1 text-sm text-[var(--color-text-muted)]">
-                {fmtCredits(data.allowance_credits)} AI credits each billing period
+                {fmtCredits(data.allowance_credits)} credits each billing period
               </p>
               {data.stripe_subscription_status && data.stripe_subscription_status !== 'active' && (
                 <p className="mt-1 text-xs text-[var(--color-text-dim)]">

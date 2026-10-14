@@ -1,5 +1,5 @@
 import { useNavigate, useLocation, NavLink } from 'react-router-dom'
-import { Activity, Bot, ChartNoAxesCombined, CircleDollarSign, CreditCard, KeyRound, LayoutDashboard, ScrollText, Settings2, Users, Workflow } from 'lucide-react'
+import { Activity, Bot, ChartNoAxesCombined, CircleDollarSign, CreditCard, KeyRound, LayoutDashboard, ScrollText, Server, Settings2, Users, Workflow } from 'lucide-react'
 import { cn } from '../../lib'
 
 const groups = [
@@ -15,6 +15,7 @@ const groups = [
   { label: 'AI & automation', items: [
     { to: '/admin/ai-provider', label: 'AI Provider', icon: KeyRound },
     { to: '/admin/llm-usage', label: 'AI usage', icon: ChartNoAxesCombined },
+    { to: '/admin/resource-usage', label: 'Resource usage', icon: Server },
     { to: '/admin/models', label: 'Models', icon: Bot },
     { to: '/admin/automation', label: 'Automation', icon: Workflow },
   ] },

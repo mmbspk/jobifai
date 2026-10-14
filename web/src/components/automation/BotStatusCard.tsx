@@ -130,6 +130,11 @@ export function BotStatusCard(props: BotStatusCardProps) {
                     : `Complete setup first${setupHint ? `: ${setupHint}` : ''}.`}
                 </p>
               )}
+              {state === 'running' && (
+                <p className="text-sm text-[var(--color-text-dim)] mt-1">
+                  Automation uses credits while Jobifai is actively working. Paused and user-wait time is not charged.
+                </p>
+              )}
               {status?.platform && isActive && (
                 <p className="text-sm text-[var(--color-text-muted)] mt-1">
                   {status.platform.charAt(0).toUpperCase() + status.platform.slice(1)}
