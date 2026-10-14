@@ -257,13 +257,28 @@ func (h *AdminHandlers) Health(w http.ResponseWriter, r *http.Request) {
 	stripeConfigured := billing.StripeConfigured()
 	webhookConfigured := billing.WebhookConfigured()
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"provider": gs.LLM.Provider, "global_model": gs.LLM.Model,
 		"api_credential_configured": hasKey, "proxy_enabled": gs.LLM.UseProxy, "proxy_key_configured": hasProxy,
 		"pricing_catalog_source": catSource, "pricing_catalog_last_refresh": catRefresh,
 		"pricing_catalog_last_error": catErr,
 		"stripe_configured": stripeConfigured, "stripe_webhook_configured": webhookConfigured,
-	})
+	}
+
+	if h.svc.Resource != nil {
+		rm, err := h.svc.Resource.Readiness()
+		if err != nil {
+			resp["resource_metering"] = map[string]any{
+				"ready":  false,
+				"status": string(domain.ResourceMeteringStatusInvalid),
+				"warnings": []string{"failed to compute resource metering readiness"},
+			}
+		} else {
+			resp["resource_metering"] = rm
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // GET /api/admin/models/policy-audit

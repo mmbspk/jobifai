@@ -225,6 +225,11 @@ type ResourceService interface {
 	// RecordRender atomically commits one document_render billing event.
 	// idempotencyKey must be "document-render:<versionID_or_operationID>".
 	RecordRender(ctx context.Context, userID, idempotencyKey string) error
+	// DefaultsPersisted returns true when an admin has explicitly saved resource-metering
+	// configuration (i.e. the key exists in the config store).
+	DefaultsPersisted() (bool, error)
+	// Readiness computes the structured readiness verdict for health reporting.
+	Readiness() (domain.ResourceMeteringReadiness, error)
 }
 
 // UsageStore provides per-user LLM token usage snapshots.

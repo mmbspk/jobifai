@@ -124,6 +124,7 @@ export function AdminDefaultsPage() {
     },
     onSuccess: (result) => {
       void qc.invalidateQueries({ queryKey: ['admin-resource-metering'] })
+      void qc.invalidateQueries({ queryKey: ['admin-health'] })
       setMetering({
         enabled: result.enabled,
         browser_automation: { ...result.browser_automation },
@@ -294,6 +295,12 @@ export function AdminDefaultsPage() {
           </p>
         ) : (
           <>
+            {meteringData?.defaults_persisted === false && (
+              <div role="alert" className="rounded-[var(--radius-md)] border border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-3 text-sm text-[var(--color-warn-text)]">
+                <strong>Not yet reviewed.</strong> Built-in safe defaults are in use (metering disabled).
+                Review and save these settings before going to production.
+              </div>
+            )}
             <SettingsField label="Master enable" sub="When off, no resource credits are ever burned.">
               <Switch
                 checked={metering.enabled}

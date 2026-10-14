@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	resourcedb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/quota"
@@ -158,6 +160,27 @@ func (s *Service) RecordBrowserIncrement(ctx context.Context, userID, idempotenc
 	})
 }
 
+// DefaultsPersisted returns true when an admin has explicitly saved resource-metering
+// configuration. Returns (false, nil) when using built-in safe defaults.
+func (s *Service) DefaultsPersisted() (bool, error) {
+	return DefaultsPersisted(s.store)
+}
+
+// Readiness computes the structured resource metering readiness verdict.
+// Fail-closed: any storage error yields ready=false.
+func (s *Service) Readiness() (domain.ResourceMeteringReadiness, error) {
+	cfg, err := s.LoadDefaults()
+	if err != nil {
+		return domain.ResourceMeteringReadiness{Ready: false, Status: domain.ResourceMeteringStatusInvalid, Warnings: []string{"storage error loading resource metering config"}}, err
+	}
+	persisted, err := s.DefaultsPersisted()
+	if err != nil {
+		return domain.ResourceMeteringReadiness{Ready: false, Status: domain.ResourceMeteringStatusInvalid, Warnings: []string{"storage error checking defaults_persisted"}}, err
+	}
+	qd := s.quotaDefaultsFn()
+	return ComputeReadiness(cfg, persisted, qd), nil
+}
+
 // BrowserIncrementDuration returns the configured billing increment as a Duration.
 // Returns 30 s when metering is disabled or the increment is unset.
 func (s *Service) BrowserIncrementDuration() (time.Duration, error) {
@@ -210,6 +233,11 @@ func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 
 	cfg, err := s.LoadDefaults()
 	if err != nil {
+		log.Ctx(ctx).Error().
+			Err(err).
+			Str("user_id", in.UserID).
+			Str("resource_type", string(in.ResourceType)).
+			Msg("resource billing: failed to load metering config")
 		return err
 	}
 	pricing := PriceResource(cfg, s.quotaDefaultsFn(), in.ResourceType)
@@ -220,6 +248,19 @@ func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 		burnCredits = pricing.Credits
 		prep, err = s.quota.PrepareTransactionalBurnStrict(in.UserID, burnCredits)
 		if err != nil {
+			level := zerolog.WarnLevel
+			msg := "resource billing: quota check failed"
+			if errors.Is(err, quota.ErrExceeded) {
+				msg = "resource billing: quota exceeded — operation will not be billed"
+			} else {
+				level = zerolog.ErrorLevel
+			}
+			log.Ctx(ctx).WithLevel(level).
+				Err(err).
+				Str("user_id", in.UserID).
+				Str("resource_type", string(in.ResourceType)).
+				Int64("credits", burnCredits).
+				Msg(msg)
 			return err
 		}
 	} else {
@@ -259,6 +300,12 @@ func (s *Service) RecordOnce(ctx context.Context, in RecordInput) error {
 		if errors.Is(err, resourcedb.ErrResourceIdempotencyConflict) {
 			return nil
 		}
+		log.Ctx(ctx).Error().
+			Err(err).
+			Str("user_id", in.UserID).
+			Str("resource_type", string(in.ResourceType)).
+			Int64("credits", burnCredits).
+			Msg("resource billing: failed to record billing event")
 		return err
 	}
 	return tx.Commit()

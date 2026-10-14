@@ -55,6 +55,22 @@ func SaveDefaults(store settingsKV, d domain.ResourceMeteringDefaults) error {
 	return store.Set(domain.SystemUserID, defaultsKey, d)
 }
 
+// DefaultsPersisted returns true when an admin has explicitly saved resource-metering
+// configuration (i.e. the key exists in the config store).
+// Returns (false, nil) when not yet persisted — the runtime is using built-in safe defaults.
+// Returns (false, error) when the storage layer fails.
+func DefaultsPersisted(store settingsKV) (bool, error) {
+	var stored domain.ResourceMeteringDefaults
+	err := store.Get(domain.SystemUserID, defaultsKey, &stored)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, domain.ErrNotFound) {
+		return false, nil
+	}
+	return false, err
+}
+
 // validateDefaults returns an error if any field is out of acceptable range.
 func validateDefaults(d domain.ResourceMeteringDefaults) error {
 	if d.Browser.RawCostUSDMicroPerHour < 0 {

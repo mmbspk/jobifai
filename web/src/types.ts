@@ -469,6 +469,32 @@ export interface ResourceMeteringDefaults {
   browser_credits_per_minute: number
   render_credits_per_render: number
   per_call_fee_is_ai_only: boolean
+  defaults_persisted?: boolean
+}
+
+export interface ResourceBrowserReadiness {
+  enabled: boolean
+  ready: boolean
+  raw_cost_usd_micro_per_hour: number
+  billing_increment_seconds: number
+  credits_per_minute: number
+}
+
+export interface ResourceRenderReadiness {
+  enabled: boolean
+  ready: boolean
+  raw_cost_usd_micro_per_render: number
+  credits_per_render: number
+}
+
+export interface ResourceMeteringReadiness {
+  defaults_persisted: boolean
+  master_enabled: boolean
+  ready: boolean
+  status: 'unreviewed' | 'disabled' | 'ready' | 'invalid'
+  browser_automation: ResourceBrowserReadiness
+  document_render: ResourceRenderReadiness
+  warnings: string[]
 }
 
 // ── Admin Resource Usage ────────────────────────────────────────────

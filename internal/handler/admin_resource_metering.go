@@ -71,6 +71,8 @@ type resourceMeteringResponse struct {
 	RenderCreditsPerRender  int64   `json:"render_credits_per_render"`
 	// PerCallFeeIsAIOnly reminds the Admin UI that PerCallFeeUSD does not apply to resource usage.
 	PerCallFeeIsAIOnly bool `json:"per_call_fee_is_ai_only"`
+	// DefaultsPersisted is true when an admin has explicitly saved config (vs built-in safe defaults).
+	DefaultsPersisted bool `json:"defaults_persisted"`
 }
 
 func buildResourceMeteringResponse(def domain.ResourceMeteringDefaults, svc *Services) resourceMeteringResponse {
@@ -80,6 +82,9 @@ func buildResourceMeteringResponse(def domain.ResourceMeteringDefaults, svc *Ser
 	}
 	if svc.Resource == nil {
 		return resp
+	}
+	if persisted, err := svc.Resource.DefaultsPersisted(); err == nil {
+		resp.DefaultsPersisted = persisted
 	}
 	if rc, err := svc.Resource.EstimateRenderCredits(); err == nil {
 		resp.RenderCreditsPerRender = rc
