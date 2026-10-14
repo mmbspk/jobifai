@@ -1377,11 +1377,32 @@ func detectLinkedInEasyApply(page *rod.Page) bool {
 			].join(','));
 		}
 		function isVisible(el) {
-			const r = el.getBoundingClientRect();
-			return r.width > 0 && r.height > 0;
+			try {
+				const rect = el.getBoundingClientRect();
+				if (rect.width < 2 && rect.height < 2) return false;
+				const doc = el.ownerDocument || document;
+				const view = doc.defaultView || window;
+				let node = el;
+				while (node && node !== doc.documentElement) {
+					const s = view.getComputedStyle(node);
+					if (s.display === 'none' || s.visibility === 'hidden') return false;
+					const parent = node.parentElement;
+					if (parent) { node = parent; continue; }
+					const root = node.getRootNode && node.getRootNode();
+					if (root && root.host) { node = root.host; continue; }
+					break;
+				}
+				return true;
+			} catch(e) { return false; }
 		}
 		function isEasyApplyLabel(t) {
 			return t.includes('easy apply') || t.includes('linkedin apply');
+		}
+		// currentJobPath extracts /jobs/view/<id> from the current page URL.
+		// Used to reject SDUI links that target a different job than the open listing.
+		function currentJobPath() {
+			const m = window.location.pathname.match(/\/jobs\/view\/(\d+)/i);
+			return m ? '/jobs/view/' + m[1] : '';
 		}
 
 		// 1) Visible Easy Apply control in the main job pane (LinkedIn's standard CTA).
@@ -1398,14 +1419,19 @@ func detectLinkedInEasyApply(page *rod.Page) bool {
 		}
 
 		// 2) LinkedIn SDUI Easy Apply flag on an in-pane control/link.
-		// Visibility is required here — hidden SDUI preload/analytics links with
-		// opensduiapplyflow in the href are present on 3rd-party job pages too and
-		// must not be treated as evidence of an Easy Apply CTA.
+		// Requires full visibility (display + visibility:hidden + ancestor walk) —
+		// hidden SDUI preload/analytics links are present on 3rd-party job pages too.
+		// Also rejects links whose href explicitly targets a different job ID.
+		const pagePath = currentJobPath();
 		for (const el of controls) {
 			if (isExcluded(el)) continue;
 			if (!isVisible(el)) continue;
 			const href = (el.getAttribute('href') || '').toLowerCase();
-			if (href.includes('opensduiapplyflow=true') || href.includes('opensduiapplyflow')) return true;
+			if (!href.includes('opensduiapplyflow')) continue;
+			// Reject if the href targets a different job than the current listing.
+			const hrefJobM = href.match(/\/jobs\/view\/(\d+)/);
+			if (hrefJobM && pagePath && '/jobs/view/' + hrefJobM[1] !== pagePath) continue;
+			return true;
 		}
 
 		return false;
@@ -1721,23 +1747,42 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "apply", "apply_error", err.Error())
 		return false
 	}
+	// Check for job identity drift before recording the application.
+	// easyApply aborts on drift during form navigation, but the success signal
+	// may have been detected on the wrong job if the URL fallback
+	// (openSDUIApplyFlow=true) navigated to a different listing.
+	var postApplyURL string
+	if info, infoErr := jobPage.Info(); infoErr == nil && info != nil && info.URL != "" {
+		postApplyURL = info.URL
+	}
+	startPath := linkedInJobPath(startURL)
+	endPath := linkedInJobPath(postApplyURL)
+	if startPath != "" && endPath != "" && startPath != endPath {
+		log.Error().
+			Str("attempt_id", ac.AttemptID).
+			Str("job_id", job.ID).
+			Str("intended_url", startURL).
+			Str("actual_url", postApplyURL).
+			Msg("linkedin: submitted to a different job — recording submission_unknown, routing original job to Top Matches")
+		b.savePendingReview(ctx, &domain.PendingReview{
+			JobID:                job.ID,
+			Company:              job.Company,
+			Role:                 job.Title,
+			Location:             job.Location,
+			Platform:             domain.PlatformLinkedIn,
+			Link:                 job.URL,
+			SuitabilityScore:     score,
+			SuitabilityReasoning: reasoning,
+			EasyApply:            false,
+			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
+			CreatedAt:            time.Now(),
+		})
+		finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", "submitted to "+postApplyURL+" instead of "+startURL)
+		return false
+	}
 	resume, cover := lazy.get()
 	b.recordApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
 	b.logApplied(ac.AttemptID, job.ID, job.Title, job.Company, domain.PlatformLinkedIn, llmBefore)
-	// Warn if the page drifted to a different job during the apply flow (e.g., jsPoll
-	// followed a link from a recommendation panel instead of the main Easy Apply CTA).
-	if info, infoErr := jobPage.Info(); infoErr == nil && info != nil && info.URL != "" {
-		if endPath := linkedInJobPath(info.URL); endPath != "" {
-			if startPath := linkedInJobPath(startURL); startPath != "" && startPath != endPath {
-				log.Warn().
-					Str("attempt_id", ac.AttemptID).
-					Str("job_id", job.ID).
-					Str("expected_url", startURL).
-					Str("actual_url", info.URL).
-					Msg("linkedin: page navigated to a different job during apply — recorded URL may not match the submitted application")
-			}
-		}
-	}
 	finishAttempt(b.cfg.DB, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
 	return true
 }
@@ -1831,7 +1876,15 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			if (label.includes('easy apply') || label.includes('linkedin apply')) return true;
 			if (b.getAttribute('data-live-test-easy-apply') != null) return true;
 			const href = (b.getAttribute('href') || '').toLowerCase();
-			if (href.includes('opensduiapplyflow')) return true;
+			if (href.includes('opensduiapplyflow')) {
+				// Reject if href explicitly targets a different job than the current page.
+				const hrefJobM = href.match(/\/jobs\/view\/(\d+)/);
+				if (hrefJobM) {
+					const pageJobM = window.location.pathname.match(/\/jobs\/view\/(\d+)/i);
+					if (pageJobM && hrefJobM[1] !== pageJobM[1]) return false;
+				}
+				return true;
+			}
 			return false;
 		});
 		if (btn) {
@@ -2362,11 +2415,26 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		return b.scanApplyStepsForPrepare(ctx, page, lazy)
 	}
 
+	// expectedJobPath is derived from the declared job URL (lazy.job.URL) rather
+	// than the live page URL: jsPoll may have already navigated the page to a
+	// different job before easyApply is called, so reading the page URL here would
+	// capture the wrong path and disable the drift guard.
+	expectedJobPath := linkedInJobPath(lazy.job.URL)
+
 	for i := 0; i < 40; i++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+		// Identity guard: abort before filling or submitting if the page has
+		// navigated to a different job (e.g. jsPoll clicked a hidden preload link).
+		if expectedJobPath != "" {
+			if info, infoErr := page.Timeout(5 * time.Second).Info(); infoErr == nil && info != nil {
+				if cp := linkedInJobPath(info.URL); cp != "" && cp != expectedJobPath {
+					return fmt.Errorf("job identity drift: page is at %s (expected %s) — aborting before submit to prevent wrong-job application", info.URL, lazy.job.URL)
+				}
+			}
 		}
 		if b.cfg.BrowserMeter != nil {
 			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
