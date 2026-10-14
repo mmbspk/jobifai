@@ -109,6 +109,9 @@ func NewRouter(svc *Services) *chi.Mux {
 		r.Post("/api/billing/topup", billingH.TopUp)
 		r.Post("/api/billing/portal", billingH.Portal)
 
+		// ── Customer usage summary (any authenticated user) ──────────────
+		r.Get("/api/usage/summary", usage.Summary)
+
 		// ── Platform auth (browser + session) ───────────────────────────
 		r.Route("/api/auth", func(r chi.Router) {
 			r.Post("/launch-browser", authH.LaunchBrowser)
@@ -261,6 +264,8 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Get("/api/admin/economics/models", adminH.EconomicsModels)
 			r.Get("/api/admin/economics/users", adminH.EconomicsUsers)
 			r.Get("/api/admin/economics/application/{job_id}", adminH.EconomicsApplication)
+			r.Get("/api/admin/resource-usage/summary", adminH.ResourceUsageSummary)
+			r.Get("/api/admin/resource-usage/events", adminH.ResourceUsageEvents)
 			r.Get("/api/admin/operations/jobs/summary", adminH.OperationsJobsSummary)
 			r.Get("/api/admin/operations/jobs/recent", adminH.OperationsJobsRecent)
 			r.Get("/api/admin/operations/scoring/recent", adminH.OperationsScoringRecent)

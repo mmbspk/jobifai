@@ -15,6 +15,28 @@ type economicsOverview struct {
 	Calls              int64   `json:"calls"`
 	SuccessCalls       int64   `json:"success_calls"`
 	AvgRawCostPerCall  float64 `json:"avg_raw_cost_per_call_usd"`
+
+	// Extended fields (PR4): sub-objects for clean PR5 contract + unified totals.
+	AI                      *aiEconomics       `json:"ai,omitempty"`
+	Resource                *resourceEconomics `json:"resource,omitempty"`
+	TotalCreditsBurned      int64              `json:"total_credits_burned"`
+	TotalRawCostUSDMicro    int64              `json:"total_raw_cost_usd_micro"`
+	TotalLoadedCostUSDMicro int64              `json:"total_loaded_cost_usd_micro"`
+}
+
+type aiEconomics struct {
+	CreditsBurned      int64 `json:"credits_burned"`
+	RawCostUSDMicro    int64 `json:"raw_cost_usd_micro"`
+	LoadedCostUSDMicro int64 `json:"loaded_cost_usd_micro"`
+}
+
+type resourceEconomics struct {
+	CreditsBurned      int64   `json:"credits_burned"`
+	RawCostUSDMicro    int64   `json:"raw_cost_usd_micro"`
+	LoadedCostUSDMicro int64   `json:"loaded_cost_usd_micro"`
+	BrowserDurationMS  int64   `json:"browser_duration_ms"`
+	BrowserEvents      int64   `json:"browser_events"`
+	RenderEvents       int64   `json:"render_events"`
 }
 
 type economicsTaskRow struct {
@@ -54,6 +76,57 @@ func (h *AdminHandlers) EconomicsOverview(w http.ResponseWriter, r *http.Request
 	if out.Calls > 0 {
 		out.AvgRawCostPerCall = float64(out.RawCostUSDMicro) / float64(out.Calls) / 1_000_000
 	}
+	out.AI = &aiEconomics{
+		CreditsBurned:      out.CreditsBurned,
+		RawCostUSDMicro:    out.RawCostUSDMicro,
+		LoadedCostUSDMicro: out.LoadedCostUSDMicro,
+	}
+
+	// Resource sub-object: aggregate browser_automation + document_render.
+	resRows, err := h.svc.DB.QueryContext(r.Context(), `
+		SELECT resource_type,
+			COUNT(*),
+			COALESCE(SUM(credits_burned),0),
+			COALESCE(SUM(raw_cost_usd_micro),0),
+			COALESCE(SUM(loaded_cost_usd_micro),0),
+			COALESCE(SUM(duration_ms),0)
+		FROM resource_usage_events
+		WHERE `+economicsTimeWhere(allTime)+`
+		GROUP BY resource_type`,
+		resourceTimeArg(since, allTime)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
+		return
+	}
+	defer func() { _ = resRows.Close() }()
+	res := &resourceEconomics{}
+	for resRows.Next() {
+		var rt string
+		var events, credits, raw, loaded, durationMS int64
+		if err := resRows.Scan(&rt, &events, &credits, &raw, &loaded, &durationMS); err != nil {
+			continue
+		}
+		res.CreditsBurned += credits
+		res.RawCostUSDMicro += raw
+		res.LoadedCostUSDMicro += loaded
+		switch rt {
+		case "browser_automation":
+			res.BrowserEvents = events
+			res.BrowserDurationMS = durationMS
+		case "document_render":
+			res.RenderEvents = events
+		}
+	}
+	if err := resRows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "query failed"})
+		return
+	}
+	out.Resource = res
+	out.TotalCreditsBurned = out.CreditsBurned + res.CreditsBurned
+	out.TotalRawCostUSDMicro = out.RawCostUSDMicro + res.RawCostUSDMicro
+	out.TotalLoadedCostUSDMicro = out.LoadedCostUSDMicro + res.LoadedCostUSDMicro
+
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -131,6 +204,16 @@ func economicsTimeArg(since time.Time, allTime bool) []any {
 		return nil
 	}
 	return []any{since}
+}
+
+// resourceTimeArg returns the time bound for resource_usage_events queries.
+// resource_usage_events.created_at is stored as RFC3339 via strftime(), so the
+// bound must be a string, not time.Time, to guarantee format-compatible comparison.
+func resourceTimeArg(since time.Time, allTime bool) []any {
+	if allTime {
+		return nil
+	}
+	return []any{since.UTC().Format(time.RFC3339)}
 }
 
 // GET /api/admin/economics/models?period=30d
