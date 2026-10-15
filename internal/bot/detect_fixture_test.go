@@ -38,6 +38,11 @@ import (
 // launchTestBrowser starts a headless Chromium for the test and returns a
 // connected *rod.Browser. Skips the test if Chromium cannot be launched.
 func launchTestBrowser(t *testing.T) *rod.Browser {
+	br, _ := launchTestBrowserEndpoint(t)
+	return br
+}
+
+func launchTestBrowserEndpoint(t *testing.T) (*rod.Browser, string) {
 	t.Helper()
 	l := launcher.New().Headless(true).NoSandbox(os.Getenv("CI") != "")
 	if bin := os.Getenv("ROD_BROWSER_BIN"); bin != "" {
@@ -52,7 +57,7 @@ func launchTestBrowser(t *testing.T) *rod.Browser {
 	}
 	br := rod.New().ControlURL(u).MustConnect()
 	t.Cleanup(func() { _ = br.Close() })
-	return br
+	return br, u
 }
 
 // fixtureServer starts an httptest server serving html at /jobs/view/targetJobID

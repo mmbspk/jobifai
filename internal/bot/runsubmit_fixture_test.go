@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,8 +43,13 @@ import (
 //	/jobs/view/123456789/modal — modal with a submit button that navigates to wrong job
 //	/jobs/view/999888          — success page ("application submitted") at wrong job URL
 func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
-	// Check Chromium availability first — skip rather than fail when not present.
-	launchTestBrowser(t)
+	// Reuse the fixture's Chrome through the supported remote-debug setting.
+	// This exercises runSubmit without a second launcher requiring a Linux sandbox.
+	_, endpoint := launchTestBrowserEndpoint(t)
+	parsedEndpoint, err := url.Parse(endpoint)
+	require.NoError(t, err)
+	port, err := strconv.Atoi(parsedEndpoint.Port())
+	require.NoError(t, err)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jobs/view/123456789", func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +91,10 @@ func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 	sessions := browser.NewSessionStore(db, secrets)
 
 	const userID = "rs-drift-user"
+	require.NoError(t, cfgStore.Set(userID, "general_settings", domain.GeneralSettings{
+		Browser:       domain.BrowserConfig{RemoteDebugPort: port},
+		HumanBehavior: domain.HumanBehaviorConfig{InteractionPauseMin: 0.01, InteractionPauseMax: 0.02},
+	}))
 	require.NoError(t, cfgStore.Set(userID, "resume_profile", domain.ResumeProfile{
 		Summary: "Test profile.",
 		PersonalInformation: domain.PersonalInformation{
