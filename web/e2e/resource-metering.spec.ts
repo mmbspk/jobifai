@@ -431,7 +431,7 @@ test.describe('Resource Metering E2E — Story #86 Acceptance', () => {
     await expect(page.getByText('Total credits used')).toBeVisible()
     await expect(page.getByText('12', { exact: true })).toBeVisible()
     // Breakdown section — each category must show its exact credit count.
-    await expect(page.getByText('AI')).toBeVisible()
+    await expect(page.getByText('AI', { exact: true })).toBeVisible()
     await expect(page.getByText('5 credits', { exact: true })).toBeVisible()
     await expect(page.getByText('Browser automation')).toBeVisible()
     await expect(page.getByText('4 credits', { exact: true })).toBeVisible()
