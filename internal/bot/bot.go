@@ -1239,7 +1239,6 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	// No HTTP fallback: the browser page is the sole content source. An HTTP fetch would
 	// follow redirects without identity checks and could return a collections page description,
 	// corrupting scores or causing wrong-job apply attempts.
-	easyApply := job.EasyApply
 	var details scraper.JobDetails
 	jobPage, pageErr := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if pageErr != nil {
@@ -1263,7 +1262,7 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 			return false
 		}
 	}
-	easyApply = detectLinkedInEasyApply(jobPage)
+	easyApply := detectLinkedInEasyApply(jobPage)
 	if pageDetails, err := jobPage.HTML(); err == nil {
 		if parsed := scraper.ParseHTML(pageDetails); len(strings.TrimSpace(parsed.Description)) >= 100 {
 			details = parsed
