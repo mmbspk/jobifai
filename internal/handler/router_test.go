@@ -89,6 +89,7 @@ func TestE2ERoutesNotRegisteredWithoutEnvVar(t *testing.T) {
 		"/api/e2e/resource/fail-next-render",
 		"/api/e2e/resource/record-render-once",
 		"/api/e2e/resource/materialize-document",
+		"/api/e2e/resource/materialize-application-docs",
 	}
 	for _, route := range e2eRoutes {
 		w := httptest.NewRecorder()

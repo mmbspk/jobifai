@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/bot"
 	jobdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/quota"
 )
@@ -424,6 +427,80 @@ func (h *E2EResourceFixtureHandlers) RunBrowserSession(w http.ResponseWriter, r 
 		"err":                         meterErrStr,
 		"billing_ctx_cancelled":       billingCtxCancelled,
 		"destructive_action_executed": bot.DestructiveActionAllowed(meter),
+	})
+}
+
+// POST /api/e2e/resource/materialize-application-docs — invokes the production
+// MaterializeApplicationDocs path with a frozen saved resume and skipped cover.
+// Proves that selecting an existing version in the review flow reuses the artifact
+// without creating a new render billing event.
+func (h *E2EResourceFixtureHandlers) MaterializeApplicationDocs(w http.ResponseWriter, r *http.Request) {
+	if !e2eFixturesEnabled() {
+		notFound(w, "not found")
+		return
+	}
+	var req struct {
+		VersionID string `json:"version_id"`
+		JobID     string `json:"job_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid body"})
+		return
+	}
+	if req.VersionID == "" || req.JobID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "version_id and job_id required"})
+		return
+	}
+	userID := auth.UserIDFromCtx(r.Context())
+
+	res := documents.ResolveResult{
+		Resume: documents.ResolvedDocument{
+			Kind:      documents.KindResume,
+			Outcome:   domain.DocumentOutcomeLocalFile,
+			VersionID: req.VersionID,
+		},
+		Cover: documents.ResolvedDocument{
+			Kind:    documents.KindCoverLetter,
+			Outcome: domain.DocumentOutcomeSkipped,
+			Skip:    true,
+		},
+	}
+
+	tmpDir, err := os.MkdirTemp("", "e2e-matdocs-")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "temp dir failed: " + err.Error()})
+		return
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	deps := documents.MaterializeDeps{
+		ExportUpload: func(uid, jid, vid, kind string, payload documents.VersionUploadPayload) (string, error) {
+			if len(payload.Data) == 0 {
+				return "", fmt.Errorf("empty payload")
+			}
+			p := filepath.Join(tmpDir, kind+"-"+vid+".pdf")
+			if err := os.WriteFile(p, payload.Data, 0600); err != nil {
+				return "", err
+			}
+			return p, nil
+		},
+	}
+
+	out, err := h.svc.Documents.MaterializeApplicationDocs(
+		r.Context(),
+		userID, req.JobID, "E2E Co", "E2E Role", "e2e job description",
+		res, domain.DocumentPolicies{}, documents.RenderContext{Market: "e2e"},
+		nil,
+		deps,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "materialize failed: " + err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         !out.Hold,
+		"has_resume": out.ResumePath != "",
 	})
 }
 

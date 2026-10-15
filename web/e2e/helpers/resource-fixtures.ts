@@ -138,3 +138,21 @@ export async function materializeDocument(
   expect(resp.ok()).toBeTruthy()
   return resp.json()
 }
+
+/**
+ * Invokes the production MaterializeApplicationDocs path with a frozen saved resume.
+ * Proves the review-path selection reuses an existing artifact without new billing.
+ */
+export async function materializeApplicationDocs(
+  request: APIRequestContext,
+  userToken: string,
+  versionID: string,
+  jobID: string,
+): Promise<{ ok: boolean; has_resume: boolean }> {
+  const resp = await request.post('/api/e2e/resource/materialize-application-docs', {
+    headers: { Authorization: `Bearer ${userToken}` },
+    data: { version_id: versionID, job_id: jobID },
+  })
+  expect(resp.ok()).toBeTruthy()
+  return resp.json()
+}

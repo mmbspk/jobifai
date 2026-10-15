@@ -225,6 +225,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/api/e2e/resource/fail-next-render", e2eResH.FailNextRender)
 			r.Post("/api/e2e/resource/record-render-once", e2eResH.RecordRenderOnce)
 			r.Post("/api/e2e/resource/materialize-document", e2eResH.MaterializeDocument)
+			r.Post("/api/e2e/resource/materialize-application-docs", e2eResH.MaterializeApplicationDocs)
 		}
 
 		// ── Admin-only ────────────────────────────────────────────────────

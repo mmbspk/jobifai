@@ -10,7 +10,7 @@ import {
   evictDocumentArtifact,
   failNextRender,
   recordRenderOnce,
-  materializeDocument,
+  materializeApplicationDocs,
 } from './helpers/resource-fixtures'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -167,10 +167,11 @@ test.describe('Resource Metering E2E — Story #86 Acceptance', () => {
     })
     expect(putResp.ok()).toBeTruthy()
 
-    // Materialize via PDFBytes cache-hit path.
-    const mat = await materializeDocument(request, user.accessToken, V1)
+    // Invoke production MaterializeApplicationDocs with frozen resume V1 — proves the
+    // review-path selection reuses the existing artifact without new billing.
+    const mat = await materializeApplicationDocs(request, user.accessToken, V1, jobID)
     expect(mat.ok).toBe(true)
-    expect(mat.size_bytes).toBeGreaterThan(0)
+    expect(mat.has_resume).toBe(true)
 
     const summary = await getUsageSummary(request, user.accessToken)
     expect(summary.document_renders).toBe(1) // no new render
@@ -425,10 +426,17 @@ test.describe('Resource Metering E2E — Story #86 Acceptance', () => {
       summary.ai_credits + summary.browser_automation_credits + summary.document_render_credits,
     )
 
-    // UI: navigate to settings/usage page and verify values render.
+    // UI: navigate to settings/usage page and verify all four category values render.
     await page.goto('/settings/usage')
     await expect(page.getByText('Total credits used')).toBeVisible()
     await expect(page.getByText('12', { exact: true })).toBeVisible()
+    // Breakdown section — each category must show its exact credit count.
+    await expect(page.getByText('AI')).toBeVisible()
+    await expect(page.getByText('5 credits', { exact: true })).toBeVisible()
+    await expect(page.getByText('Browser automation')).toBeVisible()
+    await expect(page.getByText('4 credits', { exact: true })).toBeVisible()
+    await expect(page.getByText('Document rendering')).toBeVisible()
+    await expect(page.getByText('3 credits', { exact: true })).toBeVisible()
 
     // The raw JSON must not expose internal cost fields.
     const raw = JSON.stringify(summary)
@@ -527,6 +535,15 @@ test.describe('Resource Metering E2E — Story #86 Acceptance', () => {
     await registerAdminAndInjectTokens(page, request)
     await page.goto('/admin/resource-usage')
     await expect(page.getByRole('heading', { name: 'Resource usage', exact: true })).toBeVisible()
+    // Verify correlation column headers are present in the table.
+    await expect(page.getByRole('columnheader', { name: 'Automation' })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: 'App' })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: 'Job' })).toBeVisible()
+    // Exercise the resource type filter — select browser_automation and apply.
+    await page.selectOption('select', 'browser_automation')
+    await page.getByRole('button', { name: 'Apply filters' }).click()
+    // At least one row must be visible after filtering (test user created browser events above).
+    await expect(page.locator('tbody tr').first()).toBeVisible()
   })
 
   test('T16 — admin economics totals are consistent', async ({ page, request }) => {
@@ -549,11 +566,14 @@ test.describe('Resource Metering E2E — Story #86 Acceptance', () => {
       expect(o.total_loaded_cost_usd_micro).toBe(o.ai.loaded_cost_usd_micro + o.resource.loaded_cost_usd_micro)
     }
 
-    // UI: admin economics page renders with totals visible.
+    // UI: admin economics page renders with totals visible and matching the API.
     await registerAdminAndInjectTokens(page, request)
     await page.goto('/admin/economics')
     await expect(page.getByRole('heading', { name: 'Economics', exact: true })).toBeVisible()
     await expect(page.getByText('Total credits burned')).toBeVisible()
+    // Verify the displayed total_credits_burned matches the API value exactly.
+    const totalCredits = o.total_credits_burned ?? 0
+    await expect(page.getByText(String(totalCredits), { exact: true })).toBeVisible()
   })
 
   // ── Group 7: Resource readiness lifecycle ───────────────────────────────────

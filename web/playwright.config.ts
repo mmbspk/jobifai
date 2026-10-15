@@ -23,6 +23,7 @@ export default defineConfig({
     // server on :8081 would miss /api/e2e/* routes and break fixture tests.
     reuseExistingServer: false,
     env: {
+      ...process.env,
       JWT_SECRET: 'e2e-test-secret-do-not-use-in-prod',
       JOBIFAI_E2E: '1',
     },
