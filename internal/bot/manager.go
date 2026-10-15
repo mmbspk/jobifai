@@ -1293,10 +1293,15 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		linkedInResolved, resolveErr = waitLinkedInJob(ctx, jobPage, linkedInExpectedID(jobURL))
 		if resolveErr != nil {
 			job := linkedInJob{ID: linkedInExpectedID(jobURL), URL: jobURL, Title: "Listing requires verification", Company: "LinkedIn"}
+			ac.JobID = job.ID
 			if ctx.Err() == nil {
 				b.preserveLinkedInReview(ctx, job, 0, "Not scored: listing could not be verified.", resolveErr)
 			}
-			finishAttempt(m.db, ac, OutcomeBlocked, "classification", "linkedin_listing_unverified", resolveErr.Error())
+			outcome := OutcomeBlocked
+			if !linkedInNeedsReview(resolveErr) {
+				outcome = classifyApplyOutcome(resolveErr)
+			}
+			finishAttempt(m.db, ac, outcome, "classification", "linkedin_listing_unverified", resolveErr.Error())
 			_ = jobPage.Close()
 			if ownsBr {
 				_ = br.Close()

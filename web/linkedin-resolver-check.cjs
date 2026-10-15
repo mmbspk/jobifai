@@ -1,5 +1,5 @@
 // Executable DOM regression checks against the production Go-embedded script.
-// Run: node --test linkedin-resolver.test.cjs (from web/).
+// Run: node --test linkedin-resolver-check.cjs (from web/).
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {readFileSync}=require('node:fs');

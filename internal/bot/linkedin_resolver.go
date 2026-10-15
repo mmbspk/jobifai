@@ -127,7 +127,7 @@ func (b *Bot) preserveLinkedInReview(ctx context.Context, job linkedInJob, score
 		hold = "Submission was attempted but could not be confirmed. Check the original listing before applying again."
 	}
 	pack, _ := json.Marshal(map[string]any{"hold_reason": hold, "listing_review_required": true})
-	_, dbErr := b.cfg.DB.ExecContext(ctx, `INSERT INTO jobs_pending_review
+	result, dbErr := b.cfg.DB.ExecContext(ctx, `INSERT INTO jobs_pending_review
 		(job_id,user_id,company,role,location,platform,link,suitability_score,suitability_reasoning,easy_apply,document_refs_json,created_at)
 		VALUES(?,?,?,?,?,?,?,?,?,0,?,datetime('now'))
 		ON CONFLICT(job_id) DO UPDATE SET easy_apply=0,
@@ -136,6 +136,10 @@ func (b *Bot) preserveLinkedInReview(ctx context.Context, job linkedInJob, score
 		job.ID, b.cfg.UserID, job.Company, job.Title, job.Location, string(domain.PlatformLinkedIn), job.URL, score, reasoning, string(pack))
 	if dbErr != nil {
 		log.Error().Err(dbErr).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: could not preserve listing for manual review")
+		return
+	}
+	if count, err := result.RowsAffected(); err != nil || count == 0 {
+		log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: manual review row was not written; job key may belong to another user")
 		return
 	}
 	if b.seenCache != nil {
