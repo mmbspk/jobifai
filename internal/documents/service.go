@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/user/jobifai/internal/domain"
@@ -57,6 +58,18 @@ type Service struct {
 	Biller RenderBiller
 	// Metrics accumulates reuse/reconstruction counters.  Nil disables tracking.
 	Metrics *ServiceMetrics
+	// e2eFailNextRenderUsers is a pointer so it is shared across copies made during
+	// request handling (resume_documents.go copies the Service by value). Nil in production.
+	e2eFailNextRenderUsers *sync.Map
+}
+
+// E2ESetFailNextRender marks the next render for this user as a deterministic failure.
+// Only called from E2E fixture handlers — never from any production path.
+func (s *Service) E2ESetFailNextRender(userID string) {
+	if s.e2eFailNextRenderUsers == nil {
+		s.e2eFailNextRenderUsers = &sync.Map{}
+	}
+	s.e2eFailNextRenderUsers.Store(userID, true)
 }
 
 type RenderContext struct {
@@ -576,6 +589,12 @@ func (s *Service) resumeBillAndLink(ctx context.Context, userID, versionID strin
 		return false, err
 	}
 	defer cleanup()
+
+	if s.e2eFailNextRenderUsers != nil {
+		if _, shouldFail := s.e2eFailNextRenderUsers.LoadAndDelete(userID); shouldFail {
+			return false, errors.New("e2e injected render failure")
+		}
+	}
 
 	pdf, err := s.Renderer.RenderResume(ctx, profile, styleName, cssOverride, opts)
 	if err != nil {

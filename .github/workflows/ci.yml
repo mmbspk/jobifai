@@ -63,6 +63,9 @@ jobs:
       - name: Install Playwright browser
         run: cd web && npx playwright install --with-deps chromium
 
+      - name: Expose Playwright Chromium as ROD_BROWSER_BIN
+        run: echo "ROD_BROWSER_BIN=$(cd web && node -e "console.log(require('playwright').chromium.executablePath())")" >> "$GITHUB_ENV"
+
       - name: Playwright e2e (includes seeded job fixtures)
         run: make test-e2e
         env:

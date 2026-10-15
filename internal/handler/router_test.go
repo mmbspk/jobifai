@@ -72,3 +72,29 @@ func TestAuthVerifyEmailChangeRoute_StillAPIEndpoint(t *testing.T) {
 	assert.NotEqual(t, http.StatusOK, rr.Code, "expected /auth/verify-email-change to be an API endpoint, not SPA")
 	assert.NotContains(t, rr.Body.String(), "SPA", "/auth/verify-email-change must not be served as SPA")
 }
+
+// TestE2ERoutesNotRegisteredWithoutEnvVar verifies all resource E2E routes return 404
+// when JOBIFAI_E2E is unset, proving they are not exposed in production.
+func TestE2ERoutesNotRegisteredWithoutEnvVar(t *testing.T) {
+	t.Setenv("JOBIFAI_E2E", "")
+	svc, _ := newTestServices(t)
+	router := handler.NewRouter(svc)
+	e2eRoutes := []string{
+		"/api/e2e/resource/setup-metering",
+		"/api/e2e/resource/reset-metering-config",
+		"/api/e2e/resource/set-user-credits",
+		"/api/e2e/resource/seed-llm-event",
+		"/api/e2e/resource/run-browser-session",
+		"/api/e2e/resource/evict-document-artifact",
+		"/api/e2e/resource/fail-next-render",
+		"/api/e2e/resource/record-render-once",
+		"/api/e2e/resource/materialize-document",
+		"/api/e2e/resource/materialize-application-docs",
+	}
+	for _, route := range e2eRoutes {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, route, nil)
+		router.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusNotFound, w.Code, "E2E route %s must return 404 without JOBIFAI_E2E", route)
+	}
+}

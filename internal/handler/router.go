@@ -219,6 +219,13 @@ func NewRouter(svc *Services) *chi.Mux {
 			e2eH := NewE2EFixtureHandlers(svc)
 			r.Post("/api/e2e/seed-jobs", e2eH.SeedJobs)
 			r.Post("/api/e2e/clear-jobs", e2eH.ClearJobs)
+			e2eResH := NewE2EResourceFixtureHandlers(svc)
+			r.Post("/api/e2e/resource/run-browser-session", e2eResH.RunBrowserSession)
+			r.Post("/api/e2e/resource/evict-document-artifact", e2eResH.EvictDocumentArtifact)
+			r.Post("/api/e2e/resource/fail-next-render", e2eResH.FailNextRender)
+			r.Post("/api/e2e/resource/record-render-once", e2eResH.RecordRenderOnce)
+			r.Post("/api/e2e/resource/materialize-document", e2eResH.MaterializeDocument)
+			r.Post("/api/e2e/resource/materialize-application-docs", e2eResH.MaterializeApplicationDocs)
 		}
 
 		// ── Admin-only ────────────────────────────────────────────────────
@@ -238,6 +245,13 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Put("/api/admin/users/{user_id}", adminH.UserUpdate)
 			r.Delete("/api/admin/users/{user_id}", adminH.UserDelete)
 			r.Post("/api/admin/users/prune-e2e", adminH.PruneE2EUsers)
+			if os.Getenv("JOBIFAI_E2E") == "1" {
+				e2eResAdminH := NewE2EResourceFixtureHandlers(svc)
+				r.Post("/api/e2e/resource/setup-metering", e2eResAdminH.SetupMetering)
+				r.Post("/api/e2e/resource/reset-metering-config", e2eResAdminH.ResetMeteringConfig)
+				r.Post("/api/e2e/resource/set-user-credits", e2eResAdminH.SetUserCredits)
+				r.Post("/api/e2e/resource/seed-llm-event", e2eResAdminH.SeedLLMEvent)
+			}
 			r.Post("/api/admin/users/{user_id}/secrets/api-key", adminH.UserSetAPIKey)
 			r.Delete("/api/admin/users/{user_id}/secrets/api-key", adminH.UserDeleteAPIKey)
 			r.Get("/api/usage/session", usage.Session)
