@@ -266,7 +266,7 @@ func (m *liveBrowserMeter) WasActivated() bool {
 
 // DestructiveActionAllowed reports whether billing state permits a destructive action
 // (e.g. the final submit click in an apply flow). Returns false when quota is exhausted.
-// This is the canonical guard used before every submit in apply flows.
+// This is the canonical guard used before every submit in apply flows (seek.go, bot.go).
 func DestructiveActionAllowed(m BrowserUsageMeter) bool {
 	return m.Err() == nil
 }
