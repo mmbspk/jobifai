@@ -171,6 +171,108 @@ func TestProcessJob_NonJobPageRedirect_IsSkipped(t *testing.T) {
 	assert.Equal(t, 0, pendingCount, "unavailable listing must not appear in Top Matches")
 }
 
+// capturingScorer is a JobScorer that records the job description it receives.
+// Used to assert that the description reaching the scorer is the browser-derived
+// or title+company fallback, never HTTP content fetched without identity checks.
+type capturingScorer struct {
+	gotDesc string
+}
+
+func (s *capturingScorer) EvaluateJob(_ context.Context, _ *domain.ResumeProfile, jobDesc string) (domain.JobScore, error) {
+	s.gotDesc = jobDesc
+	return domain.JobScore{Score: 8}, nil
+}
+
+// TestProcessJob_BrowserOpenFails_IsSkipped verifies that when the browser cannot open
+// a page at all (connection refused / browser closed), processJob records the job as
+// skipped rather than falling through to the removed HTTP fallback or returning true.
+func TestProcessJob_BrowserOpenFails_IsSkipped(t *testing.T) {
+	br := launchTestBrowser(t)
+	// Close the browser so that br.Page() returns a connection error.
+	require.NoError(t, br.Close())
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	b := &Bot{
+		cfg:       Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn},
+		stopCh:    make(chan struct{}),
+		seenCache: newJobSeenCache(),
+	}
+	job := linkedInJob{
+		ID:      "ORIG123",
+		URL:     "https://www.linkedin.com/jobs/view/ORIG123",
+		Title:   "Test Role",
+		Company: "OriginalCo",
+	}
+
+	result := b.processJob(context.Background(), br, job)
+	assert.False(t, result, "processJob must return false when browser page open fails")
+
+	var skipReason string
+	require.NoError(t, db.QueryRow(
+		`SELECT skip_reason FROM jobs_skipped WHERE id = ? AND user_id = ?`,
+		job.ID, "u1",
+	).Scan(&skipReason), "job must be recorded in jobs_skipped")
+	assert.Contains(t, skipReason, "browser page open failed", "skip reason must identify the browser failure")
+
+	var pendingCount int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
+		job.ID, "u1",
+	).Scan(&pendingCount))
+	assert.Equal(t, 0, pendingCount, "job with browser failure must not appear in Top Matches")
+}
+
+// TestProcessJob_ThinDescriptionNoHTTPFallback verifies that when the browser page loads
+// successfully but yields a description shorter than 100 characters, processJob falls back
+// to "title at company" rather than making an HTTP fetch. An HTTP fetch would follow
+// redirects without identity checks and could return collections page content.
+func TestProcessJob_ThinDescriptionNoHTTPFallback(t *testing.T) {
+	br := launchTestBrowser(t)
+
+	// Serve a valid job page with a description too short to pass the 100-char threshold.
+	const thinDescHTML = `<!DOCTYPE html><html><body>
+<main>
+  <h1>Test Role at OriginalCo</h1>
+  <div>Short description.</div>
+</main>
+</body></html>`
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jobs/view/ORIG123", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, thinDescHTML)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	scorer := &capturingScorer{}
+	b := &Bot{
+		cfg:       Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer},
+		stopCh:    make(chan struct{}),
+		seenCache: newJobSeenCache(),
+	}
+	job := linkedInJob{
+		ID:      "ORIG123",
+		URL:     srv.URL + "/jobs/view/ORIG123",
+		Title:   "Test Role",
+		Company: "OriginalCo",
+	}
+
+	b.processJob(context.Background(), br, job)
+
+	assert.Equal(t, "Test Role at OriginalCo", scorer.gotDesc,
+		"thin browser description must fall back to title+company, not HTTP-fetched content")
+}
+
 // TestProcessJob_ValidNonEasyApplyJob_GoesToTopMatches is the regression guard:
 // a valid listing that loads at the declared URL with only an external Apply button
 // must still route to Top Matches (jobs_pending_review, easy_apply=0) as before.

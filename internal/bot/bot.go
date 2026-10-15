@@ -1236,37 +1236,44 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	}
 
 	// Open the job page — authoritative Easy Apply detection and description extraction.
-	// fetchJob (HTTP) is deferred to after identity is confirmed; using content from a
-	// redirected page (expired listing → similar-jobs collections) against the original
-	// job_id would produce corrupt scores and potentially apply to the wrong listing.
+	// No HTTP fallback: the browser page is the sole content source. An HTTP fetch would
+	// follow redirects without identity checks and could return a collections page description,
+	// corrupting scores or causing wrong-job apply attempts.
 	easyApply := job.EasyApply
 	var details scraper.JobDetails
-	if jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL}); err == nil {
-		_ = jobPage.Timeout(30 * time.Second).WaitLoad()
-		// Verify the page is the declared job before consuming any of its content.
-		if expectedPath := linkedInJobPath(job.URL); expectedPath != "" {
-			if idErr := verifyJobIdentity(jobPage, expectedPath); idErr != nil {
-				_ = jobPage.Close()
-				log.Info().Err(idErr).
-					Str("job_id", job.ID).Str("url", job.URL).
-					Str("role", job.Title).Str("company", job.Company).
-					Msg("linkedin: listing page unavailable — skipping")
-				b.recordSkipped(job, "linkedin: listing unavailable: "+idErr.Error(), 0, "", nil)
-				return false
-			}
-		}
-		easyApply = detectLinkedInEasyApply(jobPage)
-		if pageDetails, err := jobPage.HTML(); err == nil {
-			if parsed := scraper.ParseHTML(pageDetails); len(strings.TrimSpace(parsed.Description)) >= 100 {
-				details = parsed
-			}
-		}
-		_ = jobPage.Close()
+	jobPage, pageErr := br.Page(proto.TargetCreateTarget{URL: job.URL})
+	if pageErr != nil {
+		log.Info().Err(pageErr).
+			Str("job_id", job.ID).Str("url", job.URL).
+			Str("role", job.Title).Str("company", job.Company).
+			Msg("linkedin: browser page open failed — skipping")
+		b.recordSkipped(job, "linkedin: browser page open failed: "+pageErr.Error(), 0, "", nil)
+		return false
 	}
-	// HTTP fallback when the browser page didn't yield sufficient description content.
-	// Only reached when the identity check above passed (or when the URL has no job path).
+	_ = jobPage.Timeout(30 * time.Second).WaitLoad()
+	// Verify the page is the declared job before consuming any of its content.
+	if expectedPath := linkedInJobPath(job.URL); expectedPath != "" {
+		if idErr := verifyJobIdentity(jobPage, expectedPath); idErr != nil {
+			_ = jobPage.Close()
+			log.Info().Err(idErr).
+				Str("job_id", job.ID).Str("url", job.URL).
+				Str("role", job.Title).Str("company", job.Company).
+				Msg("linkedin: listing page unavailable — skipping")
+			b.recordSkipped(job, "linkedin: listing unavailable: "+idErr.Error(), 0, "", nil)
+			return false
+		}
+	}
+	easyApply = detectLinkedInEasyApply(jobPage)
+	if pageDetails, err := jobPage.HTML(); err == nil {
+		if parsed := scraper.ParseHTML(pageDetails); len(strings.TrimSpace(parsed.Description)) >= 100 {
+			details = parsed
+		}
+	}
+	_ = jobPage.Close()
+	// Thin browser description: use title + company rather than an HTTP fallback.
+	// An HTTP fetch would follow redirects without identity checks.
 	if len(strings.TrimSpace(details.Description)) < 100 {
-		details = b.fetchJob(ctx, job)
+		details.Description = job.Title + " at " + job.Company
 	}
 	if details.PostedDate == "" {
 		details.PostedDate = job.PostedDate
