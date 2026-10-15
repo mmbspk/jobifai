@@ -539,8 +539,9 @@ test.describe('Resource Metering E2E — Story #86 Acceptance', () => {
     await expect(page.getByRole('columnheader', { name: 'Automation' })).toBeVisible()
     await expect(page.getByRole('columnheader', { name: 'App' })).toBeVisible()
     await expect(page.getByRole('columnheader', { name: 'Job' })).toBeVisible()
-    // Exercise the resource type filter — select browser_automation and apply.
-    await page.selectOption('select', 'browser_automation')
+    // Exercise the resource type filter — expand the Filters section first, then select.
+    await page.locator('summary').filter({ hasText: 'Filters' }).click()
+    await page.getByLabel('Resource type').selectOption('browser_automation')
     await page.getByRole('button', { name: 'Apply filters' }).click()
     // At least one row must be visible after filtering (test user created browser events above).
     await expect(page.locator('tbody tr').first()).toBeVisible()

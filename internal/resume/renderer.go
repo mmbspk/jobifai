@@ -262,7 +262,11 @@ func renderCoverLetterHTML(body, css string) string {
 // ── go-rod PDF rendering ──────────────────────────────────────────────────
 
 func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) ([]byte, error) {
-	u, err := launcher.New().Headless(true).Launch()
+	l := launcher.New().Headless(true)
+	if bin := os.Getenv("ROD_BROWSER_BIN"); bin != "" {
+		l = l.Bin(bin)
+	}
+	u, err := l.Launch()
 	if err != nil {
 		return nil, fmt.Errorf("launch chrome for pdf: %w", err)
 	}
