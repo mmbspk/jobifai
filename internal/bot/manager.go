@@ -49,25 +49,25 @@ type botEntry struct {
 // Manager is the long-lived bot controller exposed to HTTP handlers.
 // It supports concurrent bots, one per user, and satisfies handler.BotController.
 type Manager struct {
-	mu           sync.Mutex
-	bots         map[string]*botEntry // key = userID
-	db           *sql.DB
-	cfgStore     ConfigReader
-	secrets      SecretsReader
-	sessions     *browser.SessionStore
-	tailor       ResumeTailor
-	scorer       JobScorer
-	halal        JobHalalChecker
-	renderer     ResumeRenderer
-	marketDir    string
-	ctx          context.Context // lifetime context; cancelled on server shutdown
+	mu               sync.Mutex
+	bots             map[string]*botEntry // key = userID
+	db               *sql.DB
+	cfgStore         ConfigReader
+	secrets          SecretsReader
+	sessions         *browser.SessionStore
+	tailor           ResumeTailor
+	scorer           JobScorer
+	halal            JobHalalChecker
+	renderer         ResumeRenderer
+	marketDir        string
+	ctx              context.Context         // lifetime context; cancelled on server shutdown
 	seekBrowsers     map[string]*rod.Browser // persistent Seek browser per user
 	linkedInBrowsers map[string]*rod.Browser // persistent LinkedIn browser per user
 	browserMu        sync.Mutex              // protects seekBrowsers + linkedInBrowsers
 	applyMu          sync.Mutex              // protects applyInProgress
 	applyInProgress  map[string]bool         // userID → AI Apply call in flight
-	quotaSessions    SessionQuota   // optional grace sessions for subscribers
-	llmQuota         quota.LLMGuard // optional cost enforcement on bot LLM calls
+	quotaSessions    SessionQuota            // optional grace sessions for subscribers
+	llmQuota         quota.LLMGuard          // optional cost enforcement on bot LLM calls
 	llmPolicy        *llmpolicy.Store
 	llmCatalog       *pricing.Catalog
 	documents        *documents.Service
@@ -76,7 +76,7 @@ type Manager struct {
 	llmReuse         *llmreuse.Store
 	submitWorkGuard  documents.UserWorkGuard
 	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
-	browserMeterSvc  MeterService // optional browser automation billing service
+	browserMeterSvc  MeterService                                 // optional browser automation billing service
 }
 
 type retentionAfterSubmit interface {
@@ -151,16 +151,16 @@ func NewManager(
 	marketDir string,
 ) *Manager {
 	return &Manager{
-		ctx:          ctx,
-		db:           db,
-		cfgStore:     cfgStore,
-		secrets:      secrets,
-		sessions:     sessions,
-		tailor:       tailor,
-		scorer:       scorer,
-		halal:        halal,
-		renderer:     renderer,
-		marketDir:    marketDir,
+		ctx:              ctx,
+		db:               db,
+		cfgStore:         cfgStore,
+		secrets:          secrets,
+		sessions:         sessions,
+		tailor:           tailor,
+		scorer:           scorer,
+		halal:            halal,
+		renderer:         renderer,
+		marketDir:        marketDir,
 		bots:             make(map[string]*botEntry),
 		seekBrowsers:     make(map[string]*rod.Browser),
 		linkedInBrowsers: make(map[string]*rod.Browser),
@@ -457,6 +457,13 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
 	}
 	if applyErr != nil {
+		if linkedInNeedsReview(applyErr) {
+			b.preserveLinkedInReview(ctx, managerLazy.job, score, req.SuitabilityReasoning, applyErr)
+			_, _ = m.db.Exec(`DELETE FROM jobs_approved_queue WHERE job_id=? AND user_id=?`, req.JobID, userID)
+			outcome, stage, code := linkedInReviewOutcome(applyErr)
+			finishAttempt(m.db, ac, outcome, stage, code, applyErr.Error())
+			return applyErr
+		}
 		if errors.Is(applyErr, errAlreadyApplied) {
 			log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("company", req.Company).Str("role", req.Role).Msg("approve: already applied, recording ✓")
 			// fall through to success path so queues are cleaned up; finishAttempt below uses OutcomeAlreadyApplied
@@ -916,18 +923,18 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 			}
 			return &p
 		},
-		Cookies:       cookies,
-		Tailor:        tailor,
-		Scorer:        scorer,
-		HalalChecker:  halal,
+		Cookies:         cookies,
+		Tailor:          tailor,
+		Scorer:          scorer,
+		HalalChecker:    halal,
 		CoverLetterTone: gs.CoverLetterTone,
-		Renderer:      m.renderer,
-		DB:            m.db,
+		Renderer:        m.renderer,
+		DB:              m.db,
 		UserID:          userID,
 		AutomationRunID: runID,
 		RequireReview:   gs.RequireReview,
-		MarketDir:     m.marketDir,
-		Documents:     m.documents,
+		MarketDir:       m.marketDir,
+		Documents:       m.documents,
 		OnApplied: func() {
 			if m.retention != nil {
 				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
@@ -1081,20 +1088,20 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 
 	b := &Bot{
 		cfg: Config{
-			Platform:     platform,
-			Settings:     gs,
-			Cookies:      cookies,
-			DB:           m.db,
+			Platform:        platform,
+			Settings:        gs,
+			Cookies:         cookies,
+			DB:              m.db,
 			UserID:          userID,
 			AutomationRunID: runID,
 			Tailor:          tailor,
-			Scorer:       scorer,
-			HalalChecker: halal,
-			Renderer:     m.renderer,
-			Profile:      &profile,
-			MarketDir:    m.marketDir,
-			LLMTracker:   tracker,
-			Sessions:     m.sessions,
+			Scorer:          scorer,
+			HalalChecker:    halal,
+			Renderer:        m.renderer,
+			Profile:         &profile,
+			MarketDir:       m.marketDir,
+			LLMTracker:      tracker,
+			Sessions:        m.sessions,
 		},
 		state:  domain.BotStateIdle,
 		stopCh: make(chan struct{}),
@@ -1280,6 +1287,23 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		}
 	}
 
+	var linkedInResolved linkedInResolution
+	if platform == domain.PlatformLinkedIn {
+		var resolveErr error
+		linkedInResolved, resolveErr = waitLinkedInJob(ctx, jobPage, linkedInExpectedID(jobURL))
+		if resolveErr != nil {
+			job := linkedInJob{ID: linkedInExpectedID(jobURL), URL: jobURL, Title: "Listing requires verification", Company: "LinkedIn"}
+			if ctx.Err() == nil {
+				b.preserveLinkedInReview(ctx, job, 0, "Not scored: listing could not be verified.", resolveErr)
+			}
+			finishAttempt(m.db, ac, OutcomeBlocked, "classification", "linkedin_listing_unverified", resolveErr.Error())
+			_ = jobPage.Close()
+			if ownsBr {
+				_ = br.Close()
+			}
+			return ApplyFromURLResult{JobID: job.ID}, resolveErr
+		}
+	}
 	company, role := extractJobMeta(jobPage, platform)
 	if company == "" {
 		company = string(platform)
@@ -1310,7 +1334,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	case domain.PlatformSeek:
 		pageApplied = detectSeekPageApplied(jobPage)
 	default:
-		pageApplied = b.linkedInPageApplied(jobPage)
+		pageApplied = linkedInResolved.Kind == "already_applied"
 	}
 	if pageApplied {
 		_ = jobPage.Close()
@@ -1360,12 +1384,16 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	case domain.PlatformSeek:
 		isEasyApply = detectSeekEasyApply(jobPage)
 	default:
-		isEasyApply = detectLinkedInEasyApply(jobPage)
+		isEasyApply = linkedInResolved.Kind == "native"
 	}
 
 	// Extract job description from the already-loaded page (needed for score + pending).
 	jobDesc := role + " at " + company
-	if rawHTML, htmlErr := jobPage.HTML(); htmlErr == nil {
+	if platform == domain.PlatformLinkedIn {
+		if len(strings.TrimSpace(linkedInResolved.Description)) >= 100 {
+			jobDesc = linkedInResolved.Description
+		}
+	} else if rawHTML, htmlErr := jobPage.HTML(); htmlErr == nil {
 		if d := scraper.ParseHTML(rawHTML); len(strings.TrimSpace(d.Description)) >= 100 {
 			jobDesc = d.Description
 		}
@@ -1458,6 +1486,12 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	}
 
 	if applyErr != nil && !errors.Is(applyErr, errAlreadyApplied) {
+		if linkedInNeedsReview(applyErr) {
+			b.preserveLinkedInReview(ctx, lazy.job, score, scoreReason, applyErr)
+			outcome, stage, code := linkedInReviewOutcome(applyErr)
+			finishAttempt(m.db, ac, outcome, stage, code, applyErr.Error())
+			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, applyErr
+		}
 		// Quota exhausted mid-run: do not write jobs_skipped and do not consume an attempt.
 		if errors.Is(applyErr, quota.ErrExceeded) {
 			log.Warn().Err(applyErr).Str("job_id", jobID).Str("url", jobURL).Msg("ai apply: browser quota exceeded mid-run")
@@ -1524,12 +1558,12 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 				confirmed = detectSeekPageApplied(jobPage)
 			}
 		default:
-			confirmed = b.linkedInPageApplied(jobPage)
+			confirmed = b.linkedInPageApplied(jobPage, linkedInExpectedID(jobURL))
 			if !confirmed {
 				_ = jobPage.Navigate(jobURL)
 				_ = jobPage.Timeout(30 * time.Second).WaitLoad()
 				_ = jobPage.Timeout(5 * time.Second).WaitStable(2 * time.Second)
-				confirmed = b.linkedInPageApplied(jobPage)
+				confirmed = b.linkedInPageApplied(jobPage, linkedInExpectedID(jobURL))
 			}
 		}
 		if !confirmed {

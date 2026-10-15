@@ -36,9 +36,10 @@ import (
 // This covers the fourth submission caller identified in PR #97 review round 5.
 //
 // Fixture layout:
-//   /jobs/view/123456789       — correct job, CTA navigates to modal on same path
-//   /jobs/view/123456789/modal — modal with a submit button that navigates to wrong job
-//   /jobs/view/999888          — success page ("application submitted") at wrong job URL
+//
+//	/jobs/view/123456789       — correct job, CTA navigates to modal on same path
+//	/jobs/view/123456789/modal — modal with a submit button that navigates to wrong job
+//	/jobs/view/999888          — success page ("application submitted") at wrong job URL
 func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 	// Check Chromium availability first — skip rather than fail when not present.
 	launchTestBrowser(t)
@@ -47,7 +48,7 @@ func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 	mux.HandleFunc("/jobs/view/123456789", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, `<!DOCTYPE html><html><body>
-<main>
+<main data-job-id="123456789">
   <h1>Test Role at TestCo</h1>
   <button data-live-test-easy-apply
           onclick="window.location.href='/jobs/view/123456789/modal'">Easy Apply</button>
@@ -66,7 +67,7 @@ func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 	mux.HandleFunc("/jobs/view/999888", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, `<!DOCTYPE html><html><body>
-<main><p>Application submitted. Your application was sent to TestCo.</p></main>
+<main data-job-id="123456789"><p>Application submitted. Your application was sent to TestCo.</p></main>
 </body></html>`)
 	})
 	srv := httptest.NewServer(mux)
@@ -119,7 +120,7 @@ func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 		Location: "Remote",
 	})
 	require.Error(t, err, "runSubmit must return error when post-apply drift is detected")
-	assert.Contains(t, err.Error(), "post-apply identity verification failed",
+	assert.Contains(t, err.Error(), "submission could not be confirmed",
 		"error must identify this as a post-apply identity failure")
 
 	// No jobs_applied row — post-apply drift must not produce an Applied record.

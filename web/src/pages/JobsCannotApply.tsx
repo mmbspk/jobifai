@@ -84,7 +84,7 @@ export function JobsCannotApply() {
       <InfoBanner variant="warn">
         <AlertCircle size={18} className="shrink-0 text-[var(--color-warn)] mt-0.5" />
         <span>
-          Easy Apply was available, but submission could not be finished (for example screening questions or validation).
+          Automation could not complete or verify these listings. The reason on each job explains what happened.
           Retry queues the job for the next automation run, or continue manually on the listing.
         </span>
       </InfoBanner>
@@ -132,3 +132,4 @@ export function JobsCannotApply() {
     </JobListPage>
   )
 }
+

@@ -551,9 +551,9 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 	q := `SELECT job_id,company,role,COALESCE(location,''),platform,COALESCE(link,''),
 	             COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
 	             suitability_score,COALESCE(suitability_reasoning,''),COALESCE(due_date,''),COALESCE(posted_date,''),
-	             easy_apply,COALESCE(halal_verdict,''),created_at
+	             easy_apply,COALESCE(halal_verdict,''),created_at,COALESCE(document_refs_json,'')
 	      FROM jobs_pending_review
-	      WHERE user_id = ? AND suitability_score >= ? AND easy_apply = 0
+	      WHERE user_id = ? AND (suitability_score >= ? OR json_extract(CASE WHEN json_valid(document_refs_json) THEN document_refs_json ELSE '{}' END, '$.listing_review_required') = 1) AND easy_apply = 0
 	      ORDER BY suitability_score DESC, created_at DESC
 	      LIMIT ? OFFSET ?`
 
@@ -573,7 +573,7 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 			&p.JobID, &p.Company, &p.Role, &p.Location, &p.Platform, &p.Link,
 			&p.ResumePath, &p.CoverLetterPath,
 			&p.SuitabilityScore, &p.SuitabilityReasoning, &p.DueDate, &p.PostedDate,
-			&p.EasyApply, &halalJSON, &createdStr,
+			&p.EasyApply, &halalJSON, &createdStr, &p.DocumentRefsJSON,
 		); err != nil {
 			log.Error().Err(err).Msg("top matches: scan row")
 			continue
@@ -620,7 +620,7 @@ func (h *JobHandlers) Stats(w http.ResponseWriter, r *http.Request) {
 		topThreshold = gs.JobSuitabilityScore
 	}
 	if err := h.svc.DB.QueryRowContext(r.Context(),
-		`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id = ? AND suitability_score >= ? AND easy_apply = 0`,
+		`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id = ? AND (suitability_score >= ? OR json_extract(CASE WHEN json_valid(document_refs_json) THEN document_refs_json ELSE '{}' END, '$.listing_review_required') = 1) AND easy_apply = 0`,
 		userID, topThreshold).Scan(&stats.TopMatchesCount); err != nil {
 		log.Error().Err(err).Msg("stats: top_matches_count query failed")
 	}

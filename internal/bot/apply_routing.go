@@ -17,22 +17,32 @@ import (
 //   - the URL carries no LinkedIn job path
 //   - the URL carries a different job ID
 //
-// Callers inside the form loop must check for terminal success (jsSuccess) before
-// calling this function; success pages carry no job path and would otherwise be blocked.
+// Callers check this before form actions and before accepting confirmation.
+// Losing identity after submission means submission_unknown, never success.
 func verifyJobIdentity(page *rod.Page, expectedJobPath string) error {
 	if expectedJobPath == "" {
 		return nil
 	}
 	info, err := page.Timeout(5 * time.Second).Info()
 	if err != nil || info == nil || info.URL == "" {
-		return fmt.Errorf("job identity: cannot read page URL (expected job path %s)", expectedJobPath)
+		return fmt.Errorf("%w: job identity: cannot read page URL (expected job path %s)", errLinkedInIdentity, expectedJobPath)
+	}
+	u, parseErr := url.Parse(info.URL)
+	if parseErr != nil || !(u.Hostname() == "linkedin.com" || strings.HasSuffix(u.Hostname(), ".linkedin.com") || u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1") {
+		return fmt.Errorf("%w: unexpected page origin", errLinkedInIdentity)
 	}
 	cp := linkedInJobPath(info.URL)
 	if cp == "" {
-		return fmt.Errorf("job identity: page at %s has no LinkedIn job path (expected %s)", info.URL, expectedJobPath)
+		// Collections are acceptable only when both selected ID and rendered pane
+		// are verified by the same resolver. referenceJobId is never evidence.
+		r, resolveErr := resolveLinkedInJob(page, strings.TrimPrefix(expectedJobPath, "/jobs/view/"), false)
+		if resolveErr == nil && r.IdentityVerified {
+			return nil
+		}
+		return fmt.Errorf("%w: job identity: page at %s has no LinkedIn job path (expected %s)", errLinkedInIdentity, info.URL, expectedJobPath)
 	}
 	if cp != expectedJobPath {
-		return fmt.Errorf("job identity drift: page at %s but declared job is %s", info.URL, expectedJobPath)
+		return fmt.Errorf("%w: job identity drift: page at %s but declared job is %s", errLinkedInIdentity, info.URL, expectedJobPath)
 	}
 	return nil
 }
@@ -96,6 +106,9 @@ func skipReasonBelongsInTopMatches(reason string) bool {
 // additional label — previously the "approved queue: " prefix was prepended here
 // which inadvertently prevented the blocked-ATS branch from ever matching.
 func queueApplyOutcome(err error) (outcome AttemptOutcome, stage, reasonCode string) {
+	if linkedInNeedsReview(err) {
+		return linkedInReviewOutcome(err)
+	}
 	if isSeekSubmitUnconfirmedError(err) {
 		return OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed"
 	}

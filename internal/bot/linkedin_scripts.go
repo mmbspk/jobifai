@@ -1,188 +1,127 @@
 package bot
 
-// jsLinkedInDetectCTA is the detection script used by detectLinkedInEasyApply.
-// Exported at package level so integration tests can reason about it without
-// duplicating the script. Any change here must be re-tested against fixture pages.
-const jsLinkedInDetectCTA = `() => {
-	function deepAll(root, selector) {
-		const out = [];
-		const walk = (node) => {
-			if (!node || !node.querySelectorAll) return;
-			try { out.push(...node.querySelectorAll(selector)); } catch (e) {}
-			try {
-				for (const el of node.querySelectorAll('*')) {
-					if (el.shadowRoot) walk(el.shadowRoot);
-				}
-			} catch (e) {}
-		};
-		walk(root);
-		return out;
-	}
-	function labelOf(el) {
-		return ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || el.textContent || ''))
-			.toLowerCase().replace(/\s+/g, ' ').trim();
-	}
-	function isExcluded(el) {
-		return !!el.closest([
-			'aside',
-			'[class*="similar-job"]',
-			'[class*="jobs-similar"]',
-			'[class*="people-also-viewed"]',
-			'[class*="scaffold-layout__aside"]',
-			'[data-test-similar-jobs]',
-			'.jobs-discovery',
-		].join(','));
-	}
-	function isVisible(el) {
-		try {
-			const rect = el.getBoundingClientRect();
-			if (rect.width < 2 && rect.height < 2) return false;
-			const doc = el.ownerDocument || document;
-			const view = doc.defaultView || window;
-			let node = el;
-			while (node && node !== doc.documentElement) {
-				const s = view.getComputedStyle(node);
-				if (s.display === 'none' || s.visibility === 'hidden') return false;
-				const parent = node.parentElement;
-				if (parent) { node = parent; continue; }
-				const root = node.getRootNode && node.getRootNode();
-				if (root && root.host) { node = root.host; continue; }
-				break;
-			}
-			return true;
-		} catch(e) { return false; }
-	}
-	function isEasyApplyLabel(t) {
-		return t.includes('easy apply') || t.includes('linkedin apply');
-	}
-	function currentJobPath() {
-		const m = window.location.pathname.match(/\/jobs\/view\/(\d+)/i);
-		return m ? '/jobs/view/' + m[1] : '';
-	}
-
-	// 1) Visible Easy Apply control in the main job pane (LinkedIn's standard CTA).
-	// Href destination is validated before accepting any label match — a link
-	// labelled "Easy Apply" that carries a different job ID is rejected here.
-	const pagePath = currentJobPath();
-	const controls = [
-		...deepAll(document, 'button'),
-		...deepAll(document, 'a'),
-		...deepAll(document, '[role="button"]'),
-	];
-	for (const el of controls) {
-		if (isExcluded(el)) continue;
-		if (!isVisible(el)) continue;
-		const href = (el.getAttribute('href') || '').toLowerCase();
-		const hrefJobM = href.match(/\/jobs\/view\/(\d+)/);
-		if (hrefJobM && pagePath && '/jobs/view/' + hrefJobM[1] !== pagePath) continue;
-		if (isEasyApplyLabel(labelOf(el))) return true;
-		if (el.getAttribute('data-live-test-easy-apply') != null) return true;
-	}
-
-	// 2) LinkedIn SDUI Easy Apply flag on an in-pane control/link.
-	// Requires full visibility (display + visibility:hidden + ancestor walk) —
-	// hidden SDUI preload/analytics links are present on 3rd-party job pages too.
-	// Also rejects links whose href explicitly targets a different job ID.
-	for (const el of controls) {
-		if (isExcluded(el)) continue;
-		if (!isVisible(el)) continue;
-		const href = (el.getAttribute('href') || '').toLowerCase();
-		if (!href.includes('opensduiapplyflow')) continue;
-		const hrefJobM = href.match(/\/jobs\/view\/(\d+)/);
-		if (hrefJobM && pagePath && '/jobs/view/' + hrefJobM[1] !== pagePath) continue;
-		return true;
-	}
-
-	return false;
+// One resolver owns both classification and clicking. It is given the intended
+// job ID, never inferred from whichever recommendation is currently selected.
+// No whole-document label, SDUI flag, or success-text fallback is authoritative.
+const jsLinkedInResolve = `(expectedID, click = false) => {
+ const out = {kind:'unknown', reason:'identity_unverified', expected_id:expectedID,
+   observed_id:'', identity_verified:false, label:'', destination:'', url:location.origin+location.pathname,
+   description:'', action:''};
+ const finish = () => JSON.stringify(out);
+ const pathID = u => { const m = u.pathname.match(/^\/jobs\/view\/([^/]+)/); return m ? m[1] : ''; };
+ const current = new URL(location.href);
+ if(!/(^|\.)linkedin\.com$/i.test(current.hostname) && !['localhost','127.0.0.1','[::1]'].includes(current.hostname)) {out.reason='unexpected_origin';return finish();}
+ const currentID = pathID(current) || current.searchParams.get('currentJobId') || '';
+ out.observed_id = currentID;
+ if (!expectedID || currentID !== expectedID) return finish();
+ const visible = el => {
+   const r = el.getBoundingClientRect();
+   if (r.width < 2 || r.height < 2) return false;
+   for(let n=el;n; n=n.parentElement || (n.getRootNode && n.getRootNode().host)) {
+     const s = getComputedStyle(n);
+     if(s.display==='none' || s.visibility==='hidden' || s.visibility==='collapse' || s.opacity==='0') return false;
+   }
+   return true;
+ };
+ const all = (root, selector) => {
+   const found = [...root.querySelectorAll(selector)];
+   for(const el of root.querySelectorAll('*')) if(el.shadowRoot) found.push(...all(el.shadowRoot,selector));
+   return found;
+ };
+ const parent = el => el.parentElement || (el.getRootNode && el.getRootNode().host);
+ const excluded = el => {
+   for(let n=el;n;n=parent(n)) if(n.matches && n.matches('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="people-also-viewed"], [class*="scaffold-layout__aside"], [data-test-similar-jobs], .jobs-discovery, .job-card-container, [data-occludable-job-id]')) return true;
+   return false;
+ };
+ const ownID = el => {
+   for(const attr of ['data-job-id','data-job-detail-id','data-entity-urn']) {
+     const v = el.getAttribute(attr);
+     if(v) return v.replace(/^urn:li:jobPosting:/,'');
+   }
+   return '';
+ };
+ // A root must carry the intended ID or a job-title link identifying it. The
+ // generic <main> container alone does not prove ownership of its descendants.
+ const roots = all(document, '.jobs-unified-top-card, .job-details-jobs-unified-top-card__container, .jobs-details__main-content, [data-job-id], [data-job-detail-id], main');
+ const verified = roots.filter(root => {
+   if(excluded(root) || !visible(root)) return false;
+   const id = ownID(root);
+   if(id) return id === expectedID;
+   const titleLinks = all(root, 'h1 a[href], h2 a[href], a.job-details-jobs-unified-top-card__job-title-link, .job-details-jobs-unified-top-card__job-title a[href]');
+   const ids = titleLinks.filter(a=>visible(a) && !excluded(a)).map(a=>{
+     try { const u=new URL(a.href,location.href); return u.origin===location.origin ? pathID(u) : ''; } catch { return ''; }
+   }).filter(Boolean);
+   return ids.length > 0 && ids.every(id=>id===expectedID);
+ });
+ // Prefer the smallest verified top-card/pane, never a broad parent containing
+ // multiple independent job panes.
+ const scopes = verified.filter(root=>!verified.some(other=>other!==root && root.contains(other)));
+ if(scopes.length !== 1) {out.reason='job_pane_not_unique'; return finish();}
+ const root = scopes[0];
+ const belongs = el => {
+   if(excluded(el)) return false;
+   for(let n=el;n && n!==root;n=parent(n)) {
+     const id=ownID(n); if(id && id!==expectedID) return false;
+     if(n.matches && n.matches('section, article, li')) {
+       const ids=[...n.querySelectorAll('h1 a[href], h2 a[href], h3 a[href]')].map(a=>{try{return pathID(new URL(a.href,location.href));}catch{return '';}}).filter(Boolean);
+       if(ids.some(id=>id!==expectedID)) return false;
+     }
+   }
+   return true;
+ };
+ out.identity_verified=true;
+ out.reason='control_not_found';
+ // Read only a description inside this verified pane, never the whole page.
+ const desc=root.querySelector('.jobs-description, .jobs-description-content__text, [data-job-description]');
+ if(desc && belongs(desc)) out.description=desc.innerText || desc.textContent || '';
+ // Prior application evidence must belong to the verified job pane.
+ const statuses=all(root,'[data-test-job-apply-button-applied], [aria-label="Applied"], [class*="application-status"], [role="status"]');
+ if(statuses.some(el=>visible(el) && belongs(el) && (el.hasAttribute('data-test-job-apply-button-applied') || el.getAttribute('aria-label')==='Applied' || /application submitted|application was sent|applied successfully/i.test(el.innerText || el.textContent || '')))) {
+   out.kind='already_applied'; out.reason='verified_job_status'; return finish();
+ }
+ const candidates=[];
+ for(const el of all(root,'button, a[href], [role="button"]')) {
+   if(!visible(el) || !belongs(el) || el.disabled || el.getAttribute('aria-disabled')==='true') continue;
+   // Do not accept a wrapping role=button whose descendant contains a CTA.
+   if(el.querySelector('button, a[href], [role="button"]')) continue;
+   const label=((el.getAttribute('aria-label') || '')+' '+(el.innerText || el.textContent || '')).toLowerCase().replace(/\s+/g,' ').trim();
+   const native=/\beasy apply\b|\blinkedin apply\b/.test(label);
+   const external=!native && /^(apply|apply now|apply on company website|apply on employer website)(\b|$)/.test(label);
+   if(!native && !external) continue;
+   let dest='';
+   const href=el.getAttribute('href');
+   if(href) {
+     let u; try {u=new URL(href,location.href);} catch {continue;}
+     if(!['http:','https:'].includes(u.protocol)) continue;
+     const destID=pathID(u) || u.searchParams.get('currentJobId');
+     if(destID && destID!==expectedID) continue;
+     // Native links must explicitly target this job on the same origin. A
+     // collection/recommendation link or a flag alone is never an apply CTA.
+     if(native && (u.origin!==location.origin || pathID(u)!==expectedID)) continue;
+     dest=u.origin+u.pathname; // omit tokens and tracking query parameters
+   }
+   candidates.push({el,label,kind:native?'native':'external',dest});
+ }
+ // Ambiguous native/external controls are held for manual review, never guessed.
+ const kinds=new Set(candidates.map(c=>c.kind));
+ if(kinds.size!==1) {out.reason=candidates.length?'ambiguous_controls':'control_not_found'; return finish();}
+ const c=candidates[0];
+ out.kind=c.kind; out.reason='verified_primary_control'; out.label=c.label.slice(0,160); out.destination=c.dest;
+ if(click && c.kind==='native') {
+   c.el.scrollIntoView({block:'center'});
+   // A single click. Do not dispatch a synthetic click followed by .click().
+   c.el.click(); out.action='clicked';
+ }
+ return finish();
 }`
 
-// jsLinkedInClickCTA is the poll-and-click script used inside easyApply.
-// Exported at package level so integration tests can evaluate it against
-// fixture pages without duplicating the script.
-const jsLinkedInClickCTA = `() => {
-	function trustClick(btn) {
-		try { btn.scrollIntoView({ block: 'center' }); } catch(e) {}
-		try { btn.focus(); } catch(e) {}
-		const view = (btn.ownerDocument && btn.ownerDocument.defaultView) || window;
-		const opts = { bubbles: true, cancelable: true, view: view };
-		for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
-			try {
-				if (type.startsWith('pointer')) {
-					btn.dispatchEvent(new PointerEvent(type, Object.assign({pointerId: 1, pointerType: 'mouse'}, opts)));
-				} else {
-					btn.dispatchEvent(new MouseEvent(type, opts));
-				}
-			} catch(e) {
-				try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch(e2) {}
-			}
-		}
-		try { btn.click(); } catch(e) {}
-	}
-	function allInDOM(root, selector) {
-		const r = [];
-		try {
-			r.push(...root.querySelectorAll(selector));
-			for (const el of root.querySelectorAll('*')) {
-				if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
-				if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-					try {
-						const d = el.contentDocument;
-						if (d) r.push(...allInDOM(d, selector));
-					} catch (e) {}
-				}
-			}
-		} catch(e) {}
-		return r;
-	}
-	function isVisible(el) {
-		try {
-			const rect = el.getBoundingClientRect();
-			if (rect.width < 2 && rect.height < 2) return false;
-			const doc = el.ownerDocument || document;
-			const view = doc.defaultView || window;
-			let node = el;
-			while (node && node !== doc.documentElement) {
-				const s = view.getComputedStyle(node);
-				if (s.display === 'none' || s.visibility === 'hidden') return false;
-				const parent = node.parentElement;
-				if (parent) { node = parent; continue; }
-				const root = node.getRootNode && node.getRootNode();
-				if (root && root.host) { node = root.host; continue; }
-				break;
-			}
-			return true;
-		} catch(e) { return false; }
-	}
-	const t = document.body.innerText.toLowerCase();
-	if (t.includes('application submitted') || t.includes('application was sent')) {
-		const hasAppStatus = document.querySelector('[class*="application-status"], [class*="ApplicationStatus"]');
-		if (hasAppStatus || t.includes('application submitted') || t.includes('application was sent')) return 'already_applied';
-	}
-	const candidates = (() => {
-		return allInDOM(document, 'button, a, [role="button"]').filter(b => {
-			return !b.closest('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="scaffold-layout__aside"], [class*="people-also-viewed"]');
-		});
-	})();
-	const btn = candidates.find(b => {
-		if (!isVisible(b)) return false;
-		const href = (b.getAttribute('href') || '').toLowerCase();
-		// Validate href destination before accepting any candidate — a link labelled
-		// "Easy Apply" that targets a different job ID must not be clicked.
-		const hrefJobM = href.match(/\/jobs\/view\/(\d+)/);
-		if (hrefJobM) {
-			const pageJobM = window.location.pathname.match(/\/jobs\/view\/(\d+)/i);
-			if (pageJobM && hrefJobM[1] !== pageJobM[1]) return false;
-		}
-		const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || b.textContent || ''))
-			.toLowerCase().replace(/\s+/g, ' ').trim();
-		if (label.includes('easy apply') || label.includes('linkedin apply')) return true;
-		if (b.getAttribute('data-live-test-easy-apply') != null) return true;
-		if (href.includes('opensduiapplyflow')) return true;
-		return false;
-	});
-	if (btn) {
-		trustClick(btn);
-		return 'clicked';
-	}
-	return '';
+// Compatibility wrappers for existing callers/fixtures. Production callers pass
+// their declared expected ID; the shared resolver remains the only selector.
+const jsLinkedInDetectCTA = `(expectedID) => {
+ const id=expectedID || ((location.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'');
+ return JSON.parse((` + jsLinkedInResolve + `)(id,false)).kind==='native';
+}`
+const jsLinkedInClickCTA = `(expectedID) => {
+ const id=expectedID || ((location.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'');
+ return JSON.parse((` + jsLinkedInResolve + `)(id,true)).action;
 }`

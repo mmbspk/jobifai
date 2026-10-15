@@ -25,6 +25,15 @@ jobs:
       - name: Install frontend dependencies
         run: cd web && npm ci
 
+      - name: Install Chromium for Go browser regressions
+        run: cd web && npx playwright install --with-deps chromium
+
+      - name: Configure Rod browser
+        run: echo "ROD_BROWSER_BIN=$(cd web && node -e "console.log(require('playwright').chromium.executablePath())")" >> "$GITHUB_ENV"
+
+      - name: LinkedIn resolver DOM regressions
+        run: cd web && node --test linkedin-resolver.test.cjs
+
       - name: Lint
         run: |
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
@@ -32,6 +41,8 @@ jobs:
 
       - name: Go + frontend tests with coverage
         run: make test-coverage
+        env:
+          CI: "1"
 
       - name: Upload Go coverage artifact
         if: always()
