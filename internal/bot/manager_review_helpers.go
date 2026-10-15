@@ -31,7 +31,7 @@ func (m *Manager) pendingSubmitRequest(userID, jobID string) (SubmitRequest, err
 
 func newManagerLazy(b *Bot, ctx context.Context, req SubmitRequest) *lazyDocGen {
 	lazy := &lazyDocGen{
-		b: b, ctx: ctx, job: linkedInJob{ID: req.JobID, Company: req.Company, Title: req.Role},
+		b: b, ctx: ctx, job: linkedInJob{ID: req.JobID, Company: req.Company, Title: req.Role, URL: req.Link, Location: req.Location},
 		resumeOverride: req.ResumePath, coverOverride: req.CoverPath,
 		resumeVersionOverride: req.ResumeContentVersionID, coverVersionOverride: req.CoverContentVersionID,
 		frozen: req.FrozenDocuments, refsJSON: req.DocumentRefsJSON,
@@ -87,9 +87,10 @@ func managerLazyForSubmit(b *Bot, ctx context.Context, req SubmitRequest, jobPag
 				jobDesc = d.Description
 			}
 		}
-	} else {
-		managerDetails := b.fetchJob(ctx, linkedInJob{URL: req.Link, Company: req.Company, Title: req.Role})
-		jobDesc = managerDetails.Description
+	} else if resolved, err := resolveLinkedInJob(jobPage, linkedInExpectedID(req.Link), false); err == nil && resolved.IdentityVerified {
+		if len(strings.TrimSpace(resolved.Description)) >= 100 {
+			jobDesc = resolved.Description
+		}
 	}
 	lazy := newManagerLazy(b, ctx, req)
 	lazy.jobDesc = jobDesc
