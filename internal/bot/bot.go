@@ -1700,16 +1700,15 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	// Entry identity check — before any CTA interaction or preparation scan.
 	// This also protects the reviewPrepareOnly branch below.
 	expectedJobPath := linkedInJobPath(lazy.job.URL)
-	if err := verifyJobIdentity(page, expectedJobPath); err != nil {
-		return err
-	}
-
 	resolution, err := waitLinkedInJob(ctx, page, linkedInExpectedID(lazy.job.URL))
 	logLinkedInResolution(resolution, lazy.job, lazy.attemptID, "before_initial_click")
 	if err != nil {
 		return err
 	}
 	if resolution.Kind == "already_applied" {
+		if err := verifyJobIdentity(page, expectedJobPath); err != nil {
+			return err
+		}
 		return errAlreadyApplied
 	}
 	if err := resolution.resolutionError(); err != nil {

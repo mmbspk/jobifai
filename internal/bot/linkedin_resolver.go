@@ -14,7 +14,7 @@ import (
 )
 
 // These are recoverable listing decisions, not permanent application failures.
-var errLinkedInIdentity = errors.New("LinkedIn listing identity could not be verified")
+var errLinkedInIdentity = errors.New("job identity: LinkedIn listing could not be verified")
 var errLinkedInExternal = errors.New("LinkedIn listing requires external application")
 var errLinkedInUnknown = errors.New("LinkedIn application control could not be verified")
 
@@ -45,7 +45,7 @@ func resolveLinkedInJob(page *rod.Page, expectedID string, click bool) (linkedIn
 	}
 	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInResolve, expectedID, click)
 	if err != nil {
-		return result, fmt.Errorf("%w: browser read: %v", errLinkedInIdentity, err)
+		return result, fmt.Errorf("%w: browser read: %w", errLinkedInIdentity, err)
 	}
 	if err := json.Unmarshal([]byte(value.Value.String()), &result); err != nil {
 		return result, fmt.Errorf("%w: invalid browser evidence: %v", errLinkedInIdentity, err)
@@ -58,6 +58,9 @@ func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string) (li
 	defer deadline.Stop()
 	var result linkedInResolution
 	for {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		var err error
 		result, err = resolveLinkedInJob(page, expectedID, false)
 		if err != nil {
@@ -90,11 +93,15 @@ func (r linkedInResolution) resolutionError() error {
 }
 
 func linkedInNeedsReview(err error) bool {
+	if !errors.Is(err, errLinkedInSubmissionUnknown) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return false
+	}
 	return errors.Is(err, errLinkedInSubmissionUnknown) || errors.Is(err, errLinkedInIdentity) || errors.Is(err, errLinkedInExternal) || errors.Is(err, errLinkedInUnknown)
 }
 
 func logLinkedInResolution(r linkedInResolution, job linkedInJob, attemptID, stage string) {
 	log.Info().Str("attempt_id", attemptID).Str("job_id", job.ID).Str("url", job.URL).
+		Str("observed_url", r.URL).
 		Str("stage", stage).Str("observed_job_id", r.ObservedID).
 		Str("classification", r.Kind).Str("reason_code", r.Reason).
 		Str("control_label", r.Label).Str("control_destination", r.Destination).

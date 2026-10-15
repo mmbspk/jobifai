@@ -44,6 +44,13 @@ func verifyJobIdentity(page *rod.Page, expectedJobPath string) error {
 	if cp != expectedJobPath {
 		return fmt.Errorf("%w: job identity drift: page at %s but declared job is %s", errLinkedInIdentity, info.URL, expectedJobPath)
 	}
+	r, resolveErr := resolveLinkedInJob(page, strings.TrimPrefix(expectedJobPath, "/jobs/view/"), false)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	if !r.IdentityVerified {
+		return r.resolutionError()
+	}
 	return nil
 }
 

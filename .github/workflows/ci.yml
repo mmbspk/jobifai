@@ -34,6 +34,9 @@ jobs:
       - name: LinkedIn resolver DOM regressions
         run: cd web && node --test linkedin-resolver.test.cjs
 
+      - name: LinkedIn historical recovery tests
+        run: python3 -m unittest discover -s scripts -p test_recover_linkedin_identity.py
+
       - name: Lint
         run: |
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest

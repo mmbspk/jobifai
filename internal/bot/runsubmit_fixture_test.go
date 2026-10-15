@@ -58,10 +58,11 @@ func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 	mux.HandleFunc("/jobs/view/123456789/modal", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+<main data-job-id="123456789"><h1>Test Role at TestCo</h1>
 <div role="dialog" aria-label="Easy Apply">
   <button data-live-test-easy-apply-submit-button
           onclick="window.location.href='/jobs/view/999888'">Submit Application</button>
-</div>
+</div></main>
 </body></html>`)
 	})
 	mux.HandleFunc("/jobs/view/999888", func(w http.ResponseWriter, r *http.Request) {

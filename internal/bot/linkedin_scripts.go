@@ -72,7 +72,9 @@ const jsLinkedInResolve = `(expectedID, click = false) => {
  out.identity_verified=true;
  out.reason='control_not_found';
  // Read only a description inside this verified pane, never the whole page.
- const desc=root.querySelector('.jobs-description, .jobs-description-content__text, [data-job-description]');
+ const descriptionSelector='.jobs-description, .jobs-description-content__text, [data-job-description]';
+ const descriptionRoot=verified.find(pane=>pane.contains(root) && pane.querySelector(descriptionSelector)) || root;
+ const desc=descriptionRoot.querySelector(descriptionSelector);
  if(desc && belongs(desc)) out.description=desc.innerText || desc.textContent || '';
  // Prior application evidence must belong to the verified job pane.
  const statuses=all(root,'[data-test-job-apply-button-applied], [aria-label="Applied"], [class*="application-status"], [role="status"]');
@@ -115,12 +117,8 @@ const jsLinkedInResolve = `(expectedID, click = false) => {
  return finish();
 }`
 
-// Compatibility wrappers for existing callers/fixtures. Production callers pass
-// their declared expected ID; the shared resolver remains the only selector.
-const jsLinkedInDetectCTA = `(expectedID) => {
- const id=expectedID || ((location.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'');
- return JSON.parse((` + jsLinkedInResolve + `)(id,false)).kind==='native';
-}`
+// Compatibility wrapper used by existing browser fixtures. Production callers
+// use resolveLinkedInJob with their declared expected ID.
 const jsLinkedInClickCTA = `(expectedID) => {
  const id=expectedID || ((location.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'');
  return JSON.parse((` + jsLinkedInResolve + `)(id,true)).action;
