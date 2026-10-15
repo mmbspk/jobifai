@@ -35,6 +35,11 @@ func linkedInExpectedID(raw string) string {
 	return strings.TrimPrefix(linkedInJobPath(raw), "/jobs/view/")
 }
 
+func linkedInSubmissionConfirmed(page *rod.Page, expectedID, company string) bool {
+	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInSubmissionConfirmed, expectedID, company)
+	return err == nil && value.Value.Bool()
+}
+
 // Resolve and click share one JS execution: a stale Go-side element cannot be
 // clicked after the SPA replaces the selected job. ExpectedID never comes from
 // the currently selected collection job.

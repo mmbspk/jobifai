@@ -13,6 +13,10 @@ import (
 
 // scanApplyStepsForPrepare walks apply steps without uploading files or submitting.
 func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy *lazyDocGen) error {
+	if lazy == nil {
+		return fmt.Errorf("%w: missing declared job", errLinkedInIdentity)
+	}
+	expectedPath := linkedInJobPath(lazy.job.URL)
 	prevStepHash := ""
 	stuckSteps := 0
 	for step := 0; step < 12; step++ {
@@ -20,6 +24,9 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
+		}
+		if err := verifyJobIdentity(page, expectedPath); err != nil {
+			return err
 		}
 		_, _, fillErr := b.fillFormStep(ctx, page, lazy)
 		if fillErr != nil && isFormFillFatalLLM(fillErr) {
@@ -60,6 +67,9 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 			prevStepHash = stepHash
 		}
 
+		if err := verifyJobIdentity(page, expectedPath); err != nil {
+			return err
+		}
 		navLabel, clicked, clickErr := b.clickEasyApplyNavigation(page)
 		if clickErr != nil {
 			return fmt.Errorf("prepare: scan incomplete — navigation click failed: %w", clickErr)

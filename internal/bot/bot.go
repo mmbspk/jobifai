@@ -2101,8 +2101,6 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		return label, false, nil
 	}
 
-	jsSuccess := `(expectedID) => JSON.parse((` + jsLinkedInResolve + `)(expectedID,false)).kind === 'already_applied'`
-
 	// jsStepHash identifies the current Easy Apply step using visible question text
 	// and the section heading inside the modal. Progress % alone is unreliable because
 	// LinkedIn only updates it at major milestones, not on every individual step.
@@ -2188,11 +2186,9 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if err := verifyJobIdentity(page, expectedJobPath); err != nil {
 			return err
 		}
-		if res, err := page.Timeout(10*time.Second).Eval(jsSuccess, linkedInExpectedID(lazy.job.URL)); err == nil && res.Value.Bool() {
+		if submitClicked && linkedInSubmissionConfirmed(page, linkedInExpectedID(lazy.job.URL), lazy.job.Company) {
 			log.Info().Msg("easy apply: success detected")
 			return nil
-		} else if isCDPFatal(err) {
-			return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
 		}
 
 		// Check whether the modal actually advanced since the previous click.
@@ -2341,7 +2337,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 				if err := verifyJobIdentity(page, expectedJobPath); err != nil {
 					return err
 				}
-				if b.linkedInPageApplied(page, linkedInExpectedID(lazy.job.URL)) {
+				if linkedInSubmissionConfirmed(page, linkedInExpectedID(lazy.job.URL), lazy.job.Company) {
 					return nil
 				}
 				time.Sleep(300 * time.Millisecond)

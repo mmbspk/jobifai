@@ -93,12 +93,22 @@ func TestLinkedInReviewOutcome(t *testing.T) {
 	}
 }
 
+func TestLinkedInPrepare_DriftStopsBeforeFormScan(t *testing.T) {
+	br := launchTestBrowser(t)
+	srv := fixtureServer(t, "4478417422", "", `<main data-job-id="4478417422"><button>Next</button></main>`, "")
+	page := navigateAndWait(t, br, srv.URL+"/jobs/view/4478417422")
+	b := &Bot{}
+	lazy := &lazyDocGen{b: b, job: linkedInJob{ID: "4479748087", URL: srv.URL + "/jobs/view/4479748087"}, reviewPrepareOnly: true}
+	require.ErrorIs(t, b.scanApplyStepsForPrepare(context.Background(), page, lazy), errLinkedInIdentity)
+	require.False(t, lazy.prepareScanComplete)
+}
+
 func TestSubmitEasyApply_VerifiedNativeConfirmation(t *testing.T) {
 	br := launchTestBrowser(t)
 	html := `<main data-job-id="4479748087"><h1>Verified role</h1>
  <button onclick="this.remove();document.getElementById('modal').style.display='block'">Easy Apply</button>
  <div id="modal" class="jobs-easy-apply-modal" role="dialog" aria-label="Easy Apply" style="display:none">
- <button data-live-test-easy-apply-submit-button onclick="this.parentElement.remove();document.querySelector('main').insertAdjacentHTML('beforeend','<div role=&quot;status&quot;>Application submitted</div>')">Submit application</button>
+ <button data-live-test-easy-apply-submit-button onclick="this.parentElement.innerHTML='Your application was sent to Company'">Submit application</button>
  </div></main>`
 	srv := fixtureServer(t, "4479748087", "", html, "")
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -114,4 +124,16 @@ func TestSubmitEasyApply_VerifiedNativeConfirmation(t *testing.T) {
 	var outcome string
 	require.NoError(t, db.QueryRow(`SELECT outcome FROM apply_attempts WHERE user_id='u1' AND job_id=?`, job.ID).Scan(&outcome))
 	require.Equal(t, string(OutcomeSubmittedConfirmed), outcome)
+}
+
+func TestLinkedInConfirmation_RequiresVerifiedJobAndEmployer(t *testing.T) {
+	br := launchTestBrowser(t)
+	html := `<main data-job-id="4479748087"><h1>Role</h1><button>Easy Apply</button></main><div role="dialog">Your application was sent to OtherCo</div>`
+	srv := fixtureServer(t, "4479748087", "", html, "")
+	page := navigateAndWait(t, br, srv.URL+"/jobs/view/4479748087")
+	require.False(t, linkedInSubmissionConfirmed(page, "4479748087", "Company"))
+	_, err := page.Eval(`() => document.querySelector('[role="dialog"]').textContent='Your application was sent to Company'`)
+	require.NoError(t, err)
+	require.True(t, linkedInSubmissionConfirmed(page, "4479748087", "Company"))
+	require.False(t, linkedInSubmissionConfirmed(page, "4478417422", "Company"))
 }

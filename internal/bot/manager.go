@@ -1558,7 +1558,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 				confirmed = detectSeekPageApplied(jobPage)
 			}
 		default:
-			confirmed = b.linkedInPageApplied(jobPage, linkedInExpectedID(jobURL))
+			confirmed = linkedInSubmissionConfirmed(jobPage, linkedInExpectedID(jobURL), company)
 			if !confirmed {
 				_ = jobPage.Navigate(jobURL)
 				_ = jobPage.Timeout(30 * time.Second).WaitLoad()

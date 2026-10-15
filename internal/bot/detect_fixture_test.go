@@ -39,7 +39,11 @@ import (
 // connected *rod.Browser. Skips the test if Chromium cannot be launched.
 func launchTestBrowser(t *testing.T) *rod.Browser {
 	t.Helper()
-	u, err := launcher.New().Headless(true).NoSandbox(os.Getenv("CI") != "").Launch()
+	l := launcher.New().Headless(true).NoSandbox(os.Getenv("CI") != "")
+	if bin := os.Getenv("ROD_BROWSER_BIN"); bin != "" {
+		l = l.Bin(bin)
+	}
+	u, err := l.Launch()
 	if err != nil {
 		if os.Getenv("CI") != "" {
 			t.Fatalf("Chromium required in CI: %v", err)

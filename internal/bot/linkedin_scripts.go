@@ -34,11 +34,12 @@ const jsLinkedInResolve = `(expectedID, click = false) => {
    return false;
  };
  const ownID = el => {
-   for(const attr of ['data-job-id','data-job-detail-id','data-entity-urn']) {
+   for(const attr of ['data-job-id','data-job-detail-id']) {
      const v = el.getAttribute(attr);
-     if(v) return v.replace(/^urn:li:jobPosting:/,'');
+     if(v) return v.replace(/^urn:li:(?:fsd_)?jobPosting:/,'');
    }
-   return '';
+   const urn=(el.getAttribute('data-entity-urn') || '').match(/^urn:li:(?:fsd_)?jobPosting:(\d+)$/);
+   return urn ? urn[1] : '';
  };
  // A root must carry the intended ID or a job-title link identifying it. The
  // generic <main> container alone does not prove ownership of its descendants.
@@ -122,4 +123,26 @@ const jsLinkedInResolve = `(expectedID, click = false) => {
 const jsLinkedInClickCTA = `(expectedID) => {
  const id=expectedID || ((location.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'');
  return JSON.parse((` + jsLinkedInResolve + `)(id,true)).action;
+}`
+
+// A completion dialog is evidence only after our Submit click and while the
+// original job is still verified. Employer text must match the declared job.
+// Callers must not use this to infer a prior application before submission.
+const jsLinkedInSubmissionConfirmed = `(expectedID, company) => {
+ const evidence=JSON.parse((` + jsLinkedInResolve + `)(expectedID,false));
+ if(!evidence.identity_verified) return false;
+ if(evidence.kind==='already_applied') return true;
+ const norm=s=>(s||'').toLowerCase().replace(/\s+/g,' ').trim();
+ const employer=norm(company);
+ if(!employer) return false;
+ return [...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content')].some(el=>{
+   if(el.closest('[class*="msg-overlay"], aside, [class*="similar-job"]')) return false;
+   const owner=el.closest('[data-job-id], [data-job-detail-id]');
+   if(owner && (owner.getAttribute('data-job-id') || owner.getAttribute('data-job-detail-id'))!==expectedID) return false;
+   const rect=el.getBoundingClientRect(), style=getComputedStyle(el);
+   if(rect.width<2 || rect.height<2 || style.display==='none' || style.visibility==='hidden') return false;
+   const text=norm(el.innerText || el.textContent);
+   if(text.includes('review your application')) return false;
+   return text.includes(employer) && /application (was sent|submitted)|applied successfully/.test(text);
+ });
 }`
