@@ -1171,8 +1171,8 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 			break
 		}
 		if b.cfg.BrowserMeter != nil {
-			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
-				log.Warn().Err(meterErr).Msg("seek top-matches: browser quota exceeded, stopping")
+			if !DestructiveActionAllowed(b.cfg.BrowserMeter) {
+				log.Warn().Err(b.cfg.BrowserMeter.Err()).Msg("seek top-matches: browser quota exceeded, stopping")
 				return applied
 			}
 		}
@@ -1453,8 +1453,8 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			return ctx.Err()
 		}
 		if b.cfg.BrowserMeter != nil {
-			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
-				return fmt.Errorf("seek apply: %w", meterErr)
+			if !DestructiveActionAllowed(b.cfg.BrowserMeter) {
+				return fmt.Errorf("seek apply: %w", b.cfg.BrowserMeter.Err())
 			}
 		}
 		// Scroll before scan so below-the-fold consent checkboxes are visible.
@@ -1513,8 +1513,8 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if isSubmit {
 			// Guard: quota must not be exhausted mid-run — reject the final submit click.
 			if b.cfg.BrowserMeter != nil {
-				if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
-					return fmt.Errorf("seek apply: quota exhausted before submit: %w", meterErr)
+				if !DestructiveActionAllowed(b.cfg.BrowserMeter) {
+					return fmt.Errorf("seek apply: quota exhausted before submit: %w", b.cfg.BrowserMeter.Err())
 				}
 			}
 			// Final step: ensure consent/terms checkboxes are ticked before submit.
