@@ -91,10 +91,12 @@ func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 	sessions := browser.NewSessionStore(db, secrets)
 
 	const userID = "rs-drift-user"
-	require.NoError(t, cfgStore.Set(userID, "general_settings", domain.GeneralSettings{
+	require.NoError(t, cfgStore.Set(domain.SystemUserID, config.KeyGeneralSettings, domain.GeneralSettings{
 		Browser:       domain.BrowserConfig{RemoteDebugPort: port},
 		HumanBehavior: domain.HumanBehaviorConfig{InteractionPauseMin: 0.01, InteractionPauseMax: 0.02},
 	}))
+	resolved := config.ResolveOperationalSettings(cfgStore, userID, false)
+	require.Equal(t, port, resolved.Browser.RemoteDebugPort, "fixture must use the existing Chrome instead of launching another process")
 	require.NoError(t, cfgStore.Set(userID, "resume_profile", domain.ResumeProfile{
 		Summary: "Test profile.",
 		PersonalInformation: domain.PersonalInformation{
