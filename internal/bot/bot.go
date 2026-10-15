@@ -997,10 +997,8 @@ func (b *Bot) stopReason(ctx context.Context) string {
 		return "context cancelled: " + ctx.Err().Error()
 	default:
 	}
-	if b.cfg.BrowserMeter != nil {
-		if err := b.cfg.BrowserMeter.Err(); err != nil {
-			return "browser automation quota exceeded"
-		}
+	if b.cfg.BrowserMeter != nil && !DestructiveActionAllowed(b.cfg.BrowserMeter) {
+		return "browser automation quota exceeded"
 	}
 	return ""
 }
@@ -2241,10 +2239,8 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 			return ctx.Err()
 		default:
 		}
-		if b.cfg.BrowserMeter != nil {
-			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
-				return fmt.Errorf("easy apply: %w", meterErr)
-			}
+		if b.cfg.BrowserMeter != nil && !DestructiveActionAllowed(b.cfg.BrowserMeter) {
+			return fmt.Errorf("easy apply: %w", b.cfg.BrowserMeter.Err())
 		}
 
 		b.interactionPause()
@@ -2317,10 +2313,8 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) e
 		}
 
 		// Final pre-click guard: reject if quota expired during form-fill phase.
-		if b.cfg.BrowserMeter != nil {
-			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
-				return fmt.Errorf("easy apply: %w", meterErr)
-			}
+		if b.cfg.BrowserMeter != nil && !DestructiveActionAllowed(b.cfg.BrowserMeter) {
+			return fmt.Errorf("easy apply: %w", b.cfg.BrowserMeter.Err())
 		}
 
 		// Identity check immediately before advancing — fail-closed: any unverifiable identity blocks the click.
@@ -2497,11 +2491,9 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			return applied
 		}
 		// Respect billing quota: stop if a mid-run bucket charge failed.
-		if b.cfg.BrowserMeter != nil {
-			if meterErr := b.cfg.BrowserMeter.Err(); meterErr != nil {
-				log.Warn().Err(meterErr).Msg("approved queue: browser quota exceeded, stopping")
-				return applied
-			}
+		if b.cfg.BrowserMeter != nil && !DestructiveActionAllowed(b.cfg.BrowserMeter) {
+			log.Warn().Err(b.cfg.BrowserMeter.Err()).Msg("approved queue: browser quota exceeded, stopping")
+			return applied
 		}
 		jobPlatform := j.Platform
 		if jobPlatform == "" {
