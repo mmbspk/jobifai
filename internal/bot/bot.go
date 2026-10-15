@@ -1235,29 +1235,38 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 		return false
 	}
 
-	// Open the job page once — authoritative Easy Apply detection before scoring/apply.
+	// Open the job page — authoritative Easy Apply detection and description extraction.
+	// fetchJob (HTTP) is deferred to after identity is confirmed; using content from a
+	// redirected page (expired listing → similar-jobs collections) against the original
+	// job_id would produce corrupt scores and potentially apply to the wrong listing.
 	easyApply := job.EasyApply
-	details := b.fetchJob(ctx, job)
+	var details scraper.JobDetails
 	if jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL}); err == nil {
 		_ = jobPage.Timeout(30 * time.Second).WaitLoad()
-		// Verify the page landed on the expected job before trusting Easy Apply detection.
-		// LinkedIn may redirect expired listings to a similar-jobs collections page that
-		// highlights a different job — whose Easy Apply button the detector would find,
-		// causing an apply attempt against the wrong listing.
-		if expectedPath := linkedInJobPath(job.URL); expectedPath != "" && verifyJobIdentity(jobPage, expectedPath) != nil {
-			log.Info().Str("job_id", job.ID).Str("url", job.URL).
-				Str("role", job.Title).Str("company", job.Company).
-				Msg("linkedin: page redirected away from declared job — routing to Top Matches as non-Easy Apply")
-			easyApply = false
-		} else {
-			easyApply = detectLinkedInEasyApply(jobPage)
+		// Verify the page is the declared job before consuming any of its content.
+		if expectedPath := linkedInJobPath(job.URL); expectedPath != "" {
+			if idErr := verifyJobIdentity(jobPage, expectedPath); idErr != nil {
+				_ = jobPage.Close()
+				log.Info().Err(idErr).
+					Str("job_id", job.ID).Str("url", job.URL).
+					Str("role", job.Title).Str("company", job.Company).
+					Msg("linkedin: listing page unavailable — skipping")
+				b.recordSkipped(job, "linkedin: listing unavailable: "+idErr.Error(), 0, "", nil)
+				return false
+			}
 		}
+		easyApply = detectLinkedInEasyApply(jobPage)
 		if pageDetails, err := jobPage.HTML(); err == nil {
 			if parsed := scraper.ParseHTML(pageDetails); len(strings.TrimSpace(parsed.Description)) >= 100 {
 				details = parsed
 			}
 		}
 		_ = jobPage.Close()
+	}
+	// HTTP fallback when the browser page didn't yield sufficient description content.
+	// Only reached when the identity check above passed (or when the URL has no job path).
+	if len(strings.TrimSpace(details.Description)) < 100 {
+		details = b.fetchJob(ctx, job)
 	}
 	if details.PostedDate == "" {
 		details.PostedDate = job.PostedDate
