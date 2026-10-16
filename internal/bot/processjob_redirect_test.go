@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,8 +39,8 @@ func TestProcessJob_ListingResolution(t *testing.T) {
 	}{
 		{"collections redirect", "/jobs/collections/similar-jobs/?currentJobId=4478417422&referenceJobId=4479748087", `<main data-job-id="4478417422"><h1>Wrong role</h1><button>Easy Apply</button></main>`, false},
 		{"non-job redirect", "/jobs/not-found", `<main>Unable to load listing</main>`, false},
-		{"external with recommendation", "", `<main data-job-id="4479748087"><h1>Principal Developer at MYOB</h1><a href="https://employer.example/apply">Apply</a><section data-job-id="4478417422"><button>Easy Apply</button></section></main>`, true},
-		{"thin description", "", `<main data-job-id="4479748087"><h1>Principal Developer at MYOB</h1><a href="https://employer.example/apply">Apply</a><div data-job-description>Short description.</div></main>`, true},
+		{"external with recommendation", "", `<main data-job-id="4479748087"><h1>Principal Developer at MYOB</h1><div data-job-description>` + verifiedDescription + `</div><a href="https://employer.example/apply">Apply</a><section data-job-id="4478417422"><button>Easy Apply</button></section></main>`, true},
+		{"thin description", "", `<main data-job-id="4479748087"><h1>Principal Developer at MYOB</h1><a href="https://employer.example/apply">Apply</a><div data-job-description>Short description.</div></main>`, false},
 		{"URL correct but stale pane", "", `<main data-job-id="4478417422"><button>Easy Apply</button></main>`, false},
 		{"verified listing without recognized control", "", `<main data-job-id="4479748087"><h1>Principal Developer at MYOB</h1><div data-job-description>` + verifiedDescription + `</div><button>Continue to employer</button></main>`, true},
 	} {
@@ -63,29 +64,31 @@ func TestProcessJob_ListingResolution(t *testing.T) {
 			require.False(t, b.processJob(context.Background(), br, job))
 			var count int
 			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id='u1'`).Scan(&count))
-			require.Zero(t, count)
+			failure := !tc.scored || tc.name == "verified listing without recognized control"
+			if failure {
+				require.Equal(t, 1, count)
+			} else {
+				require.Zero(t, count)
+			}
 			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_applied WHERE user_id='u1'`).Scan(&count))
 			require.Zero(t, count)
-			var easy bool
-			var pack string
-			require.NoError(t, db.QueryRow(`SELECT easy_apply,document_refs_json FROM jobs_pending_review WHERE job_id=? AND user_id='u1'`, job.ID).Scan(&easy, &pack))
-			require.False(t, easy)
 			if tc.scored {
-				if tc.name == "verified listing without recognized control" {
-					require.Equal(t, strings.TrimSpace(verifiedDescription), strings.TrimSpace(scorer.gotDesc))
-					require.Contains(t, pack, "control_not_found")
-				} else {
-					require.Equal(t, "Principal Developer at MYOB", scorer.gotDesc)
-				}
+				require.Contains(t, scorer.gotDesc, strings.TrimSpace(verifiedDescription))
+				require.Contains(t, scorer.gotDesc, "Company: MYOB")
 				var score int
 				var reasoning string
-				require.NoError(t, db.QueryRow(`SELECT suitability_score,suitability_reasoning FROM jobs_pending_review WHERE job_id=? AND user_id='u1'`, job.ID).Scan(&score, &reasoning))
+				query := `SELECT suitability_score,suitability_reasoning FROM jobs_pending_review WHERE job_id=? AND user_id='u1'`
+				if failure {
+					query = `SELECT suitability_score,suitability_reasoning FROM jobs_skipped WHERE id=? AND user_id='u1'`
+				}
+				require.NoError(t, db.QueryRow(query, job.ID).Scan(&score, &reasoning))
 				require.Equal(t, 8, score)
 				require.Equal(t, "Evaluated verified listing", reasoning)
 			} else {
 				require.Empty(t, scorer.gotDesc)
-				require.Contains(t, pack, "Could not verify")
-				require.Contains(t, pack, "listing_review_diagnostic")
+				var diagnostic string
+				require.NoError(t, db.QueryRow(`SELECT failure_details_json FROM jobs_skipped WHERE id=? AND user_id='u1'`, job.ID).Scan(&diagnostic))
+				require.NotEmpty(t, diagnostic)
 			}
 		})
 	}
@@ -93,7 +96,7 @@ func TestProcessJob_ListingResolution(t *testing.T) {
 
 func TestProcessJob_UnrecognizedControlStillRejectsLowScore(t *testing.T) {
 	br := launchTestBrowser(t)
-	srv := fixtureServer(t, "4479748087", "", `<main data-job-id="4479748087"><h1>Role</h1><button>Continue to employer</button></main>`, "")
+	srv := fixtureServer(t, "4479748087", "", `<main data-job-id="4479748087"><h1>Role</h1><div data-job-description>`+strings.Repeat("Actual job responsibilities and requirements. ", 5)+`</div><button>Continue to employer</button></main>`, "")
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
 	defer db.Close()
@@ -119,7 +122,55 @@ func TestProcessJob_BrowserFailurePreservesReview(t *testing.T) {
 	require.False(t, b.processJob(context.Background(), br, linkedInJob{ID: "4479748087", URL: "https://www.linkedin.com/jobs/view/4479748087", Title: "Role", Company: "Company"}))
 	var count int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id='u1'`).Scan(&count))
-	require.Zero(t, count)
-	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id='u1'`).Scan(&count))
 	require.Equal(t, 1, count)
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id='u1'`).Scan(&count))
+	require.Zero(t, count)
+}
+
+func TestProcessJob_CapturedSDUIExternal_IsScored(t *testing.T) {
+	br := launchTestBrowser(t)
+	html, err := os.ReadFile(filepath.Join("testdata", "linkedin", "sdui-external.html"))
+	require.NoError(t, err)
+	srv := fixtureServer(t, "4479800927", "", string(html), "")
+	db := testDB(t)
+	scorer := &capturingScorer{}
+	b := &Bot{cfg: Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer}, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
+	job := linkedInJob{ID: "4479800927", URL: srv.URL + "/jobs/view/4479800927", Title: "Mid-Level Product Manager", Company: "Zeller"}
+	require.False(t, b.processJob(context.Background(), br, job))
+	require.Contains(t, scorer.gotDesc, "Project Delivery:")
+	require.Greater(t, len(scorer.gotDesc), 1000)
+	var score int
+	var reasoning string
+	var easy bool
+	require.NoError(t, db.QueryRow(`SELECT suitability_score,suitability_reasoning,easy_apply FROM jobs_pending_review WHERE user_id='u1' AND job_id=?`, job.ID).Scan(&score, &reasoning, &easy))
+	require.Equal(t, 8, score)
+	require.Equal(t, "Evaluated verified listing", reasoning)
+	require.False(t, easy)
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_applied WHERE user_id='u1'`).Scan(&count))
+	require.Zero(t, count)
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id='u1'`).Scan(&count))
+	require.Zero(t, count)
+}
+
+func TestEvaluationRetry_CapturedExternalRechecksAndScores(t *testing.T) {
+	br := launchTestBrowser(t)
+	html, err := os.ReadFile(filepath.Join("testdata", "linkedin", "sdui-external.html"))
+	require.NoError(t, err)
+	srv := fixtureServer(t, "4479800927", "", string(html), "")
+	db := testDB(t)
+	scorer := &capturingScorer{}
+	b := New(Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer})
+	url := srv.URL + "/jobs/view/4479800927"
+	_, err = db.Exec(`INSERT INTO jobs_approved_queue(job_id,user_id,platform,company,role,location,link,approved_at,needs_evaluation) VALUES('4479800927','u1','linkedin','Zeller','Mid-Level Product Manager','Melbourne',?,datetime('now'),1)`, url)
+	require.NoError(t, err)
+	b.seenCache.mark("4479800927", seenSkipped)
+	require.Zero(t, b.processApprovedQueue(context.Background(), br, 10))
+	require.Contains(t, scorer.gotDesc, "Project Delivery:")
+	var score int
+	require.NoError(t, db.QueryRow(`SELECT suitability_score FROM jobs_pending_review WHERE user_id='u1' AND job_id='4479800927'`).Scan(&score))
+	require.Equal(t, 8, score)
+	var queued int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_approved_queue WHERE user_id='u1'`).Scan(&queued))
+	require.Zero(t, queued)
 }

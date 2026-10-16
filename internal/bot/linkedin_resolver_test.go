@@ -6,9 +6,60 @@ import (
 	"github.com/stretchr/testify/require"
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/llm"
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestLinkedInResolver_CapturedSDUIPages(t *testing.T) {
+	for _, tc := range []struct{ name, id, kind, description string }{
+		{"external", "4479800927", "external", "Project Delivery:"},
+		{"native", "4477930880", "native", "Australian citizenship"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			br := launchTestBrowser(t)
+			html, err := os.ReadFile(filepath.Join("testdata", "linkedin", "sdui-"+tc.name+".html"))
+			require.NoError(t, err)
+			srv := fixtureServer(t, tc.id, "", string(html), "")
+			page := navigateAndWait(t, br, srv.URL+"/jobs/view/"+tc.id)
+			r, err := resolveLinkedInJob(page, tc.id, false)
+			require.NoError(t, err)
+			require.True(t, r.IdentityVerified)
+			require.Equal(t, tc.kind, r.Kind)
+			require.Contains(t, r.Description, tc.description)
+			require.Greater(t, len(r.Description), 1000)
+			require.NotContains(t, r.Description, "More jobs")
+			require.NoError(t, verifyJobIdentity(page, "/jobs/view/"+tc.id))
+		})
+	}
+}
+
+func TestSubmitEasyApply_CapturedSDUINative(t *testing.T) {
+	br := launchTestBrowser(t)
+	html, err := os.ReadFile(filepath.Join("testdata", "linkedin", "sdui-native.html"))
+	require.NoError(t, err)
+	// Keep the captured listing header/description intact. Only the modal and
+	// its confirmation are synthetic; this never connects to LinkedIn.
+	html = append(html, []byte(`<script>
+document.querySelector('[aria-label="Easy Apply to this job"]').onclick=function(){
+ this.remove();
+ const modal=document.createElement('div');
+ modal.className='jobs-easy-apply-modal';modal.setAttribute('role','dialog');modal.setAttribute('aria-label','Easy Apply');
+ const submit=document.createElement('button');submit.setAttribute('data-live-test-easy-apply-submit-button','');submit.textContent='Submit application';
+ submit.onclick=()=>{modal.textContent='Your application was sent to Exceed Global';};
+ modal.appendChild(submit);document.body.appendChild(modal);
+};
+</script>`)...)
+	srv := fixtureServer(t, "4477930880", "", string(html), "")
+	db := testDB(t)
+	b := &Bot{cfg: Config{DB: db, UserID: "u1"}, stopCh: make(chan struct{})}
+	job := linkedInJob{ID: "4477930880", URL: srv.URL + "/jobs/view/4477930880", Title: "Principal Software Engineer (EL2)", Company: "Exceed Global"}
+	lazy := &lazyDocGen{b: b, job: job, ctx: context.Background()}
+	require.True(t, b.submitEasyApply(context.Background(), br, job, lazy, 8, "Evaluated intended listing", nil, llm.UsageSnapshot{}))
+	var outcome string
+	require.NoError(t, db.QueryRow(`SELECT outcome FROM apply_attempts WHERE user_id='u1' AND job_id=?`, job.ID).Scan(&outcome))
+	require.Equal(t, string(OutcomeSubmittedConfirmed), outcome)
+}
 
 func TestLinkedInResolver_DetectAndClickAgree(t *testing.T) {
 	br := launchTestBrowser(t)
@@ -58,6 +109,8 @@ func TestLinkedInReview_PreservesDocumentsAndUserScope(t *testing.T) {
 	defer db.Close()
 	b := &Bot{cfg: Config{DB: db, UserID: "u1"}, seenCache: newJobSeenCache()}
 	job := linkedInJob{ID: "4479748087", URL: "https://www.linkedin.com/jobs/view/4479748087", Title: "Role", Company: "Company"}
+	_, err = db.Exec(`INSERT INTO jobs_pending_review(job_id,user_id,company,role,platform,link,document_refs_json,created_at) VALUES(?, 'u1','Company','Role','linkedin',?,'{"resume":"prepared"}',datetime('now'))`, job.ID, job.URL)
+	require.NoError(t, err)
 	b.preserveLinkedInReview(context.Background(), job, 8, "match", errLinkedInIdentity)
 	_, err = db.Exec(`UPDATE jobs_pending_review SET resume_path='existing.pdf', attempt_count=1 WHERE job_id=?`, job.ID)
 	require.NoError(t, err)
@@ -67,11 +120,14 @@ func TestLinkedInReview_PreservesDocumentsAndUserScope(t *testing.T) {
 	require.NoError(t, db.QueryRow(`SELECT resume_path,attempt_count,document_refs_json FROM jobs_pending_review WHERE job_id=? AND user_id='u1'`, job.ID).Scan(&path, &attempts, &pack))
 	require.Equal(t, "existing.pdf", path)
 	require.Equal(t, 1, attempts)
-	require.Contains(t, pack, "Submission was attempted")
+	require.Contains(t, pack, "prepared")
+	var reason string
+	require.NoError(t, db.QueryRow(`SELECT skip_reason FROM jobs_skipped WHERE id=? AND user_id='u1'`, job.ID).Scan(&reason))
+	require.Contains(t, reason, "submission_unknown")
 	other := &Bot{cfg: Config{DB: db, UserID: "u2"}}
 	other.preserveLinkedInReview(context.Background(), job, 8, "", errLinkedInIdentity)
 	require.NoError(t, db.QueryRow(`SELECT document_refs_json FROM jobs_pending_review WHERE job_id=? AND user_id='u1'`, job.ID).Scan(&pack))
-	require.Contains(t, pack, "Submission was attempted")
+	require.Contains(t, pack, "prepared")
 }
 
 func TestLinkedInReviewOutcome(t *testing.T) {
@@ -100,7 +156,7 @@ func TestLinkedInReview_ScoredHoldRetainsHalalVerdict(t *testing.T) {
 	b.preserveLinkedInReviewWithVerdict(context.Background(), job, 8, "Evaluated intended listing", []byte(`{"verdict":"DOUBTFUL"}`), errLinkedInUnknown)
 	var score int
 	var reasoning, verdict string
-	require.NoError(t, db.QueryRow(`SELECT suitability_score,suitability_reasoning,halal_verdict FROM jobs_pending_review WHERE job_id='123' AND user_id='u1'`).Scan(&score, &reasoning, &verdict))
+	require.NoError(t, db.QueryRow(`SELECT suitability_score,suitability_reasoning,halal_verdict FROM jobs_skipped WHERE id='123' AND user_id='u1'`).Scan(&score, &reasoning, &verdict))
 	require.Equal(t, 8, score)
 	require.Equal(t, "Evaluated intended listing", reasoning)
 	require.Contains(t, verdict, "DOUBTFUL")

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CheckCheck, ChevronDown, ExternalLink, Play, RotateCcw, Trash2 } from 'lucide-react'
+import { CheckCheck, ChevronDown, ExternalLink, Play, Trash2 } from 'lucide-react'
 import { cn, formatDate, relativeTime } from '../../lib'
 import type { SkippedJob } from '../../types'
 import { PlatformBadge } from '../PlatformBadge'
@@ -12,18 +12,19 @@ interface Props {
   readonly job: SkippedJob
   readonly halalEnabled: boolean
   readonly onRetry: (id: string) => void
-  readonly onRequeue: (id: string) => void
   readonly onMarkApplied: (id: string) => void
   readonly onDelete: (id: string) => void
   readonly actionPending: boolean
 }
 
 export function CannotApplyJobItem({
-  job, halalEnabled, onRetry, onRequeue, onMarkApplied, onDelete, actionPending,
+  job, halalEnabled, onRetry, onMarkApplied, onDelete, actionPending,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const expandable = !!(job.suitability_reasoning || (halalEnabled && job.halal_verdict))
+  const submissionUnknown = /submission_unknown|submission status is unknown|could not be confirmed/i.test(job.skip_reason)
+  const failureMessage = job.skip_reason.replace(/^(easy apply|seek apply|quick apply):\s*(\[[^\]]+\]\s*)?/i, '')
 
   return (
     <div className="border-b border-[var(--color-border-subtle)] last:border-0">
@@ -36,8 +37,8 @@ export function CannotApplyJobItem({
             <div className="min-w-0">
               <p className="font-semibold text-[var(--color-text)]">{job.role}</p>
               <p className="text-sm text-[var(--color-text-muted)]">{job.company}{job.location ? ` · ${job.location}` : ''}</p>
-              <p className="text-xs font-medium text-[var(--color-warn)] mt-2">Manual step required</p>
-              <p className="text-xs text-[var(--color-text-dim)] mt-1">{job.skip_reason}</p>
+              <p className="text-xs font-medium text-[var(--color-warn)] mt-2">{submissionUnknown ? 'Check submission status' : 'Automation needs attention'}</p>
+              <p className="text-xs text-[var(--color-text-dim)] mt-1">{failureMessage}</p>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <PlatformBadge platform={job.platform} size="sm" />
@@ -55,11 +56,8 @@ export function CannotApplyJobItem({
             <Button variant="ghost" size="sm" leftIcon={<CheckCheck size={12} />} disabled={actionPending} onClick={() => onMarkApplied(job.id)}>
               Mark applied
             </Button>
-            <Button variant="ghost" size="sm" leftIcon={<Play size={12} />} disabled={actionPending} onClick={() => onRetry(job.id)}>
-              Retry
-            </Button>
-            <Button variant="ghost" size="sm" leftIcon={<RotateCcw size={12} />} disabled={actionPending} onClick={() => onRequeue(job.id)}>
-              Re-queue
+            <Button variant="ghost" size="sm" leftIcon={<Play size={12} />} disabled={actionPending || submissionUnknown} onClick={() => onRetry(job.id)} title="Recheck the listing and suitability before applying">
+              Re-evaluate
             </Button>
             {confirmDelete ? (
               <span className="flex items-center gap-1 text-xs self-center">

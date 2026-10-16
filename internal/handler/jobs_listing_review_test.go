@@ -23,7 +23,7 @@ func TestTopMatches_RequiresScoreEvenForListingReview(t *testing.T) {
 		{"low-score", userID, `{}`, 3},
 		{"low-score-review", userID, `{"listing_review_required":true}`, 5},
 		{"qualified", userID, `{}`, 8},
-		{"qualified-review", userID, `{"listing_review_required":true}`, 9},
+		{"qualified-review", userID, `{"listing_review_required":true,"hold_reason":"Apply on the employer's website."}`, 9},
 		{"foreign", "other-user", `{"listing_review_required":true}`, 0},
 	} {
 		_, err := db.Exec(`INSERT INTO jobs_pending_review(job_id,user_id,company,role,platform,link,suitability_score,easy_apply,document_refs_json,created_at) VALUES(?,?, 'Company','Role','linkedin','https://www.linkedin.com/jobs/view/123',?,0,?,datetime('now'))`, row.id, row.user, row.score, row.pack)
@@ -46,8 +46,6 @@ func TestTopMatches_RequiresScoreEvenForListingReview(t *testing.T) {
 	rows = nil
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&rows))
 	require.Len(t, rows, 2)
-	require.Equal(t, "low-score-review", rows[0].JobID)
-	require.Equal(t, "review", rows[1].JobID)
-	require.Zero(t, rows[1].SuitabilityScore)
-	require.Contains(t, rows[1].DocumentRefsJSON, "Could not verify listing")
+	require.Equal(t, "qualified-review", rows[0].JobID)
+	require.Equal(t, "qualified", rows[1].JobID)
 }

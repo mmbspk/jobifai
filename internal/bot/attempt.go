@@ -11,20 +11,52 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Persist intent before dispatch: losing the browser response must never turn
+// a possibly submitted application into an ordinary retryable failure.
+func unresolvedSubmission(db *sql.DB, userID, jobID, url, currentAttempt string) error {
+	if db == nil {
+		return nil
+	}
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM apply_attempts WHERE user_id=? AND (job_id=? OR url=?) AND id<>? AND outcome IN ('submission_unknown','in_progress')`, userID, jobID, url, currentAttempt).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check previous submission: %w", err)
+	}
+	if count > 0 {
+		return fmt.Errorf("an earlier application is unresolved or active; reconcile it before retrying")
+	}
+	return nil
+}
+
+func markAttemptSubmitDispatch(db *sql.DB, attemptID, userID string) error {
+	if db == nil || attemptID == "" {
+		return nil
+	}
+	r, err := db.Exec(`UPDATE apply_attempts SET stage='submit_dispatch',reason_code='submit_dispatch' WHERE id=? AND user_id=? AND outcome='in_progress'`, attemptID, userID)
+	if err != nil {
+		return fmt.Errorf("persist submit intent: %w", err)
+	}
+	n, err := r.RowsAffected()
+	if err != nil || n != 1 {
+		return fmt.Errorf("persist submit intent: active attempt missing")
+	}
+	return nil
+}
+
 // AttemptOutcome is the terminal state of an application attempt.
 type AttemptOutcome string
 
 const (
-	OutcomeInProgress        AttemptOutcome = "in_progress"
+	OutcomeInProgress         AttemptOutcome = "in_progress"
 	OutcomeSubmittedConfirmed AttemptOutcome = "submitted_confirmed"
-	OutcomeAlreadyApplied    AttemptOutcome = "already_applied"
-	OutcomeFailed            AttemptOutcome = "failed"
-	OutcomeCancelled         AttemptOutcome = "cancelled"
-	OutcomeTimedOut          AttemptOutcome = "timed_out"
-	OutcomeBlocked           AttemptOutcome = "blocked"
-	OutcomeSkipped           AttemptOutcome = "skipped"
-	OutcomeSubmissionUnknown AttemptOutcome = "submission_unknown"
-	OutcomeInterrupted       AttemptOutcome = "interrupted"
+	OutcomeAlreadyApplied     AttemptOutcome = "already_applied"
+	OutcomeFailed             AttemptOutcome = "failed"
+	OutcomeCancelled          AttemptOutcome = "cancelled"
+	OutcomeTimedOut           AttemptOutcome = "timed_out"
+	OutcomeBlocked            AttemptOutcome = "blocked"
+	OutcomeSkipped            AttemptOutcome = "skipped"
+	OutcomeSubmissionUnknown  AttemptOutcome = "submission_unknown"
+	OutcomeInterrupted        AttemptOutcome = "interrupted"
 )
 
 // AttemptContext carries diagnostic identity for one application attempt.

@@ -131,7 +131,7 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 		`SELECT job_id,company,role,COALESCE(location,''),platform,link,resume_path,cover_letter_path,
 		        COALESCE(resume_content_version_id,''),COALESCE(cover_letter_content_version_id,''),COALESCE(document_refs_json,''),
 		        suitability_score,easy_apply,COALESCE(halal_verdict,''),created_at
-		 FROM jobs_pending_review WHERE user_id = ? AND easy_apply = 1 ORDER BY created_at DESC`, userID)
+		 FROM jobs_pending_review WHERE user_id = ? AND easy_apply = 1 AND NOT EXISTS (SELECT 1 FROM jobs_skipped s WHERE s.user_id=jobs_pending_review.user_id AND s.id=jobs_pending_review.job_id) ORDER BY created_at DESC`, userID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return

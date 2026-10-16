@@ -2,7 +2,6 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { useMemo, useState } from 'react'
 import { TrendingUp } from 'lucide-react'
 import { TopMatchJobItem } from '../components/jobs/top-match-job-item'
-import { Button } from '../components/ui/button'
 import {
   InfoBanner,
   JobListEmpty,
@@ -22,12 +21,11 @@ const PAGE_SIZE = 50
 export function TopMatches() {
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
-  const [needsVerification, setNeedsVerification] = useState(false)
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery({
-    queryKey: ['jobs-top-matches', needsVerification],
+    queryKey: ['jobs-top-matches'],
     queryFn: ({ pageParam = 0 }) =>
-      jobsApi.topMatches({ limit: PAGE_SIZE, offset: pageParam, needs_verification: needsVerification }),
+      jobsApi.topMatches({ limit: PAGE_SIZE, offset: pageParam }),
     initialPageParam: 0,
     getNextPageParam: (last, all) =>
       last.length === PAGE_SIZE ? all.flat().length : undefined,
@@ -84,18 +82,14 @@ export function TopMatches() {
 
   return (
     <JobListPage
-      title={needsVerification ? 'Needs verification' : 'Top Matches'}
-      description={needsVerification ? 'Held listings that have not qualified as matches.' : 'Strong matches for manual application.'}
+      title="Top Matches"
+      description="Strong matches for manual application."
     >
       <InfoBanner variant="accent">
         <TrendingUp size={18} className="shrink-0 text-[var(--color-accent)] mt-0.5" />
-        <span>{needsVerification ? 'These listings are held because verification or evaluation could not be completed. They are not Top Matches.' : 'Only roles at or above your suitability threshold appear here. Apply manually or mark applied when done.'}</span>
+        <span>Only roles at or above your suitability threshold appear here. Apply manually or mark applied when done.</span>
       </InfoBanner>
 
-      <div role="group" aria-label="Listing view" className="flex gap-3">
-        <Button type="button" size="sm" variant={!needsVerification ? 'primary' : 'secondary'} aria-pressed={!needsVerification} onClick={() => setNeedsVerification(false)}>Top Matches</Button>
-        <Button type="button" size="sm" variant={needsVerification ? 'primary' : 'secondary'} aria-pressed={needsVerification} onClick={() => setNeedsVerification(true)}>Needs verification</Button>
-      </div>
 
       <JobSearchBar value={search} onChange={setSearch} />
 
@@ -103,7 +97,7 @@ export function TopMatches() {
         {isLoading && <JobListSkeleton />}
         {!isLoading && filtered.length === 0 && (
           <JobListEmpty
-            message={needsVerification ? 'No listings awaiting verification.' : "No strong manual matches yet. Jobifai will add high-scoring roles here when automated application isn't available."}
+            message="No strong manual matches yet. Jobifai will add high-scoring roles here when automated application isn't available."
           />
         )}
         {filtered.map(job => (
@@ -111,7 +105,6 @@ export function TopMatches() {
             key={job.job_id}
             job={job}
             halalEnabled={halalEnabled}
-            verificationOnly={needsVerification}
             pending={pending}
             onMarkApplied={id => applyMutation.mutate(id)}
             onDelete={id => deleteMutation.mutate(id)}

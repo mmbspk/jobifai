@@ -585,7 +585,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	// rather than a confirmed apply. Leaves jobs_pending_review intact so the user can
 	// reconcile the submission manually (the application may have gone through on a different job).
 	if domain.Platform(req.Platform) == domain.PlatformLinkedIn {
-		if err := verifyJobIdentity(jobPage, linkedInJobPath(req.Link)); err != nil {
+		if err := verifyLinkedInCompletion(jobPage, req.Link, req.Company); err != nil {
 			log.Error().Err(err).
 				Str("attempt_id", ac.AttemptID).
 				Str("job_id", req.JobID).
@@ -593,6 +593,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 				Str("company", req.Company).
 				Str("role", req.Role).
 				Msg("approve: post-apply identity check failed — preserving job for reconciliation")
+			b.recordListingFailure(ctx, domain.PlatformLinkedIn, linkedInJob{ID: req.JobID, URL: req.Link, Title: req.Role, Company: req.Company}, score, "", []byte(halalVerdict), fmt.Errorf("%w: %v", errLinkedInSubmissionUnknown, err))
 			_, _ = m.db.Exec(`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, req.JobID, userID)
 			finishAttempt(m.db, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
 			return fmt.Errorf("approve: post-apply identity verification failed: %w", err)
@@ -1382,8 +1383,8 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		applyLabel = "quick apply"
 	}
 
-	// STEP 1: Easy/Quick Apply check BEFORE scoring — external Apply jobs must fail
-	// fast so the UI does not sit on "Submitting application…" during an LLM score.
+	// Classify before evaluating. External listings still need real suitability
+	// evaluation before they can be saved as Top Matches.
 	var isEasyApply bool
 	switch platform {
 	case domain.PlatformSeek:
@@ -1392,86 +1393,102 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		isEasyApply = linkedInResolved.Kind == "native"
 	}
 
-	// Extract job description from the already-loaded page (needed for score + pending).
-	jobDesc := role + " at " + company
+	job := linkedInJob{ID: jobID, URL: jobURL, Title: role, Company: company, Location: location}
+	jobDesc := ""
 	if platform == domain.PlatformLinkedIn {
-		if len(strings.TrimSpace(linkedInResolved.Description)) >= 100 {
-			jobDesc = linkedInResolved.Description
-		}
-	} else if rawHTML, htmlErr := jobPage.HTML(); htmlErr == nil {
-		if d := scraper.ParseHTML(rawHTML); len(strings.TrimSpace(d.Description)) >= 100 {
-			jobDesc = d.Description
-		}
-	}
-
-	if !isEasyApply {
-		// Light score for Top Matches context — bounded so this path cannot hang.
-		score, scoreReason := 0, ""
-		if b.cfg.Scorer != nil {
-			scoreCtx, scoreCancel := context.WithTimeout(ctx, 45*time.Second)
-			if jScore, scoreErr := b.cfg.Scorer.EvaluateJob(scoreCtx, b.cfg.Profile, jobDesc); scoreErr == nil {
-				score, scoreReason = jScore.Score, jScore.Reasoning
-			} else {
-				log.Warn().Err(scoreErr).Msg("ai apply: scoring failed for non-easy-apply job")
+		resolved, readErr := readLinkedInDescription(ctx, jobPage, job)
+		if readErr != nil {
+			b.recordListingFailure(ctx, platform, job, 0, "", nil, readErr)
+			finishAttempt(m.db, ac, OutcomeBlocked, "extraction", "listing_unverified", readErr.Error())
+			_ = jobPage.Close()
+			if ownsBr {
+				_ = br.Close()
 			}
-			scoreCancel()
+			return ApplyFromURLResult{JobID: jobID}, readErr
 		}
+		jobDesc = resolved.Description
+		linkedInResolved = resolved
+		isEasyApply = resolved.Kind == "native"
+	} else if rawHTML, htmlErr := jobPage.HTML(); htmlErr == nil {
+		jobDesc = scraper.ParseHTML(rawHTML).Description
+	}
+	if evaluationErr := listingEvaluationError(strings.TrimSpace(jobDesc), b.cfg.Scorer); evaluationErr != nil {
+		b.recordListingFailure(ctx, platform, job, 0, "", nil, evaluationErr)
+		finishAttempt(m.db, ac, OutcomeBlocked, "evaluation", "evaluation_unavailable", evaluationErr.Error())
 		_ = jobPage.Close()
 		if ownsBr {
 			_ = br.Close()
 		}
-		var pendingCount int
-		if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL).Scan(&pendingCount); err != nil {
-			log.Warn().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: pending check failed")
-		}
-		if pendingCount == 0 {
-			if _, err := m.db.ExecContext(ctx,
-				`INSERT OR IGNORE INTO jobs_pending_review
-				 (job_id,user_id,company,role,location,platform,link,resume_path,cover_letter_path,
-				  suitability_score,suitability_reasoning,easy_apply,created_at)
-				 VALUES(?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'))`,
-				jobID, userID, company, role, location, string(platform), jobURL, "", "", score, scoreReason,
-			); err != nil {
-				log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert pending review failed")
-			}
-		}
-		finishAttempt(m.db, ac, OutcomeSkipped, "not_easy_apply", "external_ats", "not an easy/quick apply job")
-		return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, ErrNotEasyApply
+		return ApplyFromURLResult{JobID: jobID}, evaluationErr
 	}
-
-	// STEP 2: Score Easy/Quick Apply jobs (bounded).
-	score, scoreReason := 0, ""
+	jobDesc = listingScoringContext(job, jobDesc, linkedInResolved.HeaderText)
+	scoreCtx, scoreCancel := context.WithTimeout(ctx, 90*time.Second)
+	jScore, scoreErr := b.cfg.Scorer.EvaluateJob(scoreCtx, b.cfg.Profile, jobDesc)
+	scoreCancel()
+	if scoreErr != nil {
+		evaluationErr := fmt.Errorf("%w: %w", errJobEvaluationFailed, scoreErr)
+		b.recordListingFailure(ctx, platform, job, 0, "", nil, evaluationErr)
+		finishAttempt(m.db, ac, classifyApplyOutcome(scoreErr), "evaluation", "evaluation_failed", scoreErr.Error())
+		_ = jobPage.Close()
+		if ownsBr {
+			_ = br.Close()
+		}
+		return ApplyFromURLResult{JobID: jobID}, evaluationErr
+	}
+	score, scoreReason := jScore.Score, jScore.Reasoning
 	threshold := gs.JobSuitabilityScore
 	if threshold == 0 {
 		threshold = 7
 	}
-	scoredOK := false
-	if b.cfg.Scorer != nil {
-		scoreCtx, scoreCancel := context.WithTimeout(ctx, 90*time.Second)
-		if jScore, scoreErr := b.cfg.Scorer.EvaluateJob(scoreCtx, b.cfg.Profile, jobDesc); scoreErr == nil {
-			score, scoreReason = jScore.Score, jScore.Reasoning
-			scoredOK = true
+	if score < threshold && (!force || !isEasyApply) {
+		if platform == domain.PlatformSeek {
+			b.recordSeekSkipped(seekJob{ID: jobID, URL: jobURL, Title: role, Company: company, Location: location}, fmt.Sprintf("score %d < %d", score, threshold), score, scoreReason, nil)
 		} else {
-			log.Warn().Err(scoreErr).Msg("ai apply: scoring failed, proceeding without score gate")
+			b.recordSkipped(job, fmt.Sprintf("score %d < %d", score, threshold), score, scoreReason, nil)
 		}
-		scoreCancel()
-	}
-
-	// STEP 3: Score threshold (skip when force=true).
-	if !force && scoredOK && score < threshold {
+		finishAttempt(m.db, ac, OutcomeSkipped, "score", "score_below_threshold", fmt.Sprintf("score %d < %d", score, threshold))
 		_ = jobPage.Close()
 		if ownsBr {
 			_ = br.Close()
 		}
-		finishAttempt(m.db, ac, OutcomeSkipped, "score", "score_below_threshold", fmt.Sprintf("score %d < %d", score, threshold))
-		return ApplyFromURLResult{
-			Company:      company,
-			Role:         role,
-			Score:        score,
-			ScoreReason:  scoreReason,
-			JobID:        jobID,
-			ScoreWarning: true,
-		}, nil
+		return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID, ScoreWarning: true}, nil
+	}
+	var halalJSON []byte
+	if b.cfg.HalalChecker != nil {
+		verdict, halalErr := b.cfg.HalalChecker.CheckHalal(ctx, role, company, jobDesc)
+		if halalErr != nil {
+			evaluationErr := fmt.Errorf("%w: halal evaluation: %w", errJobEvaluationFailed, halalErr)
+			b.recordListingFailure(ctx, platform, job, score, scoreReason, nil, evaluationErr)
+			finishAttempt(m.db, ac, classifyApplyOutcome(halalErr), "evaluation", "halal_evaluation_failed", halalErr.Error())
+			_ = jobPage.Close()
+			if ownsBr {
+				_ = br.Close()
+			}
+			return ApplyFromURLResult{JobID: jobID}, evaluationErr
+		}
+		halalJSON, _ = json.Marshal(verdict)
+		if verdict.Verdict == "HARAM" {
+			if platform == domain.PlatformSeek {
+				b.recordSeekSkipped(seekJob{ID: jobID, URL: jobURL, Title: role, Company: company}, "halal filter", score, scoreReason, halalJSON)
+			} else {
+				b.recordSkipped(job, "halal filter", score, scoreReason, halalJSON)
+			}
+			finishAttempt(m.db, ac, OutcomeSkipped, "evaluation", "halal_filter", "Listing rejected by halal filter")
+			_ = jobPage.Close()
+			if ownsBr {
+				_ = br.Close()
+			}
+			return ApplyFromURLResult{JobID: jobID}, fmt.Errorf("listing rejected by halal filter")
+		}
+	}
+	if !isEasyApply {
+		b.queueForReview(ctx, &domain.PendingReview{JobID: jobID, Company: company, Role: role, Location: location, Platform: platform, Link: jobURL, SuitabilityScore: score, SuitabilityReasoning: scoreReason, EasyApply: false, HalalVerdict: unmarshalHalalVerdict(halalJSON), CreatedAt: time.Now()})
+		finishAttempt(m.db, ac, OutcomeSkipped, "not_easy_apply", "external_ats", "External application requires manual submission")
+		_ = jobPage.Close()
+		if ownsBr {
+			_ = br.Close()
+		}
+		return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, ErrNotEasyApply
 	}
 
 	// STEP 4: Apply — use request ctx (includes 4m handler timeout) so a hung
@@ -1580,9 +1597,10 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		// Post-apply identity check for LinkedIn — fail-closed: an unreadable or non-job-view
 		// URL after submission is treated as submission-unknown rather than a confirmed apply.
 		if platform == domain.PlatformLinkedIn {
-			if err := verifyJobIdentity(jobPage, linkedInJobPath(jobURL)); err != nil {
+			if err := verifyLinkedInCompletion(jobPage, jobURL, company); err != nil {
 				log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", jobURL).
 					Msg("ai apply: post-apply identity check failed")
+				b.recordListingFailure(ctx, platform, job, score, scoreReason, halalJSON, fmt.Errorf("%w: %v", errLinkedInSubmissionUnknown, err))
 				finishAttempt(m.db, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
 				return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason},
 					fmt.Errorf("easy apply: post-apply identity verification failed: %w", err)
@@ -1594,7 +1612,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	if _, err := m.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,halal_verdict,applied_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		jobID, userID, string(platform), company, role, location, jobURL, resumePath, coverPath, lazy.resumeVersionID, lazy.coverVersionID, lazy.packJSONForPersist(), score, "",
+		jobID, userID, string(platform), company, role, location, jobURL, resumePath, coverPath, lazy.resumeVersionID, lazy.coverVersionID, lazy.packJSONForPersist(), score, string(halalJSON),
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", jobURL).Msg("ai apply: insert applied failed")

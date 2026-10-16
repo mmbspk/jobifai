@@ -16,16 +16,16 @@ class RecoveryTest(unittest.TestCase):
           location TEXT,platform TEXT,link TEXT,suitability_score INTEGER,suitability_reasoning TEXT,
           easy_apply INTEGER,document_refs_json TEXT,created_at TEXT,attempt_count INTEGER DEFAULT 0);
         CREATE TABLE jobs_applied(id TEXT,user_id TEXT,link TEXT);
-        CREATE TABLE jobs_approved_queue(job_id TEXT,user_id TEXT);
-        CREATE TABLE apply_attempts(job_id TEXT,user_id TEXT,outcome TEXT);
+        CREATE TABLE jobs_approved_queue(job_id TEXT PRIMARY KEY,user_id TEXT,company TEXT,role TEXT,location TEXT,platform TEXT,link TEXT,needs_evaluation INTEGER);
+        CREATE TABLE apply_attempts(job_id TEXT,user_id TEXT,outcome TEXT,url TEXT DEFAULT '');
         INSERT INTO jobs_skipped VALUES('123','u1','linkedin','easy apply: job identity: drift',
           'https://www.linkedin.com/jobs/view/123','Company','Role','Remote',8,'match');
-        INSERT INTO apply_attempts VALUES('123','u1','failed');
+        INSERT INTO apply_attempts(job_id,user_id,outcome) VALUES('123','u1','failed');
         """)
 
     def test_user_scope_and_uncertainty_block_recovery(self):
         self.assertEqual([], eligible(self.db, "u2", ["123"]))
-        self.db.execute("INSERT INTO apply_attempts VALUES('123','u1','submission_unknown')")
+        self.db.execute("INSERT INTO apply_attempts(job_id,user_id,outcome) VALUES('123','u1','submission_unknown')")
         self.assertEqual([], eligible(self.db, "u1", ["123"]))
 
     def test_recovery_preserves_attempt_history(self):
@@ -34,10 +34,14 @@ class RecoveryTest(unittest.TestCase):
         recover(self.db, rows, "u1")
         self.assertEqual(0, self.db.execute("SELECT COUNT(*) FROM jobs_skipped").fetchone()[0])
         self.assertEqual("failed", self.db.execute("SELECT outcome FROM apply_attempts").fetchone()[0])
-        row = self.db.execute("SELECT * FROM jobs_pending_review").fetchone()
-        self.assertEqual(0, row["easy_apply"])
-        self.assertEqual(8, row["suitability_score"])
-        self.assertIn('"listing_review_required": true', row["document_refs_json"])
+        self.assertEqual(0, self.db.execute("SELECT COUNT(*) FROM jobs_pending_review").fetchone()[0])
+        row = self.db.execute("SELECT * FROM jobs_approved_queue").fetchone()
+        self.assertEqual(1, row["needs_evaluation"])
+        self.assertEqual("123", row["job_id"])
+
+    def test_uncertainty_matches_url_even_with_different_stored_id(self):
+        self.db.execute("INSERT INTO apply_attempts VALUES('legacy-id','u1','submission_unknown','https://www.linkedin.com/jobs/view/123')")
+        self.assertEqual([], eligible(self.db, "u1", ["123"]))
 
     def test_recovery_preserves_prepared_documents_and_attempt_count(self):
         self.db.execute("""INSERT INTO jobs_pending_review(job_id,user_id,easy_apply,document_refs_json,attempt_count)

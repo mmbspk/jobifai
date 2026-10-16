@@ -33,12 +33,6 @@ func verifyJobIdentity(page *rod.Page, expectedJobPath string) error {
 	}
 	cp := linkedInJobPath(info.URL)
 	if cp == "" {
-		// Collections are acceptable only when both selected ID and rendered pane
-		// are verified by the same resolver. referenceJobId is never evidence.
-		r, resolveErr := resolveLinkedInJob(page, strings.TrimPrefix(expectedJobPath, "/jobs/view/"), false)
-		if resolveErr == nil && r.IdentityVerified {
-			return nil
-		}
 		return fmt.Errorf("%w: job identity: page at %s has no LinkedIn job path (expected %s)", errLinkedInIdentity, info.URL, expectedJobPath)
 	}
 	if cp != expectedJobPath {

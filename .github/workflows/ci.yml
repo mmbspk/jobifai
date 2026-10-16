@@ -37,8 +37,8 @@ jobs:
       - name: LinkedIn historical recovery tests
         run: python3 -m unittest discover -s scripts -p test_recover_linkedin_identity.py
 
-      - name: LinkedIn approval identity regressions
-        run: go test ./internal/bot -run '^Test(NewManagerLazy_PreservesDeclaredJobIdentity|RunSubmit_PostApplyDriftNoAppliedRecord)$' -count=1 -timeout=90s
+      - name: LinkedIn captured-layout and approval regressions
+        run: go test ./internal/bot -run '^Test(NewManagerLazy_PreservesDeclaredJobIdentity|RunSubmit_PostApplyDriftNoAppliedRecord|LinkedInResolver_CapturedSDUIPages|SubmitEasyApply_CapturedSDUINative|ProcessJob_CapturedSDUIExternal_IsScored|EvaluationRetry_CapturedExternalRechecksAndScores)$' -count=1 -timeout=120s
         env:
           CI: "1"
 

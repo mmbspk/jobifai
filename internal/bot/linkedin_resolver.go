@@ -28,6 +28,7 @@ type linkedInResolution struct {
 	Destination      string `json:"destination"`
 	URL              string `json:"url"`
 	Description      string `json:"description"`
+	HeaderText       string `json:"header_text"`
 	Action           string `json:"action"`
 }
 
@@ -40,15 +41,53 @@ func linkedInSubmissionConfirmed(page *rod.Page, expectedID, company string) boo
 	return err == nil && value.Value.Bool()
 }
 
+func verifyLinkedInCompletion(page *rod.Page, jobURL, company string) error {
+	if linkedInSubmissionConfirmed(page, linkedInExpectedID(jobURL), company) {
+		return nil
+	}
+	return verifyJobIdentity(page, linkedInJobPath(jobURL))
+}
+
+func waitLinkedInConfirmation(ctx context.Context, page *rod.Page, expectedID, company string) error {
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if linkedInSubmissionConfirmed(page, expectedID, company) {
+			return nil
+		}
+		if err := verifyJobIdentity(page, "/jobs/view/"+expectedID); err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errLinkedInSubmissionUnknown
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+}
+
 // Resolve and click share one JS execution: a stale Go-side element cannot be
 // clicked after the SPA replaces the selected job. ExpectedID never comes from
 // the currently selected collection job.
-func resolveLinkedInJob(page *rod.Page, expectedID string, click bool) (linkedInResolution, error) {
+func resolveLinkedInJob(page *rod.Page, expectedID string, click bool, jobs ...linkedInJob) (linkedInResolution, error) {
+	var job linkedInJob
+	if len(jobs) > 0 {
+		job = jobs[0]
+	}
+	return evalLinkedInJob(page, expectedID, click, false, job)
+}
+
+func evalLinkedInJob(page *rod.Page, expectedID string, click, expand bool, job linkedInJob) (linkedInResolution, error) {
 	var result linkedInResolution
 	if expectedID == "" {
 		return result, fmt.Errorf("%w: missing intended job ID", errLinkedInIdentity)
 	}
-	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInResolve, expectedID, click)
+	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInResolve, expectedID, click, expand, job.Title, job.Company)
 	if err != nil {
 		return result, fmt.Errorf("%w: browser read: %w", errLinkedInIdentity, err)
 	}
@@ -58,7 +97,7 @@ func resolveLinkedInJob(page *rod.Page, expectedID string, click bool) (linkedIn
 	return result, nil
 }
 
-func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string) (linkedInResolution, error) {
+func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string, jobs ...linkedInJob) (linkedInResolution, error) {
 	deadline := time.NewTimer(12 * time.Second)
 	defer deadline.Stop()
 	var result linkedInResolution
@@ -67,7 +106,7 @@ func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string) (li
 			return result, err
 		}
 		var err error
-		result, err = resolveLinkedInJob(page, expectedID, false)
+		result, err = resolveLinkedInJob(page, expectedID, false, jobs...)
 		if err != nil {
 			return result, err
 		}
@@ -82,6 +121,29 @@ func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string) (li
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
+}
+
+func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJob) (linkedInResolution, error) {
+	r, err := evalLinkedInJob(page, linkedInExpectedID(job.URL), false, true, job)
+	if err != nil {
+		return r, err
+	}
+	if !r.IdentityVerified {
+		return r, r.resolutionError()
+	}
+	select {
+	case <-ctx.Done():
+		return r, ctx.Err()
+	case <-time.After(400 * time.Millisecond):
+	}
+	r, err = resolveLinkedInJob(page, linkedInExpectedID(job.URL), false, job)
+	if err != nil {
+		return r, err
+	}
+	if !r.IdentityVerified {
+		return r, r.resolutionError()
+	}
+	return r, nil
 }
 
 func (r linkedInResolution) resolutionError() error {
@@ -120,6 +182,10 @@ func (b *Bot) preserveLinkedInReview(ctx context.Context, job linkedInJob, score
 }
 
 func (b *Bot) preserveLinkedInReviewWithVerdict(ctx context.Context, job linkedInJob, score int, reasoning string, halalVerdict []byte, err error) {
+	if !errors.Is(err, errLinkedInExternal) {
+		b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, score, reasoning, halalVerdict, err)
+		return
+	}
 	if b.cfg.DB == nil {
 		return
 	}

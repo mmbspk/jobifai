@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Move explicitly selected historical identity failures to manual review.
+"""Queue explicitly selected historical identity failures for fresh evaluation.
 
 Dry-run by default. Stop automation before --apply, and restart afterwards so the
 seen cache is reloaded. Attempt history stays untouched. --backup is an exclusive
 JSON archive of the original skipped rows; it must not already exist.
+Requires migration 050. A later bot run may apply a qualifying native job after
+fresh evaluation; external jobs must qualify before entering Top Matches.
 """
 
 import argparse
 import json
 from pathlib import Path
 import sqlite3
-
-
-HOLD = "Listing identity could not be verified in a previous run. Check the original listing manually before applying."
 
 
 def eligible(db, user, job_ids):
@@ -30,14 +29,14 @@ def eligible(db, user, job_ids):
         ).fetchone():
             continue
         if db.execute(
-            "SELECT 1 FROM jobs_approved_queue WHERE user_id=? AND job_id=?",
-            (user, job_id),
+            "SELECT 1 FROM jobs_approved_queue WHERE job_id=?",
+            (job_id,),
         ).fetchone():
             continue
         if db.execute(
-            "SELECT 1 FROM apply_attempts WHERE user_id=? AND job_id=? AND "
+            "SELECT 1 FROM apply_attempts WHERE user_id=? AND (job_id=? OR url=?) AND "
             "outcome IN ('submitted_confirmed','submission_unknown','already_applied','in_progress')",
-            (user, job_id),
+            (user, job_id, row["link"]),
         ).fetchone():
             continue
         # The legacy schema has a globally unique job_id. Never change another
@@ -53,32 +52,13 @@ def eligible(db, user, job_ids):
 
 def recover(db, rows, user):
     for row in rows:
-        existing = db.execute(
-            "SELECT document_refs_json FROM jobs_pending_review WHERE job_id=? AND user_id=?",
-            (row["id"], user),
-        ).fetchone()
-        try:
-            pack = json.loads(existing[0] or "{}") if existing else {}
-        except (ValueError, TypeError):
-            pack = {}
-        if not isinstance(pack, dict):
-            pack = {}
-        pack.update(hold_reason=HOLD, listing_review_required=True)
-        if existing:
-            db.execute(
-                "UPDATE jobs_pending_review SET easy_apply=0,document_refs_json=? "
-                "WHERE job_id=? AND user_id=?",
-                (json.dumps(pack), row["id"], user),
-            )
-        else:
-            db.execute(
-                "INSERT INTO jobs_pending_review(job_id,user_id,company,role,location,platform,link,"
-                "suitability_score,suitability_reasoning,easy_apply,document_refs_json,created_at) "
-                "VALUES(?,?,?,?,?,'linkedin',?,?,?,0,?,datetime('now'))",
-                (row["id"], user, row["company"], row["role"], row.get("location", ""),
-                 row["link"], row.get("suitability_score", 0), row.get("suitability_reasoning", ""),
-                 json.dumps(pack)),
-            )
+        # Keep any prepared documents intact; this request re-enters discovery,
+        # classification and scoring rather than approving a blind submission.
+        db.execute(
+            "INSERT INTO jobs_approved_queue(job_id,user_id,company,role,location,platform,link,needs_evaluation) "
+            "VALUES(?,?,?,?,?,'linkedin',?,1)",
+            (row["id"], user, row["company"], row["role"], row.get("location", ""), row["link"]),
+        )
         db.execute("DELETE FROM jobs_skipped WHERE id=? AND user_id=?", (row["id"], user))
 
 

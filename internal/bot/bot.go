@@ -168,7 +168,7 @@ type Config struct {
 	ProfileLoader    func() *domain.ResumeProfile // if set, called per-job to get the latest profile
 	Cookies          []browser.Cookie
 	Tailor           ResumeTailor    // nil = no LLM tailoring
-	Scorer           JobScorer       // nil = let all jobs through
+	Scorer           JobScorer       // nil = evaluation unavailable; never a passing score
 	HalalChecker     JobHalalChecker // nil = halal filter disabled
 	CoverLetterTone  string          // "" = default; see domain.GeneralSettings.CoverLetterTone
 	Renderer         ResumeRenderer
@@ -219,7 +219,9 @@ type Bot struct {
 
 	seekSeams *seekAuthSeams // nil in production; injected in tests
 
-	seenCache *jobSeenCache
+	seenCache          *jobSeenCache
+	listingFailureCode string
+	listingFailedJobs  map[string]bool
 }
 
 // SetKeyword stores the keyword currently being searched (thread-safe).
@@ -497,6 +499,8 @@ func (b *Bot) Start(ctx context.Context) error {
 		return fmt.Errorf("bot already running")
 	}
 	b.stopCh = make(chan struct{})
+	b.listingFailureCode = ""
+	b.listingFailedJobs = nil
 	b.state = domain.BotStateRunning
 	b.mu.Unlock()
 	b.run(ctx)
@@ -639,7 +643,9 @@ func init() {
 func (b *Bot) run(ctx context.Context) {
 	defer func() {
 		b.mu.Lock()
-		b.state = domain.BotStateStopped
+		if b.state != domain.BotStateError {
+			b.state = domain.BotStateStopped
+		}
 		b.mu.Unlock()
 		log.Info().Str("platform", string(b.cfg.Platform)).Msg("bot stopped")
 	}()
@@ -1205,13 +1211,17 @@ func extractLinkedInJob(el *rod.Element) linkedInJob {
 // ── Job processing ─────────────────────────────────────────────────────────
 
 func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) bool {
+	return b.processLinkedInJob(ctx, br, job, false)
+}
+
+func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linkedInJob, reevaluate bool) bool {
 	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: processing, %q @ %s", job.Title, job.Company)
 
-	if reason := b.alreadyAppliedReason(job.ID); reason != "" {
+	if reason := b.alreadyAppliedReason(job.ID); reason != "" && !(reevaluate && (reason == "in approved queue" || reason == "in Top Matches")) {
 		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
-	if b.alreadyQueued(ctx, job.Company, job.Title) {
+	if !reevaluate && b.alreadyQueued(ctx, job.Company, job.Title) {
 		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, duplicate listing already queued: %q @ %s", job.Title, job.Company)
 		return false
 	}
@@ -1249,7 +1259,7 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 		return false
 	}
 	_ = jobPage.Timeout(30 * time.Second).WaitLoad()
-	resolution, resolveErr := waitLinkedInJob(ctx, jobPage, linkedInExpectedID(job.URL))
+	resolution, resolveErr := waitLinkedInJob(ctx, jobPage, linkedInExpectedID(job.URL), job)
 	logLinkedInResolution(resolution, job, "", "classification")
 	// A missing/ambiguous CTA does not invalidate verified job content. Score
 	// that content normally, but never try to apply while the control is unknown.
@@ -1261,17 +1271,39 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 		}
 		return false
 	}
-	easyApply := resolution.Kind == "native"
+	if resolution.Kind == "already_applied" {
+		_ = jobPage.Close()
+		b.recordSkipped(job, "already_applied_indicator", 0, "", nil)
+		return false
+	}
+	controlError := resolveErr
+	resolution, resolveErr = readLinkedInDescription(ctx, jobPage, job)
+	if resolveErr != nil {
+		_ = jobPage.Close()
+		if ctx.Err() == nil {
+			b.preserveLinkedInReview(ctx, job, 0, "", resolveErr)
+		}
+		return false
+	}
 	details.Description = resolution.Description
+	easyApply := resolution.Kind == "native"
+	controlUnverified = resolution.Kind == "unknown"
+	if controlUnverified && controlError == nil {
+		controlError = resolution.resolutionError()
+	}
 	_ = jobPage.Close()
-	if len(strings.TrimSpace(details.Description)) < 100 {
-		details.Description = job.Title + " at " + job.Company
+	if err := listingEvaluationError(strings.TrimSpace(details.Description), b.cfg.Scorer); err != nil {
+		b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, 0, "", nil, err)
+		return false
+	}
+	if !controlUnverified {
+		b.noteListingHealthy()
 	}
 	if details.PostedDate == "" {
 		details.PostedDate = job.PostedDate
 	}
 	if controlUnverified {
-		log.Warn().Err(resolveErr).Str("job_id", job.ID).Str("url", job.URL).
+		log.Warn().Err(controlError).Str("job_id", job.ID).Str("url", job.URL).
 			Msg("linkedin: application control unverified; evaluating verified listing without applying")
 	} else if easyApply {
 		log.Info().Msgf("linkedin: Easy Apply detected: %q @ %s", job.Title, job.Company)
@@ -1280,18 +1312,19 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	}
 
 	llmBefore := b.llmSnapshot()
-	score, reasoning, halalVerdict, ok := b.checkScore(ctx, job, details.Description)
+	evaluationText := listingScoringContext(job, details.Description, resolution.HeaderText)
+	score, reasoning, halalVerdict, ok := b.checkScore(ctx, job, evaluationText)
 	if !ok {
 		return false
 	}
 	if controlUnverified {
-		b.preserveLinkedInReviewWithVerdict(ctx, job, score, reasoning, halalVerdict, resolveErr)
+		b.preserveLinkedInReviewWithVerdict(ctx, job, score, reasoning, halalVerdict, controlError)
 		return false
 	}
 
 	// Docs are generated lazily at the file-upload step, only if the toggle is on
 	// and a file field is actually encountered during form filling.
-	lazy := &lazyDocGen{b: b, ctx: ctx, job: job, jobDesc: details.Description}
+	lazy := &lazyDocGen{b: b, ctx: ctx, job: job, jobDesc: evaluationText}
 
 	if b.cfg.RequireReview {
 		packJSON := documents.WriteApplicationPackJSON(documents.ApplicationDocumentPack{
@@ -1396,7 +1429,7 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 		minScore = 6
 	}
 	if b.cfg.Scorer == nil {
-		return minScore, "", nil, true
+		return 0, "", nil, false
 	}
 	result, err := b.cfg.Scorer.EvaluateJob(b.llmCtx(ctx, "evaluate job", job.ID), b.currentProfile(), jobDesc)
 	if err != nil {
@@ -1654,25 +1687,13 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	// Post-apply identity check — fail-closed: an unreadable or non-job-view URL after
 	// submission is treated as submission-unknown. Uses declared job.URL (not live URL)
 	// so URL transforms during navigation cannot mask wrong-job submissions.
-	if err := verifyJobIdentity(jobPage, linkedInJobPath(job.URL)); err != nil {
+	if err := verifyLinkedInCompletion(jobPage, job.URL, job.Company); err != nil {
 		log.Error().Err(err).
 			Str("attempt_id", ac.AttemptID).
 			Str("job_id", job.ID).
 			Str("intended_url", job.URL).
-			Msg("linkedin: post-apply identity check failed — recording submission_unknown, routing to Top Matches")
-		b.savePendingReview(ctx, &domain.PendingReview{
-			JobID:                job.ID,
-			Company:              job.Company,
-			Role:                 job.Title,
-			Location:             job.Location,
-			Platform:             domain.PlatformLinkedIn,
-			Link:                 job.URL,
-			SuitabilityScore:     score,
-			SuitabilityReasoning: reasoning,
-			EasyApply:            false,
-			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
-			CreatedAt:            time.Now(),
-		})
+			Msg("linkedin: post-apply identity check failed — submission needs reconciliation")
+		b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, score, reasoning, halalVerdict, fmt.Errorf("%w: %v", errLinkedInSubmissionUnknown, err))
 		finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
 		return false
 	}
@@ -1688,6 +1709,9 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (retErr error) {
 	if lazy == nil {
 		return fmt.Errorf("%w: missing declared job", errLinkedInIdentity)
+	}
+	if err := unresolvedSubmission(b.cfg.DB, b.cfg.UserID, lazy.job.ID, lazy.job.URL, lazy.attemptID); err != nil {
+		return fmt.Errorf("%w: %v", errLinkedInSubmissionUnknown, err)
 	}
 	submitClicked := false
 	defer func() {
@@ -1710,7 +1734,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	// Entry identity check — before any CTA interaction or preparation scan.
 	// This also protects the reviewPrepareOnly branch below.
 	expectedJobPath := linkedInJobPath(lazy.job.URL)
-	resolution, err := waitLinkedInJob(ctx, page, linkedInExpectedID(lazy.job.URL))
+	resolution, err := waitLinkedInJob(ctx, page, linkedInExpectedID(lazy.job.URL), lazy.job)
 	logLinkedInResolution(resolution, lazy.job, lazy.attemptID, "before_initial_click")
 	if err != nil {
 		return err
@@ -1731,7 +1755,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if b.cfg.BrowserMeter != nil && b.cfg.BrowserMeter.Err() != nil {
 			return b.cfg.BrowserMeter.Err()
 		}
-		r, err := resolveLinkedInJob(page, linkedInExpectedID(lazy.job.URL), true)
+		r, err := resolveLinkedInJob(page, linkedInExpectedID(lazy.job.URL), true, lazy.job)
 		logLinkedInResolution(r, lazy.job, lazy.attemptID, "cta_click")
 		if err != nil {
 			return err
@@ -1942,7 +1966,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	// Submit), not by fragile .jobs-easy-apply-* shell classes. We deep-walk
 	// open shadow roots + same-origin iframes; the Go caller also re-runs this
 	// inside each CDP frame when the top document cannot see the modal.
-	const jsClickPrimary = `(expectedID) => {
+	const jsClickPrimary = `(expectedID, allowedKind) => {
         try {
             const u=new URL(window.top.location.href);
             const id=(u.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1] || u.searchParams.get('currentJobId');
@@ -2038,7 +2062,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			const label=btnLabel(btn);
             try { btn.scrollIntoView({block:'center'}); btn.focus(); btn.click(); return {ok:true,label}; } catch(e) { return {ok:false,label}; }
 		}
-		const priority = ['submit', 'review', 'continue', 'next'];
+		const priority = allowedKind ? [allowedKind] : [];
 		const candidates = allInDOM(document, 'button, [role="button"], a[role="button"]')
 			.filter(b => b.closest('[role="dialog"], .jobs-easy-apply-content, .jobs-easy-apply-modal, [data-test-easy-apply-modal]') && !isMessagingChrome(b) && !isExcludedRail(b) && actionKind(b));
 
@@ -2055,7 +2079,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 				if (t.includes('easy apply') || t === 'apply' || t.startsWith('apply ')) return false;
 				return actionKind(b) !== '';
 			});
-		if (primary) return trustClick(primary);
+		if (primary && allowedKind && actionKind(primary)===allowedKind) return trustClick(primary);
 
 		const disabledNext = candidates.find(b => actionKind(b) && isVisible(b) && !isEnabled(b));
 		if (disabledNext) {
@@ -2074,9 +2098,9 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	// clickEasyApplyPrimary runs the CTA clicker on the top page, then inside each
 	// CDP iframe frame. LinkedIn often mounts the apply UI in a frame whose
 	// contentDocument is opaque to page JS but reachable via rod's Frame().
-	clickEasyApplyPrimary := func() (label string, ok bool, err error) {
+	clickEasyApplyPrimary := func(allowedKind string) (label string, ok bool, err error) {
 		tryEval := func(p *rod.Page) (string, bool, error) {
-			res, evalErr := p.Timeout(10*time.Second).Eval(jsClickPrimary, linkedInExpectedID(lazy.job.URL))
+			res, evalErr := p.Timeout(10*time.Second).Eval(jsClickPrimary, linkedInExpectedID(lazy.job.URL), allowedKind)
 			if evalErr != nil {
 				return "", false, evalErr
 			}
@@ -2193,12 +2217,12 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 
 		b.interactionPause()
 
-		if err := verifyJobIdentity(page, expectedJobPath); err != nil {
-			return err
-		}
 		if submitClicked && linkedInSubmissionConfirmed(page, linkedInExpectedID(lazy.job.URL), lazy.job.Company) {
 			log.Info().Msg("easy apply: success detected")
 			return nil
+		}
+		if err := verifyJobIdentity(page, expectedJobPath); err != nil {
+			return err
 		}
 
 		// Check whether the modal actually advanced since the previous click.
@@ -2274,11 +2298,21 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			return err
 		}
 
-		label, ok, err := clickEasyApplyPrimary()
-		if ok && strings.Contains(strings.ToLower(label), "submit") {
+		_, kind, found, enabled, peekErr := b.peekEasyApplyPrimary(page)
+		if peekErr != nil {
+			return fmt.Errorf("read application action: %w", peekErr)
+		}
+		if kind == "submit" && found && enabled {
+			if err := markAttemptSubmitDispatch(b.cfg.DB, lazy.attemptID, b.cfg.UserID); err != nil {
+				return err
+			}
 			submitClicked = true
 		}
+		label, ok, err := clickEasyApplyPrimary(kind)
 		if err != nil {
+			if submitClicked {
+				return err
+			}
 			if isCDPFatal(err) {
 				return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
 			}
@@ -2286,6 +2320,12 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			continue
 		}
 		log.Info().Msgf("easy apply: step %d, btn=%q ok=%v filled=%v", i, label, ok, filled)
+		if submitClicked {
+			if !ok {
+				return errLinkedInSubmissionUnknown
+			}
+			return waitLinkedInConfirmation(ctx, page, linkedInExpectedID(lazy.job.URL), lazy.job.Company)
+		}
 
 		// Bail when the modal is stuck: button click may succeed (ok=true) while
 		// LinkedIn validation blocks advance (e.g. essay fields left empty). Do NOT
@@ -2337,24 +2377,6 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			consecutiveBlind = 0
 		}
 
-		if strings.Contains(strings.ToLower(label), "submit") {
-			submitClicked = true
-			deadline := time.Now().Add(10 * time.Second)
-			for time.Now().Before(deadline) {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				if err := verifyJobIdentity(page, expectedJobPath); err != nil {
-					return err
-				}
-				if linkedInSubmissionConfirmed(page, linkedInExpectedID(lazy.job.URL), lazy.job.Company) {
-					return nil
-				}
-				time.Sleep(300 * time.Millisecond)
-			}
-			return errLinkedInSubmissionUnknown
-		}
-
 	}
 
 	saveApplyDebug(page, "modal_incomplete")
@@ -2384,6 +2406,7 @@ type approvedJob struct {
 	Link            string
 	ResumePath      string
 	CoverLetterPath string
+	NeedsEvaluation bool
 }
 
 func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaining int) int {
@@ -2391,7 +2414,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		return 0
 	}
 	rows, err := b.cfg.DB.QueryContext(ctx,
-		`SELECT job_id,platform,company,role,location,link,COALESCE(resume_path,''),COALESCE(cover_letter_path,'')
+		`SELECT job_id,platform,company,role,location,link,COALESCE(resume_path,''),COALESCE(cover_letter_path,''),needs_evaluation
 		 FROM jobs_approved_queue WHERE user_id = ? ORDER BY approved_at ASC`, b.cfg.UserID)
 	if err != nil {
 		log.Error().Err(err).Msg("approved queue: load")
@@ -2400,7 +2423,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 	var jobs []approvedJob
 	for rows.Next() {
 		var j approvedJob
-		if err := rows.Scan(&j.JobID, &j.Platform, &j.Company, &j.Role, &j.Location, &j.Link, &j.ResumePath, &j.CoverLetterPath); err == nil {
+		if err := rows.Scan(&j.JobID, &j.Platform, &j.Company, &j.Role, &j.Location, &j.Link, &j.ResumePath, &j.CoverLetterPath, &j.NeedsEvaluation); err == nil {
 			jobs = append(jobs, j)
 		}
 	}
@@ -2429,6 +2452,12 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		}
 		if jobPlatform != platform {
 			continue // wait for the matching platform bot run
+		}
+		if j.NeedsEvaluation {
+			if b.processEvaluationRetry(ctx, br, j) {
+				applied++
+			}
+			continue
 		}
 		log.Info().Str("job_id", j.JobID).Str("company", j.Company).Str("title", j.Role).Msg("approved queue: submitting")
 		b.humanPause()
@@ -2479,11 +2508,12 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		}
 		// Post-apply identity check for LinkedIn — fail-closed before recording as applied.
 		if b.cfg.Platform == domain.PlatformLinkedIn {
-			if err := verifyJobIdentity(jobPage, linkedInJobPath(j.Link)); err != nil {
+			if err := verifyLinkedInCompletion(jobPage, j.Link, j.Company); err != nil {
 				_ = jobPage.Close()
 				log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).
 					Str("company", j.Company).Str("role", j.Role).Msg("approved queue: post-apply identity check failed")
 				_, _ = appdb.ExecWithRetry(b.cfg.DB, `DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
+				b.recordApplyFailure(j, 0, fmt.Errorf("%w: %v", errLinkedInSubmissionUnknown, err))
 				finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
 				continue
 			}
