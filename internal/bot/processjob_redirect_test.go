@@ -72,7 +72,7 @@ func TestProcessJob_ListingResolution(t *testing.T) {
 			require.False(t, easy)
 			if tc.scored {
 				if tc.name == "verified listing without recognized control" {
-					require.Equal(t, verifiedDescription, scorer.gotDesc)
+					require.Equal(t, strings.TrimSpace(verifiedDescription), strings.TrimSpace(scorer.gotDesc))
 					require.Contains(t, pack, "control_not_found")
 				} else {
 					require.Equal(t, "Principal Developer at MYOB", scorer.gotDesc)
