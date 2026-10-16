@@ -1396,10 +1396,8 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	job := linkedInJob{ID: jobID, URL: jobURL, Title: role, Company: company, Location: location}
 	jobDesc := ""
 	if platform == domain.PlatformLinkedIn {
-		resolved, readErr := readLinkedInDescription(ctx, jobPage, job)
+		resolved, readErr := b.readLinkedInURLListing(ctx, jobPage, job, ac)
 		if readErr != nil {
-			b.recordListingFailure(ctx, platform, job, 0, "", nil, readErr)
-			finishAttempt(m.db, ac, OutcomeBlocked, "extraction", "listing_unverified", readErr.Error())
 			_ = jobPage.Close()
 			if ownsBr {
 				_ = br.Close()

@@ -8,8 +8,76 @@ import (
 	"github.com/user/jobifai/internal/llm"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func refreshedControlFixture(mutation string) string {
+	return `<main data-job-id="123"><h1>Role at Company</h1><button id="cta">Easy Apply</button><div data-job-description>` + strings.Repeat("Verified job responsibilities and requirements. ", 8) + `<button onclick="` + mutation + `">Show more</button></div></main>`
+}
+
+func TestLinkedInURLListing_UsesRefreshedControl(t *testing.T) {
+	br := launchTestBrowser(t)
+	for _, tc := range []struct{ name, mutation, kind, outcome string }{
+		{"native", "void 0", "native", string(OutcomeInProgress)},
+		{"external", "document.getElementById('cta').outerHTML='<a href=&quot;https://employer.example/apply&quot;>Apply</a>'", "external", string(OutcomeInProgress)},
+		{"unknown", "document.getElementById('cta').remove()", "unknown", string(OutcomeBlocked)},
+		{"already applied", "const c=document.getElementById('cta');c.textContent='Applied';c.setAttribute('data-test-job-apply-button-applied','')", "already_applied", string(OutcomeAlreadyApplied)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fixtureServer(t, "123", "", refreshedControlFixture(tc.mutation), "")
+			page := navigateAndWait(t, br, srv.URL+"/jobs/view/123")
+			db := testDB(t)
+			b := New(Config{DB: db, UserID: "u1"})
+			job := linkedInJob{ID: "123", URL: srv.URL + "/jobs/view/123", Title: "Role", Company: "Company"}
+			initial, err := waitLinkedInJob(context.Background(), page, "123", job)
+			require.NoError(t, err)
+			require.Equal(t, "native", initial.Kind)
+			ac := newAttemptContext("u1", "linkedin", job.ID, job.URL, job.Title, job.Company, "applyFromURL")
+			beginAttempt(db, ac)
+			resolved, err := b.readLinkedInURLListing(context.Background(), page, job, ac)
+			require.Equal(t, tc.kind, resolved.Kind)
+			switch tc.kind {
+			case "unknown":
+				require.ErrorIs(t, err, errLinkedInUnknown)
+			case "already_applied":
+				require.ErrorIs(t, err, ErrAlreadyApplied)
+			default:
+				require.NoError(t, err)
+			}
+			var outcome string
+			require.NoError(t, db.QueryRow(`SELECT outcome FROM apply_attempts WHERE id=?`, ac.AttemptID).Scan(&outcome))
+			require.Equal(t, tc.outcome, outcome)
+			var count int
+			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_pending_review`).Scan(&count))
+			require.Zero(t, count)
+			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_applied`).Scan(&count))
+			require.Zero(t, count)
+			if tc.kind == "unknown" {
+				var code string
+				require.NoError(t, db.QueryRow(`SELECT failure_code FROM jobs_skipped WHERE id='123' AND user_id='u1'`).Scan(&code))
+				require.Equal(t, "control_unrecognized", code)
+			}
+		})
+	}
+}
+
+func TestProcessJob_AlreadyAppliedAfterDescriptionExpansion(t *testing.T) {
+	br := launchTestBrowser(t)
+	srv := fixtureServer(t, "123", "", refreshedControlFixture("const c=document.getElementById('cta');c.textContent='Applied';c.setAttribute('data-test-job-apply-button-applied','')"), "")
+	db := testDB(t)
+	scorer := &capturingScorer{}
+	b := New(Config{DB: db, UserID: "u1", Scorer: scorer})
+	job := linkedInJob{ID: "123", URL: srv.URL + "/jobs/view/123", Title: "Role", Company: "Company"}
+	require.False(t, b.processJob(context.Background(), br, job))
+	require.Empty(t, scorer.gotDesc)
+	var reason string
+	require.NoError(t, db.QueryRow(`SELECT skip_reason FROM jobs_skipped WHERE id='123' AND user_id='u1'`).Scan(&reason))
+	require.Equal(t, "already_applied_indicator", reason)
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_pending_review`).Scan(&count))
+	require.Zero(t, count)
+}
 
 func TestLinkedInResolver_CapturedSDUIPages(t *testing.T) {
 	for _, tc := range []struct{ name, id, kind, description string }{

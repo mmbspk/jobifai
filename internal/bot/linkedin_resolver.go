@@ -146,6 +146,28 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 	return r, nil
 }
 
+// Expanding the description may replace the header. Manual URL application
+// must use that refreshed classification, never interpret unknown as external.
+func (b *Bot) readLinkedInURLListing(ctx context.Context, page *rod.Page, job linkedInJob, ac *AttemptContext) (linkedInResolution, error) {
+	r, err := readLinkedInDescription(ctx, page, job)
+	if err == nil && r.Kind == "already_applied" {
+		finishAttempt(b.cfg.DB, ac, OutcomeAlreadyApplied, "classification", "already_applied", "")
+		return r, ErrAlreadyApplied
+	}
+	if err == nil && r.Kind != "native" && r.Kind != "external" {
+		err = fmt.Errorf("%w: refreshed control: %s", errLinkedInUnknown, r.Reason)
+	}
+	if err != nil {
+		b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, 0, "", nil, err)
+		outcome := OutcomeBlocked
+		if !linkedInNeedsReview(err) {
+			outcome = classifyApplyOutcome(err)
+		}
+		finishAttempt(b.cfg.DB, ac, outcome, "extraction", "listing_unverified", err.Error())
+	}
+	return r, err
+}
+
 func (r linkedInResolution) resolutionError() error {
 	if !r.IdentityVerified {
 		return fmt.Errorf("%w: expected %s, observed %s (%s)", errLinkedInIdentity, r.ExpectedID, r.ObservedID, r.Reason)

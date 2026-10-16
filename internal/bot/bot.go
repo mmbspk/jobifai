@@ -1286,6 +1286,11 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 		return false
 	}
 	details.Description = resolution.Description
+	if resolution.Kind == "already_applied" {
+		_ = jobPage.Close()
+		b.recordSkipped(job, "already_applied_indicator", 0, "", nil)
+		return false
+	}
 	easyApply := resolution.Kind == "native"
 	controlUnverified = resolution.Kind == "unknown"
 	if controlUnverified && controlError == nil {
