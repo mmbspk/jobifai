@@ -35,6 +35,12 @@ import (
 	"github.com/user/jobifai/internal/llm"
 )
 
+// Legacy fixture convenience only. Production always supplies declared intent.
+const jsLinkedInClickCTA = `(expectedID) => {
+ const id=expectedID || ((location.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'');
+ return JSON.parse((` + jsLinkedInResolve + `)(id,true)).action;
+}`
+
 // launchTestBrowser starts a headless Chromium for the test and returns a
 // connected *rod.Browser. Skips the test if Chromium cannot be launched.
 func launchTestBrowser(t *testing.T) *rod.Browser {

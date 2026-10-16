@@ -55,6 +55,17 @@ for(const [name,id,kind,description] of [
    }
   }finally{p.dom.window.close()}
  });
+ test('captured SDUI '+name+' never widens the header to a page-level recommendation',()=>{
+  const p=page(html,'/jobs/view/'+id,id);
+  try {
+   const d=p.dom.window.document;
+   d.querySelector('[aria-label="Easy Apply to this job"], [aria-label="Apply on company website"]').remove();
+   const rec=d.createElement('div');rec.innerHTML='<button>Easy Apply</button>';
+   d.querySelector('[id^="JobDetails_AboutTheJob_"]').after(rec);
+   let clicks=0;d.addEventListener('click',()=>clicks++);
+   const r=p.resolve(true);assert.equal(r.kind,'unknown');assert.equal(r.action,'');assert.equal(clicks,0);
+  }finally{p.dom.window.close()}
+ });
 }
 const pane=body=>`<main data-job-id="${target}"><h1>Principal Developer at MYOB</h1>${body}</main>`;
 const external='<a href="https://employer.example/apply">Apply</a>';

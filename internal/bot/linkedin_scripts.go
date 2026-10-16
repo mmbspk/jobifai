@@ -53,6 +53,9 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
    if(jobLinkID(link)!==expectedID || excluded(link) || !visible(link)) continue;
    for(let header=parent(link);header && header!==document.body && header!==document.documentElement;header=parent(header)) {
      if(excluded(header)) break;
+     // The primary header precedes the description. Never widen ownership to
+     // the entire listing just to find an unrelated recommendation's button.
+     if(header.contains(descriptions[0])) break;
      const companies=all(header,'[aria-label^="Company,"]').filter(el=>!excluded(el) && visible(el));
      if(!companies.length || !visible(header)) continue;
      const ids=all(header,'a[href]').filter(el=>!excluded(el) && visible(el)).map(jobLinkID).filter(Boolean);
@@ -170,13 +173,6 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
    c.el.click(); out.action='clicked';
  }
  return finish();
-}`
-
-// Compatibility wrapper used by existing browser fixtures. Production callers
-// use resolveLinkedInJob with their declared expected ID.
-const jsLinkedInClickCTA = `(expectedID) => {
- const id=expectedID || ((location.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'');
- return JSON.parse((` + jsLinkedInResolve + `)(id,true)).action;
 }`
 
 // A completion dialog is evidence only after our Submit click and while the
