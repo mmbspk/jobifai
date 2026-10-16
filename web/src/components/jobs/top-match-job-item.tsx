@@ -16,10 +16,11 @@ interface Props {
   readonly onBlacklist: (jobId: string) => void
   readonly onBlacklistAndClear: (job: PendingReview) => void
   readonly pending: boolean
+  readonly verificationOnly?: boolean
 }
 
 export function TopMatchJobItem({
-  job, halalEnabled, onMarkApplied, onDelete, onBlacklist, onBlacklistAndClear, pending,
+  job, halalEnabled, onMarkApplied, onDelete, onBlacklist, onBlacklistAndClear, pending, verificationOnly = false,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -65,7 +66,7 @@ export function TopMatchJobItem({
         {expandable && (
           <button type="button" onClick={() => setOpen(v => !v)} className="mt-3 flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline">
             <ChevronDown size={12} className={cn(open && 'rotate-180')} />
-            Why it matches
+            {verificationOnly ? 'Why this listing is held' : 'Why it matches'}
           </button>
         )}
 

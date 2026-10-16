@@ -93,6 +93,19 @@ func TestLinkedInReviewOutcome(t *testing.T) {
 	}
 }
 
+func TestLinkedInReview_ScoredHoldRetainsHalalVerdict(t *testing.T) {
+	db := testDB(t)
+	b := &Bot{cfg: Config{DB: db, UserID: "u1"}, seenCache: newJobSeenCache()}
+	job := linkedInJob{ID: "123", URL: "https://www.linkedin.com/jobs/view/123", Title: "Role", Company: "Company"}
+	b.preserveLinkedInReviewWithVerdict(context.Background(), job, 8, "Evaluated intended listing", []byte(`{"verdict":"DOUBTFUL"}`), errLinkedInUnknown)
+	var score int
+	var reasoning, verdict string
+	require.NoError(t, db.QueryRow(`SELECT suitability_score,suitability_reasoning,halal_verdict FROM jobs_pending_review WHERE job_id='123' AND user_id='u1'`).Scan(&score, &reasoning, &verdict))
+	require.Equal(t, 8, score)
+	require.Equal(t, "Evaluated intended listing", reasoning)
+	require.Contains(t, verdict, "DOUBTFUL")
+}
+
 func TestLinkedInPrepare_DriftStopsBeforeFormScan(t *testing.T) {
 	br := launchTestBrowser(t)
 	srv := fixtureServer(t, "4478417422", "", `<main data-job-id="4478417422"><button>Next</button></main>`, "")

@@ -547,13 +547,18 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Config.Get(userID, "general_settings", &gs); err == nil && gs.JobSuitabilityScore > 0 {
 		threshold = gs.JobSuitabilityScore
 	}
+	// Unscored recovery holds are retained separately, never treated as matches.
+	filter := `suitability_score >= ?`
+	if r.URL.Query().Get("needs_verification") == "true" {
+		filter = `suitability_score < ? AND json_extract(CASE WHEN json_valid(document_refs_json) THEN document_refs_json ELSE '{}' END, '$.listing_review_required') = 1`
+	}
 
 	q := `SELECT job_id,company,role,COALESCE(location,''),platform,COALESCE(link,''),
 	             COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
 	             suitability_score,COALESCE(suitability_reasoning,''),COALESCE(due_date,''),COALESCE(posted_date,''),
 	             easy_apply,COALESCE(halal_verdict,''),created_at,COALESCE(document_refs_json,'')
 	      FROM jobs_pending_review
-	      WHERE user_id = ? AND (suitability_score >= ? OR json_extract(CASE WHEN json_valid(document_refs_json) THEN document_refs_json ELSE '{}' END, '$.listing_review_required') = 1) AND easy_apply = 0
+	      WHERE user_id = ? AND (` + filter + `) AND easy_apply = 0
 	      ORDER BY suitability_score DESC, created_at DESC
 	      LIMIT ? OFFSET ?`
 
@@ -620,7 +625,7 @@ func (h *JobHandlers) Stats(w http.ResponseWriter, r *http.Request) {
 		topThreshold = gs.JobSuitabilityScore
 	}
 	if err := h.svc.DB.QueryRowContext(r.Context(),
-		`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id = ? AND (suitability_score >= ? OR json_extract(CASE WHEN json_valid(document_refs_json) THEN document_refs_json ELSE '{}' END, '$.listing_review_required') = 1) AND easy_apply = 0`,
+		`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id = ? AND suitability_score >= ? AND easy_apply = 0`,
 		userID, topThreshold).Scan(&stats.TopMatchesCount); err != nil {
 		log.Error().Err(err).Msg("stats: top_matches_count query failed")
 	}

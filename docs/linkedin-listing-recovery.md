@@ -3,9 +3,13 @@
 The resolver classifies only the intended job's verified details pane. A different
 `currentJobId` is never evidence about the original `referenceJobId`. A collection
 with the intended selected ID is usable only when the rendered pane also matches.
-Unresolved listings appear in Top Matches with an explicit manual-verification
-message; their suitability is not fabricated. Verified external listings still
-pass the normal score and halal filters before entering Top Matches.
+Top Matches contains only listings at or above the configured suitability
+threshold. Unscored recovery holds are available in the separate Needs
+verification view; they do not count as matches. Verified job content is scored
+and filtered even when its application control is unrecognized. An unknown
+control never grants permission to click or apply. If identity itself cannot be
+verified, no scoring occurs and the listing stays held. New holds retain the
+specific resolver error in document_refs_json.listing_review_diagnostic.
 
 ## Existing Cannot Apply entries
 

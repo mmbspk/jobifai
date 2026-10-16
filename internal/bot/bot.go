@@ -1251,7 +1251,10 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	_ = jobPage.Timeout(30 * time.Second).WaitLoad()
 	resolution, resolveErr := waitLinkedInJob(ctx, jobPage, linkedInExpectedID(job.URL))
 	logLinkedInResolution(resolution, job, "", "classification")
-	if resolveErr != nil {
+	// A missing/ambiguous CTA does not invalidate verified job content. Score
+	// that content normally, but never try to apply while the control is unknown.
+	controlUnverified := resolveErr != nil && resolution.IdentityVerified && errors.Is(resolveErr, errLinkedInUnknown)
+	if resolveErr != nil && !controlUnverified {
 		_ = jobPage.Close()
 		if ctx.Err() == nil {
 			b.preserveLinkedInReview(ctx, job, 0, "Listing identity or application control could not be verified; suitability has not been evaluated.", resolveErr)
@@ -1267,7 +1270,10 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	if details.PostedDate == "" {
 		details.PostedDate = job.PostedDate
 	}
-	if easyApply {
+	if controlUnverified {
+		log.Warn().Err(resolveErr).Str("job_id", job.ID).Str("url", job.URL).
+			Msg("linkedin: application control unverified; evaluating verified listing without applying")
+	} else if easyApply {
 		log.Info().Msgf("linkedin: Easy Apply detected: %q @ %s", job.Title, job.Company)
 	} else {
 		log.Info().Msgf("linkedin: not Easy Apply, will route to Top Matches: %q @ %s", job.Title, job.Company)
@@ -1276,6 +1282,10 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 	llmBefore := b.llmSnapshot()
 	score, reasoning, halalVerdict, ok := b.checkScore(ctx, job, details.Description)
 	if !ok {
+		return false
+	}
+	if controlUnverified {
+		b.preserveLinkedInReviewWithVerdict(ctx, job, score, reasoning, halalVerdict, resolveErr)
 		return false
 	}
 

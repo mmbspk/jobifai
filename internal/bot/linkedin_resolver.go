@@ -116,24 +116,32 @@ func logLinkedInResolution(r linkedInResolution, job linkedInJob, attemptID, sta
 // Preserve an unresolved listing without incrementing attempts, erasing prepared
 // documents, or granting permission to automatically submit it again.
 func (b *Bot) preserveLinkedInReview(ctx context.Context, job linkedInJob, score int, reasoning string, err error) {
+	b.preserveLinkedInReviewWithVerdict(ctx, job, score, reasoning, nil, err)
+}
+
+func (b *Bot) preserveLinkedInReviewWithVerdict(ctx context.Context, job linkedInJob, score int, reasoning string, halalVerdict []byte, err error) {
 	if b.cfg.DB == nil {
 		return
 	}
 	hold := "Could not verify this listing's application control. Open the original listing to review it manually."
+	if errors.Is(err, errLinkedInIdentity) {
+		hold = "Could not verify that the displayed job is the intended listing. Open the original listing to check it."
+	}
 	if errors.Is(err, errLinkedInExternal) {
 		hold = "Apply on the employer's website."
 	}
 	if errors.Is(err, errLinkedInSubmissionUnknown) {
 		hold = "Submission was attempted but could not be confirmed. Check the original listing before applying again."
 	}
-	pack, _ := json.Marshal(map[string]any{"hold_reason": hold, "listing_review_required": true})
+	pack, _ := json.Marshal(map[string]any{"hold_reason": hold, "listing_review_required": true, "listing_review_diagnostic": err.Error()})
 	result, dbErr := b.cfg.DB.ExecContext(ctx, `INSERT INTO jobs_pending_review
-		(job_id,user_id,company,role,location,platform,link,suitability_score,suitability_reasoning,easy_apply,document_refs_json,created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,0,?,datetime('now'))
+		(job_id,user_id,company,role,location,platform,link,suitability_score,suitability_reasoning,easy_apply,document_refs_json,halal_verdict,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,0,?,?,datetime('now'))
 		ON CONFLICT(job_id) DO UPDATE SET easy_apply=0,
         document_refs_json=json_set(CASE WHEN json_valid(jobs_pending_review.document_refs_json) THEN jobs_pending_review.document_refs_json ELSE '{}' END,
-        '$.hold_reason', json_extract(excluded.document_refs_json,'$.hold_reason'), '$.listing_review_required', json('true')) WHERE jobs_pending_review.user_id=excluded.user_id`,
-		job.ID, b.cfg.UserID, job.Company, job.Title, job.Location, string(domain.PlatformLinkedIn), job.URL, score, reasoning, string(pack))
+        '$.hold_reason', json_extract(excluded.document_refs_json,'$.hold_reason'), '$.listing_review_required', json('true'),
+        '$.listing_review_diagnostic', json_extract(excluded.document_refs_json,'$.listing_review_diagnostic')) WHERE jobs_pending_review.user_id=excluded.user_id`,
+		job.ID, b.cfg.UserID, job.Company, job.Title, job.Location, string(domain.PlatformLinkedIn), job.URL, score, reasoning, string(pack), string(halalVerdict))
 	if dbErr != nil {
 		log.Error().Err(dbErr).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: could not preserve listing for manual review")
 		return
