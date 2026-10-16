@@ -92,6 +92,10 @@ func TestEvaluationRetry_UnknownSubmissionCannotReachBrowser(t *testing.T) {
 	ac := newAttemptContext("u1", "linkedin", j.JobID, j.Link, "Role", "Company", "test")
 	beginAttempt(db, ac)
 	finishAttempt(db, ac, OutcomeSubmissionUnknown, "confirmation", "unknown", "")
+	for _, variant := range []string{"https://www.linkedin.com/jobs/view/123/", "https://www.linkedin.com/jobs/view/123?trackingId=example", "https://linkedin.com/jobs/view/123/"} {
+		require.Error(t, unresolvedSubmission(db, "u1", "new-manual-id", variant, "new-attempt"))
+	}
+	require.NoError(t, unresolvedSubmission(db, "u1", "other-id", "https://other.example/jobs/view/123", ""))
 	require.False(t, b.processEvaluationRetry(context.Background(), nil, j))
 }
 
