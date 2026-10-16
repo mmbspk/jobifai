@@ -2,11 +2,43 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"github.com/stretchr/testify/require"
 	"github.com/user/jobifai/internal/domain"
 	"strings"
 	"testing"
 )
+
+func TestListingEvaluation_ServiceErrorsPersistWithoutQualification(t *testing.T) {
+	for _, platform := range []domain.Platform{domain.PlatformLinkedIn, domain.PlatformSeek} {
+		for _, stage := range []string{"score", "halal"} {
+			t.Run(string(platform)+"/"+stage, func(t *testing.T) {
+				db := testDB(t)
+				cfg := Config{DB: db, UserID: "u1", Platform: platform, Scorer: stubScorer{result: domain.JobScore{Score: 9}}}
+				if stage == "score" {
+					cfg.Scorer = stubScorer{err: errors.New("service unavailable")}
+				} else {
+					cfg.HalalChecker = stubHalal{err: errors.New("service unavailable")}
+				}
+				b := New(cfg)
+				job := linkedInJob{ID: "123", URL: "https://www.linkedin.com/jobs/view/123", Title: "Role", Company: "Company"}
+				var ok bool
+				if platform == domain.PlatformSeek {
+					_, _, _, ok = b.checkSeekScore(context.Background(), seekJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company}, "actual description")
+				} else {
+					_, _, _, ok = b.checkScore(context.Background(), job, "actual description")
+				}
+				require.False(t, ok)
+				var code string
+				require.NoError(t, db.QueryRow(`SELECT failure_code FROM jobs_skipped WHERE id='123' AND user_id='u1'`).Scan(&code))
+				require.Equal(t, "evaluation_failed", code)
+				var count int
+				require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_pending_review`).Scan(&count))
+				require.Zero(t, count)
+			})
+		}
+	}
+}
 
 func TestListingEvaluation_RequiresDescriptionAndScorer(t *testing.T) {
 	require.ErrorIs(t, listingEvaluationError("Role at Company", stubScorer{}), errJobDescriptionMissing)

@@ -14,7 +14,7 @@ function page(html,path='/jobs/view/'+target,expectedID=target){
  dom.window.HTMLElement.prototype.scrollIntoView=function(){};
  const resolve=dom.window.eval('('+script+')');
  const confirm=dom.window.eval('('+confirmation+')');
- return {dom,resolve:click=>JSON.parse(resolve(expectedID,click)),confirm:company=>confirm(expectedID,company)};
+ return {dom,resolve:(click,metadata={})=>JSON.parse(resolve(expectedID,click,false,metadata.title||'',metadata.company||'')),confirm:company=>confirm(expectedID,company)};
 }
 for(const [name,id,kind,description] of [
  ['external','4479800927','external','Project Delivery:'],
@@ -43,6 +43,18 @@ for(const [name,id,kind,description] of [
  test('captured SDUI '+name+' rejects another selected collection job',()=>{
   const p=page(html,'/jobs/collections/similar-jobs/?currentJobId=999&referenceJobId='+id,id);try{const r=p.resolve(true);assert.equal(r.identity_verified,false);assert.equal(r.action,'');assert.equal(r.description,'');}finally{p.dom.window.close()}
  });
+ test('captured SDUI '+name+' does not depend on generated wrapper classes',()=>{
+  const p=page(html,'/jobs/view/'+id,id);
+  try {p.dom.window.document.querySelectorAll('[class]').forEach(el=>el.removeAttribute('class'));assert.equal(p.resolve(false).kind,kind);}finally{p.dom.window.close()}
+ });
+ test('captured SDUI '+name+' rejects conflicting declared listing metadata',()=>{
+  const p=page(html,'/jobs/view/'+id,id);
+  try {
+   for(const metadata of [{title:'Unrelated different role'},{company:'Unrelated different employer'}]) {
+    const r=p.resolve(true,metadata);assert.equal(r.identity_verified,false);assert.equal(r.reason,'listing_metadata_mismatch');assert.equal(r.action,'');assert.equal(r.description,'');
+   }
+  }finally{p.dom.window.close()}
+ });
 }
 const pane=body=>`<main data-job-id="${target}"><h1>Principal Developer at MYOB</h1>${body}</main>`;
 const external='<a href="https://employer.example/apply">Apply</a>';
@@ -67,6 +79,7 @@ for(const [name,html,path,kind] of [
  ['SDUI false flag is not native',pane(`<a href="/jobs/view/${target}?openSDUIApplyFlow=false">Apply</a>`),undefined,'external'],
  ['hidden native ignored',pane(external+'<button style="visibility:hidden">Easy Apply</button>'),undefined,'external'],
  ['ambiguous controls held',pane(external+native),undefined,'unknown'],
+ ['duplicate native controls held',pane(native+native),undefined,'unknown'],
  ['wrong job submitted text ignored',pane(external+`<section data-job-id="${other}"><div role="status">Application submitted</div></section>`),undefined,'external'],
  ['body submitted text ignored',pane(external)+'<p>Application submitted</p>',undefined,'external'],
  ['verified prior application',pane('<button data-test-job-apply-button-applied>Applied</button>'),undefined,'already_applied'],

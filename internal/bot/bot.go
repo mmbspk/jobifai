@@ -1433,6 +1433,9 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	}
 	result, err := b.cfg.Scorer.EvaluateJob(b.llmCtx(ctx, "evaluate job", job.ID), b.currentProfile(), jobDesc)
 	if err != nil {
+		if ctx.Err() == nil {
+			b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, 0, "", nil, fmt.Errorf("%w: %w", errJobEvaluationFailed, err))
+		}
 		b.abortOnLLMFailure(err)
 		return 0, "", nil, false
 	}
@@ -1448,11 +1451,11 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	if b.cfg.HalalChecker != nil {
 		verdict, err := b.cfg.HalalChecker.CheckHalal(b.llmCtx(ctx, "halal check", job.ID), job.Title, job.Company, jobDesc)
 		if err != nil {
-			if isJobifaiQuotaExceeded(err) {
-				b.abortOnLLMFailure(err)
-				return result.Score, result.Reasoning, nil, false
+			if ctx.Err() == nil {
+				b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, result.Score, result.Reasoning, nil, fmt.Errorf("%w: halal check: %w", errJobEvaluationFailed, err))
 			}
-			log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("halal check failed, letting job through")
+			b.abortOnLLMFailure(err)
+			return result.Score, result.Reasoning, nil, false
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
