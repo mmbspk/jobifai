@@ -39,9 +39,12 @@ import (
 //
 // Fixture layout:
 //
-//	/jobs/view/123456789       — correct job, CTA navigates to modal on same path
-//	/jobs/view/123456789/modal — modal with a submit button that navigates to wrong job
-//	/jobs/view/999888          — success page ("application submitted") at wrong job URL
+//	/jobs/view/123456789 — correct job, CTA reveals its modal
+//	Submit updates the SPA URL to /jobs/view/999888 and shows confirmation.
+//
+// Opening the modal must not perform a full document navigation: that can
+// legitimately abort before Submit when the fail-closed identity read observes
+// a transient unreadable page, which would not exercise this regression.
 func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 	// Reuse the fixture's Chrome through the supported remote-debug setting.
 	// This exercises runSubmit without a second launcher requiring a Linux sandbox.
@@ -58,17 +61,10 @@ func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 <main data-job-id="123456789">
   <h1>Test Role at TestCo</h1>
   <button data-live-test-easy-apply
-          onclick="window.location.href='/jobs/view/123456789/modal'">Easy Apply</button>
-</main>
-</body></html>`)
-	})
-	mux.HandleFunc("/jobs/view/123456789/modal", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!DOCTYPE html><html><body>
-<main data-job-id="123456789"><h1>Test Role at TestCo</h1>
-<div role="dialog" aria-label="Easy Apply">
+          onclick="this.remove();document.getElementById('apply-modal').style.display='block'">Easy Apply</button>
+<div id="apply-modal" role="dialog" aria-label="Easy Apply" style="display:none">
   <button data-live-test-easy-apply-submit-button
-          onclick="window.location.href='/jobs/view/999888'">Submit Application</button>
+          onclick="history.replaceState({},'', '/jobs/view/999888');this.parentElement.innerHTML='Application submitted. Your application was sent to TestCo.'">Submit Application</button>
 </div></main>
 </body></html>`)
 	})

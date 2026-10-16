@@ -19,7 +19,13 @@ function page(html,path='/jobs/view/'+target){
 const pane=body=>`<main data-job-id="${target}"><h1>Principal Developer at MYOB</h1>${body}</main>`;
 const external='<a href="https://employer.example/apply">Apply</a>';
 const native='<button>Easy Apply</button>';
+// Captured SDUI control shapes supplied by the user. The verified parent below
+// is synthetic: the capture contains the controls, not their job-header owner.
+const sduiNative='<div class="iiimki iiiax0 iiiifh iiijmn iiijl2 iiijmd iiiih5 iiimkb"><div class="iiia1c iiihex iiihu9 iiimkb"><button type="button" componentkey="fcbdc6af-86ae-4f4e-a042-6ee86f5e204f" aria-label="Easy Apply to this job"><span><svg aria-hidden="true"></svg><span>Easy Apply</span></span></button></div><button type="button" aria-label="Save the job"><span>Save</span></button></div>';
+const sduiExternal='<div class="iiimki iiiax0 iiiifh iiijmn iiijl2 iiijmd iiiih5 iiimkb"><div class="iiia1c iiihex iiihu9 iiimkb"><a aria-disabled="false" href="https://www.linkedin.com/safety/go/?url=https%3A%2F%2Fjobs.lever.co%2FZeller%2F0fbec193-ea8a-4c5d-8441-d4ad3dab6ed2%2Fapply&isSdui=true" target="_blank" componentkey="ec093e15-bea5-4a74-a698-9a07620fc5de" aria-label="Apply on company website"><span><svg aria-hidden="true"></svg><span>Apply</span></span></a></div><button type="button" aria-label="Save the job"><span>Save</span></button></div>';
 for(const [name,html,path,kind] of [
+ ['captured SDUI native control in verified owner',pane(sduiNative),undefined,'native'],
+ ['captured SDUI safety redirect control in verified owner',pane(sduiExternal),undefined,'external'],
  ['external with another job native button',pane(external+`<section data-job-id="${other}">${native}</section>`),undefined,'external'],
  ['external with collection SDUI link',pane(external+`<a href="/jobs/collections/similar-jobs/?currentJobId=${other}&referenceJobId=${target}&openSDUIApplyFlow=true">Easy Apply</a>`),undefined,'external'],
  ['collection selects wrong job',`<main data-job-id="${other}">${native}</main>`,`/jobs/collections/similar-jobs/?currentJobId=${other}&referenceJobId=${target}`,'unknown'],
@@ -39,6 +45,12 @@ for(const [name,html,path,kind] of [
  ['foreign host native link rejected',pane(`<a href="https://evil.example/jobs/view/${target}">Easy Apply</a>`),undefined,'unknown'],
  ['recommendation heading owner rejected',pane(external+`<section><h3><a href="/jobs/view/${other}">Other role</a></h3>${native}</section>`),undefined,'external'],
 ]) test(name,()=>{const p=page(html,path);try{assert.equal(p.resolve(false).kind,kind);let clicks=0;p.dom.window.document.addEventListener('click',e=>{clicks++;e.preventDefault()});const r=p.resolve(true);assert.equal(r.kind,kind);assert.equal(clicks,kind==='native'?1:0);}finally{p.dom.window.close()}});
+test('captured SDUI controls alone do not prove pane ownership',()=>{
+ for(const control of [sduiNative,sduiExternal]) {
+  const p=page('<main>'+control+'</main>');
+  try {const r=p.resolve(false);assert.equal(r.reason,'job_pane_not_unique');assert.equal(r.identity_verified,false);}finally{p.dom.window.close()}
+ }
+});
 test('identity rechecked between detection and click',()=>{
  const p=page(pane(native)); assert.equal(p.resolve(false).kind,'native');
  p.dom.window.history.replaceState({},'',`/jobs/collections/similar-jobs/?currentJobId=${other}&referenceJobId=${target}`);
