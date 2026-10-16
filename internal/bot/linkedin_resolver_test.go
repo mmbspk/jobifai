@@ -20,6 +20,7 @@ func TestLinkedInURLListing_UsesRefreshedControl(t *testing.T) {
 	br := launchTestBrowser(t)
 	for _, tc := range []struct{ name, mutation, kind, outcome string }{
 		{"native", "void 0", "native", string(OutcomeInProgress)},
+		{"temporarily hidden", "document.getElementById('cta').style.display='none';setTimeout(()=>document.getElementById('cta').style.display='block',700)", "native", string(OutcomeInProgress)},
 		{"external", "document.getElementById('cta').outerHTML='<a href=&quot;https://employer.example/apply&quot;>Apply</a>'", "external", string(OutcomeInProgress)},
 		{"unknown", "document.getElementById('cta').remove()", "unknown", string(OutcomeBlocked)},
 		{"already applied", "const c=document.getElementById('cta');c.textContent='Applied';c.setAttribute('data-test-job-apply-button-applied','')", "already_applied", string(OutcomeAlreadyApplied)},

@@ -150,6 +150,11 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 // must use that refreshed classification, never interpret unknown as external.
 func (b *Bot) readLinkedInURLListing(ctx context.Context, page *rod.Page, job linkedInJob, ac *AttemptContext) (linkedInResolution, error) {
 	r, err := readLinkedInDescription(ctx, page, job)
+	if err == nil && r.IdentityVerified && r.Kind == "unknown" {
+		// Allow an ordinary header rerender to settle before declaring that the
+		// application control cannot be recognized.
+		r, err = waitLinkedInJob(ctx, page, linkedInExpectedID(job.URL), job)
+	}
 	if err == nil && r.Kind == "already_applied" {
 		finishAttempt(b.cfg.DB, ac, OutcomeAlreadyApplied, "classification", "already_applied", "")
 		return r, ErrAlreadyApplied
