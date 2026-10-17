@@ -83,12 +83,13 @@ export function TopMatches() {
   return (
     <JobListPage
       title="Top Matches"
-      description="Strong matches that do not support automated application."
+      description="Strong matches for manual application."
     >
       <InfoBanner variant="accent">
         <TrendingUp size={18} className="shrink-0 text-[var(--color-accent)] mt-0.5" />
-        <span>Roles at or above your suitability threshold. Apply manually or mark applied when done.</span>
+        <span>Only roles at or above your suitability threshold appear here. Apply manually or mark applied when done.</span>
       </InfoBanner>
+
 
       <JobSearchBar value={search} onChange={setSearch} />
 

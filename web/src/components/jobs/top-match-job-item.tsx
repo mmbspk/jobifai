@@ -26,6 +26,11 @@ export function TopMatchJobItem({
   const [confirmBlacklist, setConfirmBlacklist] = useState(false)
   const isDoubtful = halalEnabled && job.halal_verdict?.verdict === 'DOUBTFUL'
   const expandable = !!(job.suitability_reasoning || isDoubtful)
+  let reviewReason = ''
+  try {
+    const pack: unknown = JSON.parse(job.document_refs_json || '{}')
+    if (pack && typeof pack === 'object' && 'listing_review_required' in pack && pack.listing_review_required === true && 'hold_reason' in pack && typeof pack.hold_reason === 'string') reviewReason = pack.hold_reason
+  } catch { /* Older rows may not contain a document pack. */ }
   const posted = formatPostedDisplay(job.posted_date, job.created_at)
 
   return (
@@ -54,6 +59,8 @@ export function TopMatchJobItem({
           </div>
           <PlatformBadge platform={job.platform} size="sm" />
         </div>
+
+        {reviewReason && <p className="mt-3 text-xs text-[var(--color-warn)]">{reviewReason}</p>}
 
         {expandable && (
           <button type="button" onClick={() => setOpen(v => !v)} className="mt-3 flex items-center gap-1 text-xs text-[var(--color-accent)] hover:underline">

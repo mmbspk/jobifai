@@ -1,325 +1,176 @@
 package bot
 
-// Browser fixture tests for processJob's listing-unavailable guard.
-//
-// When LinkedIn redirects an expired job URL to a similar-jobs collections page,
-// that page shows a different job's content (description, Easy Apply CTA). These
-// tests prove that processJob detects the redirect via verifyJobIdentity and:
-//
-//   - records the job as skipped with the identity error preserved
-//   - never routes the job to Top Matches (jobs_pending_review)
-//   - never uses the collections page description for scoring
-//   - never attempts an Easy Apply against the wrong listing
-//
-// A regression guard confirms the happy path is unaffected: a valid non-Easy-Apply
-// job page still routes to Top Matches as expected.
-//
-// Tests are skipped automatically when no Chromium binary is available.
-
 import (
 	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 )
 
-// collectionsPageHTML simulates a LinkedIn similar-jobs collections page.
-// It carries a different job's Easy Apply CTA and a description longer than 100
-// characters — both must not be attributed to the original (expired) listing.
-const collectionsPageHTML = `<!DOCTYPE html><html><body>
-<main>
-  <h1>Wrong Highlighted Job at WrongCo</h1>
-  <button aria-label="Easy Apply" style="display:block; width:120px; height:40px">Easy Apply</button>
-  <div>This is the description of the WRONG JOB shown on the collections page.
-  It is intentionally longer than one hundred characters so it would corrupt
-  the score if identity gating were absent.</div>
-</main>
-</body></html>`
-
-// expiredJobPageHTML simulates a generic error/unavailable page with no job path.
-const expiredJobPageHTML = `<!DOCTYPE html><html><body>
-<main><h1>Job no longer available</h1><p>This posting has been removed.</p></main>
-</body></html>`
-
-// validExternalApplyHTML: a correct job page at the declared URL, external Apply only.
-// Used to prove the happy path — verified listing with no Easy Apply — routes to Top Matches.
-const validExternalApplyHTML = `<!DOCTYPE html><html><body>
-<main>
-  <h1>Test Role at OriginalCo</h1>
-  <a href="https://external-ats.example.com/apply">Apply on company website</a>
-  <div>This is a genuine job description for the correct listing.
-  It is intentionally longer than one hundred characters to ensure description
-  extraction works normally for the regression guard test case.</div>
-</main>
-</body></html>`
-
-// TestProcessJob_CollectionsPageRedirect_IsSkippedNotTopMatches verifies the main
-// expired-listing scenario: the original job URL redirects to a similar-jobs
-// collections page that highlights a different job's Easy Apply CTA and description.
-// The bot must record the original job as skipped (with the identity error preserved)
-// and must not place it in Top Matches or attempt an Easy Apply against the wrong job.
-func TestProcessJob_CollectionsPageRedirect_IsSkippedNotTopMatches(t *testing.T) {
-	br := launchTestBrowser(t)
-
-	mux := http.NewServeMux()
-	// Original job URL redirects to a similar-jobs collections page — the collections
-	// page highlights a different job (OTHER456) which has an Easy Apply CTA.
-	mux.HandleFunc("/jobs/view/ORIG123", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/jobs/collections/similar-jobs/?currentJobId=OTHER456", http.StatusFound)
-	})
-	mux.HandleFunc("/jobs/collections/similar-jobs/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, collectionsPageHTML)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := appdb.Open(dbPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
-	b := &Bot{
-		cfg:       Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn},
-		stopCh:    make(chan struct{}),
-		seenCache: newJobSeenCache(),
-	}
-	job := linkedInJob{
-		ID:      "ORIG123",
-		URL:     srv.URL + "/jobs/view/ORIG123",
-		Title:   "Test Role",
-		Company: "OriginalCo",
-	}
-
-	result := b.processJob(context.Background(), br, job)
-	assert.False(t, result, "processJob must return false for an unavailable listing")
-
-	// The original job must be recorded in jobs_skipped with the identity error preserved.
-	var skipReason string
-	require.NoError(t, db.QueryRow(
-		`SELECT skip_reason FROM jobs_skipped WHERE id = ? AND user_id = ?`,
-		job.ID, "u1",
-	).Scan(&skipReason), "job must be recorded in jobs_skipped")
-	assert.Contains(t, skipReason, "listing unavailable", "skip reason must identify the listing as unavailable")
-	assert.Contains(t, skipReason, "no LinkedIn job path", "skip reason must preserve the identity error")
-
-	// Must NOT appear in Top Matches — the job is gone, not a manual-apply opportunity.
-	var pendingCount int
-	require.NoError(t, db.QueryRow(
-		`SELECT COUNT(*) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
-		job.ID, "u1",
-	).Scan(&pendingCount))
-	assert.Equal(t, 0, pendingCount, "unavailable listing must not appear in Top Matches")
-}
-
-// TestProcessJob_NonJobPageRedirect_IsSkipped verifies the unreadable-page variant:
-// the original job URL redirects to a plain error page (no /jobs/view/ path in the URL).
-// The identity check catches the missing job path and records the job as skipped.
-func TestProcessJob_NonJobPageRedirect_IsSkipped(t *testing.T) {
-	br := launchTestBrowser(t)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/jobs/view/ORIG123", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/jobs/not-found", http.StatusFound)
-	})
-	mux.HandleFunc("/jobs/not-found", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, expiredJobPageHTML)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := appdb.Open(dbPath)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
-	b := &Bot{
-		cfg:       Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn},
-		stopCh:    make(chan struct{}),
-		seenCache: newJobSeenCache(),
-	}
-	job := linkedInJob{
-		ID:      "ORIG123",
-		URL:     srv.URL + "/jobs/view/ORIG123",
-		Title:   "Test Role",
-		Company: "OriginalCo",
-	}
-
-	result := b.processJob(context.Background(), br, job)
-	assert.False(t, result)
-
-	var skipReason string
-	require.NoError(t, db.QueryRow(
-		`SELECT skip_reason FROM jobs_skipped WHERE id = ? AND user_id = ?`,
-		job.ID, "u1",
-	).Scan(&skipReason), "job must be recorded in jobs_skipped")
-	assert.Contains(t, skipReason, "listing unavailable")
-
-	var pendingCount int
-	require.NoError(t, db.QueryRow(
-		`SELECT COUNT(*) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
-		job.ID, "u1",
-	).Scan(&pendingCount))
-	assert.Equal(t, 0, pendingCount, "unavailable listing must not appear in Top Matches")
-}
-
-// capturingScorer is a JobScorer that records the job description it receives.
-// Used to assert that the description reaching the scorer is the browser-derived
-// or title+company fallback, never HTTP content fetched without identity checks.
 type capturingScorer struct {
 	gotDesc string
+	score   int
 }
 
-func (s *capturingScorer) EvaluateJob(_ context.Context, _ *domain.ResumeProfile, jobDesc string) (domain.JobScore, error) {
-	s.gotDesc = jobDesc
-	return domain.JobScore{Score: 8}, nil
+func (s *capturingScorer) EvaluateJob(_ context.Context, _ *domain.ResumeProfile, desc string) (domain.JobScore, error) {
+	s.gotDesc = desc
+	score := s.score
+	if score == 0 {
+		score = 8
+	}
+	return domain.JobScore{Score: score, Reasoning: "Evaluated verified listing"}, nil
 }
 
-// TestProcessJob_BrowserOpenFails_IsSkipped verifies that when the browser cannot open
-// a page at all (connection refused / browser closed), processJob records the job as
-// skipped rather than falling through to the removed HTTP fallback or returning true.
-func TestProcessJob_BrowserOpenFails_IsSkipped(t *testing.T) {
+// Exercise real processJob routing: a redirect is not proof of expiry, and
+// another selected job's description/Apply button must never be consumed.
+func TestProcessJob_ListingResolution(t *testing.T) {
+	verifiedDescription := strings.Repeat("Verified intended listing responsibilities and requirements. ", 4)
+	for _, tc := range []struct {
+		name, path, html string
+		scored           bool
+	}{
+		{"collections redirect", "/jobs/collections/similar-jobs/?currentJobId=4478417422&referenceJobId=4479748087", `<main data-job-id="4478417422"><h1>Wrong role</h1><button>Easy Apply</button></main>`, false},
+		{"non-job redirect", "/jobs/not-found", `<main>Unable to load listing</main>`, false},
+		{"external with recommendation", "", `<main data-job-id="4479748087"><h1>Principal Developer at MYOB</h1><div data-job-description>` + verifiedDescription + `</div><a href="https://employer.example/apply">Apply</a><section data-job-id="4478417422"><button>Easy Apply</button></section></main>`, true},
+		{"thin description", "", `<main data-job-id="4479748087"><h1>Principal Developer at MYOB</h1><a href="https://employer.example/apply">Apply</a><div data-job-description>Short description.</div></main>`, false},
+		{"URL correct but stale pane", "", `<main data-job-id="4478417422"><button>Easy Apply</button></main>`, false},
+		{"verified listing without recognized control", "", `<main data-job-id="4479748087"><h1>Principal Developer at MYOB</h1><div data-job-description>` + verifiedDescription + `</div><button>Continue to employer</button></main>`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			br := launchTestBrowser(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.path != "" && r.URL.Path == "/jobs/view/4479748087" {
+					http.Redirect(w, r, tc.path, http.StatusFound)
+					return
+				}
+				w.Header().Set("Content-Type", "text/html")
+				fmt.Fprint(w, tc.html)
+			}))
+			defer srv.Close()
+			db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
+			require.NoError(t, err)
+			defer db.Close()
+			scorer := &capturingScorer{}
+			b := &Bot{cfg: Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer}, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
+			job := linkedInJob{ID: "4479748087", URL: srv.URL + "/jobs/view/4479748087", Title: "Principal Developer", Company: "MYOB"}
+			require.False(t, b.processJob(context.Background(), br, job))
+			var count int
+			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id='u1'`).Scan(&count))
+			failure := !tc.scored || tc.name == "verified listing without recognized control"
+			if failure {
+				require.Equal(t, 1, count)
+			} else {
+				require.Zero(t, count)
+			}
+			require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_applied WHERE user_id='u1'`).Scan(&count))
+			require.Zero(t, count)
+			if tc.scored {
+				require.Contains(t, scorer.gotDesc, strings.TrimSpace(verifiedDescription))
+				require.Contains(t, scorer.gotDesc, "Company: MYOB")
+				var score int
+				var reasoning string
+				query := `SELECT suitability_score,suitability_reasoning FROM jobs_pending_review WHERE job_id=? AND user_id='u1'`
+				if failure {
+					query = `SELECT suitability_score,suitability_reasoning FROM jobs_skipped WHERE id=? AND user_id='u1'`
+				}
+				require.NoError(t, db.QueryRow(query, job.ID).Scan(&score, &reasoning))
+				require.Equal(t, 8, score)
+				require.Equal(t, "Evaluated verified listing", reasoning)
+			} else {
+				require.Empty(t, scorer.gotDesc)
+				var diagnostic string
+				require.NoError(t, db.QueryRow(`SELECT failure_details_json FROM jobs_skipped WHERE id=? AND user_id='u1'`, job.ID).Scan(&diagnostic))
+				require.NotEmpty(t, diagnostic)
+			}
+		})
+	}
+}
+
+func TestProcessJob_UnrecognizedControlStillRejectsLowScore(t *testing.T) {
 	br := launchTestBrowser(t)
-	// Close the browser so that br.Page() returns a connection error.
+	srv := fixtureServer(t, "4479748087", "", `<main data-job-id="4479748087"><h1>Role</h1><div data-job-description>`+strings.Repeat("Actual job responsibilities and requirements. ", 5)+`</div><button>Continue to employer</button></main>`, "")
+	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
+	require.NoError(t, err)
+	defer db.Close()
+	scorer := &capturingScorer{score: 3}
+	b := &Bot{cfg: Config{DB: db, UserID: "u1", Scorer: scorer}, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
+	job := linkedInJob{ID: "4479748087", URL: srv.URL + "/jobs/view/4479748087", Title: "Role", Company: "Company"}
+	require.False(t, b.processJob(context.Background(), br, job))
+	require.NotEmpty(t, scorer.gotDesc)
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id='u1'`).Scan(&count))
+	require.Zero(t, count)
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id='u1' AND suitability_score=3`).Scan(&count))
+	require.Equal(t, 1, count)
+}
+
+func TestProcessJob_BrowserFailurePreservesReview(t *testing.T) {
+	br := launchTestBrowser(t)
 	require.NoError(t, br.Close())
-
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := appdb.Open(dbPath)
+	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
-	b := &Bot{
-		cfg:       Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn},
-		stopCh:    make(chan struct{}),
-		seenCache: newJobSeenCache(),
-	}
-	job := linkedInJob{
-		ID:      "ORIG123",
-		URL:     "https://www.linkedin.com/jobs/view/ORIG123",
-		Title:   "Test Role",
-		Company: "OriginalCo",
-	}
-
-	result := b.processJob(context.Background(), br, job)
-	assert.False(t, result, "processJob must return false when browser page open fails")
-
-	var skipReason string
-	require.NoError(t, db.QueryRow(
-		`SELECT skip_reason FROM jobs_skipped WHERE id = ? AND user_id = ?`,
-		job.ID, "u1",
-	).Scan(&skipReason), "job must be recorded in jobs_skipped")
-	assert.Contains(t, skipReason, "browser page open failed", "skip reason must identify the browser failure")
-
-	var pendingCount int
-	require.NoError(t, db.QueryRow(
-		`SELECT COUNT(*) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
-		job.ID, "u1",
-	).Scan(&pendingCount))
-	assert.Equal(t, 0, pendingCount, "job with browser failure must not appear in Top Matches")
+	defer db.Close()
+	b := &Bot{cfg: Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn}, seenCache: newJobSeenCache()}
+	require.False(t, b.processJob(context.Background(), br, linkedInJob{ID: "4479748087", URL: "https://www.linkedin.com/jobs/view/4479748087", Title: "Role", Company: "Company"}))
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id='u1'`).Scan(&count))
+	require.Equal(t, 1, count)
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id='u1'`).Scan(&count))
+	require.Zero(t, count)
 }
 
-// TestProcessJob_ThinDescriptionNoHTTPFallback verifies that when the browser page loads
-// successfully but yields a description shorter than 100 characters, processJob falls back
-// to "title at company" rather than making an HTTP fetch. An HTTP fetch would follow
-// redirects without identity checks and could return collections page content.
-func TestProcessJob_ThinDescriptionNoHTTPFallback(t *testing.T) {
+func TestProcessJob_CapturedSDUIExternal_IsScored(t *testing.T) {
 	br := launchTestBrowser(t)
-
-	// Serve a valid job page with a description too short to pass the 100-char threshold.
-	const thinDescHTML = `<!DOCTYPE html><html><body>
-<main>
-  <h1>Test Role at OriginalCo</h1>
-  <div>Short description.</div>
-</main>
-</body></html>`
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/jobs/view/ORIG123", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, thinDescHTML)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := appdb.Open(dbPath)
+	html, err := os.ReadFile(filepath.Join("testdata", "linkedin", "sdui-external.html"))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
+	srv := fixtureServer(t, "4479800927", "", string(html), "")
+	db := testDB(t)
 	scorer := &capturingScorer{}
-	b := &Bot{
-		cfg:       Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer},
-		stopCh:    make(chan struct{}),
-		seenCache: newJobSeenCache(),
-	}
-	job := linkedInJob{
-		ID:      "ORIG123",
-		URL:     srv.URL + "/jobs/view/ORIG123",
-		Title:   "Test Role",
-		Company: "OriginalCo",
-	}
-
-	b.processJob(context.Background(), br, job)
-
-	assert.Equal(t, "Test Role at OriginalCo", scorer.gotDesc,
-		"thin browser description must fall back to title+company, not HTTP-fetched content")
+	b := &Bot{cfg: Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer}, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
+	job := linkedInJob{ID: "4479800927", URL: srv.URL + "/jobs/view/4479800927", Title: "Mid-Level Product Manager", Company: "Zeller"}
+	require.False(t, b.processJob(context.Background(), br, job))
+	require.Contains(t, scorer.gotDesc, "Project Delivery:")
+	require.Greater(t, len(scorer.gotDesc), 1000)
+	var score int
+	var reasoning string
+	var easy bool
+	require.NoError(t, db.QueryRow(`SELECT suitability_score,suitability_reasoning,easy_apply FROM jobs_pending_review WHERE user_id='u1' AND job_id=?`, job.ID).Scan(&score, &reasoning, &easy))
+	require.Equal(t, 8, score)
+	require.Equal(t, "Evaluated verified listing", reasoning)
+	require.False(t, easy)
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_applied WHERE user_id='u1'`).Scan(&count))
+	require.Zero(t, count)
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_skipped WHERE user_id='u1'`).Scan(&count))
+	require.Zero(t, count)
 }
 
-// TestProcessJob_ValidNonEasyApplyJob_GoesToTopMatches is the regression guard:
-// a valid listing that loads at the declared URL with only an external Apply button
-// must still route to Top Matches (jobs_pending_review, easy_apply=0) as before.
-func TestProcessJob_ValidNonEasyApplyJob_GoesToTopMatches(t *testing.T) {
+func TestEvaluationRetry_CapturedExternalRechecksAndScores(t *testing.T) {
 	br := launchTestBrowser(t)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/jobs/view/ORIG123", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, validExternalApplyHTML)
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := appdb.Open(dbPath)
+	html, err := os.ReadFile(filepath.Join("testdata", "linkedin", "sdui-external.html"))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
-	b := &Bot{
-		cfg:       Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn},
-		stopCh:    make(chan struct{}),
-		seenCache: newJobSeenCache(),
-	}
-	job := linkedInJob{
-		ID:      "ORIG123",
-		URL:     srv.URL + "/jobs/view/ORIG123",
-		Title:   "Test Role",
-		Company: "OriginalCo",
-	}
-
-	result := b.processJob(context.Background(), br, job)
-	assert.False(t, result, "non-Easy Apply returns false (queued to Top Matches, not applied)")
-
-	// Valid listing must be in Top Matches with easy_apply=0.
-	var easyApply int
-	require.NoError(t, db.QueryRow(
-		`SELECT easy_apply FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
-		job.ID, "u1",
-	).Scan(&easyApply), "valid non-Easy Apply listing must be in jobs_pending_review")
-	assert.Equal(t, 0, easyApply, "easy_apply must be 0 for a non-Easy Apply listing in Top Matches")
-
-	// Must not be skipped.
-	var skipCount int
-	require.NoError(t, db.QueryRow(
-		`SELECT COUNT(*) FROM jobs_skipped WHERE id = ? AND user_id = ?`,
-		job.ID, "u1",
-	).Scan(&skipCount))
-	assert.Equal(t, 0, skipCount, "valid listing must not be in jobs_skipped")
+	srv := fixtureServer(t, "4479800927", "", string(html), "")
+	db := testDB(t)
+	scorer := &capturingScorer{}
+	b := New(Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer})
+	url := srv.URL + "/jobs/view/4479800927"
+	_, err = db.Exec(`INSERT INTO jobs_approved_queue(job_id,user_id,platform,company,role,location,link,approved_at,needs_evaluation) VALUES('4479800927','u1','linkedin','Zeller','Mid-Level Product Manager','Melbourne',?,datetime('now'),1)`, url)
+	require.NoError(t, err)
+	b.seenCache.mark("4479800927", seenSkipped)
+	require.Zero(t, b.processApprovedQueue(context.Background(), br, 10))
+	require.Contains(t, scorer.gotDesc, "Project Delivery:")
+	var score int
+	require.NoError(t, db.QueryRow(`SELECT suitability_score FROM jobs_pending_review WHERE user_id='u1' AND job_id='4479800927'`).Scan(&score))
+	require.Equal(t, 8, score)
+	var queued int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_approved_queue WHERE user_id='u1'`).Scan(&queued))
+	require.Zero(t, queued)
 }

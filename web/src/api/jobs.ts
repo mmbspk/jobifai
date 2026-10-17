@@ -7,6 +7,7 @@ export interface JobsQuery {
   limit?: number
   offset?: number
   today?: boolean
+  needs_verification?: boolean
 }
 
 function qs(q: JobsQuery): string {
@@ -16,6 +17,7 @@ function qs(q: JobsQuery): string {
   if (q.limit != null) p.set('limit', String(q.limit))
   if (q.offset != null) p.set('offset', String(q.offset))
   if (q.today) p.set('today', 'true')
+  if (q.needs_verification) p.set('needs_verification', 'true')
   const s = p.toString()
   return s ? `?${s}` : ''
 }

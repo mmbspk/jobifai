@@ -334,6 +334,9 @@ func TestJobs_RetryCannotApply(t *testing.T) {
 	var cnt int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM jobs_approved_queue WHERE job_id=? AND user_id=?`, "retry-001", userID).Scan(&cnt))
 	assert.Equal(t, 1, cnt)
+	var evaluate bool
+	require.NoError(t, db.QueryRow(`SELECT needs_evaluation FROM jobs_approved_queue WHERE job_id=? AND user_id=?`, "retry-001", userID).Scan(&evaluate))
+	require.True(t, evaluate)
 
 	w2 := authGet(t, router, "/api/jobs/cannot-apply", token)
 	var out []domain.SkippedJob

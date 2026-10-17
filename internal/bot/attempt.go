@@ -6,25 +6,81 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
 
+// Persist intent before dispatch: losing the browser response must never turn
+// a possibly submitted application into an ordinary retryable failure.
+func unresolvedSubmission(db *sql.DB, userID, jobID, jobURL, currentAttempt string) error {
+	if db == nil {
+		return nil
+	}
+	// Manual URL entry uses internal IDs, and tracking/trailing-slash variants
+	// must not bypass an unresolved submission for the same LinkedIn job.
+	canonicalID := func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		host := strings.ToLower(u.Hostname())
+		if host != "linkedin.com" && !strings.HasSuffix(host, ".linkedin.com") {
+			return ""
+		}
+		return linkedInExpectedID(raw)
+	}
+	expectedID := canonicalID(jobURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rows, err := db.QueryContext(ctx, `SELECT job_id,url FROM apply_attempts WHERE user_id=? AND id<>? AND outcome IN ('submission_unknown','in_progress')`, userID, currentAttempt)
+	if err != nil {
+		return fmt.Errorf("check previous submission: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var priorID, priorURL string
+		if err := rows.Scan(&priorID, &priorURL); err != nil {
+			return fmt.Errorf("read previous submission: %w", err)
+		}
+		if (jobID != "" && priorID == jobID) || priorURL == jobURL || (expectedID != "" && canonicalID(priorURL) == expectedID) {
+			return fmt.Errorf("an earlier application is unresolved or active; reconcile it before retrying")
+		}
+	}
+	return rows.Err()
+}
+
+func markAttemptSubmitDispatch(db *sql.DB, attemptID, userID string) error {
+	if db == nil || attemptID == "" {
+		return nil
+	}
+	r, err := db.Exec(`UPDATE apply_attempts SET stage='submit_dispatch',reason_code='submit_dispatch' WHERE id=? AND user_id=? AND outcome='in_progress'`, attemptID, userID)
+	if err != nil {
+		return fmt.Errorf("persist submit intent: %w", err)
+	}
+	n, err := r.RowsAffected()
+	if err != nil || n != 1 {
+		return fmt.Errorf("persist submit intent: active attempt missing")
+	}
+	return nil
+}
+
 // AttemptOutcome is the terminal state of an application attempt.
 type AttemptOutcome string
 
 const (
-	OutcomeInProgress        AttemptOutcome = "in_progress"
+	OutcomeInProgress         AttemptOutcome = "in_progress"
 	OutcomeSubmittedConfirmed AttemptOutcome = "submitted_confirmed"
-	OutcomeAlreadyApplied    AttemptOutcome = "already_applied"
-	OutcomeFailed            AttemptOutcome = "failed"
-	OutcomeCancelled         AttemptOutcome = "cancelled"
-	OutcomeTimedOut          AttemptOutcome = "timed_out"
-	OutcomeBlocked           AttemptOutcome = "blocked"
-	OutcomeSkipped           AttemptOutcome = "skipped"
-	OutcomeSubmissionUnknown AttemptOutcome = "submission_unknown"
-	OutcomeInterrupted       AttemptOutcome = "interrupted"
+	OutcomeAlreadyApplied     AttemptOutcome = "already_applied"
+	OutcomeFailed             AttemptOutcome = "failed"
+	OutcomeCancelled          AttemptOutcome = "cancelled"
+	OutcomeTimedOut           AttemptOutcome = "timed_out"
+	OutcomeBlocked            AttemptOutcome = "blocked"
+	OutcomeSkipped            AttemptOutcome = "skipped"
+	OutcomeSubmissionUnknown  AttemptOutcome = "submission_unknown"
+	OutcomeInterrupted        AttemptOutcome = "interrupted"
 )
 
 // AttemptContext carries diagnostic identity for one application attempt.

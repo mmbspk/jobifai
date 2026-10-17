@@ -869,9 +869,13 @@ func searchArrangementLabel(target domain.SearchTarget) string {
 // ── Per-job pipeline ──────────────────────────────────────────────────────
 
 func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) bool {
+	return b.processSeekJobEvaluation(ctx, br, job, false)
+}
+
+func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job seekJob, reevaluate bool) bool {
 	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("seek: processing, %q @ %s", job.Title, job.Company)
 
-	if reason := b.alreadyAppliedReason(job.ID); reason != "" {
+	if reason := b.alreadyAppliedReason(job.ID); reason != "" && !(reevaluate && (reason == "in approved queue" || reason == "in Top Matches")) {
 		log.Info().Str("job_id", job.ID).Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
@@ -900,6 +904,11 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 	}
 
 	llmBefore := b.llmSnapshot()
+	if err := listingEvaluationError(strings.TrimSpace(details.Description), b.cfg.Scorer); err != nil {
+		b.recordListingFailure(ctx, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company, Location: job.Location}, 0, "", nil, err)
+		return false
+	}
+	b.noteListingHealthy()
 	score, reasoning, halalVerdict, ok := b.checkSeekScore(ctx, job, details.Description)
 	if !ok {
 		return false
@@ -910,13 +919,13 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 			HoldReason: "Use Prepare documents to scan the apply form and build your application pack before approving",
 		})
 		b.saveSeekPendingReview(ctx, &domain.PendingReview{
-			JobID:            job.ID,
-			Company:          job.Company,
-			Role:             job.Title,
-			Location:         job.Location,
-			Platform:         domain.PlatformSeek,
-			Link:             job.URL,
-			DocumentRefsJSON: packJSON,
+			JobID:                job.ID,
+			Company:              job.Company,
+			Role:                 job.Title,
+			Location:             job.Location,
+			Platform:             domain.PlatformSeek,
+			Link:                 job.URL,
+			DocumentRefsJSON:     packJSON,
 			SuitabilityScore:     score,
 			SuitabilityReasoning: reasoning,
 			DueDate:              details.DueDate,
@@ -961,10 +970,13 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 		minScore = 6
 	}
 	if b.cfg.Scorer == nil {
-		return minScore, "", nil, true
+		return 0, "", nil, false
 	}
 	result, err := b.cfg.Scorer.EvaluateJob(ctx, b.currentProfile(), jobDesc)
 	if err != nil {
+		if ctx.Err() == nil {
+			b.recordListingFailure(ctx, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company, Location: job.Location}, 0, "", nil, fmt.Errorf("%w: %w", errJobEvaluationFailed, err))
+		}
 		b.abortOnLLMFailure(err)
 		return 0, "", nil, false
 	}
@@ -980,11 +992,11 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 	if b.cfg.HalalChecker != nil {
 		verdict, err := b.cfg.HalalChecker.CheckHalal(ctx, job.Title, job.Company, jobDesc)
 		if err != nil {
-			if isJobifaiQuotaExceeded(err) {
-				b.abortOnLLMFailure(err)
-				return result.Score, result.Reasoning, nil, false
+			if ctx.Err() == nil {
+				b.recordListingFailure(ctx, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company, Location: job.Location}, result.Score, result.Reasoning, nil, fmt.Errorf("%w: halal check: %w", errJobEvaluationFailed, err))
 			}
-			log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: halal check failed, letting job through")
+			b.abortOnLLMFailure(err)
+			return result.Score, result.Reasoning, nil, false
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSeekSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
@@ -1006,13 +1018,13 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 	page, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
 		log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: open job page for details")
-		return scraper.JobDetails{Description: job.Title + " at " + job.Company, PostedDate: job.PostedDate}
+		return scraper.JobDetails{PostedDate: job.PostedDate}
 	}
 	defer func() { _ = page.Close() }()
 	page = page.Timeout(30 * time.Second)
 
 	if err := page.WaitLoad(); err != nil {
-		return scraper.JobDetails{Description: job.Title + " at " + job.Company, PostedDate: job.PostedDate}
+		return scraper.JobDetails{PostedDate: job.PostedDate}
 	}
 	_ = page.WaitStable(500 * time.Millisecond)
 
@@ -1100,13 +1112,10 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 
 	rawHTML, err := page.HTML()
 	if err != nil {
-		return scraper.JobDetails{Description: job.Title + " at " + job.Company, PostedDate: job.PostedDate}
+		return scraper.JobDetails{PostedDate: job.PostedDate}
 	}
 
 	details := scraper.ParseHTML(rawHTML)
-	if len(strings.TrimSpace(details.Description)) < 100 {
-		details.Description = job.Title + " at " + job.Company
-	}
 	// Use listing-card date as fallback when JSON-LD is absent on the page.
 	if details.PostedDate == "" {
 		details.PostedDate = job.PostedDate

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -34,17 +35,35 @@ import (
 	"github.com/user/jobifai/internal/llm"
 )
 
+// Legacy fixture convenience only. Production always supplies declared intent.
+const jsLinkedInClickCTA = `(expectedID) => {
+ const id=expectedID || ((location.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'');
+ return JSON.parse((` + jsLinkedInResolve + `)(id,true)).action;
+}`
+
 // launchTestBrowser starts a headless Chromium for the test and returns a
 // connected *rod.Browser. Skips the test if Chromium cannot be launched.
 func launchTestBrowser(t *testing.T) *rod.Browser {
+	br, _ := launchTestBrowserEndpoint(t)
+	return br
+}
+
+func launchTestBrowserEndpoint(t *testing.T) (*rod.Browser, string) {
 	t.Helper()
-	u, err := launcher.New().Headless(true).Launch()
+	l := launcher.New().Headless(true).NoSandbox(os.Getenv("CI") != "")
+	if bin := os.Getenv("ROD_BROWSER_BIN"); bin != "" {
+		l = l.Bin(bin)
+	}
+	u, err := l.Launch()
 	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("Chromium required in CI: %v", err)
+		}
 		t.Skipf("skip browser fixture test: cannot launch Chromium: %v", err)
 	}
 	br := rod.New().ControlURL(u).MustConnect()
 	t.Cleanup(func() { _ = br.Close() })
-	return br
+	return br, u
 }
 
 // fixtureServer starts an httptest server serving html at /jobs/view/targetJobID
@@ -82,7 +101,7 @@ func navigateAndWait(t *testing.T, br *rod.Browser, url string) *rod.Page {
 // hiddenDisplayNoneHTML: 3rd-party job page with a display:none preload link.
 // detectLinkedInEasyApply must return false; jsLinkedInClickCTA must return "".
 const hiddenDisplayNoneHTML = `<!DOCTYPE html><html><body>
-<main>
+<main data-job-id="123456789">
   <h1>Project Manager at ExternalCo</h1>
   <!-- 3rd-party apply — the visible CTA goes to an external ATS -->
   <a href="https://external-ats.com/apply" aria-label="Apply on company website">Apply on company website</a>
@@ -95,7 +114,7 @@ const hiddenDisplayNoneHTML = `<!DOCTYPE html><html><body>
 // hiddenVisibilityHiddenHTML: preload link hidden via visibility:hidden (nonzero dimensions).
 // Dimension-only check would pass (rect.width > 0); full visibility check must reject it.
 const hiddenVisibilityHiddenHTML = `<!DOCTYPE html><html><body>
-<main>
+<main data-job-id="123456789">
   <h1>Marketing Lead at ExternalCo</h1>
   <a href="https://external-ats.com/apply">Apply on company website</a>
   <!-- visibility:hidden link — has nonzero dimensions but must be treated as hidden -->
@@ -109,7 +128,7 @@ const hiddenVisibilityHiddenHTML = `<!DOCTYPE html><html><body>
 // The link has no "Easy Apply" label so it is only matched via the href check (check 2).
 // Both detectLinkedInEasyApply and jsLinkedInClickCTA must reject this link.
 const differentJobLinkHTML = `<!DOCTYPE html><html><body>
-<main>
+<main data-job-id="123456789">
   <h1>Software Engineer at Acme — 3rd party apply</h1>
   <!-- Visible link with opensduiapplyflow but targets a different job.
        No "Easy Apply" aria-label so it is only a candidate via the href check.
@@ -123,7 +142,7 @@ const differentJobLinkHTML = `<!DOCTYPE html><html><body>
 // DIFFERENT job ID. This is the exact gap from reviewer gap #1 — the label
 // match must not fire before the href destination is validated.
 const differentJobLabeledHTML = `<!DOCTYPE html><html><body>
-<main>
+<main data-job-id="123456789">
   <h1>Accountant at ExternalCo — 3rd party apply</h1>
   <!-- Visible, "Easy Apply"-labelled link whose href targets a different job.
        Before the fix, check 1 accepted this via the label match before
@@ -137,7 +156,7 @@ const differentJobLabeledHTML = `<!DOCTYPE html><html><body>
 // sameJobVisibleCTAHTML: a visible Easy Apply button for the same job.
 // detectLinkedInEasyApply must return true; jsLinkedInClickCTA must return "clicked".
 const sameJobVisibleCTAHTML = `<!DOCTYPE html><html><body>
-<main>
+<main data-job-id="123456789">
   <h1>Data Analyst at ValidCo</h1>
   <!-- Visible Easy Apply CTA for the correct job — must be detected and clicked -->
   <button aria-label="Easy Apply" style="display:inline-block; width:120px; height:40px">
@@ -149,7 +168,7 @@ const sameJobVisibleCTAHTML = `<!DOCTYPE html><html><body>
 // sameJobSDUILinkHTML: a visible opensduiapplyflow link targeting the SAME job.
 // detectLinkedInEasyApply must return true; jsLinkedInClickCTA must return "clicked".
 const sameJobSDUILinkHTML = `<!DOCTYPE html><html><body>
-<main>
+<main data-job-id="123456789">
   <h1>Business Analyst at ValidCo</h1>
   <!-- Visible SDUI link targeting the same job — must be accepted -->
   <a href="/jobs/view/123456789?openSDUIApplyFlow=true" aria-label="Easy Apply"
@@ -159,7 +178,7 @@ const sameJobSDUILinkHTML = `<!DOCTYPE html><html><body>
 
 // wrongJobPageHTML: a simple page at /jobs/view/999888, used to simulate URL drift.
 const wrongJobPageHTML = `<!DOCTYPE html><html><body>
-<main><h1>Wrong Job Page</h1></main>
+<main data-job-id="123456789"><h1>Wrong Job Page</h1></main>
 </body></html>`
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -329,7 +348,7 @@ func TestSubmitEasyApply_RedirectDriftNoAppliedRecord(t *testing.T) {
 		`SELECT outcome FROM apply_attempts WHERE url = ? AND user_id = ?`,
 		job.URL, "u1",
 	).Scan(&outcome))
-	assert.Equal(t, string(OutcomeFailed), outcome, "outcome must be failed after redirect drift")
+	assert.Equal(t, string(OutcomeBlocked), outcome, "outcome must be failed after redirect drift")
 }
 
 // TestSubmitEasyApply_DriftAfterEntry_NoAppliedRecord proves that when the entry
@@ -343,7 +362,7 @@ func TestSubmitEasyApply_DriftAfterEntry_NoAppliedRecord(t *testing.T) {
 	// Correct job page: has a data-live-test-easy-apply button whose onclick navigates
 	// to the wrong job URL. Entry check passes; drift is detected post-modal.
 	const correctJobHTML = `<!DOCTYPE html><html><body>
-<main>
+<main data-job-id="123456789">
   <h1>Test Role at TestCo</h1>
   <button data-live-test-easy-apply
           onclick="window.location.href='/jobs/view/999888'">Easy Apply</button>
@@ -401,7 +420,7 @@ func TestSubmitEasyApply_DriftAfterEntry_NoAppliedRecord(t *testing.T) {
 		`SELECT outcome FROM apply_attempts WHERE url = ? AND user_id = ?`,
 		job.URL, "u1",
 	).Scan(&outcome))
-	assert.Equal(t, string(OutcomeFailed), outcome, "outcome must be failed after post-entry drift")
+	assert.Equal(t, string(OutcomeBlocked), outcome, "outcome must be failed after post-entry drift")
 }
 
 // ── Post-apply drift path ─────────────────────────────────────────────────────

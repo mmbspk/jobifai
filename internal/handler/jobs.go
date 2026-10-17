@@ -19,6 +19,7 @@ import (
 )
 
 const msgQueryError = "query error"
+const sqlVerifiedManualListing = `NOT (COALESCE(json_extract(CASE WHEN json_valid(document_refs_json) THEN document_refs_json ELSE '{}' END, '$.listing_review_required'),0)=1 AND COALESCE(json_extract(CASE WHEN json_valid(document_refs_json) THEN document_refs_json ELSE '{}' END, '$.hold_reason'),'')<>'Apply on the employer''s website.')`
 
 // logParseTime parses an RFC3339 timestamp string, logging a warning on failure.
 func logParseTime(s, field string) time.Time {
@@ -385,59 +386,24 @@ func (h *JobHandlers) MarkAppliedFromCannotApply(w http.ResponseWriter, r *http.
 
 // POST /api/jobs/cannot-apply/{job_id}/requeue
 func (h *JobHandlers) RequeueCannotApply(w http.ResponseWriter, r *http.Request) {
-	userID := auth.UserIDFromCtx(r.Context())
-	jobID := chi.URLParam(r, "job_id")
-
-	tx, err := h.svc.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	var company, role, platform, link, location string
-	var score int
-	err = tx.QueryRowContext(r.Context(),
-		`SELECT company, role, platform, link, COALESCE(location,''), COALESCE(suitability_score, 0)
-		 FROM jobs_skipped
-		 WHERE id = ? AND user_id = ? AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`,
-		jobID, userID).Scan(&company, &role, &platform, &link, &location, &score)
-	if err != nil {
-		notFound(w, "job not found in cannot-apply list")
-		return
-	}
-
-	if _, err = tx.ExecContext(r.Context(),
-		`INSERT OR REPLACE INTO jobs_pending_review
-		     (job_id, user_id, company, role, location, platform, link, resume_path, cover_letter_path, suitability_score, easy_apply, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, 1, datetime('now'))`,
-		jobID, userID, company, role, location, platform, link, score); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-
-	if _, err = tx.ExecContext(r.Context(),
-		`DELETE FROM jobs_skipped WHERE id = ? AND user_id = ?`, jobID, userID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-
-	if err = tx.Commit(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "requeued"})
+	// Legacy action follows the same evaluation-first retry path.
+	h.RetryCannotApply(w, r)
 }
 
 const sqlCannotApplyFilter = `(skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`
 
 var errCannotApplyNotFound = errors.New("not_found")
+var errCannotApplyUnsafe = errors.New("submission status must be reconciled before retrying")
 
 // POST /api/jobs/cannot-apply/{job_id}/retry
 func (h *JobHandlers) RetryCannotApply(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	jobID := chi.URLParam(r, "job_id")
 	if err := h.enqueueCannotApplyRetry(r.Context(), userID, jobID); err != nil {
+		if errors.Is(err, errCannotApplyUnsafe) {
+			writeJSON(w, http.StatusConflict, map[string]string{"message": err.Error()})
+			return
+		}
 		if errors.Is(err, errCannotApplyNotFound) {
 			notFound(w, "job not found in cannot-apply list")
 			return
@@ -480,9 +446,13 @@ func (h *JobHandlers) RetryAllCannotApply(w http.ResponseWriter, r *http.Request
 	}
 	_ = rows.Close()
 
-	queued := 0
+	queued, blocked := 0, 0
 	for _, id := range ids {
 		if err := h.enqueueCannotApplyRetryTx(r.Context(), tx, userID, id); err != nil {
+			if errors.Is(err, errCannotApplyUnsafe) {
+				blocked++
+				continue
+			}
 			if errors.Is(err, errCannotApplyNotFound) {
 				continue
 			}
@@ -495,7 +465,7 @@ func (h *JobHandlers) RetryAllCannotApply(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"queued": queued})
+	writeJSON(w, http.StatusOK, map[string]int{"queued": queued, "blocked": blocked})
 }
 
 func (h *JobHandlers) enqueueCannotApplyRetry(ctx context.Context, userID, jobID string) error {
@@ -512,23 +482,41 @@ func (h *JobHandlers) enqueueCannotApplyRetry(ctx context.Context, userID, jobID
 
 func (h *JobHandlers) enqueueCannotApplyRetryTx(ctx context.Context, tx *sql.Tx, userID, jobID string) error {
 	var company, role, platform, link, location string
+	var failureCode, reason string
 	err := tx.QueryRowContext(ctx,
-		`SELECT company, role, platform, link, COALESCE(location,'')
+		`SELECT company, role, platform, link, COALESCE(location,''),failure_code,skip_reason
 		 FROM jobs_skipped
 		 WHERE id = ? AND user_id = ? AND `+sqlCannotApplyFilter,
-		jobID, userID).Scan(&company, &role, &platform, &link, &location)
+		jobID, userID).Scan(&company, &role, &platform, &link, &location, &failureCode, &reason)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errCannotApplyNotFound
 		}
 		return err
 	}
-	if _, err = tx.ExecContext(ctx,
-		`INSERT OR REPLACE INTO jobs_approved_queue
-		     (job_id, user_id, company, role, location, platform, link, resume_path, cover_letter_path, approved_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', datetime('now'))`,
-		jobID, userID, company, role, location, platform, link); err != nil {
+	if failureCode == "submission_unknown" || strings.Contains(strings.ToLower(reason), "submission status is unknown") || strings.Contains(strings.ToLower(reason), "could not be confirmed") {
+		return errCannotApplyUnsafe
+	}
+	var unsafe int
+	if err = tx.QueryRowContext(ctx, `SELECT
+	 (SELECT COUNT(*) FROM apply_attempts WHERE user_id=? AND (job_id=? OR url=?) AND outcome IN ('submission_unknown','in_progress'))+
+	 (SELECT COUNT(*) FROM jobs_applied WHERE user_id=? AND (id=? OR link=?))`, userID, jobID, link, userID, jobID, link).Scan(&unsafe); err != nil {
 		return err
+	}
+	if unsafe > 0 {
+		return errCannotApplyUnsafe
+	}
+	result, err := tx.ExecContext(ctx,
+		`INSERT INTO jobs_approved_queue
+		     (job_id, user_id, company, role, location, platform, link, resume_path, cover_letter_path, approved_at,needs_evaluation)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', datetime('now'),1)
+		 ON CONFLICT(job_id) DO UPDATE SET needs_evaluation=1 WHERE jobs_approved_queue.user_id=excluded.user_id`,
+		jobID, userID, company, role, location, platform, link)
+	if err != nil {
+		return err
+	}
+	if count, err := result.RowsAffected(); err != nil || count == 0 {
+		return errCannotApplyUnsafe
 	}
 	if _, err = tx.ExecContext(ctx,
 		`DELETE FROM jobs_skipped WHERE id = ? AND user_id = ?`, jobID, userID); err != nil {
@@ -547,13 +535,15 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 	if err := h.svc.Config.Get(userID, "general_settings", &gs); err == nil && gs.JobSuitabilityScore > 0 {
 		threshold = gs.JobSuitabilityScore
 	}
+	filter := `suitability_score >= ? AND ` + sqlVerifiedManualListing
 
 	q := `SELECT job_id,company,role,COALESCE(location,''),platform,COALESCE(link,''),
 	             COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
 	             suitability_score,COALESCE(suitability_reasoning,''),COALESCE(due_date,''),COALESCE(posted_date,''),
-	             easy_apply,COALESCE(halal_verdict,''),created_at
+	             easy_apply,COALESCE(halal_verdict,''),created_at,COALESCE(document_refs_json,'')
 	      FROM jobs_pending_review
-	      WHERE user_id = ? AND suitability_score >= ? AND easy_apply = 0
+	      WHERE user_id = ? AND (` + filter + `) AND easy_apply = 0
+	      AND NOT EXISTS (SELECT 1 FROM jobs_skipped s WHERE s.user_id=jobs_pending_review.user_id AND s.id=jobs_pending_review.job_id)
 	      ORDER BY suitability_score DESC, created_at DESC
 	      LIMIT ? OFFSET ?`
 
@@ -573,7 +563,7 @@ func (h *JobHandlers) TopMatches(w http.ResponseWriter, r *http.Request) {
 			&p.JobID, &p.Company, &p.Role, &p.Location, &p.Platform, &p.Link,
 			&p.ResumePath, &p.CoverLetterPath,
 			&p.SuitabilityScore, &p.SuitabilityReasoning, &p.DueDate, &p.PostedDate,
-			&p.EasyApply, &halalJSON, &createdStr,
+			&p.EasyApply, &halalJSON, &createdStr, &p.DocumentRefsJSON,
 		); err != nil {
 			log.Error().Err(err).Msg("top matches: scan row")
 			continue
@@ -620,7 +610,7 @@ func (h *JobHandlers) Stats(w http.ResponseWriter, r *http.Request) {
 		topThreshold = gs.JobSuitabilityScore
 	}
 	if err := h.svc.DB.QueryRowContext(r.Context(),
-		`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id = ? AND suitability_score >= ? AND easy_apply = 0`,
+		`SELECT COUNT(*) FROM jobs_pending_review WHERE user_id = ? AND suitability_score >= ? AND `+sqlVerifiedManualListing+` AND easy_apply = 0 AND NOT EXISTS (SELECT 1 FROM jobs_skipped s WHERE s.user_id=jobs_pending_review.user_id AND s.id=jobs_pending_review.job_id)`,
 		userID, topThreshold).Scan(&stats.TopMatchesCount); err != nil {
 		log.Error().Err(err).Msg("stats: top_matches_count query failed")
 	}
