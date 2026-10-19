@@ -131,6 +131,12 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 	if !r.IdentityVerified {
 		return r, r.resolutionError()
 	}
+	// Preserve the description read before the expand click. Clicking "see more"
+	// can trigger a React re-render that replaces the description element; if the
+	// second call catches that window the description comes back empty even though
+	// the full text was already in the DOM. Falling back to the pre-click value
+	// avoids silently discarding good content.
+	firstDescription := r.Description
 	select {
 	case <-ctx.Done():
 		return r, ctx.Err()
@@ -142,6 +148,9 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 	}
 	if !r.IdentityVerified {
 		return r, r.resolutionError()
+	}
+	if len([]rune(r.Description)) < len([]rune(firstDescription)) {
+		r.Description = firstDescription
 	}
 	return r, nil
 }
