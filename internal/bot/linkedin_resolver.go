@@ -147,7 +147,7 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 		case <-ctx.Done():
 			return r, ctx.Err()
 		case <-deadline.C:
-			return r, r.resolutionError()
+			return r, fmt.Errorf("%w: description element did not reappear after expand click", errLinkedInIdentity)
 		case <-time.After(wait):
 			wait = 200 * time.Millisecond
 		}
