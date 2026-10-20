@@ -124,30 +124,45 @@ func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string, job
 }
 
 func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJob) (linkedInResolution, error) {
-	r, err := evalLinkedInJob(page, linkedInExpectedID(job.URL), false, true, job)
+	expectedID := linkedInExpectedID(job.URL)
+	r, err := evalLinkedInJob(page, expectedID, false, true, job)
 	if err != nil {
 		return r, err
 	}
 	if !r.IdentityVerified {
 		return r, r.resolutionError()
 	}
-	// Preserve the description read before the expand click. Clicking "see more"
-	// can trigger a React re-render that replaces the description element; if the
-	// second call catches that window the description comes back empty even though
-	// the full text was already in the DOM. Falling back to the pre-click value
-	// avoids silently discarding good content.
+	// Preserve the pre-expand description. Clicking "see more" triggers a React
+	// re-render that can temporarily remove the description element; SDUI pane
+	// detection then fails and identity_verified comes back false even though the
+	// page has not navigated away. Retry until the DOM re-stabilizes, then restore
+	// firstDescription if the settled read comes back shorter (genuine expansion
+	// never produces fewer runes than the pre-expand snapshot).
 	firstDescription := r.Description
-	select {
-	case <-ctx.Done():
-		return r, ctx.Err()
-	case <-time.After(400 * time.Millisecond):
-	}
-	r, err = resolveLinkedInJob(page, linkedInExpectedID(job.URL), false, job)
-	if err != nil {
-		return r, err
-	}
-	if !r.IdentityVerified {
-		return r, r.resolutionError()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	wait := 400 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return r, ctx.Err()
+		case <-deadline.C:
+			return r, r.resolutionError()
+		case <-time.After(wait):
+			wait = 200 * time.Millisecond
+		}
+		r, err = resolveLinkedInJob(page, expectedID, false, job)
+		if err != nil {
+			return r, err
+		}
+		if r.IdentityVerified {
+			break
+		}
+		// Page has navigated to a different job — genuine drift, stop retrying.
+		if r.ObservedID != "" && r.ObservedID != expectedID {
+			return r, r.resolutionError()
+		}
+		// Same job URL, DOM still mid-rerender — keep waiting.
 	}
 	if len([]rune(r.Description)) < len([]rune(firstDescription)) {
 		r.Description = firstDescription
