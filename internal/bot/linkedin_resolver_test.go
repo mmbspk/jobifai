@@ -12,6 +12,37 @@ import (
 	"testing"
 )
 
+// sduiReRenderFixture returns SDUI-structured HTML for jobID. Clicking the
+// expandable-text-button hides the description element for delayMs milliseconds
+// and then restores it, simulating the React re-render triggered by "see more".
+// All elements carry explicit inline dimensions so visible() returns true in a
+// headless Chromium without LinkedIn's CSS.
+func sduiReRenderFixture(jobID string, delayMs int) string {
+	body := strings.Repeat("The position requires demonstrated experience and strong skills in the relevant field. ", 5)
+	return `<!DOCTYPE html><html><body>
+<div style="width:1000px;height:3000px">
+  <div id="hdr-` + jobID + `" style="display:block;width:800px;height:300px">
+    <div aria-label="Company, TestCo." style="display:block;width:200px;height:50px">TestCo</div>
+    <p style="display:block;width:500px;height:30px">Test Role</p>
+    <a href="/jobs/view/` + jobID + `" style="display:inline-block;width:100px;height:25px">Location</a>
+    <button aria-label="Easy Apply to this job" style="display:inline-block;width:140px;height:40px">Easy Apply</button>
+  </div>
+  <div id="JobDetails_AboutTheJob_` + jobID + `" style="display:block;width:800px;height:600px">
+    <h2 style="display:block">About the job</h2>
+    <p style="display:block">` + body + `</p>
+    <button data-testid="expandable-text-button" aria-hidden="true" style="display:inline-block;width:60px;height:25px">… more</button>
+  </div>
+</div>
+<script>
+document.querySelector('[data-testid="expandable-text-button"]').addEventListener('click',function(){
+  var el=document.getElementById('JobDetails_AboutTheJob_` + jobID + `');
+  if(el){el.style.display='none';setTimeout(function(){el.style.display='block';},` + fmt.Sprintf("%d", delayMs) + `);}
+  window._rerenderSimulated=true;
+});
+</script>
+</body></html>`
+}
+
 func refreshedControlFixture(mutation string) string {
 	return `<main data-job-id="123"><h1>Role at Company</h1><button id="cta">Easy Apply</button><div data-job-description>` + strings.Repeat("Verified job responsibilities and requirements. ", 8) + `<button onclick="` + mutation + `">Show more</button></div></main>`
 }
@@ -274,4 +305,38 @@ func TestLinkedInConfirmation_RequiresVerifiedJobAndEmployer(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, linkedInSubmissionConfirmed(page, "4479748087", "Company"))
 	require.False(t, linkedInSubmissionConfirmed(page, "4478417422", "Company"))
+}
+
+// TestReadLinkedInDescription_SDUIDescriptionRemovedAndReinsertedOnExpand is a
+// regression for the React re-render race described in PR #105.
+//
+// Clicking "see more" triggers a re-render that temporarily removes the SDUI
+// description element. Before the retry fix, the single 400 ms wait was not
+// enough: the second read landed in the removal window, SDUI pane detection
+// found no visible description, and readLinkedInDescription returned an identity
+// error instead of falling back to the pre-click text.
+//
+// The fixture sets a 500 ms removal window so the first retry (at 400 ms) catches
+// the element absent; subsequent retries succeed once the element is restored.
+func TestReadLinkedInDescription_SDUIDescriptionRemovedAndReinsertedOnExpand(t *testing.T) {
+	br := launchTestBrowser(t)
+	jobID := "55512345"
+	srv := fixtureServer(t, jobID, "", sduiReRenderFixture(jobID, 500), "")
+	page := navigateAndWait(t, br, srv.URL+"/jobs/view/"+jobID)
+	job := linkedInJob{
+		ID:      jobID,
+		URL:     srv.URL + "/jobs/view/" + jobID,
+		Title:   "Test Role",
+		Company: "TestCo",
+	}
+	r, err := readLinkedInDescription(context.Background(), page, job)
+	require.NoError(t, err)
+	require.True(t, r.IdentityVerified)
+	require.Contains(t, r.Description, "relevant field")
+	require.Greater(t, len(r.Description), 100)
+	// Confirm the simulation fired — the button was clicked and the description
+	// element was actually hidden and then restored during the test.
+	simulated, evalErr := page.Eval(`() => window._rerenderSimulated === true`)
+	require.NoError(t, evalErr)
+	require.True(t, simulated.Value.Bool(), "expandable-text-button must have been clicked to trigger re-render simulation")
 }

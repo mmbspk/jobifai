@@ -124,24 +124,48 @@ func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string, job
 }
 
 func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJob) (linkedInResolution, error) {
-	r, err := evalLinkedInJob(page, linkedInExpectedID(job.URL), false, true, job)
+	expectedID := linkedInExpectedID(job.URL)
+	r, err := evalLinkedInJob(page, expectedID, false, true, job)
 	if err != nil {
 		return r, err
 	}
 	if !r.IdentityVerified {
 		return r, r.resolutionError()
 	}
-	select {
-	case <-ctx.Done():
-		return r, ctx.Err()
-	case <-time.After(400 * time.Millisecond):
+	// Preserve the pre-expand description. Clicking "see more" triggers a React
+	// re-render that can temporarily remove the description element; SDUI pane
+	// detection then fails and identity_verified comes back false even though the
+	// page has not navigated away. Retry until the DOM re-stabilizes, then restore
+	// firstDescription if the settled read comes back shorter (genuine expansion
+	// never produces fewer runes than the pre-expand snapshot).
+	firstDescription := r.Description
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	wait := 400 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return r, ctx.Err()
+		case <-deadline.C:
+			return r, fmt.Errorf("%w: description element did not reappear after expand click", errLinkedInIdentity)
+		case <-time.After(wait):
+			wait = 200 * time.Millisecond
+		}
+		r, err = resolveLinkedInJob(page, expectedID, false, job)
+		if err != nil {
+			return r, err
+		}
+		if r.IdentityVerified {
+			break
+		}
+		// Page has navigated to a different job — genuine drift, stop retrying.
+		if r.ObservedID != "" && r.ObservedID != expectedID {
+			return r, r.resolutionError()
+		}
+		// Same job URL, DOM still mid-rerender — keep waiting.
 	}
-	r, err = resolveLinkedInJob(page, linkedInExpectedID(job.URL), false, job)
-	if err != nil {
-		return r, err
-	}
-	if !r.IdentityVerified {
-		return r, r.resolutionError()
+	if len([]rune(r.Description)) < len([]rune(firstDescription)) {
+		r.Description = firstDescription
 	}
 	return r, nil
 }
