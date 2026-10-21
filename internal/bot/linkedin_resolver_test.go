@@ -356,11 +356,13 @@ document.querySelector('[data-testid="expandable-text-button"]').addEventListene
 func sduiCollapsedPreviewFixture(jobID string, delayMs int) string {
 	preview := "The position requires demonstrated experience in the field. You will be working on challenging projects with a talented team. We are looking for someone who can contribute immediately."
 	fullBody := strings.Repeat("The position requires demonstrated experience and strong skills in the relevant field. ", 5)
-	scriptPart := fmt.Sprintf(`setTimeout(function(){
-  var el=document.getElementById('jd-body-%s');
-  if(el){el.textContent=%q;}
-  window._contentArrived=true;
-},%d);`, jobID, fullBody, delayMs)
+	scriptPart := fmt.Sprintf(`document.querySelector('[data-testid="expandable-text-button"]').addEventListener('click',function(){
+  setTimeout(function(){
+    var el=document.getElementById('jd-body-%s');
+    if(el){el.textContent=%q;}
+    window._contentArrived=true;
+  },%d);
+});`, jobID, fullBody, delayMs)
 	return `<!DOCTYPE html><html><body>
 <div style="width:1000px;height:3000px">
   <div id="hdr-` + jobID + `" style="display:block;width:800px;height:300px">
@@ -386,11 +388,13 @@ func sduiCollapsedPreviewFixture(jobID string, delayMs int) string {
 // immediately present in the DOM.
 func sduiShortThenCompleteFixture(jobID string, delayMs int) string {
 	fullBody := strings.Repeat("The position requires demonstrated experience and strong skills in the relevant field. ", 5)
-	scriptPart := fmt.Sprintf(`setTimeout(function(){
-  var el=document.getElementById('jd-body-%s');
-  if(el){el.textContent=%q;}
-  window._contentArrived=true;
-},%d);`, jobID, fullBody, delayMs)
+	scriptPart := fmt.Sprintf(`document.querySelector('[data-testid="expandable-text-button"]').addEventListener('click',function(){
+  setTimeout(function(){
+    var el=document.getElementById('jd-body-%s');
+    if(el){el.textContent=%q;}
+    window._contentArrived=true;
+  },%d);
+});`, jobID, fullBody, delayMs)
 	return `<!DOCTYPE html><html><body>
 <div style="width:1000px;height:3000px">
   <div id="hdr-` + jobID + `" style="display:block;width:800px;height:300px">
@@ -516,11 +520,13 @@ func TestReadLinkedInDescription_CollapsedPreviewExpandsToFull(t *testing.T) {
 // subsequent permanent identity loss.
 func sduiGoodThenIdentityLostFixture(jobID string, delayMs int) string {
 	fullBody := strings.Repeat("The position requires demonstrated experience and strong skills in the relevant field. ", 5)
-	scriptPart := fmt.Sprintf(`setTimeout(function(){
-  var el=document.getElementById('JobDetails_AboutTheJob_%s');
-  if(el){el.style.display='none';}
-  window._identityLost=true;
-},%d);`, jobID, delayMs)
+	scriptPart := fmt.Sprintf(`document.querySelector('[data-testid="expandable-text-button"]').addEventListener('click',function(){
+  setTimeout(function(){
+    var el=document.getElementById('JobDetails_AboutTheJob_%s');
+    if(el){el.style.display='none';}
+    window._identityLost=true;
+  },%d);
+});`, jobID, delayMs)
 	return `<!DOCTYPE html><html><body>
 <div style="width:1000px;height:3000px">
   <div id="hdr-` + jobID + `" style="display:block;width:800px;height:300px">
