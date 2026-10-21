@@ -1103,6 +1103,7 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 			MarketDir:       m.marketDir,
 			LLMTracker:      tracker,
 			Sessions:        m.sessions,
+			Documents:       m.documents,
 		},
 		state:  domain.BotStateIdle,
 		stopCh: make(chan struct{}),

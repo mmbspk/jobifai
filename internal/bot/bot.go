@@ -1332,8 +1332,12 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	lazy := &lazyDocGen{b: b, ctx: ctx, job: job, jobDesc: evaluationText}
 
 	if b.cfg.RequireReview {
+		holdReason := "Use Prepare documents to scan the apply form and build your application pack before approving"
+		if !easyApply {
+			holdReason = "Apply on the employer's website."
+		}
 		packJSON := documents.WriteApplicationPackJSON(documents.ApplicationDocumentPack{
-			HoldReason: "Use Prepare documents to scan the apply form and build your application pack before approving",
+			HoldReason: holdReason,
 		})
 		b.queueForReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
