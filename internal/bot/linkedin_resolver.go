@@ -124,6 +124,7 @@ func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string, job
 }
 
 func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJob) (linkedInResolution, error) {
+	const minDescLen = 100
 	expectedID := linkedInExpectedID(job.URL)
 	r, err := evalLinkedInJob(page, expectedID, false, true, job)
 	if err != nil {
@@ -132,22 +133,44 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 	if !r.IdentityVerified {
 		return r, r.resolutionError()
 	}
-	// Preserve the pre-expand description. Clicking "see more" triggers a React
-	// re-render that can temporarily remove the description element; SDUI pane
-	// detection then fails and identity_verified comes back false even though the
-	// page has not navigated away. Retry until the DOM re-stabilizes, then restore
-	// firstDescription if the settled read comes back shorter (genuine expansion
-	// never produces fewer runes than the pre-expand snapshot).
-	firstDescription := r.Description
+	// Preserve the pre-settle snapshot as a safety net; the expand click may
+	// trigger a React re-render (element temporarily absent) or load additional
+	// content asynchronously. Always wait at least one retry cycle so the
+	// expanded description has a chance to arrive, then return the best verified
+	// content seen across all reads.
+	//
+	// Note: a collapsed preview can exceed the minimum usable length, so the
+	// first read is never sufficient on its own — expansion must be given time
+	// to settle before we select the final description.
+	bestDesc := r.Description
 	deadline := time.NewTimer(2 * time.Second)
 	defer deadline.Stop()
 	wait := 400 * time.Millisecond
+	lastDescLen := -1
+	stableCount := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return r, ctx.Err()
 		case <-deadline.C:
-			return r, fmt.Errorf("%w: description element did not reappear after expand click", errLinkedInIdentity)
+			if r.IdentityVerified && len([]rune(bestDesc)) >= minDescLen {
+				r.Description = bestDesc
+				return r, nil
+			}
+			log.Warn().
+				Str("job_id", job.ID).
+				Str("url", job.URL).
+				Int("best_desc_len", len([]rune(bestDesc))).
+				Bool("last_identity_verified", r.IdentityVerified).
+				Str("last_reason", r.Reason).
+				Str("last_observed_id", r.ObservedID).
+				Msg("linkedin: description content not available within deadline after expand")
+			if !r.IdentityVerified {
+				return r, fmt.Errorf("%w: identity lost at deadline (best=%d chars)",
+					errLinkedInIdentity, len([]rune(bestDesc)))
+			}
+			return r, fmt.Errorf("%w: description content not available after expand (best=%d chars)",
+				errJobDescriptionMissing, len([]rune(bestDesc)))
 		case <-time.After(wait):
 			wait = 200 * time.Millisecond
 		}
@@ -155,19 +178,34 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 		if err != nil {
 			return r, err
 		}
-		if r.IdentityVerified {
-			break
-		}
-		// Page has navigated to a different job — genuine drift, stop retrying.
+		// Genuine navigation drift — abort immediately.
 		if r.ObservedID != "" && r.ObservedID != expectedID {
 			return r, r.resolutionError()
 		}
-		// Same job URL, DOM still mid-rerender — keep waiting.
+		if !r.IdentityVerified {
+			// DOM still mid-rerender — keep waiting, but reset stability counter.
+			stableCount = 0
+			continue
+		}
+		// Identity valid. Update best and track description stability.
+		currLen := len([]rune(r.Description))
+		if currLen > len([]rune(bestDesc)) {
+			bestDesc = r.Description
+		}
+		if currLen == lastDescLen {
+			stableCount++
+		} else {
+			stableCount = 0
+		}
+		lastDescLen = currLen
+		// Require two consecutive reads with identical description length before
+		// declaring expansion settled. A single usable read may still represent
+		// content in flight.
+		if currLen >= minDescLen && stableCount >= 2 {
+			r.Description = bestDesc
+			return r, nil
+		}
 	}
-	if len([]rune(r.Description)) < len([]rune(firstDescription)) {
-		r.Description = firstDescription
-	}
-	return r, nil
 }
 
 // Expanding the description may replace the header. Manual URL application
