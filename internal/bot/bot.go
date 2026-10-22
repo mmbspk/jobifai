@@ -361,7 +361,7 @@ func (b *Bot) startProfileBrowser() (br *rod.Browser, page *rod.Page, err error)
 	}
 	if len(b.cfg.Cookies) > 0 {
 		if setErr := page.SetCookies(browser.ToCookieParams(b.cfg.Cookies)); setErr != nil {
-			log.Warn().Err(setErr).Msg("browser: set cookies")
+			b.log.Warn().Err(setErr).Msg("browser: set cookies")
 		}
 	}
 	homeURL := "https://www.linkedin.com"
@@ -420,7 +420,7 @@ func (b *Bot) seekRecoverAuth(ctx context.Context, page *rod.Page, closeFn func(
 
 	// ErrAuthRequired: release the Chrome profile so the user can open Connect.
 	// ForceUnlock is NOT used — Connect closes cleanly before saving its session.
-	log.Warn().Msg("seek: auth required — releasing Chrome profile for Connect browser; waiting up to 5 min")
+	b.log.Warn().Msg("seek: auth required — releasing Chrome profile for Connect browser; waiting up to 5 min")
 	closeFn()
 
 	if waitErr := b.waitForSessionRefresh(ctx, b.cfg.UserID, "seek", 5*time.Minute); waitErr != nil {
@@ -459,10 +459,10 @@ func (b *Bot) warmSeenCache() {
 	}
 	n, err := b.seenCache.load(b.cfg.DB, b.cfg.UserID)
 	if err != nil {
-		log.Warn().Err(err).Msg("bot: job seen cache load failed, falling back to per-job DB lookups")
+		b.log.Warn().Err(err).Msg("bot: job seen cache load failed, falling back to per-job DB lookups")
 		return
 	}
-	log.Info().Int("known_jobs", n).Msg("bot: job seen cache loaded")
+	b.log.Info().Int("known_jobs", n).Msg("bot: job seen cache loaded")
 }
 
 func (b *Bot) State() domain.BotState {
@@ -494,7 +494,7 @@ func (b *Bot) bailIfSeekSessionExpired() bool {
 	if !expired {
 		return false
 	}
-	log.Error().Msg("seek: stopping run — Seek session expired, re-add your Seek session in Settings → Secrets")
+	b.log.Error().Msg("seek: stopping run — Seek session expired, re-add your Seek session in Settings → Secrets")
 	b.mu.Lock()
 	b.state = domain.BotStateError
 	b.mu.Unlock()
@@ -572,7 +572,7 @@ func (b *Bot) waitIfPaused(ctx context.Context) {
 	if b.cfg.BrowserMeter != nil {
 		b.cfg.BrowserMeter.Deactivate()
 	}
-	log.Info().Msg("bot: paused — waiting for resume")
+	b.log.Info().Msg("bot: paused — waiting for resume")
 	var resumed bool
 	select {
 	case <-ch:
@@ -582,7 +582,7 @@ func (b *Bot) waitIfPaused(ctx context.Context) {
 	}
 	if resumed && b.cfg.BrowserMeter != nil {
 		if err := b.cfg.BrowserMeter.Activate(ctx); err != nil {
-			log.Warn().Err(err).Msg("bot: browser meter reactivation after resume failed")
+			b.log.Warn().Err(err).Msg("bot: browser meter reactivation after resume failed")
 		}
 	}
 }
@@ -658,14 +658,14 @@ func (b *Bot) run(ctx context.Context) {
 			b.state = domain.BotStateStopped
 		}
 		b.mu.Unlock()
-		log.Info().Str("platform", string(b.cfg.Platform)).Msg("bot stopped")
+		b.log.Info().Str("platform", string(b.cfg.Platform)).Msg("bot stopped")
 	}()
 
-	log.Info().Str("platform", string(b.cfg.Platform)).Msg("bot starting")
+	b.log.Info().Str("platform", string(b.cfg.Platform)).Msg("bot starting")
 
 	runner, ok := runnerRegistry[b.cfg.Platform]
 	if !ok {
-		log.Warn().Str("platform", string(b.cfg.Platform)).Msg("platform not yet supported")
+		b.log.Warn().Str("platform", string(b.cfg.Platform)).Msg("platform not yet supported")
 		b.mu.Lock()
 		b.state = domain.BotStateError
 		b.mu.Unlock()
@@ -679,7 +679,7 @@ func (b *Bot) run(ctx context.Context) {
 func runLinkedIn(ctx context.Context, b *Bot) {
 	br, page, err := b.launchBrowser(ctx)
 	if err != nil {
-		log.Error().Err(err).Msg("linkedin: launch browser failed")
+		b.log.Error().Err(err).Msg("linkedin: launch browser failed")
 		return
 	}
 	defer func() { _ = br.Close() }()
@@ -696,7 +696,7 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 		u := info.URL
 		if strings.Contains(u, "/login") || strings.Contains(u, "/checkpoint") || strings.Contains(u, "/authwall") {
 			if recoverErr := b.linkedinEnsureLoggedIn(page); recoverErr != nil {
-				log.Error().Err(recoverErr).Msg("linkedin: session expired, re-login via Settings → Secrets")
+				b.log.Error().Err(recoverErr).Msg("linkedin: session expired, re-login via Settings → Secrets")
 				b.mu.Lock()
 				b.state = domain.BotStateError
 				b.mu.Unlock()
@@ -709,7 +709,7 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 	// so the user gets a clear quota error rather than continuing with no billing.
 	if b.cfg.BrowserMeter != nil {
 		if err := b.cfg.BrowserMeter.Activate(ctx); err != nil {
-			log.Error().Err(err).Msg("linkedin: browser billing activation failed")
+			b.log.Error().Err(err).Msg("linkedin: browser billing activation failed")
 			return
 		}
 	}
@@ -719,7 +719,7 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 		limit = 40
 	}
 	appliedToday := b.countAppliedToday()
-	log.Info().Int("applied_today", appliedToday).Int("limit", limit).Msg("linkedin: starting, daily progress")
+	b.log.Info().Int("applied_today", appliedToday).Int("limit", limit).Msg("linkedin: starting, daily progress")
 
 	// Process previously approved jobs first.
 	if appliedToday < limit {
@@ -730,18 +730,18 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 	for _, target := range targets {
 		arrangement := searchArrangementLabel(target)
 		if arrangement != "" || strings.TrimSpace(target.Location) != "" {
-			log.Info().Str("location", target.Location).Str("arrangement", arrangement).
+			b.log.Info().Str("location", target.Location).Str("arrangement", arrangement).
 				Msg("linkedin: searching location target")
 		}
 
 		for _, keyword := range b.cfg.Preferences.Positions {
 			b.waitIfPaused(ctx)
 			if reason := b.stopReason(ctx); reason != "" {
-				log.Info().Str("keyword", keyword).Msgf("linkedin: stopped, %s", reason)
+				b.log.Info().Str("keyword", keyword).Msgf("linkedin: stopped, %s", reason)
 				return
 			}
 			if appliedToday >= limit {
-				log.Info().Int("limit", limit).Msg("linkedin: stopped, daily application limit reached")
+				b.log.Info().Int("limit", limit).Msg("linkedin: stopped, daily application limit reached")
 				return
 			}
 			b.SetKeyword(keyword)
@@ -751,21 +751,21 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 			// If no jobs were found, check whether the browser connection was lost
 			// (e.g. VPN reset) and attempt a reconnect before continuing.
 			if n == 0 && isCDPDead(page) {
-				log.Warn().Msg("linkedin: browser connection lost, attempting reconnect")
+				b.log.Warn().Msg("linkedin: browser connection lost, attempting reconnect")
 				_ = br.Close()
 				newBr, newPage, err := b.launchBrowser(ctx)
 				if err != nil {
-					log.Error().Err(err).Msg("linkedin: reconnect failed, stopping")
+					b.log.Error().Err(err).Msg("linkedin: reconnect failed, stopping")
 					return
 				}
 				br, page = newBr, newPage
-				log.Info().Msg("linkedin: browser reconnected, retrying keyword")
+				b.log.Info().Msg("linkedin: browser reconnected, retrying keyword")
 				appliedToday += b.processKeyword(ctx, br, page, keyword, limit-appliedToday, target)
 			}
 		}
 	}
 	b.SetKeyword("")
-	log.Info().Int("applied_today", appliedToday).Msg("linkedin: stopped, all location targets and keywords processed")
+	b.log.Info().Int("applied_today", appliedToday).Msg("linkedin: stopped, all location targets and keywords processed")
 }
 
 // isCDPDead returns true when the browser's CDP connection is no longer usable
@@ -800,13 +800,13 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 		wsURL := fmt.Sprintf("ws://127.0.0.1:%d/json/version", port)
 		u, err := launcher.ResolveURL(wsURL)
 		if err != nil {
-			log.Warn().Err(err).Int("port", port).Msg("remote debug: resolve URL failed, falling back to new browser")
+			b.log.Warn().Err(err).Int("port", port).Msg("remote debug: resolve URL failed, falling back to new browser")
 		} else {
 			br := rod.New().ControlURL(u)
 			if err := br.Connect(); err != nil {
-				log.Warn().Err(err).Int("port", port).Msg("remote debug: connect failed, falling back to new browser")
+				b.log.Warn().Err(err).Int("port", port).Msg("remote debug: connect failed, falling back to new browser")
 			} else {
-				log.Info().Int("port", port).Msg("browser: connected to existing Chrome via remote debug")
+				b.log.Info().Int("port", port).Msg("browser: connected to existing Chrome via remote debug")
 				page, err := br.Page(proto.TargetCreateTarget{URL: "about:blank"})
 				if err != nil {
 					_ = br.Close()
@@ -830,7 +830,7 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 
 	u, err := l.Launch()
 	if err != nil && strings.Contains(err.Error(), "SingletonLock") {
-		log.Warn().Err(err).Str("dir", dir).Msg("browser: profile locked, force-unlocking and retrying")
+		b.log.Warn().Err(err).Str("dir", dir).Msg("browser: profile locked, force-unlocking and retrying")
 		browser.ForceUnlockChromeProfile(dir)
 		u, err = launcher.New().
 			Headless(!b.cfg.Settings.Browser.ShowBrowser).
@@ -855,7 +855,7 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	}
 	if len(b.cfg.Cookies) > 0 {
 		if err := page.SetCookies(browser.ToCookieParams(b.cfg.Cookies)); err != nil {
-			log.Warn().Err(err).Msg("browser: set cookies")
+			b.log.Warn().Err(err).Msg("browser: set cookies")
 		}
 	}
 	homeURL := "https://www.linkedin.com"
@@ -898,7 +898,7 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 		}
 	case domain.PlatformLinkedIn:
 		if err := b.linkedinEnsureLoggedIn(page); err != nil {
-			log.Warn().Err(err).Msg("browser: linkedin session not authenticated after warm-up")
+			b.log.Warn().Err(err).Msg("browser: linkedin session not authenticated after warm-up")
 		}
 	}
 
@@ -923,15 +923,15 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 					})
 				}
 				if raw, marshalErr := browser.MarshalCookies(fresh); marshalErr != nil {
-					log.Warn().Err(marshalErr).Msg("browser: failed to marshal refreshed session cookies")
+					b.log.Warn().Err(marshalErr).Msg("browser: failed to marshal refreshed session cookies")
 				} else if err := b.cfg.Sessions.Save(b.cfg.UserID, string(b.cfg.Platform), "session", raw); err != nil {
-					log.Warn().Err(err).Msg("browser: failed to refresh session cookies")
+					b.log.Warn().Err(err).Msg("browser: failed to refresh session cookies")
 				} else {
-					log.Debug().Msg("browser: session cookies refreshed after auth warm-up")
+					b.log.Debug().Msg("browser: session cookies refreshed after auth warm-up")
 				}
 			}
 		} else {
-			log.Warn().Str("state", string(state)).Msg("browser: skipping cookie refresh — not confirmed logged in")
+			b.log.Warn().Str("state", string(state)).Msg("browser: skipping cookie refresh — not confirmed logged in")
 		}
 	}
 
@@ -945,13 +945,13 @@ func (b *Bot) filterLinkedInJobs(jobs []linkedInJob) []linkedInJob {
 	for _, job := range jobs {
 		if reason := b.alreadyAppliedReason(job.ID); reason != "" {
 			skipped++
-			log.Info().Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
+			b.log.Info().Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
 			continue
 		}
 		fresh = append(fresh, job)
 	}
 	if skipped > 0 {
-		log.Info().Int("skipped_known", skipped).Int("to_process", len(fresh)).Msg("linkedin: filtered known jobs from search results")
+		b.log.Info().Int("skipped_known", skipped).Int("to_process", len(fresh)).Msg("linkedin: filtered known jobs from search results")
 	}
 	return fresh
 }
@@ -959,28 +959,28 @@ func (b *Bot) filterLinkedInJobs(jobs []linkedInJob) []linkedInJob {
 func (b *Bot) processKeyword(ctx context.Context, br *rod.Browser, page *rod.Page, keyword string, remaining int, target domain.SearchTarget) int {
 	jobs, err := b.scrapeLinkedInJobs(ctx, page, keyword, target)
 	if err != nil {
-		log.Error().Err(err).Str("keyword", keyword).Msg("linkedin: scrape jobs failed")
+		b.log.Error().Err(err).Str("keyword", keyword).Msg("linkedin: scrape jobs failed")
 		return 0
 	}
 	if len(jobs) == 0 {
-		log.Info().Str("keyword", keyword).Msg("linkedin: no new jobs found for keyword")
+		b.log.Info().Str("keyword", keyword).Msg("linkedin: no new jobs found for keyword")
 		return 0
 	}
 	jobs = b.filterLinkedInJobs(jobs)
 	if len(jobs) == 0 {
-		log.Info().Str("keyword", keyword).Msg("linkedin: all search results already known, nothing to process")
+		b.log.Info().Str("keyword", keyword).Msg("linkedin: all search results already known, nothing to process")
 		return 0
 	}
-	log.Info().Msgf("linkedin: found %d jobs for %q, processing", len(jobs), keyword)
+	b.log.Info().Msgf("linkedin: found %d jobs for %q, processing", len(jobs), keyword)
 	applied := 0
 	for _, job := range jobs {
 		b.waitIfPaused(ctx)
 		if reason := b.stopReason(ctx); reason != "" {
-			log.Info().Str("keyword", keyword).Msgf("linkedin: stopped mid-keyword, %s", reason)
+			b.log.Info().Str("keyword", keyword).Msgf("linkedin: stopped mid-keyword, %s", reason)
 			return applied
 		}
 		if applied >= remaining {
-			log.Info().Str("keyword", keyword).Int("remaining", remaining).Msg("linkedin: stopped mid-keyword, daily limit reached")
+			b.log.Info().Str("keyword", keyword).Int("remaining", remaining).Msg("linkedin: stopped mid-keyword, daily limit reached")
 			return applied
 		}
 		b.humanPause()
@@ -988,7 +988,7 @@ func (b *Bot) processKeyword(ctx context.Context, br *rod.Browser, page *rod.Pag
 			applied++
 		}
 	}
-	log.Info().Str("keyword", keyword).Int("applied", applied).Msg("linkedin: keyword done")
+	b.log.Info().Str("keyword", keyword).Int("applied", applied).Msg("linkedin: keyword done")
 	return applied
 }
 
@@ -1043,27 +1043,27 @@ func (b *Bot) scrapeLinkedInJobs(ctx context.Context, page *rod.Page, keyword st
 	}
 	fallbackLocation := domain.FormatSearchLocation(target.Location, domain.PlatformLinkedIn)
 	jobs := b.collectLinkedInCards(page, cap, fallbackLocation)
-	log.Info().Msgf("linkedin: search returned %d jobs for %q", len(jobs), keyword)
+	b.log.Info().Msgf("linkedin: search returned %d jobs for %q", len(jobs), keyword)
 	return jobs, nil
 }
 
 func (b *Bot) navigateLinkedInSearch(page *rod.Page, keyword string, target domain.SearchTarget) {
 	searchURL := b.buildLinkedInSearchURL(keyword, target)
 	arrangement := searchArrangementLabel(target)
-	log.Info().
+	b.log.Info().
 		Str("keyword", keyword).
 		Str("location", target.Location).
 		Str("arrangement", arrangement).
 		Msg("linkedin: searching")
-	log.Debug().Str("url", searchURL).Msg("linkedin: navigating to search URL")
+	b.log.Debug().Str("url", searchURL).Msg("linkedin: navigating to search URL")
 	if err := page.Timeout(30 * time.Second).Navigate(searchURL); err != nil {
-		log.Warn().Err(err).Msg("linkedin: navigate timed out, proceeding anyway")
+		b.log.Warn().Err(err).Msg("linkedin: navigate timed out, proceeding anyway")
 	}
-	log.Info().Msg("linkedin: navigate done, waiting for load")
+	b.log.Info().Msg("linkedin: navigate done, waiting for load")
 	if err := page.Timeout(30 * time.Second).WaitLoad(); err != nil {
-		log.Warn().Err(err).Msg("linkedin: WaitLoad timed out, proceeding anyway")
+		b.log.Warn().Err(err).Msg("linkedin: WaitLoad timed out, proceeding anyway")
 	}
-	log.Info().Msg("linkedin: page ready, scraping cards")
+	b.log.Info().Msg("linkedin: page ready, scraping cards")
 }
 
 func (b *Bot) collectLinkedInCards(page *rod.Page, cap int, fallbackLocation string) []linkedInJob {
@@ -1073,16 +1073,16 @@ func (b *Bot) collectLinkedInCards(page *rod.Page, cap int, fallbackLocation str
 	const maxPages = 10
 	for pageNum := 0; len(jobs) < cap && pageNum < maxPages; pageNum++ {
 		if pageNum > 0 {
-			log.Info().Msgf("linkedin: navigating to page %d", pageNum+1)
+			b.log.Info().Msgf("linkedin: navigating to page %d", pageNum+1)
 			if !clickNextPage(page) {
-				log.Info().Msg("linkedin: no next page, stopping")
+				b.log.Info().Msg("linkedin: no next page, stopping")
 				break
 			}
 			time.Sleep(3 * time.Second)
 		}
 		prev := len(jobs)
 		jobs = scrollPageCards(page, seen, jobs, cap, fallbackLocation)
-		log.Info().Msgf("linkedin: page %d yielded %d new jobs", pageNum+1, len(jobs)-prev)
+		b.log.Info().Msgf("linkedin: page %d yielded %d new jobs", pageNum+1, len(jobs)-prev)
 		if len(jobs) == prev {
 			break // page yielded nothing new even after scrolling
 		}
@@ -1226,14 +1226,14 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 }
 
 func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linkedInJob, reevaluate bool) bool {
-	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: processing, %q @ %s", job.Title, job.Company)
+	b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: processing, %q @ %s", job.Title, job.Company)
 
 	if reason := b.alreadyAppliedReason(job.ID); reason != "" && !(reevaluate && (reason == "in approved queue" || reason == "in Top Matches")) {
-		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
 	if !reevaluate && b.alreadyQueued(ctx, job.Company, job.Title) {
-		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, duplicate listing already queued: %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, duplicate listing already queued: %q @ %s", job.Title, job.Company)
 		return false
 	}
 	// Card-level applied indicator (LinkedIn shows "Applied" badge on already-applied cards).
@@ -1241,17 +1241,17 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	// This also avoids false positives from browser crashes leaving phantom "Applied" badges.
 	if job.AlreadyApplied {
 		b.recordSkipped(job, "already_applied_indicator", 0, "", nil)
-		log.Info().Str("company", job.Company).Str("role", job.Title).Str("job_id", job.ID).Msg("linkedin: card shows applied badge, recording to skipped")
+		b.log.Info().Str("company", job.Company).Str("role", job.Title).Str("job_id", job.ID).Msg("linkedin: card shows applied badge, recording to skipped")
 		return false
 	}
 	if b.isBlacklisted(job) {
 		b.recordSkipped(job, "blacklisted", 0, "", nil)
-		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, blacklisted: %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, blacklisted: %q @ %s", job.Title, job.Company)
 		return false
 	}
 	if !b.cfg.Preferences.ExperienceLevel.MatchesExperienceTitle(job.Title) {
 		b.recordSkipped(job, "experience_level", 0, "", nil)
-		log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, experience level: %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Msgf("linkedin: skip, experience level: %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -1262,7 +1262,7 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	var details scraper.JobDetails
 	jobPage, pageErr := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if pageErr != nil {
-		log.Info().Err(pageErr).
+		b.log.Info().Err(pageErr).
 			Str("job_id", job.ID).Str("url", job.URL).
 			Str("role", job.Title).Str("company", job.Company).
 			Msg("linkedin: browser page open failed — skipping")
@@ -1319,12 +1319,12 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 		details.PostedDate = job.PostedDate
 	}
 	if controlUnverified {
-		log.Warn().Err(controlError).Str("job_id", job.ID).Str("url", job.URL).
+		b.log.Warn().Err(controlError).Str("job_id", job.ID).Str("url", job.URL).
 			Msg("linkedin: application control unverified; evaluating verified listing without applying")
 	} else if easyApply {
-		log.Info().Msgf("linkedin: Easy Apply detected: %q @ %s", job.Title, job.Company)
+		b.log.Info().Msgf("linkedin: Easy Apply detected: %q @ %s", job.Title, job.Company)
 	} else {
-		log.Info().Msgf("linkedin: not Easy Apply, will route to Top Matches: %q @ %s", job.Title, job.Company)
+		b.log.Info().Msgf("linkedin: not Easy Apply, will route to Top Matches: %q @ %s", job.Title, job.Company)
 	}
 
 	llmBefore := b.llmSnapshot()
@@ -1383,7 +1383,7 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 			CreatedAt:            time.Now(),
 		})
-		log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: routed to Top Matches (not Easy Apply): %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: routed to Top Matches (not Easy Apply): %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -1443,7 +1443,7 @@ func (b *Bot) llmCtx(ctx context.Context, task, jobID string) context.Context {
 func (b *Bot) fetchJob(ctx context.Context, job linkedInJob) scraper.JobDetails {
 	details, err := scraper.FetchJob(ctx, job.URL)
 	if err != nil {
-		log.Warn().Err(err).Msg("linkedin: fetch job desc")
+		b.log.Warn().Err(err).Msg("linkedin: fetch job desc")
 		return scraper.JobDetails{Description: job.Title + " at " + job.Company}
 	}
 	return details
@@ -1467,10 +1467,10 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	}
 	if result.Score < minScore {
 		b.recordSkipped(job, fmt.Sprintf("score %d < %d", result.Score, minScore), result.Score, result.Reasoning, nil)
-		log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Int("min_score", minScore).Msgf("linkedin: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Int("min_score", minScore).Msgf("linkedin: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
 		return result.Score, result.Reasoning, nil, false
 	}
-	log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Msgf("linkedin: score %d/%d, %q @ %s", result.Score, 10, job.Title, job.Company)
+	b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Msgf("linkedin: score %d/%d, %q @ %s", result.Score, 10, job.Title, job.Company)
 
 	// Halal check, only runs after score passes to avoid wasted LLM calls.
 	// HARAM → skip; DOUBTFUL → let through but carry verdict for storage.
@@ -1485,11 +1485,11 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
-			log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("linkedin: halal skip (HARAM) %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("linkedin: halal skip (HARAM) %q @ %s", job.Title, job.Company)
 			return result.Score, result.Reasoning, nil, false
 		} else if verdict.Verdict == "DOUBTFUL" {
 			halalVerdict, _ = json.Marshal(verdict)
-			log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("linkedin: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("linkedin: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
 		}
 	}
 
@@ -1542,7 +1542,7 @@ func (b *Bot) abortOnLLMFailure(err error) {
 	if reason == "" {
 		reason = fmt.Sprintf("LLM call failed: %v", err)
 	}
-	log.Error().Msgf("bot: aborting — %s", reason)
+	b.log.Error().Msgf("bot: aborting — %s", reason)
 	b.Stop()
 }
 
@@ -1620,7 +1620,7 @@ func (b *Bot) tailoredProfile(ctx context.Context, jobID, jobDesc string, market
 	}
 	tailored, err := b.cfg.Tailor.TailorProfile(b.llmCtx(ctx, "tailor resume", jobID), profile, promptCtx)
 	if err != nil {
-		log.Warn().Err(err).Msg("linkedin: tailoring failed, using base profile")
+		b.log.Warn().Err(err).Msg("linkedin: tailoring failed, using base profile")
 		return profile
 	}
 	return tailored
@@ -1648,9 +1648,9 @@ func (b *Bot) generateCoverLetter(ctx context.Context, profile *domain.ResumePro
 func (b *Bot) queueForReview(ctx context.Context, p *domain.PendingReview) {
 	b.savePendingReview(ctx, p)
 	if p.EasyApply {
-		log.Info().Msgf("linkedin: queued for review, %q @ %s", p.Role, p.Company)
+		b.log.Info().Msgf("linkedin: queued for review, %q @ %s", p.Role, p.Company)
 	} else {
-		log.Info().Msgf("linkedin: added to Top Matches (manual apply), %q @ %s", p.Role, p.Company)
+		b.log.Info().Msgf("linkedin: added to Top Matches (manual apply), %q @ %s", p.Role, p.Company)
 	}
 }
 
@@ -1659,7 +1659,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	beginAttempt(b.cfg.DB, ac)
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
-		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: document work guard")
+		b.log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: document work guard")
 		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "document_work_guard", "begin_work_failed", err.Error())
 		return false
 	}
@@ -1669,7 +1669,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	}
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: open job page")
+		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: open job page")
 		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
 		return false
 	}
@@ -1679,7 +1679,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 		if errors.Is(err, errAlreadyApplied) {
 			resume, cover := lazy.get()
 			b.recordApplied(job, resume, cover, lazy.resumeVersionID, lazy.coverVersionID, lazy.refsJSON, score, halalVerdict)
-			log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("company", job.Company).Str("role", job.Title).Msg("linkedin: already applied, recorded ✓")
+			b.log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("company", job.Company).Str("role", job.Title).Msg("linkedin: already applied, recorded ✓")
 			finishAttempt(b.cfg.DB, ac, OutcomeAlreadyApplied, "already_applied", "already_applied", "")
 			return true
 		}
@@ -1689,7 +1689,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			finishAttempt(b.cfg.DB, ac, outcome, stage, code, err.Error())
 			return false
 		}
-		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: easy apply failed")
+		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: easy apply failed")
 		reason := "easy apply: " + err.Error()
 		if skipReasonBelongsInTopMatches(reason) {
 			b.savePendingReview(ctx, &domain.PendingReview{
@@ -1705,7 +1705,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 				HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 				CreatedAt:            time.Now(),
 			})
-			log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("reason", reason).Msgf("linkedin: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("reason", reason).Msgf("linkedin: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
 			finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "not_automatable", reason)
 			return false
 		}
@@ -1717,7 +1717,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	// submission is treated as submission-unknown. Uses declared job.URL (not live URL)
 	// so URL transforms during navigation cannot mask wrong-job submissions.
 	if err := verifyLinkedInCompletion(jobPage, job.URL, job.Company); err != nil {
-		log.Error().Err(err).
+		b.log.Error().Err(err).
 			Str("attempt_id", ac.AttemptID).
 			Str("job_id", job.ID).
 			Str("intended_url", job.URL).
@@ -1757,7 +1757,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	}
 
 	if info, err := page.Eval(`() => window.location.href`); err == nil {
-		log.Info().Str("url", info.Value.String()).Msg("easy apply: page URL after load")
+		b.log.Info().Str("url", info.Value.String()).Msg("easy apply: page URL after load")
 	}
 
 	// Entry identity check — before any CTA interaction or preparation scan.
@@ -1800,7 +1800,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	if err := clickCTA(); err != nil {
 		return err
 	}
-	log.Info().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("easy apply: verified job button clicked")
+	b.log.Info().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("easy apply: verified job button clicked")
 
 	// Wait for the Easy Apply modal. LinkedIn SDUI may render it in an iframe /
 	// shadow root without classic .jobs-easy-apply-* class names. Detect by
@@ -1928,7 +1928,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 		// Mid-wait: if nothing appeared after ~8s, click Easy Apply again once.
 		if !retriedClick && time.Until(modalDeadline) < 17*time.Second {
-			log.Warn().Msg("easy apply: modal not visible yet, re-clicking Easy Apply")
+			b.log.Warn().Msg("easy apply: modal not visible yet, re-clicking Easy Apply")
 			if err := clickCTA(); err != nil {
 				return err
 			}
@@ -1938,7 +1938,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	}
 	if !modalFound {
 		if diag, err := page.Eval(jsModalDiag); err == nil {
-			log.Warn().Str("diag", diag.Value.String()).Msg("easy apply: modal did not appear")
+			b.log.Warn().Str("diag", diag.Value.String()).Msg("easy apply: modal did not appear")
 		}
 		saveApplyDebug(page, "no_modal")
 		return fmt.Errorf("easy apply modal did not appear after click (LinkedIn may have changed the apply UI or blocked the session)")
@@ -1987,7 +1987,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		})));
 	}`
 	if diagRes, err := page.Eval(jsDiagInputs); err == nil {
-		log.Debug().Str("inputs", diagRes.Value.String()).Msg("easy apply: modal inputs at start")
+		b.log.Debug().Str("inputs", diagRes.Value.String()).Msg("easy apply: modal inputs at start")
 	}
 
 	// JS to click the correct Easy Apply action button.
@@ -2247,7 +2247,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		b.interactionPause()
 
 		if submitClicked && linkedInSubmissionConfirmed(page, linkedInExpectedID(lazy.job.URL), lazy.job.Company) {
-			log.Info().Msg("easy apply: success detected")
+			b.log.Info().Msg("easy apply: success detected")
 			return nil
 		}
 		if err := verifyJobIdentity(page, expectedJobPath); err != nil {
@@ -2257,12 +2257,12 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		// Check whether the modal actually advanced since the previous click.
 		if hashRes, err := page.Timeout(10 * time.Second).Eval(jsStepHash); err == nil {
 			h := hashRes.Value.String()
-			log.Debug().Msgf("easy apply: step %d hash=%q", i, h)
+			b.log.Debug().Msgf("easy apply: step %d hash=%q", i, h)
 			// Only treat as "same step" when we got a meaningful hash.
 			// "~" means jsStepHash found no labels, treat as unknown rather than stuck.
 			if h != "" && h != "~" && h == prevStepHash {
 				noAdvanceCount++
-				log.Warn().Int("count", noAdvanceCount).Msg("easy apply: modal did not advance")
+				b.log.Warn().Int("count", noAdvanceCount).Msg("easy apply: modal did not advance")
 			} else {
 				noAdvanceCount = 0
 				prevStepHash = h
@@ -2273,7 +2273,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 
 		// Per-step diagnostic: log what form inputs exist right now.
 		if diagRes, err := page.Timeout(10 * time.Second).Eval(jsDiagInputs); err == nil {
-			log.Debug().Str("inputs", diagRes.Value.String()).Msgf("easy apply: step %d inputs", i)
+			b.log.Debug().Str("inputs", diagRes.Value.String()).Msgf("easy apply: step %d inputs", i)
 		} else if isCDPFatal(err) {
 			return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
 		}
@@ -2288,7 +2288,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 		if hasFields && !filled {
 			consecutiveUnfillable++
-			log.Warn().Int("count", consecutiveUnfillable).Msg("easy apply: fields present but none filled")
+			b.log.Warn().Int("count", consecutiveUnfillable).Msg("easy apply: fields present but none filled")
 			// Bail out if we cannot fill anything for many consecutive steps, this
 			// catches cases where the step hash is "~" (unreadable) and noAdvanceCount
 			// never increments, e.g. a required file-upload step with no generated PDF.
@@ -2345,10 +2345,10 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			if isCDPFatal(err) {
 				return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
 			}
-			log.Warn().Err(err).Int("step", i).Msg("easy apply: eval error")
+			b.log.Warn().Err(err).Int("step", i).Msg("easy apply: eval error")
 			continue
 		}
-		log.Info().Msgf("easy apply: step %d, btn=%q ok=%v filled=%v", i, label, ok, filled)
+		b.log.Info().Msgf("easy apply: step %d, btn=%q ok=%v filled=%v", i, label, ok, filled)
 		if submitClicked {
 			if !ok {
 				return errLinkedInSubmissionUnknown
@@ -2367,7 +2367,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 		if noAdvanceCount >= stuckThreshold {
 			if errs := pageValidationErrors(page); len(errs) > 0 {
-				log.Warn().Strs("errors", errs).Msg("easy apply: validation errors on page, re-filling step")
+				b.log.Warn().Strs("errors", errs).Msg("easy apply: validation errors on page, re-filling step")
 				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)
 				if refillErr != nil {
 					if isFormFillFatalLLM(refillErr) {
@@ -2389,7 +2389,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			saveApplyDebug(page, "no_primary_button")
 			okFailCount++
 			if okFailCount >= 5 {
-				log.Error().Str("btn", label).Msg("easy apply: stuck, no clickable primary button")
+				b.log.Error().Str("btn", label).Msg("easy apply: stuck, no clickable primary button")
 				return fmt.Errorf("stuck on step %d: no clickable primary button (label=%q)", i, label)
 			}
 			time.Sleep(2 * time.Second)
@@ -2446,7 +2446,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		`SELECT job_id,platform,company,role,location,link,COALESCE(resume_path,''),COALESCE(cover_letter_path,''),needs_evaluation
 		 FROM jobs_approved_queue WHERE user_id = ? ORDER BY approved_at ASC`, b.cfg.UserID)
 	if err != nil {
-		log.Error().Err(err).Msg("approved queue: load")
+		b.log.Error().Err(err).Msg("approved queue: load")
 		return 0
 	}
 	var jobs []approvedJob
@@ -2458,7 +2458,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Str("user_id", b.cfg.UserID).Msg("processApprovedQueue row iteration error")
+		b.log.Error().Err(err).Str("user_id", b.cfg.UserID).Msg("processApprovedQueue row iteration error")
 		return 0
 	}
 
@@ -2471,7 +2471,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		// Respect billing quota: stop if a mid-run bucket charge failed.
 		if b.cfg.BrowserMeter != nil {
 			if !DestructiveActionAllowed(b.cfg.BrowserMeter) {
-				log.Warn().Err(b.cfg.BrowserMeter.Err()).Msg("approved queue: browser quota exceeded, stopping")
+				b.log.Warn().Err(b.cfg.BrowserMeter.Err()).Msg("approved queue: browser quota exceeded, stopping")
 				return applied
 			}
 		}
@@ -2488,7 +2488,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			}
 			continue
 		}
-		log.Info().Str("job_id", j.JobID).Str("company", j.Company).Str("title", j.Role).Msg("approved queue: submitting")
+		b.log.Info().Str("job_id", j.JobID).Str("company", j.Company).Str("title", j.Role).Msg("approved queue: submitting")
 		b.humanPause()
 
 		ac := newAttemptContext(b.cfg.UserID, platform, j.JobID, j.Link, j.Role, j.Company, "automated_queue")
@@ -2496,7 +2496,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 
 		jobPage, err := br.Page(proto.TargetCreateTarget{URL: j.Link})
 		if err != nil {
-			log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: open job page")
+			b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: open job page")
 			finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
 			continue
 		}
@@ -2514,7 +2514,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		if err := b.platformApply(ctx, jobPage, queueLazy); err != nil {
 			_ = jobPage.Close()
 			if errors.Is(err, errAlreadyApplied) {
-				log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).
+				b.log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).
 					Str("company", j.Company).Str("role", j.Role).Msg("approved queue: already applied, skipping ✓")
 				_, _ = appdb.ExecWithRetry(b.cfg.DB,
 					`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
@@ -2522,7 +2522,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 				applied++
 				continue
 			}
-			log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: apply failed")
+			b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: apply failed")
 			var score int
 			_ = b.cfg.DB.QueryRow(
 				`SELECT COALESCE(suitability_score,0) FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`,
@@ -2539,7 +2539,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		if b.cfg.Platform == domain.PlatformLinkedIn {
 			if err := verifyLinkedInCompletion(jobPage, j.Link, j.Company); err != nil {
 				_ = jobPage.Close()
-				log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).
+				b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).
 					Str("company", j.Company).Str("role", j.Role).Msg("approved queue: post-apply identity check failed")
 				_, _ = appdb.ExecWithRetry(b.cfg.DB, `DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID)
 				b.recordApplyFailure(j, 0, fmt.Errorf("%w: %v", errLinkedInSubmissionUnknown, err))
@@ -2563,12 +2563,12 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			j.Location, j.Link, j.ResumePath, j.CoverLetterPath, score,
 			time.Now().UTC().Format(time.RFC3339),
 		); err != nil {
-			log.Error().Err(err).Str("job_id", j.JobID).Str("company", j.Company).Str("role", j.Role).Msg("approved queue: failed to record applied job")
+			b.log.Error().Err(err).Str("job_id", j.JobID).Str("company", j.Company).Str("role", j.Role).Msg("approved queue: failed to record applied job")
 		}
 		if _, err := appdb.ExecWithRetry(b.cfg.DB, `DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, j.JobID, b.cfg.UserID); err != nil {
-			log.Error().Err(err).Str("job_id", j.JobID).Msg("approved queue: failed to delete from queue")
+			b.log.Error().Err(err).Str("job_id", j.JobID).Msg("approved queue: failed to delete from queue")
 		}
-		log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("company", j.Company).Str("role", j.Role).Msg("approved queue: submitted ✓")
+		b.log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("company", j.Company).Str("role", j.Role).Msg("approved queue: submitted ✓")
 		finishAttempt(b.cfg.DB, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
 		applied++
 	}
@@ -2670,7 +2670,7 @@ func (b *Bot) recordApplied(job linkedInJob, resumePath, coverPath, resumeVer, c
 		job.Location, job.URL, resumePath, coverPath, resumeVer, coverVer, refsJSON, score, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
-		log.Error().Err(err).Str("job_id", job.ID).Msg("failed to record applied job")
+		b.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to record applied job")
 	} else if b.cfg.OnApplied != nil {
 		b.cfg.OnApplied()
 	}
@@ -2690,7 +2690,7 @@ func (b *Bot) recordSkipped(job linkedInJob, reason string, score int, reasoning
 		job.Location, job.URL, reason, score, reasoning, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
-		log.Error().Err(err).Str("job_id", job.ID).Msg("failed to record skipped job")
+		b.log.Error().Err(err).Str("job_id", job.ID).Msg("failed to record skipped job")
 	}
 	if b.seenCache != nil {
 		b.seenCache.mark(job.ID, seenSkipped)
@@ -2713,7 +2713,7 @@ func (b *Bot) savePendingReview(ctx context.Context, p *domain.PendingReview) {
 		p.SuitabilityScore, p.SuitabilityReasoning, p.DueDate, p.PostedDate, p.EasyApply, halalJSON,
 		p.CreatedAt.UTC().Format(time.RFC3339),
 	); err != nil {
-		log.Error().Err(err).Str("job_id", p.JobID).Msg("failed to save pending review")
+		b.log.Error().Err(err).Str("job_id", p.JobID).Msg("failed to save pending review")
 	}
 	if b.seenCache != nil {
 		b.seenCache.mark(p.JobID, seenPendingReview)
@@ -2928,7 +2928,7 @@ func (b *Bot) linkedinEnsureLoggedIn(page *rod.Page) error {
 
 	state, err = browser.PageLoginState(page, "linkedin")
 	if err == nil && state == browser.LoginStateYes {
-		log.Info().Msg("linkedin: session recovered via stored credentials")
+		b.log.Info().Msg("linkedin: session recovered via stored credentials")
 		return nil
 	}
 	if info, ierr := page.Info(); ierr == nil {
@@ -2940,13 +2940,13 @@ func (b *Bot) linkedinEnsureLoggedIn(page *rod.Page) error {
 	if state == browser.LoginStateNo {
 		return fmt.Errorf("auto-login completed but still logged out")
 	}
-	log.Info().Msg("linkedin: session recovered via stored credentials")
+	b.log.Info().Msg("linkedin: session recovered via stored credentials")
 	return nil
 }
 
 // linkedinAutoLogin fills the LinkedIn login form using stored credentials.
 func (b *Bot) linkedinAutoLogin(page *rod.Page) error {
-	log.Info().Msg("linkedin: auto-login with stored credentials")
+	b.log.Info().Msg("linkedin: auto-login with stored credentials")
 
 	emailInput, err := page.Timeout(10 * time.Second).Element(
 		"input#username, input[name='session_key'], input[type='email']",

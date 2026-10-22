@@ -1125,40 +1125,42 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		return nil, gs, err
 	}
 
-	b := &Bot{
-		cfg: Config{
-			Platform:        platform,
-			Settings:        gs,
-			Cookies:         cookies,
-			DB:              m.db,
-			UserID:          userID,
-			AutomationRunID: runID,
-			Tailor:          tailor,
-			Scorer:          scorer,
-			HalalChecker:    halal,
-			Renderer:        m.renderer,
-			Profile:         &profile,
-			MarketDir:       m.marketDir,
-			LLMTracker:      tracker,
-			Sessions:        m.sessions,
-			Documents:       m.documents,
-		},
-		state:  domain.BotStateIdle,
-		stopCh: make(chan struct{}),
+	runLogger := log.Logger.
+		With().Str("user_id", userID).Str("automation_run_id", runID).Logger().
+		Hook(logIDHook{})
+
+	cfg := Config{
+		Platform:        platform,
+		Settings:        gs,
+		Cookies:         cookies,
+		DB:              m.db,
+		UserID:          userID,
+		AutomationRunID: runID,
+		Tailor:          tailor,
+		Scorer:          scorer,
+		HalalChecker:    halal,
+		Renderer:        m.renderer,
+		Profile:         &profile,
+		MarketDir:       m.marketDir,
+		LLMTracker:      tracker,
+		Sessions:        m.sessions,
+		Documents:       m.documents,
+		Logger:          &runLogger,
 	}
+
 	if m.browserMeterSvc != nil {
 		inc, incErr := m.browserMeterSvc.BrowserIncrementDuration()
 		if incErr != nil || inc <= 0 {
 			inc = 30 * time.Second
 		}
-		b.cfg.BrowserMeter = NewLiveBrowserMeter(m.browserMeterSvc, userID, runID, inc, nil)
+		cfg.BrowserMeter = NewLiveBrowserMeter(m.browserMeterSvc, userID, runID, inc, nil)
 	}
 	if platform == domain.PlatformSeek {
 		if raw, err := m.secrets.Get(userID, "cred:seek"); err == nil {
 			var cred struct{ Email, Password string }
 			if json.Unmarshal([]byte(raw), &cred) == nil {
-				b.cfg.SeekEmail = cred.Email
-				b.cfg.SeekPassword = cred.Password
+				cfg.SeekEmail = cred.Email
+				cfg.SeekPassword = cred.Password
 			}
 		}
 	}
@@ -1166,12 +1168,12 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		if raw, err := m.secrets.Get(userID, "cred:linkedin"); err == nil {
 			var cred struct{ Email, Password string }
 			if json.Unmarshal([]byte(raw), &cred) == nil {
-				b.cfg.LinkedInEmail = cred.Email
-				b.cfg.LinkedInPassword = cred.Password
+				cfg.LinkedInEmail = cred.Email
+				cfg.LinkedInPassword = cred.Password
 			}
 		}
 	}
-	return b, gs, nil
+	return New(cfg), gs, nil
 }
 
 // ApplyFromURL opens a browser at jobURL, scores the job, checks for Easy/Quick Apply,
@@ -1236,6 +1238,16 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	if err != nil {
 		finishAttempt(m.db, ac, OutcomeFailed, "setup", "bot_setup_failed", err.Error())
 		return ApplyFromURLResult{}, err
+	}
+
+	// Register the run log sink so apply-from-URL logs are persisted like regular runs.
+	if m.runLogSink != nil {
+		runID := b.cfg.AutomationRunID
+		if regErr := m.runLogSink.Register(ctx, userID, runID); regErr != nil {
+			log.Error().Err(regErr).Str("user_id", userID).Msg("applyFromURL: run log sink register failed — logs will not persist")
+		} else {
+			defer m.runLogSink.Unregister(userID, runID)
+		}
 	}
 
 	// Open browser and navigate — use persistent browsers for LinkedIn and Seek

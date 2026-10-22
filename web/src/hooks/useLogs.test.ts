@@ -195,27 +195,21 @@ describe('useLogs store', () => {
     expect(ids).not.toContain('la2')
   })
 
-  test('WS event for different run triggers adoptRun — lines switch to the new run', async () => {
-    // When displayedRunId IS set and WS delivers a line for a different run, the store
-    // calls adoptRun() (immediate notify), clears old lines, and re-seeds for the new run.
+  test('delayed WS event for wrong run is rejected when new run is active', async () => {
     const uid = nextId()
-    const seedA = makeSeedResponse('run-A', ['la1'])
-    ;(botApi.runLogs as Mock)
-      .mockResolvedValueOnce(seedA)                          // initial seed
-      .mockResolvedValue({ run_id: 'run-B', lines: [] })     // seed after adoptRun
+    // Seed establishes run-B as the active run.
+    ;(botApi.runLogs as Mock).mockResolvedValue(makeSeedResponse('run-B', ['lb1']))
 
     const { result } = renderHook(() => useLogs(uid))
     await waitFor(() => expect(result.current.lines).toHaveLength(1))
-    expect(result.current.displayedRunId).toBe('run-A')
+    expect(result.current.displayedRunId).toBe('run-B')
 
-    // Deliver run-B event while run-A is displayed.
-    // adoptRun calls notify() synchronously → displayedRunId updates without batch delay.
-    deliver(wsLine({ logId: 'lb1', runId: 'run-B' }))
-    await waitFor(() => expect(result.current.displayedRunId).toBe('run-B'))
+    // Stale run-A line arrives after run-B is established — must be REJECTED.
+    deliver(wsLine({ logId: 'la1-late', runId: 'run-A' }))
 
-    // run-A lines cleared; lb1 appears after the batch flush.
-    await waitFor(() => expect(result.current.lines.map(l => l.id)).toContain('lb1'))
-    expect(result.current.lines.map(l => l.id)).not.toContain('la1')
+    // Rejection is synchronous (no batch timer set); assert immediately.
+    expect(result.current.lines.map(l => l.id)).not.toContain('la1-late')
+    expect(result.current.lines.map(l => l.id)).toContain('lb1')
   })
 
   test('clear() triggers a new seed fetch for the new run', async () => {
@@ -237,7 +231,7 @@ describe('useLogs store', () => {
     expect(result.current.lines.map(l => l.id)).not.toContain('la1')
   })
 
-  test('early run-B WS lines are recovered after adoptRun seeds persisted logs', async () => {
+  test('WS lines for new run rejected while old run active; clear() triggers recovery seed', async () => {
     const uid = nextId()
     const seedA = makeSeedResponse('run-A', ['la1', 'la2'])
     const seedB = makeSeedResponse('run-B', ['lb-persist'])
@@ -247,19 +241,24 @@ describe('useLogs store', () => {
 
     const { result } = renderHook(() => useLogs(uid))
     await waitFor(() => expect(result.current.lines).toHaveLength(2))
+    expect(result.current.displayedRunId).toBe('run-A')
 
-    // adoptRun fires immediately on the WS event (displayedRunId was 'run-A', not '').
+    // WS delivers run-B line while run-A is displayed — rejected (different runId).
     deliver(wsLine({ logId: 'lb-ws', runId: 'run-B' }))
+    // Rejection is synchronous; run-A lines intact.
+    expect(result.current.lines.map(l => l.id)).not.toContain('lb-ws')
+    expect(result.current.lines.map(l => l.id)).toContain('la1')
+
+    // Dashboard detects run-B via status poll and calls clear() to transition.
+    await act(async () => { result.current.clear('run-B') })
 
     await waitFor(() => expect(botApi.runLogs).toHaveBeenCalledTimes(2))
-    await waitFor(() => {
-      const ids = result.current.lines.map(l => l.id)
-      expect(ids).toContain('lb-persist')
-      expect(ids).toContain('lb-ws')
-    })
+    await waitFor(() => expect(result.current.lines.map(l => l.id)).toContain('lb-persist'))
     const ids = result.current.lines.map(l => l.id)
     expect(ids).not.toContain('la1')
     expect(ids).not.toContain('la2')
+    // lb-ws was rejected and never persisted, so it doesn't appear in the seed.
+    expect(ids).not.toContain('lb-ws')
   })
 
   test('account switch: in-flight seed for old user is rejected', async () => {

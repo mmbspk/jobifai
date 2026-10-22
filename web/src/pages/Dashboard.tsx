@@ -27,7 +27,7 @@ export function Dashboard() {
   const setup = useSetupReadiness()
   const { aiDisabled, data: quota } = useQuota()
   const quotaHint = aiDisabled ? quotaBlockMessage(quota?.block_code, quota?.plan) : undefined
-  const { lines, connected, displayedRunId, clear } = useLogs(user?.id ?? '')
+  const { lines, connected, displayedRunId, clear, wipe } = useLogs(user?.id ?? '')
   const [platform, setPlatform] = useState<Platform>('linkedin')
 
   // Detect run transitions via status polling and clear old-run lines from the buffer.
@@ -225,12 +225,12 @@ export function Dashboard() {
           </section>
 
           <div className="xl:hidden h-[clamp(16rem,45dvh,28rem)] min-h-[16rem]">
-            <ActivitySection lines={lines} connected={connected} hasHistory={hasHistory} onClear={() => clear(status?.automation_run_id ?? '')} currentJob={status?.current_job} />
+            <ActivitySection lines={lines} connected={connected} hasHistory={hasHistory} onClear={wipe} currentJob={status?.current_job} />
           </div>
         </div>
 
         <div className="hidden xl:flex xl:sticky xl:top-6 xl:h-[min(calc(100dvh-7rem),40rem)] xl:min-h-[18rem] xl:w-full xl:self-start">
-          <ActivitySection lines={lines} connected={connected} hasHistory={hasHistory} onClear={() => clear(status?.automation_run_id ?? '')} currentJob={status?.current_job} />
+          <ActivitySection lines={lines} connected={connected} hasHistory={hasHistory} onClear={wipe} currentJob={status?.current_job} />
         </div>
       </div>
     </div>

@@ -87,17 +87,46 @@ const store = {
     this.seedNonce++
     this.seenIds = new Set()
     this.lines = []
+    // Clear any pending WS batch so old-account lines cannot flush after the switch.
+    this.batchBuf = []
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer)
+      this.batchTimer = null
+    }
+    this.notify()
+  },
+
+  // wipe() is called by the manual "clear" button. Empties the display without re-seeding.
+  wipe() {
+    this.lines = []
+    this.batchBuf = []
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer)
+      this.batchTimer = null
+    }
+    this.seenIds = new Set()
+    this.displayedRunId = ''
     this.notify()
   },
 
   // clear(keepRunId) is called when the Dashboard detects a new run (via status poll).
   // Lines already received for the new run are kept; old-run lines are removed.
+  // Also filters the pending WS batch so the next flush doesn't reintroduce old-run lines.
   // Invalidates any in-flight seed response for the old run via seedNonce, then
   // immediately fetches persisted logs for the new run.
   clear(keepRunId: string) {
     const retained = this.lines.filter(l => l.runId === keepRunId)
-    this.seenIds = new Set(retained.map(l => l.id).filter(Boolean))
+    const retainedBatch = this.batchBuf.filter(l => l.runId === keepRunId)
+    // Rebuild seenIds from all retained content (flushed + pending).
+    this.seenIds = new Set(
+      [...retained.map(l => l.id), ...retainedBatch.map(l => l.id)].filter(Boolean),
+    )
     this.lines = retained
+    this.batchBuf = retainedBatch
+    if (!this.batchBuf.length && this.batchTimer) {
+      clearTimeout(this.batchTimer)
+      this.batchTimer = null
+    }
     this.displayedRunId = keepRunId
     this.seeded = false
     this.seedNonce++
@@ -139,22 +168,6 @@ const store = {
     this.notify()
   },
 
-  // adoptRun() is called when WS delivers a line for a run different from displayedRunId.
-  // Clears the buffer (keeping lines for the new run), invalidates pending seeds, and
-  // triggers a fresh seed for the new run — recovering any lines rejected before the switch.
-  adoptRun(newRunId: string, userId: string, gen: number) {
-    const retained = this.lines.filter(l => l.runId === newRunId)
-    this.seenIds = new Set(retained.map(l => l.id).filter(Boolean))
-    this.lines = retained
-    this.displayedRunId = newRunId
-    this.seeded = false
-    this.seedNonce++
-    this.notify()
-    // Trigger a fresh seed to recover persisted lines for newRunId that arrived
-    // before this WS event (i.e., were rejected while displayedRunId was the old run).
-    scheduleSeed(userId, gen)
-  },
-
   connect() {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
     const token = getToken()
@@ -162,13 +175,21 @@ const store = {
     const ws = new WebSocket(url)
     this.ws = ws
 
+    // Capture at connection time so callbacks self-reject after account switch.
+    const capturedGen = this.authGen
+    const capturedUserId = this.userId
+
     ws.onopen = () => {
+      if (capturedGen !== this.authGen) return
       this.connected = true
       this.retryDelay = 500
+      // Seed on reconnect so a failed or dropped initial seed is retried automatically.
+      if (!this.seeded) scheduleSeed(capturedUserId, capturedGen)
       this.notify()
     }
 
     ws.onmessage = (e) => {
+      if (capturedGen !== this.authGen) return
       const parsed = parseLogLine(String(e.data))
       if (!parsed) return
       const { id, runId } = parsed
@@ -176,14 +197,8 @@ const store = {
       // Deduplicate: skip lines already in the buffer (from seed)
       if (id && this.seenIds.has(id)) return
 
-      if (runId && runId !== this.displayedRunId && this.displayedRunId !== '') {
-        // New run detected through WS before status poll — adopt it.
-        // The line will be re-added after adoptRun clears and rebuilds the buffer.
-        const capturedUserId = this.userId
-        const capturedGen = this.authGen
-        this.adoptRun(runId, capturedUserId, capturedGen)
-        // Re-process this line under the new run context.
-      }
+      // Reject lines for a different run; run transitions go through status-poll + clear().
+      if (runId && runId !== this.displayedRunId && this.displayedRunId !== '') return
 
       if (runId && this.displayedRunId === '') {
         this.displayedRunId = runId
@@ -201,6 +216,7 @@ const store = {
     }
 
     ws.onclose = () => {
+      if (capturedGen !== this.authGen) return
       this.connected = false
       this.ws = null
       this.notify()
@@ -214,6 +230,9 @@ const store = {
 
   closeAndRebind() {
     if (this.ws) {
+      // Null all handlers before close so in-flight events cannot mutate state for the new user.
+      this.ws.onopen = null
+      this.ws.onmessage = null
       this.ws.onclose = null
       this.ws.onerror = null
       this.ws.close()
@@ -295,6 +314,7 @@ export function useLogs(userId: string) {
   }, [userId])
 
   const clear = useCallback((keepRunId: string) => store.clear(keepRunId), [])
+  const wipe = useCallback(() => store.wipe(), [])
 
-  return { lines, connected, displayedRunId, clear }
+  return { lines, connected, displayedRunId, clear, wipe }
 }
