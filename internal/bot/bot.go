@@ -18,6 +18,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/browser"
 	appdb "github.com/user/jobifai/internal/db"
@@ -177,6 +178,9 @@ type Config struct {
 	AutomationRunID  string // one ID per automation session for LLM billing attribution
 	ApplicationID    string // set when applying to a specific application record
 	RequireReview    bool
+	// Logger is an optional run-scoped logger with user_id, automation_run_id,
+	// and log_id hook pre-wired. Nil means use the global log.Logger.
+	Logger           *zerolog.Logger
 	MarketDir        string             // path to resume_markets/ directory
 	Documents        *documents.Service // versioned document foundation (#58/#59)
 	LLMTracker       *llm.UsageTracker  // optional; tracks per-job token usage for success log
@@ -208,6 +212,7 @@ type SubmitRequest struct {
 // Bot runs the Easy Apply automation loop for a single platform session.
 type Bot struct {
 	cfg            Config
+	log            zerolog.Logger // run-scoped; carries user_id, automation_run_id, log_id hook
 	mu             sync.Mutex
 	state          domain.BotState
 	currentKeyword string
@@ -239,7 +244,13 @@ func (b *Bot) Keyword() string {
 }
 
 func New(cfg Config) *Bot {
-	return &Bot{cfg: cfg, state: domain.BotStateIdle, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
+	var botLog zerolog.Logger
+	if cfg.Logger != nil {
+		botLog = *cfg.Logger
+	} else {
+		botLog = log.Logger
+	}
+	return &Bot{cfg: cfg, log: botLog, state: domain.BotStateIdle, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
 }
 
 // ErrAuthRequired signals that the bot detected a platform authentication

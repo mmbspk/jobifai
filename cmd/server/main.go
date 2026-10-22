@@ -65,6 +65,14 @@ func main() {
 		log.Fatal().Err(err).Msg("stripe configuration")
 	}
 
+	// ── Run log sink (re-wires logger to include DB persistence) ────────
+	runLogSink := bot.NewRunLogSink(database)
+	log.Logger = log.Output(zerolog.MultiLevelWriter(
+		zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339},
+		logBroadcaster,
+		runLogSink,
+	))
+
 	// ── Config + Secrets ────────────────────────────────────────────────
 	machineKey, err := config.MachineKey(database)
 	if err != nil {
@@ -177,6 +185,7 @@ func main() {
 		}
 	}
 	botMgr := bot.NewManager(shutdownCtx, database, cfgStore, secretsStore, sessionStore, botTailor, botScorer, botHalalChecker, botRenderer, "resume_markets")
+	botMgr.SetRunLogSink(runLogSink)
 
 	botMgr.SetSessionQuota(quotaSvc)
 	botMgr.SetLLMQuota(quotaSvc)
@@ -340,8 +349,9 @@ func main() {
 			}
 			return resume.NewHalalChecker(halalC)
 		},
-		Documents: docSvc,
-		Retention: retentionSvc,
+		Documents:  docSvc,
+		Retention:  retentionSvc,
+		BotRunLogs: runLogSink,
 		LLMReuseMetrics: llmReuseStore,
 		Resource: resourceSvc,
 		AppBaseURL:  appBaseURL,

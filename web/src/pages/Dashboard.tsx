@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ChevronRight, CircleSlash2, ClipboardCheck, FileText, Send, Settings, Star } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useBot } from '../hooks/useBot'
@@ -27,8 +27,24 @@ export function Dashboard() {
   const setup = useSetupReadiness()
   const { aiDisabled, data: quota } = useQuota()
   const quotaHint = aiDisabled ? quotaBlockMessage(quota?.block_code, quota?.plan) : undefined
-  const { lines, connected, clear } = useLogs()
+  const { lines, connected, displayedRunId, clear } = useLogs(user?.id ?? '')
   const [platform, setPlatform] = useState<Platform>('linkedin')
+
+  // Detect run transitions via status polling and clear old-run lines from the buffer.
+  const prevRunIdRef = useRef(status?.automation_run_id ?? '')
+  useEffect(() => {
+    const cur = status?.automation_run_id ?? ''
+    const prev = prevRunIdRef.current
+    if (cur && cur !== prev) {
+      // A new run started. clear() keeps any early WS lines for `cur` and
+      // invalidates any in-flight seed for the old run.
+      clear(cur)
+    }
+    prevRunIdRef.current = cur
+  }, [status?.automation_run_id, clear])
+
+  // hasHistory: lines in the buffer belong to a previous run (not the active one)
+  const hasHistory = displayedRunId !== '' && displayedRunId !== (status?.automation_run_id ?? '')
 
   const state = status?.state ?? 'idle'
   const isActive = state === 'running' || state === 'paused' || state === 'pending_review'
@@ -209,12 +225,12 @@ export function Dashboard() {
           </section>
 
           <div className="xl:hidden h-[clamp(16rem,45dvh,28rem)] min-h-[16rem]">
-            <ActivitySection lines={lines} connected={connected} onClear={clear} currentJob={status?.current_job} />
+            <ActivitySection lines={lines} connected={connected} hasHistory={hasHistory} onClear={() => clear(status?.automation_run_id ?? '')} currentJob={status?.current_job} />
           </div>
         </div>
 
         <div className="hidden xl:flex xl:sticky xl:top-6 xl:h-[min(calc(100dvh-7rem),40rem)] xl:min-h-[18rem] xl:w-full xl:self-start">
-          <ActivitySection lines={lines} connected={connected} onClear={clear} currentJob={status?.current_job} />
+          <ActivitySection lines={lines} connected={connected} hasHistory={hasHistory} onClear={() => clear(status?.automation_run_id ?? '')} currentJob={status?.current_job} />
         </div>
       </div>
     </div>
@@ -222,10 +238,11 @@ export function Dashboard() {
 }
 
 function ActivitySection({
-  lines, connected, onClear, currentJob,
+  lines, connected, hasHistory, onClear, currentJob,
 }: {
   lines: Parameters<typeof LogPanel>[0]['lines']
   connected: boolean
+  hasHistory: boolean
   onClear: () => void
   currentJob: Parameters<typeof LogPanel>[0]['currentJob']
 }) {
@@ -233,6 +250,9 @@ function ActivitySection({
     <div className="flex h-full min-h-0 flex-col">
       <div className="mb-2 flex shrink-0 items-center justify-between">
         <h2 className="text-sm font-semibold text-[var(--color-text)]">Activity</h2>
+        {hasHistory && (
+          <span className="text-xs text-[var(--color-text-dim)]">Showing last run</span>
+        )}
         <span className="flex items-center gap-1.5 text-xs text-[var(--color-text-dim)]">
           <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-dim)]'}`} />
           {connected ? 'Live' : 'Disconnected'}

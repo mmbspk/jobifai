@@ -44,6 +44,7 @@ type botEntry struct {
 	bot    *Bot
 	cancel context.CancelFunc
 	status domain.BotStatus
+	runID  string // reserved run ID, set before Register to block concurrent starts
 }
 
 // Manager is the long-lived bot controller exposed to HTTP handlers.
@@ -77,6 +78,7 @@ type Manager struct {
 	submitWorkGuard  documents.UserWorkGuard
 	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
 	browserMeterSvc  MeterService                                 // optional browser automation billing service
+	runLogSink       *RunLogSink                                  // optional; persists dashboard-visible log lines
 }
 
 type retentionAfterSubmit interface {
@@ -117,6 +119,11 @@ func (m *Manager) SetDocuments(svc *documents.Service) {
 // SetLLMQuota attaches quota checks to bot-side LLM clients.
 func (m *Manager) SetLLMQuota(g quota.LLMGuard) {
 	m.llmQuota = g
+}
+
+// SetRunLogSink wires the log persistence sink into the manager.
+func (m *Manager) SetRunLogSink(sink *RunLogSink) {
+	m.runLogSink = sink
 }
 
 // SetLLMBilling wires task policy resolution and synchronous usage ledger for bot LLM clients.
@@ -183,7 +190,7 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 	defer m.mu.Unlock()
 
 	e := m.entry(userID)
-	if e.status.State == domain.BotStateRunning {
+	if e.status.State == domain.BotStateRunning || e.runID != "" {
 		return errors.New("bot is already running")
 	}
 
@@ -191,6 +198,27 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 	if err != nil {
 		return err
 	}
+	runID := cfg.AutomationRunID
+
+	// Reserve the run slot under the manager lock before any external operations.
+	e.runID = runID
+	e.status.AutomationRunID = runID
+
+	// Register the log sink while the lock prevents concurrent starts.
+	if m.runLogSink != nil {
+		if regErr := m.runLogSink.Register(ctx, userID, runID); regErr != nil {
+			// Registration failed — release the reservation and clear status.
+			e.runID = ""
+			e.status.AutomationRunID = ""
+			return fmt.Errorf("register run log sink: %w", regErr)
+		}
+	}
+
+	// Build a run-scoped logger with user_id, automation_run_id, and per-line log_id.
+	runLogger := log.Logger.
+		With().Str("user_id", userID).Str("automation_run_id", runID).Logger().
+		Hook(logIDHook{})
+	cfg.Logger = &runLogger
 
 	botCtx, cancel := context.WithCancel(m.ctx)
 	e.cancel = cancel
@@ -201,13 +229,15 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 		location = targets[0].Location
 	}
 	e.status = domain.BotStatus{
-		State:      domain.BotStateRunning,
-		Platform:   platform,
-		Location:   location,
-		StartedAt:  &now,
-		DailyLimit: cfg.Settings.HumanBehavior.DailyApplicationLimit,
+		State:           domain.BotStateRunning,
+		AutomationRunID: runID,
+		Platform:        platform,
+		Location:        location,
+		StartedAt:       &now,
+		DailyLimit:      cfg.Settings.HumanBehavior.DailyApplicationLimit,
 	}
 
+	capturedRunID := runID
 	go func() {
 		if m.quotaSessions != nil {
 			m.quotaSessions.BeginSubscriberSession(userID)
@@ -217,9 +247,17 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 		cancel()
 		m.mu.Lock()
 		fin := time.Now()
-		e.status.State = e.bot.State()
-		e.status.FinishedAt = &fin
+		// Only update status if this goroutine's run is still the active one.
+		if e.status.AutomationRunID == capturedRunID {
+			e.status.State = e.bot.State()
+			e.status.FinishedAt = &fin
+			e.status.AutomationRunID = ""
+			e.runID = ""
+		}
 		m.mu.Unlock()
+		if m.runLogSink != nil {
+			m.runLogSink.Unregister(userID, capturedRunID)
+		}
 	}()
 
 	return nil

@@ -137,16 +137,32 @@ type JobSummary struct {
 }
 
 type BotStatus struct {
-	State      BotState    `json:"state"`
-	Platform   Platform    `json:"platform,omitempty"`
-	Location   string      `json:"location,omitempty"`
-	Keyword    string      `json:"keyword,omitempty"`
-	StartedAt  *time.Time  `json:"started_at,omitempty"`
-	FinishedAt *time.Time  `json:"finished_at,omitempty"`
-	Error      string      `json:"error,omitempty"`
-	CurrentJob *JobSummary `json:"current_job,omitempty"`
-	TodayCount int         `json:"today_count"`
-	DailyLimit int         `json:"daily_limit"`
+	State           BotState    `json:"state"`
+	AutomationRunID string      `json:"automation_run_id"` // "" when idle; always present
+	Platform        Platform    `json:"platform,omitempty"`
+	Location        string      `json:"location,omitempty"`
+	Keyword         string      `json:"keyword,omitempty"`
+	StartedAt       *time.Time  `json:"started_at,omitempty"`
+	FinishedAt      *time.Time  `json:"finished_at,omitempty"`
+	Error           string      `json:"error,omitempty"`
+	CurrentJob      *JobSummary `json:"current_job,omitempty"`
+	TodayCount      int         `json:"today_count"`
+	DailyLimit      int         `json:"daily_limit"`
+}
+
+// BotRunLog is a single persisted log entry returned by GET /api/bot/run-logs.
+type BotRunLog struct {
+	ID        string `json:"id"`
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	RawJSON   string `json:"raw_json"`
+	CreatedAt string `json:"created_at"`
+}
+
+// BotRunLogs is the response envelope for GET /api/bot/run-logs.
+type BotRunLogs struct {
+	RunID string      `json:"run_id"`
+	Lines []BotRunLog `json:"lines"`
 }
 
 // ─── Resume Profile ────────────────────────────────────────────────────────

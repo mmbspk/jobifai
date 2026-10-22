@@ -91,6 +91,8 @@ type Services struct {
 	Documents *documents.Service
 	// Retention evicts submitted-application PDFs beyond admin policy (#60).
 	Retention *retention.Service
+	// BotRunLogs persists and retrieves dashboard-visible log lines across refreshes.
+	BotRunLogs BotRunLogger
 	// LLMReuseMetrics exposes the LLM content cache-hit counter for the admin metrics endpoint.
 	// Optional: when nil, the llm_cache_hits field in the snapshot is always zero.
 	LLMReuseMetrics LLMReuseMetricsReader
@@ -211,6 +213,11 @@ type QuotaService interface {
 	ApplyStripeSubscription(in quota.StripeSubscriptionUpdate) error
 	RepairReconcileAllowance(userID, plan string) error
 	GrantTopUpOnce(userID, eventID, checkoutSessionID string, credits int64) error
+}
+
+// BotRunLogger persists and retrieves bot run log lines.
+type BotRunLogger interface {
+	LatestRun(ctx context.Context, userID string) (domain.BotRunLogs, error)
 }
 
 // ResourceService meters non-AI resource consumption against the shared credit balance.

@@ -124,6 +124,22 @@ func (h *BotHandlers) Status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.svc.Bot.Status(userID))
 }
 
+// GET /api/bot/run-logs
+func (h *BotHandlers) RunLogs(w http.ResponseWriter, r *http.Request) {
+	if h.svc.BotRunLogs == nil {
+		writeJSON(w, http.StatusOK, domain.BotRunLogs{Lines: []domain.BotRunLog{}})
+		return
+	}
+	userID := auth.UserIDFromCtx(r.Context())
+	result, err := h.svc.BotRunLogs.LatestRun(r.Context(), userID)
+	if err != nil {
+		log.Error().Err(err).Str("user_id", userID).Msg("run-logs: LatestRun")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "failed to fetch run logs"})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // GET /api/bot/review/pending
 func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
