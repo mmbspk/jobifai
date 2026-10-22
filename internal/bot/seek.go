@@ -916,7 +916,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 
 	if b.cfg.RequireReview {
 		packJSON := documents.WriteApplicationPackJSON(documents.ApplicationDocumentPack{
-			HoldReason: "Use Prepare documents to scan the apply form and build your application pack before approving",
+			HoldReason: requireReviewHoldReason(job.EasyApply),
 		})
 		b.saveSeekPendingReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,

@@ -1333,7 +1333,7 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 
 	if b.cfg.RequireReview {
 		packJSON := documents.WriteApplicationPackJSON(documents.ApplicationDocumentPack{
-			HoldReason: "Use Prepare documents to scan the apply form and build your application pack before approving",
+			HoldReason: requireReviewHoldReason(easyApply),
 		})
 		b.queueForReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
@@ -1395,6 +1395,16 @@ func (b *Bot) linkedInPageApplied(page *rod.Page, expectedID string) bool {
 //	External    → primary CTA is plain "Apply" / "Apply on company website"
 //
 // Only the main job pane is considered (similar-jobs / aside rails are ignored).
+// requireReviewHoldReason returns the hold_reason for RequireReview queue entries.
+// Native Easy Apply listings prompt the user to scan the apply form; external
+// listings redirect to the employer's site and need no form-scan step.
+func requireReviewHoldReason(easyApply bool) string {
+	if easyApply {
+		return "Use Prepare documents to scan the apply form and build your application pack before approving"
+	}
+	return "Apply on the employer's website."
+}
+
 func detectLinkedInEasyApply(page *rod.Page) bool {
 	info, err := page.Info()
 	if err != nil {
