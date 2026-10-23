@@ -49,7 +49,7 @@ vi.mock('../api/bot', () => ({
   },
 }))
 
-import { useLogs, parseLogLine } from './useLogs'
+import { useLogs, parseLogLine, notifyLogout } from './useLogs'
 import { botApi } from '../api/bot'
 
 // ---------- Helpers ----------
@@ -395,5 +395,40 @@ describe('useLogs store', () => {
     await waitFor(() => expect(result.current.lines.map(l => l.id)).toContain('lb1'))
     expect(result.current.lines.map(l => l.id)).not.toContain('la1')
     expect(result.current.lines.map(l => l.id)).not.toContain('la2')
+  })
+
+  test('routed logout: notifyLogout resets store even when hook is unmounted, so same-account re-login seeds fresh', async () => {
+    const uid = nextId()
+
+    // Login and seed initial data.
+    ;(botApi.runLogs as Mock)
+      .mockResolvedValueOnce(makeSeedResponse('run-A', ['la1']))
+      .mockResolvedValue({ run_id: '', lines: [] })
+
+    const { result, unmount } = renderHook(() => useLogs(uid))
+    await waitFor(() => expect(result.current.lines).toHaveLength(1))
+    expect(result.current.displayedRunId).toBe('run-A')
+
+    // Navigate away: Dashboard unmounts and the hook stops running.
+    unmount()
+
+    // Logout fires from AuthContext while on a different page (hook not mounted).
+    // Without notifyLogout(), the store would still have userId=uid, so re-login
+    // with the same account would skip the reset in the auth effect.
+    await act(async () => { notifyLogout() })
+
+    // Re-login with the same account (simulated by re-mounting with the same uid).
+    ;(botApi.runLogs as Mock).mockResolvedValue(makeSeedResponse('run-B', ['lb1']))
+    const { result: result2 } = renderHook(() => useLogs(uid))
+
+    // Store was wiped by notifyLogout — starts empty.
+    expect(result2.current.displayedRunId).toBe('')
+    expect(result2.current.lines).toHaveLength(0)
+
+    // Fresh seed must fire for the new session.
+    await waitFor(() => expect(botApi.runLogs).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result2.current.lines.map(l => l.id)).toContain('lb1'))
+    expect(result2.current.lines.map(l => l.id)).not.toContain('la1')
+    expect(result2.current.displayedRunId).toBe('run-B')
   })
 })

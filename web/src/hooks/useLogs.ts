@@ -289,6 +289,17 @@ function scheduleSeed(userId: string, gen: number) {
   })
 }
 
+// notifyLogout is called by AuthContext when the user session ends for any reason
+// (explicit logout, token expiry, force-logout). Resets the log store and closes
+// the WebSocket without reconnecting so the socket is not left open with no user.
+// Safe to call from outside the React tree (no hooks, no re-render required).
+export function notifyLogout(): void {
+  if (store.userId !== '') {
+    store.reset('')
+    store.disconnect()
+  }
+}
+
 // Start the singleton connection immediately when this module is first imported.
 store.connect()
 

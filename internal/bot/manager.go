@@ -41,10 +41,11 @@ type SecretsReader interface {
 }
 
 type botEntry struct {
-	bot    *Bot
-	cancel context.CancelFunc
-	status domain.BotStatus
-	runID  string // reserved run ID, set before Register to block concurrent starts
+	bot     *Bot
+	cancel  context.CancelFunc
+	status  domain.BotStatus
+	runID   string // reserved run ID, set before Register to block concurrent starts
+	runRefs int    // number of operations currently holding the run registration
 }
 
 // Manager is the long-lived bot controller exposed to HTTP handlers.
@@ -184,6 +185,76 @@ func (m *Manager) entry(userID string) *botEntry {
 	return e
 }
 
+// acquireRun atomically reserves or inherits the active run registration for userID.
+// Must be called without m.mu held.
+//
+// If a run is already active (entry.runID != ""), its reference count is incremented
+// and that run ID is returned — the caller MUST defer releaseRun.
+//
+// If no run is active and a sink is configured, proposedID is reserved under the lock
+// (blocking any concurrent Start from claiming the slot) before Register is called
+// outside the lock. Registration failure rolls back the reservation. The caller MUST
+// defer releaseRun.
+//
+// If no run is active and no sink is configured, returns (proposedID, noop, nil).
+// The returned cleanup func is always safe to defer.
+func (m *Manager) acquireRun(ctx context.Context, userID, proposedID string) (runID string, cleanup func(), err error) {
+	m.mu.Lock()
+	e := m.entry(userID)
+	if e.runID != "" {
+		e.runRefs++
+		inherited := e.runID
+		m.mu.Unlock()
+		return inherited, func() { m.releaseRun(userID, inherited) }, nil
+	}
+	if m.runLogSink == nil {
+		m.mu.Unlock()
+		return proposedID, func() {}, nil
+	}
+	// Reserve the slot before releasing the lock so a concurrent Start sees runID != "".
+	e.runID = proposedID
+	e.runRefs = 1
+	e.status.AutomationRunID = proposedID
+	m.mu.Unlock()
+
+	if regErr := m.runLogSink.Register(ctx, userID, proposedID); regErr != nil {
+		m.mu.Lock()
+		if e2 := m.entry(userID); e2.runID == proposedID {
+			e2.runID = ""
+			e2.runRefs = 0
+			e2.status.AutomationRunID = ""
+		}
+		m.mu.Unlock()
+		return "", func() {}, regErr
+	}
+	return proposedID, func() { m.releaseRun(userID, proposedID) }, nil
+}
+
+// releaseRun decrements the reference count for userID's active run.
+// When the count reaches zero, it clears the run slot and calls Unregister.
+// Safe to call even if runID no longer matches the active run (no-op in that case).
+func (m *Manager) releaseRun(userID, runID string) {
+	m.mu.Lock()
+	e := m.entry(userID)
+	if e.runID != runID {
+		m.mu.Unlock()
+		return
+	}
+	e.runRefs--
+	unregister := e.runRefs <= 0
+	if unregister {
+		e.runID = ""
+		e.runRefs = 0
+		if e.status.AutomationRunID == runID {
+			e.status.AutomationRunID = ""
+		}
+	}
+	m.mu.Unlock()
+	if unregister && m.runLogSink != nil {
+		m.runLogSink.Unregister(userID, runID)
+	}
+}
+
 // Start builds the bot config from DB and launches the loop for userID.
 func (m *Manager) Start(ctx context.Context, userID string, platform domain.Platform) error {
 	m.mu.Lock()
@@ -202,6 +273,7 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 
 	// Reserve the run slot under the manager lock before any external operations.
 	e.runID = runID
+	e.runRefs = 1
 	e.status.AutomationRunID = runID
 
 	// Register the log sink while the lock prevents concurrent starts.
@@ -209,6 +281,7 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 		if regErr := m.runLogSink.Register(ctx, userID, runID); regErr != nil {
 			// Registration failed — release the reservation and clear status.
 			e.runID = ""
+			e.runRefs = 0
 			e.status.AutomationRunID = ""
 			return fmt.Errorf("register run log sink: %w", regErr)
 		}
@@ -247,17 +320,15 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 		cancel()
 		m.mu.Lock()
 		fin := time.Now()
-		// Only update status if this goroutine's run is still the active one.
+		// Update State/FinishedAt if this goroutine's run is still the active one.
+		// Do NOT clear runID or AutomationRunID here — releaseRun handles that
+		// once all operations sharing this run (e.g., concurrent approvals) finish.
 		if e.status.AutomationRunID == capturedRunID {
 			e.status.State = e.bot.State()
 			e.status.FinishedAt = &fin
-			e.status.AutomationRunID = ""
-			e.runID = ""
 		}
 		m.mu.Unlock()
-		if m.runLogSink != nil {
-			m.runLogSink.Unregister(userID, capturedRunID)
-		}
+		m.releaseRun(userID, capturedRunID)
 	}()
 
 	return nil
@@ -367,34 +438,21 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		return err
 	}
 
-	// Wire the run log sink. If a search run is already active for this user, inherit its
-	// run ID so approval logs appear in the same stream. Otherwise register a fresh run
-	// and publish it to status so the frontend knows which run ID to track.
-	m.mu.Lock()
-	activeRunID := m.entry(userID).runID
-	m.mu.Unlock()
-	if activeRunID != "" {
-		b.cfg.AutomationRunID = activeRunID
+	// Wire the run log sink. acquireRun atomically reserves or inherits the active run
+	// registration, preventing a concurrent Start from wiping this operation's logs.
+	// If a search run is active, this operation inherits its run ID so approval logs
+	// appear in the same stream. The returned cleanup must always be deferred.
+	acquiredRunID, cleanupRun, acquireErr := m.acquireRun(ctx, userID, b.cfg.AutomationRunID)
+	if acquireErr != nil {
+		finishAttempt(m.db, ac, OutcomeFailed, "setup", "sink_register_failed", acquireErr.Error())
+		return fmt.Errorf("runSubmit: register run log sink: %w", acquireErr)
+	}
+	defer cleanupRun()
+	if acquiredRunID != b.cfg.AutomationRunID {
+		b.cfg.AutomationRunID = acquiredRunID
 		b.log = log.Logger.With().
-			Str("user_id", userID).Str("automation_run_id", activeRunID).Logger().
+			Str("user_id", userID).Str("automation_run_id", acquiredRunID).Logger().
 			Hook(logIDHook{})
-	} else if m.runLogSink != nil {
-		submitRunID := b.cfg.AutomationRunID
-		if regErr := m.runLogSink.Register(ctx, userID, submitRunID); regErr != nil {
-			finishAttempt(m.db, ac, OutcomeFailed, "setup", "sink_register_failed", regErr.Error())
-			return fmt.Errorf("runSubmit: register run log sink: %w", regErr)
-		}
-		m.mu.Lock()
-		m.entry(userID).status.AutomationRunID = submitRunID
-		m.mu.Unlock()
-		defer func() {
-			m.runLogSink.Unregister(userID, submitRunID)
-			m.mu.Lock()
-			if e := m.entry(userID); e.status.AutomationRunID == submitRunID {
-				e.status.AutomationRunID = ""
-			}
-			m.mu.Unlock()
-		}()
 	}
 
 	// Reject immediately if this job has already been attempted twice.
@@ -1270,36 +1328,23 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		return ApplyFromURLResult{}, err
 	}
 
-	// Wire the run log sink. If a search run is already active, inherit its run ID so
-	// direct-apply logs appear in the active stream without wiping the search run's history.
-	// If no search is running, register a fresh run and publish it to status.
-	// Registration failure aborts (consistent with Start() policy).
+	// Wire the run log sink. acquireRun atomically reserves or inherits the active run
+	// registration, preventing a concurrent Start from wiping this operation's logs.
+	// If a search run is active, this operation inherits its run ID so direct-apply logs
+	// appear in the active stream without wiping the search run's history.
+	// The returned cleanup must always be deferred.
 	{
-		m.mu.Lock()
-		activeRunID := m.entry(userID).runID
-		m.mu.Unlock()
-		if activeRunID != "" {
-			b.cfg.AutomationRunID = activeRunID
+		acquiredRunID, cleanupRun, acquireErr := m.acquireRun(ctx, userID, b.cfg.AutomationRunID)
+		if acquireErr != nil {
+			finishAttempt(m.db, ac, OutcomeFailed, "setup", "sink_register_failed", acquireErr.Error())
+			return ApplyFromURLResult{}, fmt.Errorf("applyFromURL: register run log sink: %w", acquireErr)
+		}
+		defer cleanupRun()
+		if acquiredRunID != b.cfg.AutomationRunID {
+			b.cfg.AutomationRunID = acquiredRunID
 			b.log = log.Logger.With().
-				Str("user_id", userID).Str("automation_run_id", activeRunID).Logger().
+				Str("user_id", userID).Str("automation_run_id", acquiredRunID).Logger().
 				Hook(logIDHook{})
-		} else if m.runLogSink != nil {
-			applyRunID := b.cfg.AutomationRunID
-			if regErr := m.runLogSink.Register(ctx, userID, applyRunID); regErr != nil {
-				finishAttempt(m.db, ac, OutcomeFailed, "setup", "sink_register_failed", regErr.Error())
-				return ApplyFromURLResult{}, fmt.Errorf("applyFromURL: register run log sink: %w", regErr)
-			}
-			m.mu.Lock()
-			m.entry(userID).status.AutomationRunID = applyRunID
-			m.mu.Unlock()
-			defer func() {
-				m.runLogSink.Unregister(userID, applyRunID)
-				m.mu.Lock()
-				if e := m.entry(userID); e.status.AutomationRunID == applyRunID {
-					e.status.AutomationRunID = ""
-				}
-				m.mu.Unlock()
-			}()
 		}
 	}
 
