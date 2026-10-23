@@ -14,6 +14,8 @@ function makeLine(overrides: Partial<LogLine> = {}): LogLine {
     time: new Date('2026-05-07T10:00:00Z').toISOString(),
     raw: '',
     llmCall: false,
+    runId: '',
+    historical: false,
     ...overrides,
   }
 }
