@@ -34,7 +34,7 @@ func TestLinkedInURLListing_UsesRefreshedControl(t *testing.T) {
 			initial, err := waitLinkedInJob(context.Background(), page, "123", job)
 			require.NoError(t, err)
 			require.Equal(t, "native", initial.Kind)
-			ac := newAttemptContext("u1", "linkedin", job.ID, job.URL, job.Title, job.Company, "applyFromURL")
+			ac := newAttemptContext("u1", "linkedin", job.ID, job.URL, job.Title, job.Company, "applyFromURL", "")
 			beginAttempt(db, ac)
 			resolved, err := b.readLinkedInURLListing(context.Background(), page, job, ac)
 			require.Equal(t, tc.kind, resolved.Kind)

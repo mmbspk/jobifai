@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -86,30 +87,61 @@ const (
 // AttemptContext carries diagnostic identity for one application attempt.
 // Create it at each entry point and thread it through via lazyDocGen.attemptID.
 type AttemptContext struct {
-	AttemptID  string
-	UserID     string
-	Platform   string
-	JobID      string
-	URL        string
-	Role       string
-	Company    string
-	EntryPoint string // "runSubmit", "applyFromURL", "automated_linkedin", "automated_seek", "automated_queue"
-	StartedAt  time.Time
+	AttemptID       string
+	UserID          string
+	Platform        string
+	JobID           string
+	URL             string
+	Role            string
+	Company         string
+	EntryPoint      string // "runSubmit", "applyFromURL", "automated_linkedin", "automated_seek", "automated_queue"
+	AutomationRunID string
+	StartedAt       time.Time
 }
 
 // newAttemptContext returns an AttemptContext with a fresh v4 UUID.
-func newAttemptContext(userID, platform, jobID, url, role, company, entryPoint string) *AttemptContext {
+func newAttemptContext(userID, platform, jobID, url, role, company, entryPoint, automationRunID string) *AttemptContext {
 	return &AttemptContext{
-		AttemptID:  newAttemptID(),
-		UserID:     userID,
-		Platform:   platform,
-		JobID:      jobID,
-		URL:        url,
-		Role:       role,
-		Company:    company,
-		EntryPoint: entryPoint,
-		StartedAt:  time.Now(),
+		AttemptID:       newAttemptID(),
+		UserID:          userID,
+		Platform:        platform,
+		JobID:           jobID,
+		URL:             url,
+		Role:            role,
+		Company:         company,
+		EntryPoint:      entryPoint,
+		AutomationRunID: automationRunID,
+		StartedAt:       time.Now(),
 	}
+}
+
+// redactURL strips query strings, fragments, and embedded credentials from a
+// URL before it is written to a structured log field.
+// Malformed input returns a safe placeholder rather than propagating garbage.
+func redactURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[redacted-malformed-url]"
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.User = nil
+	return u.String()
+}
+
+var urlInErrRE = regexp.MustCompile(`https?://\S+`)
+
+// sanitizeErr strips URL tokens from an error message to prevent query strings
+// and credentials from reaching logs. Use for errors from rod.Navigate and similar
+// calls where the target URL may be embedded in the error text.
+func sanitizeErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return urlInErrRE.ReplaceAllString(err.Error(), "[url-redacted]")
 }
 
 // newAttemptID generates a v4 UUID without importing an external package.
@@ -172,6 +204,22 @@ func finishAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage
 		return
 	}
 	elapsedMS := time.Since(ac.StartedAt).Milliseconds()
+
+	log.Logger.Info().
+		Str("event", "attempt_result").
+		Str("schema_version", "1").
+		Str("user_id", ac.UserID).
+		Str("automation_run_id", ac.AutomationRunID).
+		Str("attempt_id", ac.AttemptID).
+		Str("job_id", ac.JobID).
+		Str("url", redactURL(ac.URL)).
+		Str("platform", ac.Platform).
+		Str("entry_point", ac.EntryPoint).
+		Str("outcome", string(outcome)).
+		Str("stage", stage).
+		Str("failure_code", reasonCode).
+		Int64("duration_ms", elapsedMS).
+		Msg("attempt result")
 	now := time.Now().UTC().Format(time.RFC3339)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

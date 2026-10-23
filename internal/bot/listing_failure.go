@@ -43,18 +43,18 @@ func (b *Bot) recordListingFailure(ctx context.Context, platform domain.Platform
   suitability_score=excluded.suitability_score,suitability_reasoning=excluded.suitability_reasoning,halal_verdict=excluded.halal_verdict,
   failure_code=excluded.failure_code,failure_details_json=excluded.failure_details_json,viewed_at=excluded.viewed_at WHERE jobs_skipped.user_id=excluded.user_id`, job.ID, b.cfg.UserID, string(platform), job.Company, job.Title, job.Location, job.URL, prefix+"["+code+"] "+message, score, reasoning, verdict, code, string(details))
 		if dbErr != nil {
-			log.Error().Err(dbErr).Str("job_id", job.ID).Str("url", job.URL).Msg("automation: could not persist listing failure")
+			log.Error().Err(dbErr).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("automation: could not persist listing failure")
 			return
 		}
 		if count, err := result.RowsAffected(); err != nil || count == 0 {
-			log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("automation: failure record not owned by this user")
+			log.Warn().Err(err).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("automation: failure record not owned by this user")
 			return
 		}
 	}
 	if b.seenCache != nil {
 		b.seenCache.mark(job.ID, seenSkipped)
 	}
-	log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Str("platform", string(platform)).Str("reason_code", code).Msg(message)
+	log.Warn().Err(err).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("platform", string(platform)).Str("reason_code", code).Msg(message)
 	if code != "submission_unknown" {
 		b.noteListingFailure(job.ID, code)
 	}

@@ -31,17 +31,6 @@ type nonRetryableError struct{ err error }
 func (e *nonRetryableError) Error() string { return e.err.Error() }
 func (e *nonRetryableError) Unwrap() error { return e.err }
 
-func taskLabel(ctx context.Context) string {
-	if v, ok := ctx.Value(ctxKey{}).(string); ok && v != "" {
-		return " [" + v + "]"
-	}
-	call := CallContextFrom(ctx)
-	if call.Task != "" {
-		return " [" + call.Task + "]"
-	}
-	return ""
-}
-
 // Message is a single chat turn.
 type Message struct {
 	Role    string `json:"role"` // "user" | "assistant" | "system"
@@ -354,6 +343,60 @@ func (c *Client) recordTerminalFailure(ctx context.Context, errCode string) {
 	_ = c.recordUsage(ctx, bu, 0, false, errCode, true)
 }
 
+// logLLMResult emits a stable llm_request_result lifecycle event for all call paths.
+// bu may be nil on failure (token fields are omitted). Call via deferred closure so
+// retErr and buPtr are captured by reference and reflect the final return values.
+func (c *Client) logLLMResult(ctx context.Context, start time.Time, err error, bu *billingUsage) {
+	cc := CallContextFrom(ctx)
+	ev := log.Info()
+	if err != nil {
+		ev = log.Error()
+	}
+	e := ev.
+		Str("event", "llm_request_result").
+		Str("schema_version", "1").
+		Bool("success", err == nil).
+		Str("provider", c.cfg.Provider).
+		Str("requested_model", c.cfg.Model).
+		Str("task", cc.Task).
+		Str("user_id", cc.UserID).
+		Str("automation_run_id", cc.AutomationRunID).
+		Str("job_id", cc.JobID).
+		Int64("duration_ms", time.Since(start).Milliseconds())
+	if err != nil {
+		e = e.Str("failure_code", classifyLLMError(err))
+	}
+	if bu != nil {
+		e = e.
+			Str("actual_model", bu.ActualModel).
+			Bool("actual_model_verified", bu.ActualModelVerified).
+			Int64("input_tokens", bu.InputTokens).
+			Int64("output_tokens", bu.OutputTokens)
+	}
+	e.Msg("llm result")
+}
+
+// classifyLLMError maps a raw LLM call error to a bounded failure_code value.
+func classifyLLMError(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") {
+		return "rate_limited"
+	}
+	if strings.Contains(msg, "401") || strings.Contains(msg, "403") {
+		return "auth_failed"
+	}
+	if strings.Contains(msg, "502") || strings.Contains(msg, "503") {
+		return "provider_unavailable"
+	}
+	return "provider_error"
+}
+
 // ── Claude (Anthropic Messages API) ───────────────────────────────────────
 
 type claudeRequest struct {
@@ -451,8 +494,11 @@ type openaiUsage struct {
 	CompletionTokens int `json:"completion_tokens"`
 }
 
-func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error) {
+func (c *Client) claudeChat(ctx context.Context, msgs []Message) (_ string, retErr error) {
 	start := time.Now()
+	var buPtr *billingUsage
+	defer func() { c.logLLMResult(ctx, start, retErr, buPtr) }()
+
 	var system any
 	var turns []claudeMessage
 	for _, m := range msgs {
@@ -491,7 +537,6 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 		"content-type":      contentTypeJSON,
 	}, body)
 	if err != nil {
-		log.Error().Bool("llm_call", true).Msgf("llm: claude/%s%s call failed: %v", c.cfg.Model, taskLabel(ctx), err)
 		return "", err
 	}
 	var cr claudeResponse
@@ -499,7 +544,6 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 		return "", fmt.Errorf("claude decode: %w", err)
 	}
 	if cr.Error != nil {
-		log.Error().Bool("llm_call", true).Msgf("llm: claude/%s%s error: %s", c.cfg.Model, taskLabel(ctx), cr.Error.Message)
 		return "", fmt.Errorf("claude error: %s", cr.Error.Message)
 	}
 	if len(cr.Content) == 0 {
@@ -509,28 +553,18 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
 		return "", billingPersistErr(err)
 	}
-	log.Info().
-		Str("event", "llm_call").
-		Str("task", CallContextFrom(ctx).Task).
-		Str("provider", c.cfg.Provider).
-		Str("requested_model", c.cfg.Model).
-		Str("actual_model", bu.ActualModel).
-		Bool("actual_model_verified", bu.ActualModelVerified).
-		Int64("input_tokens", bu.InputTokens).
-		Int64("output_tokens", bu.OutputTokens).
-		Int64("duration_ms", time.Since(start).Milliseconds()).
-		Bool("success", true).
-		Str("job_id", CallContextFrom(ctx).JobID).
-		Str("run_id", CallContextFrom(ctx).AutomationRunID).
-		Msg("llm call completed")
+	buPtr = &bu
 	return cr.Content[0].Text, nil
 }
 
 // ChatWithImage sends a single user message containing a PNG image and a text
 // prompt to Claude and returns the assistant reply. Only supported for the
 // Claude provider; all others return an error.
-func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt string) (string, error) {
+func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt string) (_ string, retErr error) {
 	start := time.Now()
+	var buPtr *billingUsage
+	defer func() { c.logLLMResult(ctx, start, retErr, buPtr) }()
+
 	if c.taskRuntime.TimeoutSec > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(c.taskRuntime.TimeoutSec)*time.Second)
@@ -623,6 +657,7 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
 		return "", billingPersistErr(err)
 	}
+	buPtr = &bu
 	return cr.Content[0].Text, nil
 }
 
@@ -652,8 +687,11 @@ type openaiResponse struct {
 	} `json:"error,omitempty"`
 }
 
-func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error) {
+func (c *Client) openaiChat(ctx context.Context, msgs []Message) (_ string, retErr error) {
 	start := time.Now()
+	var buPtr *billingUsage
+	defer func() { c.logLLMResult(ctx, start, retErr, buPtr) }()
+
 	turns := make([]openaiMessage, 0, len(msgs))
 	for _, m := range msgs {
 		if m.Content == "" {
@@ -674,7 +712,6 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error)
 		"Content-Type":  contentTypeJSON,
 	}, body)
 	if err != nil {
-		log.Error().Bool("llm_call", true).Msgf("llm: openai/%s%s call failed: %v", c.cfg.Model, taskLabel(ctx), err)
 		return "", err
 	}
 	var or openaiResponse
@@ -682,7 +719,6 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error)
 		return "", fmt.Errorf("openai decode: %w", err)
 	}
 	if or.Error != nil {
-		log.Error().Bool("llm_call", true).Msgf("llm: openai/%s%s error: %s", c.cfg.Model, taskLabel(ctx), or.Error.Message)
 		return "", fmt.Errorf("openai error: %s", or.Error.Message)
 	}
 	if len(or.Choices) == 0 {
@@ -704,6 +740,7 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error)
 	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
 		return "", billingPersistErr(err)
 	}
+	buPtr = &bu
 	return or.Choices[0].Message.Content, nil
 }
 
@@ -724,8 +761,11 @@ type ollamaResponse struct {
 	Error           string `json:"error,omitempty"`
 }
 
-func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (string, error) {
+func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (_ string, retErr error) {
 	start := time.Now()
+	var buPtr *billingUsage
+	defer func() { c.logLLMResult(ctx, start, retErr, buPtr) }()
+
 	ctx = c.prepareCallContext(ctx)
 	turns := make([]openaiMessage, 0, len(msgs))
 	for _, m := range msgs {
@@ -745,7 +785,6 @@ func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (string, error)
 		"Content-Type": contentTypeJSON,
 	}, body)
 	if err != nil {
-		log.Error().Bool("llm_call", true).Msgf("llm: ollama/%s%s call failed: %v", c.cfg.Model, taskLabel(ctx), err)
 		return "", err
 	}
 	var or ollamaResponse
@@ -753,7 +792,6 @@ func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (string, error)
 		return "", fmt.Errorf("ollama decode: %w", err)
 	}
 	if or.Error != "" {
-		log.Error().Bool("llm_call", true).Msgf("llm: ollama/%s%s error: %s", c.cfg.Model, taskLabel(ctx), or.Error)
 		return "", fmt.Errorf("ollama error: %s", or.Error)
 	}
 	bu := billingUsage{
@@ -767,7 +805,7 @@ func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (string, error)
 	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
 		return "", billingPersistErr(err)
 	}
-	log.Debug().Bool("llm_call", true).Msgf("llm: ollama/%s%s ✓", c.cfg.Model, taskLabel(ctx))
+	buPtr = &bu
 	return or.Message.Content, nil
 }
 

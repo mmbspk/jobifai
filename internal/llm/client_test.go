@@ -1,6 +1,7 @@
 package llm_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -8,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/user/jobifai/internal/domain"
@@ -240,4 +243,103 @@ func TestChat_ContextCancelledBeforeCall(t *testing.T) {
 
 	_, err := client.Chat(ctx, []llm.Message{{Role: "user", Content: "hi"}})
 	require.Error(t, err)
+}
+
+// ── llm_request_result lifecycle event ───────────────────────────────────────
+
+// captureGlobalLog replaces the global zerolog logger with a JSON-writing buffer
+// for the duration of the test. The buffer collects every log line emitted via
+// log.Info() / log.Error() etc. (which is what logLLMResult uses).
+func captureGlobalLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	orig := log.Logger
+	log.Logger = zerolog.New(buf)
+	t.Cleanup(func() { log.Logger = orig })
+	return buf
+}
+
+// parseEventLine scans buf for a JSON log line carrying the given event field value.
+// Returns the parsed map or nil if not found.
+func parseEventLine(t *testing.T, buf *bytes.Buffer, event string) map[string]any {
+	t.Helper()
+	for _, line := range bytes.Split(buf.Bytes(), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			continue
+		}
+		if m["event"] == event {
+			return m
+		}
+	}
+	return nil
+}
+
+// TestLLMResultEvent_SuccessFields verifies that a successful Claude call emits an
+// llm_request_result event with schema_version, automation_run_id, and user_id.
+func TestLLMResultEvent_SuccessFields(t *testing.T) {
+	srv := claudeOKServer(t, "hello", 10, 5)
+	t.Cleanup(srv.Close)
+	buf := captureGlobalLog(t)
+
+	client := newClaudeClient(t, srv)
+	cc := domain.LLMCallContext{
+		UserID:          "test-user",
+		AutomationRunID: "run-abc",
+		JobID:           "job-99",
+		Task:            "evaluate job",
+	}
+	ctx := llm.WithCallContext(context.Background(), cc)
+
+	_, err := client.Chat(ctx, []llm.Message{{Role: "user", Content: "evaluate this job"}})
+	require.NoError(t, err)
+
+	m := parseEventLine(t, buf, "llm_request_result")
+	require.NotNil(t, m, "llm_request_result event must be emitted on success")
+
+	assert.Equal(t, "1", m["schema_version"], "schema_version must be '1'")
+	assert.Equal(t, true, m["success"], "success must be true")
+	assert.Equal(t, "test-user", m["user_id"], "user_id must match call context")
+	assert.Equal(t, "run-abc", m["automation_run_id"], "automation_run_id must match (not run_id)")
+	assert.Equal(t, "job-99", m["job_id"], "job_id must match call context")
+	assert.Equal(t, "claude", m["provider"], "provider")
+	assert.Equal(t, "claude-test", m["requested_model"], "requested_model")
+	assert.NotEmpty(t, m["actual_model"], "actual_model must be present")
+	assert.InDelta(t, float64(10), m["input_tokens"], 0, "input_tokens")
+	assert.InDelta(t, float64(5), m["output_tokens"], 0, "output_tokens")
+	assert.Nil(t, m["failure_code"], "failure_code must not appear on success")
+}
+
+// TestLLMResultEvent_FailureEmitted verifies that a failed Claude call also emits
+// an llm_request_result event, with success=false and a failure_code.
+func TestLLMResultEvent_FailureEmitted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return a permanent 401 (non-retryable).
+		http.Error(w, `{"error":{"message":"unauthorized"}}`, http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	buf := captureGlobalLog(t)
+
+	client := newClaudeClient(t, srv)
+	cc := domain.LLMCallContext{
+		UserID:          "fail-user",
+		AutomationRunID: "run-fail",
+	}
+	ctx := llm.WithCallContext(context.Background(), cc)
+
+	_, err := client.Chat(ctx, []llm.Message{{Role: "user", Content: "hi"}})
+	require.Error(t, err)
+
+	m := parseEventLine(t, buf, "llm_request_result")
+	require.NotNil(t, m, "llm_request_result must be emitted even on failure")
+
+	assert.Equal(t, false, m["success"], "success must be false on error")
+	assert.Equal(t, "fail-user", m["user_id"])
+	assert.Equal(t, "run-fail", m["automation_run_id"])
+	assert.NotEmpty(t, m["failure_code"], "failure_code must be set on failure")
+	assert.Equal(t, "auth_failed", m["failure_code"], "401 must map to auth_failed")
+	assert.Nil(t, m["input_tokens"], "input_tokens must not appear on failure")
 }

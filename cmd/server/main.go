@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,6 +32,7 @@ import (
 	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/resource"
 	"github.com/user/jobifai/internal/resume"
+	"github.com/user/jobifai/internal/version"
 	jobws "github.com/user/jobifai/internal/ws"
 	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
 )
@@ -44,12 +46,16 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
-	// ── Logger + WebSocket broadcaster ──────────────────────────────────
+	// ── Logger (phase 1: before DB so startup errors are structured) ────────
+	// LOG_FORMAT=json|console; defaults to json in production, console otherwise.
+	logFmt, logEnv := logEnvFromEnv()
 	logBroadcaster := jobws.NewBroadcaster()
-	log.Logger = log.Output(zerolog.MultiLevelWriter(
-		zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339},
-		logBroadcaster,
-	))
+	stdoutWriter, logErr := buildBaseWriter(logFmt, billing.IsProduction(), os.Stdout)
+	if logErr != nil {
+		fmt.Fprintln(os.Stderr, logErr.Error())
+		os.Exit(1)
+	}
+	log.Logger = buildLogger(logEnv, version.GitSHA, zerolog.MultiLevelWriter(stdoutWriter, logBroadcaster))
 
 	// ── Database ────────────────────────────────────────────────────────
 	if err := os.MkdirAll("data", 0o750); err != nil {
@@ -65,13 +71,9 @@ func main() {
 		log.Fatal().Err(err).Msg("stripe configuration")
 	}
 
-	// ── Run log sink (re-wires logger to include DB persistence) ────────
+	// ── Run log sink (adds DB persistence to the writer chain) ─────────────
 	runLogSink := bot.NewRunLogSink(database)
-	log.Logger = log.Output(zerolog.MultiLevelWriter(
-		zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339},
-		logBroadcaster,
-		runLogSink,
-	))
+	log.Logger = log.Logger.Output(zerolog.MultiLevelWriter(stdoutWriter, logBroadcaster, runLogSink))
 
 	// ── Config + Secrets ────────────────────────────────────────────────
 	machineKey, err := config.MachineKey(database)

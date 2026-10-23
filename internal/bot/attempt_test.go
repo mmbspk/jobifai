@@ -75,7 +75,7 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 }
 
 func newTestAC(userID, platform string) *AttemptContext {
-	return newAttemptContext(userID, platform, "job-1", "https://example.com/job/1", "Analyst", "Acme Corp", "test")
+	return newAttemptContext(userID, platform, "job-1", "https://example.com/job/1", "Analyst", "Acme Corp", "test", "")
 }
 
 // TestBeginAttempt_WritesInProgressRow verifies that beginAttempt inserts a row
