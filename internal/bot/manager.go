@@ -190,10 +190,13 @@ func (m *Manager) entry(userID string) *botEntry {
 //
 // If a run is already active (entry.runID != ""), its reference count is incremented
 // and that run ID is returned — the caller MUST defer releaseRun.
+// INVARIANT: because acquireRun holds m.mu throughout Register, a caller that sees
+// entry.runID != "" is guaranteed that registration has already completed successfully.
+// There is no "registering-in-progress" window that a second caller could observe.
 //
-// If no run is active and a sink is configured, proposedID is reserved under the lock
-// (blocking any concurrent Start from claiming the slot) before Register is called
-// outside the lock. Registration failure rolls back the reservation. The caller MUST
+// If no run is active and a sink is configured, m.mu is held through Register so that
+// a concurrent caller that sees the new runID is guaranteed it is already registered.
+// Registration failure rolls back the reservation under the same lock. The caller MUST
 // defer releaseRun.
 //
 // If no run is active and no sink is configured, returns (proposedID, noop, nil).
@@ -211,22 +214,22 @@ func (m *Manager) acquireRun(ctx context.Context, userID, proposedID string) (ru
 		m.mu.Unlock()
 		return proposedID, func() {}, nil
 	}
-	// Reserve the slot before releasing the lock so a concurrent Start sees runID != "".
+	// Reserve the slot and call Register while still holding m.mu. This mirrors
+	// Start()'s pattern and establishes the invariant above: the lock is only
+	// released after a definitive success or failure, so no concurrent caller can
+	// ever see a runID that is mid-registration.
 	e.runID = proposedID
 	e.runRefs = 1
 	e.status.AutomationRunID = proposedID
-	m.mu.Unlock()
 
 	if regErr := m.runLogSink.Register(ctx, userID, proposedID); regErr != nil {
-		m.mu.Lock()
-		if e2 := m.entry(userID); e2.runID == proposedID {
-			e2.runID = ""
-			e2.runRefs = 0
-			e2.status.AutomationRunID = ""
-		}
+		e.runID = ""
+		e.runRefs = 0
+		e.status.AutomationRunID = ""
 		m.mu.Unlock()
 		return "", func() {}, regErr
 	}
+	m.mu.Unlock()
 	return proposedID, func() { m.releaseRun(userID, proposedID) }, nil
 }
 
