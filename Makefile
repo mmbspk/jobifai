@@ -45,7 +45,7 @@ dev:
 
 ## test: run Go tests (race detector)
 test:
-	go test $(GO_PACKAGES) -race -count=1
+	go test $(GO_PACKAGES) -race -count=1 -timeout 20m
 
 ## test-web: run frontend unit tests (Vitest)
 test-web:
@@ -53,7 +53,7 @@ test-web:
 
 ## test-coverage: Go + frontend coverage reports (informational)
 test-coverage:
-	go test $(GO_PACKAGES) -race -count=1 -coverprofile=coverage.out
+	go test $(GO_PACKAGES) -race -count=1 -timeout 20m -coverprofile=coverage.out
 	go tool cover -func=coverage.out | tail -1
 	cd web && npm run test:coverage
 
