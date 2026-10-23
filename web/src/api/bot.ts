@@ -1,5 +1,5 @@
 import { apiGet, apiPost, apiPut, type ApiRequestOpts } from './client'
-import type { BotStatus, PendingReview } from '../types'
+import type { BotStatus, BotRunLogs, PendingReview } from '../types'
 
 export interface ApplyURLResponse {
   status: 'applied' | 'score_warning' | 'already_applied' | 'not_easy_apply'
@@ -56,6 +56,7 @@ export interface ReviewDocumentsResponse {
 
 export const botApi = {
   status: () => apiGet<BotStatus>('/bot/status'),
+  runLogs: () => apiGet<BotRunLogs>('/bot/run-logs'),
   start: (platform: string) => apiPost<void>('/bot/start', { platform }),
   stop: () => apiPost<void>('/bot/stop'),
   pause: () => apiPost<void>('/bot/pause'),

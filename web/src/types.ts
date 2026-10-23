@@ -85,6 +85,7 @@ export interface JobStats {
 
 export interface BotStatus {
   state: BotState
+  automation_run_id: string // always present; "" when idle
   platform?: Platform
   location?: string
   keyword?: string
@@ -94,6 +95,19 @@ export interface BotStatus {
   current_job?: { job_id: string; company: string; role: string; platform: Platform }
   today_count?: number
   daily_limit?: number
+}
+
+export interface BotRunLog {
+  id: string
+  level: string
+  message: string
+  raw_json: string
+  created_at: string
+}
+
+export interface BotRunLogs {
+  run_id: string
+  lines: BotRunLog[]
 }
 
 // ── Resume Types ─────────────────────────────────────────────────────

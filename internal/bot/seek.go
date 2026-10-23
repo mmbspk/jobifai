@@ -311,7 +311,7 @@ func isSeekSessionExpiredError(err error) bool {
 func runSeek(ctx context.Context, b *Bot) {
 	br, page, err := b.launchBrowser(ctx)
 	if err != nil {
-		log.Error().Err(err).Msg("seek: launch browser failed")
+		b.log.Error().Err(err).Msg("seek: launch browser failed")
 		b.mu.Lock()
 		b.state = domain.BotStateError
 		b.mu.Unlock()
@@ -332,7 +332,7 @@ func runSeek(ctx context.Context, b *Bot) {
 
 	// Verify session is still valid after browser launch; attempt credential recovery.
 	if err := b.seekEnsureLoggedIn(page); err != nil {
-		log.Error().Err(err).Msg("seek: session expired, re-login via Settings → Secrets")
+		b.log.Error().Err(err).Msg("seek: session expired, re-login via Settings → Secrets")
 		b.mu.Lock()
 		b.state = domain.BotStateError
 		b.mu.Unlock()
@@ -342,7 +342,7 @@ func runSeek(ctx context.Context, b *Bot) {
 	// Auth verified — activate browser billing. Stop immediately on ErrExceeded.
 	if b.cfg.BrowserMeter != nil {
 		if err := b.cfg.BrowserMeter.Activate(ctx); err != nil {
-			log.Error().Err(err).Msg("seek: browser billing activation failed")
+			b.log.Error().Err(err).Msg("seek: browser billing activation failed")
 			return
 		}
 	}
@@ -352,7 +352,7 @@ func runSeek(ctx context.Context, b *Bot) {
 		limit = 40
 	}
 	appliedToday := b.countAppliedToday()
-	log.Info().Int("applied_today", appliedToday).Int("limit", limit).Msg("seek: starting, daily progress")
+	b.log.Info().Int("applied_today", appliedToday).Int("limit", limit).Msg("seek: starting, daily progress")
 
 	// Process previously approved jobs first.
 	if appliedToday < limit {
@@ -376,43 +376,43 @@ func runSeek(ctx context.Context, b *Bot) {
 	for _, target := range targets {
 		locInput := target.Location
 		if reason := b.stopReason(ctx); reason != "" {
-			log.Info().Msgf("seek: stopped, %s", reason)
+			b.log.Info().Msgf("seek: stopped, %s", reason)
 			return
 		}
 		if b.bailIfSeekSessionExpired() {
 			return
 		}
 		if appliedToday >= limit {
-			log.Info().Int("limit", limit).Msg("seek: stopped, daily application limit reached")
+			b.log.Info().Int("limit", limit).Msg("seek: stopped, daily application limit reached")
 			return
 		}
 
 		resolvedLocation := ""
 		if strings.TrimSpace(locInput) != "" {
-			log.Info().Str("preference", locInput).Msg("seek: resolving location")
+			b.log.Info().Str("preference", locInput).Msg("seek: resolving location")
 			resolvedLocation = b.resolveSeekLocation(page, locInput)
-			log.Info().Str("preference", locInput).Str("resolved", resolvedLocation).
+			b.log.Info().Str("preference", locInput).Str("resolved", resolvedLocation).
 				Msg("seek: searching location")
 		} else {
-			log.Info().Msg("seek: searching location (nationwide)")
+			b.log.Info().Msg("seek: searching location (nationwide)")
 		}
 
 		arrangement := searchArrangementLabel(target)
 		if arrangement != "" {
-			log.Info().Str("arrangement", arrangement).Msg("seek: work arrangement filter")
+			b.log.Info().Str("arrangement", arrangement).Msg("seek: work arrangement filter")
 		}
 
 		for _, keyword := range b.cfg.Preferences.Positions {
 			b.waitIfPaused(ctx)
 			if reason := b.stopReason(ctx); reason != "" {
-				log.Info().Str("keyword", keyword).Msgf("seek: stopped, %s", reason)
+				b.log.Info().Str("keyword", keyword).Msgf("seek: stopped, %s", reason)
 				return
 			}
 			if b.bailIfSeekSessionExpired() {
 				return
 			}
 			if appliedToday >= limit {
-				log.Info().Int("limit", limit).Msg("seek: stopped, daily application limit reached")
+				b.log.Info().Int("limit", limit).Msg("seek: stopped, daily application limit reached")
 				return
 			}
 			b.SetKeyword(keyword)
@@ -424,21 +424,21 @@ func runSeek(ctx context.Context, b *Bot) {
 
 			// Detect a dropped CDP connection (e.g. VPN reset) and reconnect.
 			if n == 0 && isCDPDead(page) {
-				log.Warn().Msg("seek: browser connection lost, attempting reconnect")
+				b.log.Warn().Msg("seek: browser connection lost, attempting reconnect")
 				_ = br.Close()
 				newBr, newPage, rerr := b.launchBrowser(ctx)
 				if rerr != nil {
-					log.Error().Err(rerr).Msg("seek: reconnect failed, stopping")
+					b.log.Error().Err(rerr).Msg("seek: reconnect failed, stopping")
 					return
 				}
 				br, page = newBr, newPage
-				log.Info().Msg("seek: browser reconnected, retrying keyword")
+				b.log.Info().Msg("seek: browser reconnected, retrying keyword")
 				appliedToday += b.processSeekKeyword(ctx, br, page, keyword, limit-appliedToday, resolvedLocation, target)
 			}
 		}
 	}
 	b.SetKeyword("")
-	log.Info().Int("applied_today", appliedToday).Int("targets", len(targets)).
+	b.log.Info().Int("applied_today", appliedToday).Int("targets", len(targets)).
 		Msg("seek: stopped, all location targets and keywords processed")
 }
 
@@ -447,27 +447,27 @@ func runSeek(ctx context.Context, b *Bot) {
 func (b *Bot) processSeekKeyword(ctx context.Context, br *rod.Browser, page *rod.Page, keyword string, remaining int, resolvedLocation string, target domain.SearchTarget) int {
 	jobs, err := b.scrapeSeekJobs(ctx, page, keyword, resolvedLocation, target)
 	if err != nil {
-		log.Error().Err(err).Str("keyword", keyword).Msg("seek: scrape jobs failed")
+		b.log.Error().Err(err).Str("keyword", keyword).Msg("seek: scrape jobs failed")
 		return 0
 	}
 	if len(jobs) == 0 {
-		log.Info().Str("keyword", keyword).Msg("seek: no new jobs found for keyword")
+		b.log.Info().Str("keyword", keyword).Msg("seek: no new jobs found for keyword")
 		return 0
 	}
 	jobs = b.filterSeekJobs(jobs)
 	if len(jobs) == 0 {
-		log.Info().Str("keyword", keyword).Msg("seek: all search results already known, nothing to process")
+		b.log.Info().Str("keyword", keyword).Msg("seek: all search results already known, nothing to process")
 		return 0
 	}
-	log.Info().Msgf("seek: found %d jobs for %q, processing", len(jobs), keyword)
+	b.log.Info().Msgf("seek: found %d jobs for %q, processing", len(jobs), keyword)
 	applied := 0
 	for _, job := range jobs {
 		if reason := b.stopReason(ctx); reason != "" {
-			log.Info().Str("keyword", keyword).Msgf("seek: stopped mid-keyword, %s", reason)
+			b.log.Info().Str("keyword", keyword).Msgf("seek: stopped mid-keyword, %s", reason)
 			return applied
 		}
 		if applied >= remaining {
-			log.Info().Str("keyword", keyword).Int("remaining", remaining).Msg("seek: stopped mid-keyword, daily limit reached")
+			b.log.Info().Str("keyword", keyword).Int("remaining", remaining).Msg("seek: stopped mid-keyword, daily limit reached")
 			return applied
 		}
 		b.humanPause()
@@ -478,7 +478,7 @@ func (b *Bot) processSeekKeyword(ctx context.Context, br *rod.Browser, page *rod
 			return applied
 		}
 	}
-	log.Info().Str("keyword", keyword).Int("applied", applied).Msg("seek: keyword done")
+	b.log.Info().Str("keyword", keyword).Int("applied", applied).Msg("seek: keyword done")
 	return applied
 }
 
@@ -489,13 +489,13 @@ func (b *Bot) filterSeekJobs(jobs []seekJob) []seekJob {
 	for _, job := range jobs {
 		if reason := b.alreadyAppliedReason(job.ID); reason != "" {
 			skipped++
-			log.Info().Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
+			b.log.Info().Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
 			continue
 		}
 		fresh = append(fresh, job)
 	}
 	if skipped > 0 {
-		log.Info().Int("skipped_known", skipped).Int("to_process", len(fresh)).Msg("seek: filtered known jobs from search results")
+		b.log.Info().Int("skipped_known", skipped).Int("to_process", len(fresh)).Msg("seek: filtered known jobs from search results")
 	}
 	return fresh
 }
@@ -504,8 +504,8 @@ func (b *Bot) filterSeekJobs(jobs []seekJob) []seekJob {
 
 func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resolvedLocation string, target domain.SearchTarget) ([]seekJob, error) {
 	searchURL := buildSeekSearchURL(keyword, b.cfg.Preferences, target, resolvedLocation)
-	log.Info().Str("keyword", keyword).Msg("seek: searching")
-	log.Debug().Str("url", searchURL).Msg("seek: navigating to search URL")
+	b.log.Info().Str("keyword", keyword).Msg("seek: searching")
+	b.log.Debug().Str("url", searchURL).Msg("seek: navigating to search URL")
 
 	if err := page.Navigate(searchURL); err != nil {
 		return nil, fmt.Errorf("navigate: %w", err)
@@ -514,7 +514,7 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 		return nil, fmt.Errorf("wait load: %w", err)
 	}
 	_ = page.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
-	log.Info().Str("keyword", keyword).Msg("seek: page loaded, scraping cards")
+	b.log.Info().Str("keyword", keyword).Msg("seek: page loaded, scraping cards")
 
 	cap := b.cfg.Settings.MaxJobsPerKeyword
 	if cap <= 0 {
@@ -536,19 +536,19 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 		if len(cards) == 0 && attempt == 0 {
 			// Check if Seek is showing a genuine zero-results page.
 			if _, zrErr := page.Timeout(3 * time.Second).Element("[data-automation='search-zero-results']"); zrErr == nil {
-				log.Info().Str("keyword", keyword).Msg("seek: search returned no results for keyword")
+				b.log.Info().Str("keyword", keyword).Msg("seek: search returned no results for keyword")
 				return nil, nil
 			}
 			// Unexpected: page loaded but no cards and no zero-results indicator — selector may need updating.
-			log.Warn().Str("keyword", keyword).Msg("seek: no job cards found, selectors may need updating")
+			b.log.Warn().Str("keyword", keyword).Msg("seek: no job cards found, selectors may need updating")
 			tp := page.Timeout(5 * time.Second)
 			if html, err := tp.HTML(); err == nil {
 				_ = os.WriteFile("debug_seek_page.html", []byte(html), 0o644)
-				log.Warn().Msg("seek: page HTML saved to debug_seek_page.html")
+				b.log.Warn().Msg("seek: page HTML saved to debug_seek_page.html")
 			}
 			if shot, err := tp.Screenshot(false, nil); err == nil {
 				_ = os.WriteFile("debug_seek_page.png", shot, 0o644)
-				log.Warn().Msg("seek: screenshot saved to debug_seek_page.png")
+				b.log.Warn().Msg("seek: screenshot saved to debug_seek_page.png")
 			}
 			return nil, nil
 		}
@@ -565,7 +565,7 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 			seen[job.ID] = true
 			jobs = append(jobs, job)
 		}
-		log.Info().Msgf("seek: scroll %d, found %d cards (%d new)", attempt+1, len(cards), len(jobs)-prevCount)
+		b.log.Info().Msgf("seek: scroll %d, found %d cards (%d new)", attempt+1, len(cards), len(jobs)-prevCount)
 
 		// Stop if we hit the cap or no new cards appeared after scrolling.
 		if len(jobs) >= cap || (attempt > 0 && len(jobs) == prevCount) {
@@ -584,7 +584,7 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 			select {
 			case <-done:
 			case <-time.After(5 * time.Second):
-				log.Warn().Msg("seek: scrollIntoView timed out, breaking scrape loop")
+				b.log.Warn().Msg("seek: scrollIntoView timed out, breaking scrape loop")
 				return jobs, nil
 			}
 		} else {
@@ -597,7 +597,7 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 		jobs = jobs[:cap]
 	}
 
-	log.Info().Msgf("seek: search returned %d jobs for %q", len(jobs), keyword)
+	b.log.Info().Msgf("seek: search returned %d jobs for %q", len(jobs), keyword)
 	return jobs, nil
 }
 
@@ -684,12 +684,12 @@ func normalizeLocationKey(loc string) string {
 func (b *Bot) resolveSeekLocation(page *rod.Page, locInput string) string {
 	if where, ok := domain.SeekSearchLocation(locInput); ok {
 		if where != "" {
-			log.Info().Msgf("seek: resolved location %q → %q (canonical)", locInput, where)
+			b.log.Info().Msgf("seek: resolved location %q → %q (canonical)", locInput, where)
 		}
 		return where
 	}
 
-	log.Info().Str("input", locInput).Msg("seek: resolving location via autocomplete")
+	b.log.Info().Str("input", locInput).Msg("seek: resolving location via autocomplete")
 	if err := page.Navigate("https://au.seek.com/jobs"); err != nil {
 		return ""
 	}
@@ -698,7 +698,7 @@ func (b *Bot) resolveSeekLocation(page *rod.Page, locInput string) string {
 
 	whereEl, err := page.Timeout(5 * time.Second).Element("#SearchBar__Where")
 	if err != nil {
-		log.Warn().Msg("seek: location input not found on page")
+		b.log.Warn().Msg("seek: location input not found on page")
 		return ""
 	}
 
@@ -725,7 +725,7 @@ func (b *Bot) resolveSeekLocation(page *rod.Page, locInput string) string {
 	if err != nil || len(opts) == 0 {
 		opts, err = page.Timeout(2 * time.Second).Elements("[role='listbox'] [role='option']")
 		if err != nil || len(opts) == 0 {
-			log.Warn().Str("input", locInput).Msg("seek: location autocomplete did not appear, using path-based fallback")
+			b.log.Warn().Str("input", locInput).Msg("seek: location autocomplete did not appear, using path-based fallback")
 			return ""
 		}
 	}
@@ -737,11 +737,11 @@ func (b *Bot) resolveSeekLocation(page *rod.Page, locInput string) string {
 	}
 	best := pickBestLocationOption(locInput, texts)
 	if best == "" {
-		log.Warn().Str("input", locInput).Strs("options", texts).
+		b.log.Warn().Str("input", locInput).Strs("options", texts).
 			Msg("seek: no autocomplete option matched location, using path-based fallback")
 		return ""
 	}
-	log.Info().Msgf("seek: resolved location %q → %q", locInput, best)
+	b.log.Info().Msgf("seek: resolved location %q → %q", locInput, best)
 	return best
 }
 
@@ -873,33 +873,33 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 }
 
 func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job seekJob, reevaluate bool) bool {
-	log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("seek: processing, %q @ %s", job.Title, job.Company)
+	b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("seek: processing, %q @ %s", job.Title, job.Company)
 
 	if reason := b.alreadyAppliedReason(job.ID); reason != "" && !(reevaluate && (reason == "in approved queue" || reason == "in Top Matches")) {
-		log.Info().Str("job_id", job.ID).Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
 	// Card-level applied indicator.
 	if job.AlreadyApplied {
 		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
-		log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied badge on card: %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied badge on card: %q @ %s", job.Title, job.Company)
 		return false
 	}
 	if b.isSeekJobBlacklisted(job) {
 		b.recordSeekSkipped(job, "blacklisted", 0, "", nil)
-		log.Info().Str("job_id", job.ID).Msgf("seek: skip, blacklisted: %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip, blacklisted: %q @ %s", job.Title, job.Company)
 		return false
 	}
 
 	details := b.fetchSeekJobDetails(ctx, br, &job)
 	if b.isSeekSessionExpired() {
-		log.Error().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: aborting %q @ %s — session expired", job.Title, job.Company)
+		b.log.Error().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: aborting %q @ %s — session expired", job.Title, job.Company)
 		return false
 	}
 	// Detail page may have updated AlreadyApplied (covers manual applications).
 	if job.AlreadyApplied {
 		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
-		log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied (page indicator): %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied (page indicator): %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -955,7 +955,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 			CreatedAt:            time.Now(),
 		})
-		log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: routed to Top Matches (not Quick Apply): %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: routed to Top Matches (not Quick Apply): %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -982,10 +982,10 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 	}
 	if result.Score < minScore {
 		b.recordSeekSkipped(job, fmt.Sprintf("score %d < %d", result.Score, minScore), result.Score, result.Reasoning, nil)
-		log.Info().Str("job_id", job.ID).Int("score", result.Score).Int("min_score", minScore).Msgf("seek: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Int("score", result.Score).Int("min_score", minScore).Msgf("seek: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
 		return result.Score, result.Reasoning, nil, false
 	}
-	log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Msgf("seek: score %d/10, %q @ %s", result.Score, job.Title, job.Company)
+	b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Msgf("seek: score %d/10, %q @ %s", result.Score, job.Title, job.Company)
 
 	// Halal check, only runs after score passes to avoid wasted LLM calls.
 	// HARAM → skip; DOUBTFUL → let through but carry verdict for storage.
@@ -1000,11 +1000,11 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSeekSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
-			log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: halal skip (HARAM) %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: halal skip (HARAM) %q @ %s", job.Title, job.Company)
 			return result.Score, result.Reasoning, nil, false
 		} else if verdict.Verdict == "DOUBTFUL" {
 			halalVerdict, _ = json.Marshal(verdict)
-			log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
 		}
 	}
 
@@ -1017,7 +1017,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *seekJob) scraper.JobDetails {
 	page, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: open job page for details")
+		b.log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: open job page for details")
 		return scraper.JobDetails{PostedDate: job.PostedDate}
 	}
 	defer func() { _ = page.Close() }()
@@ -1030,10 +1030,10 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 
 	// Log the actual URL — catches session-expired redirects to login.
 	if info, err := page.Info(); err == nil {
-		log.Debug().Str("url", info.URL).Msgf("seek: detail page loaded for %q", job.Title)
+		b.log.Debug().Str("url", info.URL).Msgf("seek: detail page loaded for %q", job.Title)
 		if isSeekLoginPage(info.URL) {
 			if recoverErr := b.seekEnsureLoggedIn(page); recoverErr != nil {
-				log.Error().Err(recoverErr).Msgf("seek: detail page redirected to login for %q — session expired", job.Title)
+				b.log.Error().Err(recoverErr).Msgf("seek: detail page redirected to login for %q — session expired", job.Title)
 				b.markSeekSessionExpired()
 				return scraper.JobDetails{}
 			}
@@ -1047,7 +1047,7 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 	// the same check seekApply uses before clicking Quick Apply.
 	if loggedIn, err := b.seekIsLoggedIn(page); err == nil && !loggedIn {
 		if recoverErr := b.seekEnsureLoggedIn(page); recoverErr != nil {
-			log.Error().Err(recoverErr).Msgf("seek: detail page rendered but not authenticated for %q — session expired", job.Title)
+			b.log.Error().Err(recoverErr).Msgf("seek: detail page rendered but not authenticated for %q — session expired", job.Title)
 			b.markSeekSessionExpired()
 			return scraper.JobDetails{}
 		}
@@ -1105,9 +1105,9 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 	// Authoritative Quick Apply detection on the detail page.
 	job.EasyApply = detectSeekEasyApply(page)
 	if job.EasyApply {
-		log.Info().Msgf("seek: Quick Apply detected: %q @ %s", job.Title, job.Company)
+		b.log.Info().Msgf("seek: Quick Apply detected: %q @ %s", job.Title, job.Company)
 	} else {
-		log.Info().Msgf("seek: not Quick Apply, will route to Top Matches: %q @ %s", job.Title, job.Company)
+		b.log.Info().Msgf("seek: not Quick Apply, will route to Top Matches: %q @ %s", job.Title, job.Company)
 	}
 
 	rawHTML, err := page.HTML()
@@ -1126,9 +1126,9 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 func (b *Bot) saveSeekPendingReview(ctx context.Context, p *domain.PendingReview) {
 	b.savePendingReview(ctx, p)
 	if p.EasyApply {
-		log.Info().Msgf("seek: queued for review, %q @ %s", p.Role, p.Company)
+		b.log.Info().Msgf("seek: queued for review, %q @ %s", p.Role, p.Company)
 	} else {
-		log.Info().Msgf("seek: added to Top Matches (manual apply), %q @ %s", p.Role, p.Company)
+		b.log.Info().Msgf("seek: added to Top Matches (manual apply), %q @ %s", p.Role, p.Company)
 	}
 }
 
@@ -1162,7 +1162,7 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 			b.cfg.UserID, string(domain.PlatformSeek), remaining,
 		)
 		if err != nil {
-			log.Warn().Err(err).Msg("seek: top-matches recheck query failed")
+			b.log.Warn().Err(err).Msg("seek: top-matches recheck query failed")
 			return 0
 		}
 		for rows.Next() {
@@ -1181,14 +1181,14 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 		}
 		if b.cfg.BrowserMeter != nil {
 			if !DestructiveActionAllowed(b.cfg.BrowserMeter) {
-				log.Warn().Err(b.cfg.BrowserMeter.Err()).Msg("seek top-matches: browser quota exceeded, stopping")
+				b.log.Warn().Err(b.cfg.BrowserMeter.Err()).Msg("seek top-matches: browser quota exceeded, stopping")
 				return applied
 			}
 		}
 
 		page, err := br.Page(proto.TargetCreateTarget{URL: p.link})
 		if err != nil {
-			log.Warn().Err(err).Msgf("seek: top-matches recheck: failed to open page for %q", p.role)
+			b.log.Warn().Err(err).Msgf("seek: top-matches recheck: failed to open page for %q", p.role)
 			continue
 		}
 		_ = page.Timeout(30 * time.Second).WaitLoad()
@@ -1207,7 +1207,7 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 			}
 		}
 		if sessionDead {
-			log.Error().Msgf("seek: top-matches recheck: session expired for %q — aborting recheck", p.role)
+			b.log.Error().Msgf("seek: top-matches recheck: session expired for %q — aborting recheck", p.role)
 			b.markSeekSessionExpired()
 			_ = page.Close()
 			break
@@ -1218,11 +1218,11 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 				"UPDATE jobs_pending_review SET attempt_count = attempt_count + 1 WHERE job_id = ? AND user_id = ?",
 				p.jobID, b.cfg.UserID,
 			)
-			log.Info().Msgf("seek: top-matches recheck: no Quick Apply for %q @ %s, leaving in Top Matches", p.role, p.company)
+			b.log.Info().Msgf("seek: top-matches recheck: no Quick Apply for %q @ %s, leaving in Top Matches", p.role, p.company)
 			_ = page.Close()
 			continue
 		}
-		log.Info().Msgf("seek: top-matches recheck: Quick Apply confirmed for %q @ %s, attempting apply", p.role, p.company)
+		b.log.Info().Msgf("seek: top-matches recheck: Quick Apply confirmed for %q @ %s, attempting apply", p.role, p.company)
 
 		rawHTML, _ := page.HTML()
 		_ = page.Close()
@@ -1247,7 +1247,7 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 				"UPDATE jobs_pending_review SET attempt_count = attempt_count + 1 WHERE job_id = ? AND user_id = ?",
 				p.jobID, b.cfg.UserID,
 			)
-			log.Info().Msgf("seek: top-matches recheck: kept in Top Matches after non-automatable apply: %q @ %s", p.role, p.company)
+			b.log.Info().Msgf("seek: top-matches recheck: kept in Top Matches after non-automatable apply: %q @ %s", p.role, p.company)
 		}
 		if applied >= remaining {
 			break
@@ -1288,7 +1288,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	beginAttempt(b.cfg.DB, ac)
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
-		log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: document work guard")
+		b.log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: document work guard")
 		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "document_work_guard", "begin_work_failed", err.Error())
 		return seekSubmitCannotApply
 	}
@@ -1297,14 +1297,14 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 		lazy.attemptID = ac.AttemptID
 	}
 	if !job.EasyApply {
-		log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
+		b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
 		b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
 		finishAttempt(b.cfg.DB, ac, OutcomeSkipped, "routing", "not_quick_apply", "routed to Top Matches")
 		return seekSubmitTopMatches
 	}
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: open job page")
+		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: open job page")
 		b.recordSeekSkipped(job, "seek apply: open job page: "+err.Error(), score, reasoning, halalVerdict)
 		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
 		return seekSubmitCannotApply
@@ -1312,15 +1312,15 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	defer func() { _ = jobPage.Close() }()
 
 	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
-		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: apply failed")
+		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: apply failed")
 		if isSeekSubmitUnconfirmedError(err) {
-			log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: submit clicked but outcome unconfirmed — recording submission_unknown")
+			b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: submit clicked but outcome unconfirmed — recording submission_unknown")
 			b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
 			finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed", err.Error())
 			return seekSubmitCannotApply
 		}
 		if isSeekApplyBlockedError(err) {
-			log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: not automatable — routing to Top Matches")
+			b.log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: not automatable — routing to Top Matches")
 			b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
 			finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "ats_blocked", err.Error())
 			return seekSubmitTopMatches
@@ -1328,7 +1328,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 		if isSeekSessionExpiredError(err) {
 			b.markSeekSessionExpired()
 			seekDumpUploadDebug(jobPage, "stepup_auth")
-			log.Error().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
+			b.log.Error().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
 		}
 		b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
 		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "apply", "apply_error", err.Error())
@@ -1398,7 +1398,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	if err := b.seekOpenQuickApplyForm(page, b.policiesRequireVerifiedDocuments()); err != nil {
 		return err
 	}
-	log.Info().Msg("seek: Quick Apply opened, waiting for form")
+	b.log.Info().Msg("seek: Quick Apply opened, waiting for form")
 	b.humanPause()
 
 	if onLogin, err := b.seekWaitPastLogin(page); err != nil {
@@ -1435,12 +1435,12 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if b.cfg.Documents != nil && b.policiesRequireVerifiedDocuments() {
 			return fmt.Errorf("seek Quick Apply submitted before document requirements were scanned — use Prepare documents or apply manually on Seek")
 		}
-		log.Info().Msg("seek: possible silent Quick Apply success page — verifying on job page")
+		b.log.Info().Msg("seek: possible silent Quick Apply success page — verifying on job page")
 		if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err != nil {
-			log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: success-page signal without job-page Applied confirmation")
+			b.log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: success-page signal without job-page Applied confirmation")
 			return fmt.Errorf("seek showed a possible success page but the job page does not confirm the application — try again or apply manually on Seek")
 		}
-		log.Info().Msg("seek: Quick Apply submitted silently (pre-filled) ✓")
+		b.log.Info().Msg("seek: Quick Apply submitted silently (pre-filled) ✓")
 		return nil
 	}
 
@@ -1495,7 +1495,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 		if hasFields && !filled {
 			if msgs := b.seekValidationMessages(page); len(msgs) > 0 {
-				log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Strs("errors", msgs).Int("step", step+1).Msg("seek: validation errors with unfilled fields")
+				b.log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Strs("errors", msgs).Int("step", step+1).Msg("seek: validation errors with unfilled fields")
 			}
 			if shot, err := page.Screenshot(false, nil); err == nil {
 				_ = os.WriteFile(fmt.Sprintf("debug_seek_step_%d_unfilled.png", step+1), shot, 0o644)
@@ -1511,7 +1511,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			// Save a debug snapshot to help diagnose what's on the page.
 			if shot, err := page.Screenshot(false, nil); err == nil {
 				_ = os.WriteFile("debug_seek_apply_stuck.png", shot, 0o644)
-				log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: screenshot saved to debug_seek_apply_stuck.png")
+				b.log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: screenshot saved to debug_seek_apply_stuck.png")
 			}
 			return fmt.Errorf("no continue or submit button found at form step %d", step+1)
 		}
@@ -1536,7 +1536,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 					return fmt.Errorf("seek apply: form fill aborted: %w", refillErr)
 				}
 				if refilled {
-					log.Info().Msg("seek: filled consent checkbox(es) before submit")
+					b.log.Info().Msg("seek: filled consent checkbox(es) before submit")
 				}
 			}
 		}
@@ -1546,16 +1546,16 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 
 		if isSubmit {
-			log.Info().Msgf("seek: submit clicked (%q), verifying confirmation", btnText)
+			b.log.Info().Msgf("seek: submit clicked (%q), verifying confirmation", btnText)
 			if err := b.seekWaitSubmitConfirmation(page, lazy.job.ID, jobURL); err != nil {
-				log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).
+				b.log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).
 					Msg("seek: submit confirmation failed — outcome unknown, manual reconciliation required")
 				return fmt.Errorf("%w: %w", errSeekSubmitUnconfirmed, err)
 			}
 			return nil
 		}
 
-		log.Info().Msgf("seek: form step %d, clicked %q", step+1, btnText)
+		b.log.Info().Msgf("seek: form step %d, clicked %q", step+1, btnText)
 		b.humanPause()
 		_ = page.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
 	}
@@ -1573,10 +1573,10 @@ func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string) e
 
 		if b.seekIsPostApplySuccess(page) {
 			if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err != nil {
-				log.Warn().Err(err).Str("job_id", jobID).Str("url", jobURL).Msg("seek: post-submit success UI without job-page Applied confirmation")
+				b.log.Warn().Err(err).Str("job_id", jobID).Str("url", jobURL).Msg("seek: post-submit success UI without job-page Applied confirmation")
 				return fmt.Errorf("application may not have been recorded on Seek: %w", err)
 			}
-			log.Info().Msg("seek: Quick Apply submitted successfully ✓")
+			b.log.Info().Msg("seek: Quick Apply submitted successfully ✓")
 			return nil
 		}
 
@@ -1598,11 +1598,11 @@ func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string) e
 					strings.Contains(lower, "thanks for applying") ||
 					strings.Contains(lower, "good luck") ||
 					strings.Contains(lower, "fingers crossed") {
-					log.Info().Msgf("seek: success copy on page: %q", txt)
+					b.log.Info().Msgf("seek: success copy on page: %q", txt)
 					if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err != nil {
 						return fmt.Errorf("application may not have been recorded on Seek: %w", err)
 					}
-					log.Info().Msg("seek: Quick Apply submitted successfully ✓")
+					b.log.Info().Msg("seek: Quick Apply submitted successfully ✓")
 					return nil
 				}
 			}
@@ -1612,7 +1612,7 @@ func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string) e
 	}
 
 	if info, _ := page.Info(); info != nil {
-		log.Warn().Str("url", info.URL).Str("title", info.Title).Msg("seek: could not confirm submission — page state")
+		b.log.Warn().Str("url", info.URL).Str("title", info.Title).Msg("seek: could not confirm submission — page state")
 	}
 	if shot, err := page.Screenshot(false, nil); err == nil {
 		_ = os.WriteFile("debug_seek_submit_unconfirmed.png", shot, 0o644)
@@ -1620,7 +1620,7 @@ func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string) e
 	// Fallback: success UI may be slow/missing but Seek recorded the application.
 	if jobURL != "" {
 		if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err == nil {
-			log.Info().Msg("seek: job page confirms Applied despite missing success UI")
+			b.log.Info().Msg("seek: job page confirms Applied despite missing success UI")
 			return nil
 		}
 	}
@@ -1680,8 +1680,8 @@ func (b *Bot) seekWaitPastLogin(page *rod.Page) (onLogin bool, err error) {
 		return false, nil // landed directly on the form
 	}
 
-	log.Debug().Msgf("seek: post-click URL: %s", info.URL)
-	log.Info().Msg("seek: Quick Apply landed on login page, waiting for auth0 silent redirect (up to 15s)")
+	b.log.Debug().Msgf("seek: post-click URL: %s", info.URL)
+	b.log.Info().Msg("seek: Quick Apply landed on login page, waiting for auth0 silent redirect (up to 15s)")
 
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1691,7 +1691,7 @@ func (b *Bot) seekWaitPastLogin(page *rod.Page) (onLogin bool, err error) {
 			continue
 		}
 		if !isSeekLoginPage(cur.URL) {
-			log.Info().Msgf("seek: auth0 silently redirected to form (%s)", cur.URL)
+			b.log.Info().Msgf("seek: auth0 silently redirected to form (%s)", cur.URL)
 			_ = page.Timeout(15 * time.Second).WaitLoad()
 			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 			return false, nil
@@ -1780,7 +1780,7 @@ func (b *Bot) ensureSeekApplyFormVisible(page *rod.Page, jobURL string) error {
 	if info, err := page.Info(); err == nil {
 		curURL = info.URL
 	}
-	log.Warn().Str("url", curURL).Msg("seek: apply form not visible after click, attempting recovery")
+	b.log.Warn().Str("url", curURL).Msg("seek: apply form not visible after click, attempting recovery")
 
 	jobID := seekJobIDFromURL(jobURL)
 	if jobID == "" {
@@ -1811,7 +1811,7 @@ func (b *Bot) ensureSeekApplyFormVisible(page *rod.Page, jobURL string) error {
 		_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 	}
 
-	log.Warn().Msg("seek: retrying Quick Apply click once")
+	b.log.Warn().Msg("seek: retrying Quick Apply click once")
 	if err := b.seekClickQuickApply(page); err != nil {
 		return fmt.Errorf("seek session expired — Quick Apply redirected to login (apply button vanished): %w", err)
 	}
@@ -1850,9 +1850,9 @@ func (b *Bot) ensureSeekApplyFormVisible(page *rod.Page, jobURL string) error {
 
 func (b *Bot) seekNavigateDirectApply(page *rod.Page, jobID string) {
 	applyURL := "https://au.seek.com/job/" + jobID + "/apply"
-	log.Info().Str("job_id", jobID).Str("url", applyURL).Msg("seek: trying direct apply URL")
+	b.log.Info().Str("job_id", jobID).Str("url", applyURL).Msg("seek: trying direct apply URL")
 	if err := page.Navigate(applyURL); err != nil {
-		log.Warn().Err(err).Msg("seek: direct apply navigate failed")
+		b.log.Warn().Err(err).Msg("seek: direct apply navigate failed")
 		return
 	}
 	_ = page.Timeout(30 * time.Second).WaitLoad()
@@ -1875,11 +1875,11 @@ func (b *Bot) seekWaitForApplyForm(page *rod.Page, timeout time.Duration) (found
 	lastLog := time.Time{}
 	for time.Now().Before(deadline) {
 		if b.seekApplyFormPresent(page) {
-			log.Info().Msg("seek: Quick Apply form visible")
+			b.log.Info().Msg("seek: Quick Apply form visible")
 			return true, ""
 		}
 		if reason := seekApplyBlockedReason(page); reason != "" {
-			log.Warn().Str("reason", reason).Msg("seek: Quick Apply blocked by external ATS or captcha")
+			b.log.Warn().Str("reason", reason).Msg("seek: Quick Apply blocked by external ATS or captcha")
 			return false, reason
 		}
 		if b.seekIsPostApplySuccess(page) {
@@ -1897,7 +1897,7 @@ func (b *Bot) seekWaitForApplyForm(page *rod.Page, timeout time.Duration) (found
 			if info, err := page.Info(); err == nil {
 				cur = info.URL
 			}
-			log.Info().Str("url", cur).Msg("seek: still waiting for apply form")
+			b.log.Info().Str("url", cur).Msg("seek: still waiting for apply form")
 			lastLog = time.Now()
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -2043,7 +2043,7 @@ func (b *Bot) seekEnsureLoggedIn(page *rod.Page) error {
 		b.seekSessionExpired = false
 		b.mu.Unlock()
 		b.seekPersistSession(page)
-		log.Info().Msg("seek: session recovered via stored credentials")
+		b.log.Info().Msg("seek: session recovered via stored credentials")
 		return nil
 	}
 	if info, ierr := page.Info(); ierr == nil && isSeekLoginPage(info.URL) {
@@ -2075,12 +2075,12 @@ func (b *Bot) seekPersistSession(page *rod.Page) {
 	}
 	state, stateErr := browser.PageLoginState(page, "seek")
 	if !browser.ShouldPersistCookies(state, stateErr) {
-		log.Warn().Str("state", string(state)).Msg("seek: skipping session persist — not confirmed logged in")
+		b.log.Warn().Str("state", string(state)).Msg("seek: skipping session persist — not confirmed logged in")
 		return
 	}
 	result, err := proto.NetworkGetAllCookies{}.Call(page)
 	if err != nil {
-		log.Warn().Err(err).Msg("seek: failed to read cookies for session refresh")
+		b.log.Warn().Err(err).Msg("seek: failed to read cookies for session refresh")
 		return
 	}
 	var fresh []browser.Cookie
@@ -2097,11 +2097,11 @@ func (b *Bot) seekPersistSession(page *rod.Page) {
 		})
 	}
 	if raw, marshalErr := browser.MarshalCookies(fresh); marshalErr != nil {
-		log.Warn().Err(marshalErr).Msg("seek: failed to marshal refreshed session cookies")
+		b.log.Warn().Err(marshalErr).Msg("seek: failed to marshal refreshed session cookies")
 	} else if err := b.cfg.Sessions.Save(b.cfg.UserID, string(b.cfg.Platform), "session", raw); err != nil {
-		log.Warn().Err(err).Msg("seek: failed to refresh session cookies")
+		b.log.Warn().Err(err).Msg("seek: failed to refresh session cookies")
 	} else {
-		log.Debug().Msg("seek: session cookies refreshed after job detail page auth0 re-auth")
+		b.log.Debug().Msg("seek: session cookies refreshed after job detail page auth0 re-auth")
 	}
 }
 
@@ -2121,7 +2121,7 @@ func (b *Bot) seekOpenQuickApplyForm(page *rod.Page, blockSilentSubmit bool) err
 		}
 		resolved := resolveSeekHrefOnPage(raw, page)
 		if isSeekHostedApplyHref(resolved) {
-			log.Info().Str("url", resolved).Msg("seek: opening apply via button href")
+			b.log.Info().Str("url", resolved).Msg("seek: opening apply via button href")
 			if err := page.Navigate(resolved); err != nil {
 				return fmt.Errorf("navigate apply href: %w", err)
 			}
@@ -2156,7 +2156,7 @@ func (b *Bot) seekClickQuickApply(page *rod.Page) error {
 		}
 		resolved := resolveSeekHrefOnPage(raw, page)
 		if isSeekHostedApplyHref(resolved) {
-			log.Info().Str("url", resolved).Msg("seek: opening apply via button href")
+			b.log.Info().Str("url", resolved).Msg("seek: opening apply via button href")
 			if err := page.Navigate(resolved); err != nil {
 				return fmt.Errorf("navigate apply href: %w", err)
 			}
@@ -2176,7 +2176,7 @@ func (b *Bot) seekClickQuickApply(page *rod.Page) error {
 // seekAutoLogin fills the auth0 login form at login.seek.com using stored
 // credentials. Returns nil once the browser has been redirected back to seek.
 func (b *Bot) seekAutoLogin(page *rod.Page) error {
-	log.Info().Msg("seek: auto-login with stored credentials")
+	b.log.Info().Msg("seek: auto-login with stored credentials")
 
 	// Wait for email field (auth0 uses name="username" for the email input).
 	emailInput, err := page.Timeout(10 * time.Second).Element(
@@ -2403,9 +2403,9 @@ func (b *Bot) seekUploadResume(page *rod.Page, filePath string) error {
 	if ok, _ := page.Eval(jsFillRadio, "resume-method", "upload"); ok == nil || !ok.Value.Bool() {
 		// Text-based fallback for renamed radio groups.
 		if ok, _ := page.Eval(jsClickUploadByText, `^upload( a| an| new)? (resum|cv)`); ok != nil && ok.Value.Bool() {
-			log.Info().Msg("seek: resume upload radio selected via text fallback")
+			b.log.Info().Msg("seek: resume upload radio selected via text fallback")
 		} else {
-			log.Warn().Msg("seek: resume-method=upload radio not found, upload may fail")
+			b.log.Warn().Msg("seek: resume-method=upload radio not found, upload may fail")
 		}
 	}
 	time.Sleep(600 * time.Millisecond)
@@ -2421,7 +2421,7 @@ func (b *Bot) seekUploadResume(page *rod.Page, filePath string) error {
 	if err != nil || len(inputs) == 0 {
 		fallback, ferr := page.Elements("[data-testid='quick-apply-form'] input[type='file'][accept*='pdf'], [data-automation='apply-form'] input[type='file'][accept*='pdf']")
 		if ferr == nil && len(fallback) > 0 {
-			log.Info().Msg("seek: resume file input located via fallback selector")
+			b.log.Info().Msg("seek: resume file input located via fallback selector")
 			inputs = fallback
 		} else {
 			seekDumpUploadDebug(page, "resume")
@@ -2441,9 +2441,6 @@ func seekHandleResumeLimitDialog(page *rod.Page) error {
 		return nil // no dialog
 	}
 	log.Info().Msg("seek: resume library full, selecting oldest bot-uploaded resume for deletion")
-
-	// Select the oldest bot-uploaded resume from the dropdown.
-	// Bot uploads are named like "D/M/YY - resume.pdf". Walk from last (oldest)
 	// to first (newest); fall back to the very last option if no pattern matches.
 	res, evalErr := page.Eval(`() => {
 		const sel = document.getElementById('docLimitExceededDropdown');
@@ -2493,9 +2490,9 @@ func seekHandleResumeLimitDialog(page *rod.Page) error {
 func (b *Bot) seekUploadCoverLetter(page *rod.Page, filePath string) error {
 	if ok, _ := page.Eval(jsFillRadio, "coverLetter-method", "upload"); ok == nil || !ok.Value.Bool() {
 		if ok, _ := page.Eval(jsClickUploadByText, `^upload( a| an| new)? cover`); ok != nil && ok.Value.Bool() {
-			log.Info().Msg("seek: cover letter upload radio selected via text fallback")
+			b.log.Info().Msg("seek: cover letter upload radio selected via text fallback")
 		} else {
-			log.Warn().Msg("seek: coverLetter-method=upload radio not found, upload may fail")
+			b.log.Warn().Msg("seek: coverLetter-method=upload radio not found, upload may fail")
 		}
 	}
 	time.Sleep(600 * time.Millisecond)
@@ -2504,7 +2501,7 @@ func (b *Bot) seekUploadCoverLetter(page *rod.Page, filePath string) error {
 	}
 	if fallback, ferr := page.Elements("[data-testid='quick-apply-form'] input[type='file'][accept*='pdf'], [data-automation='apply-form'] input[type='file'][accept*='pdf']"); ferr == nil && len(fallback) > 1 {
 		// Skip the first match — likely the resume input — and use the next one.
-		log.Info().Msg("seek: cover letter file input located via fallback selector")
+		b.log.Info().Msg("seek: cover letter file input located via fallback selector")
 		return fallback[1].SetFiles([]string{filePath})
 	}
 	seekDumpUploadDebug(page, "cover_letter")
@@ -2524,7 +2521,7 @@ func (b *Bot) recordSeekApplied(job seekJob, resumePath, coverPath, resumeVer, c
 		job.Location, job.URL, resumePath, coverPath, resumeVer, coverVer, refsJSON, score, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
-		log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record applied job")
+		b.log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record applied job")
 	} else if b.cfg.OnApplied != nil {
 		b.cfg.OnApplied()
 	}
@@ -2551,7 +2548,7 @@ func (b *Bot) recordSeekSkipped(job seekJob, reason string, score int, reasoning
 			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 			CreatedAt:            time.Now(),
 		})
-		log.Info().Str("reason", reason).Msgf("seek: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("reason", reason).Msgf("seek: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
 		return
 	}
 	if _, err := appdb.ExecWithRetry(b.cfg.DB,
@@ -2561,7 +2558,7 @@ func (b *Bot) recordSeekSkipped(job seekJob, reason string, score int, reasoning
 		job.Location, job.URL, reason, score, reasoning, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
-		log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record skipped job")
+		b.log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record skipped job")
 	}
 	if b.seenCache != nil {
 		b.seenCache.mark(job.ID, seenSkipped)

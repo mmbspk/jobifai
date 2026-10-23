@@ -41,9 +41,11 @@ type SecretsReader interface {
 }
 
 type botEntry struct {
-	bot    *Bot
-	cancel context.CancelFunc
-	status domain.BotStatus
+	bot     *Bot
+	cancel  context.CancelFunc
+	status  domain.BotStatus
+	runID   string // reserved run ID, set before Register to block concurrent starts
+	runRefs int    // number of operations currently holding the run registration
 }
 
 // Manager is the long-lived bot controller exposed to HTTP handlers.
@@ -77,6 +79,7 @@ type Manager struct {
 	submitWorkGuard  documents.UserWorkGuard
 	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
 	browserMeterSvc  MeterService                                 // optional browser automation billing service
+	runLogSink       *RunLogSink                                  // optional; persists dashboard-visible log lines
 }
 
 type retentionAfterSubmit interface {
@@ -117,6 +120,11 @@ func (m *Manager) SetDocuments(svc *documents.Service) {
 // SetLLMQuota attaches quota checks to bot-side LLM clients.
 func (m *Manager) SetLLMQuota(g quota.LLMGuard) {
 	m.llmQuota = g
+}
+
+// SetRunLogSink wires the log persistence sink into the manager.
+func (m *Manager) SetRunLogSink(sink *RunLogSink) {
+	m.runLogSink = sink
 }
 
 // SetLLMBilling wires task policy resolution and synchronous usage ledger for bot LLM clients.
@@ -177,13 +185,86 @@ func (m *Manager) entry(userID string) *botEntry {
 	return e
 }
 
+// acquireRun atomically reserves or inherits the active run registration for userID.
+// Must be called without m.mu held.
+//
+// If a run is already active (entry.runID != ""), its reference count is incremented
+// and that run ID is returned — the caller MUST defer releaseRun.
+// INVARIANT: because acquireRun holds m.mu throughout Register, a caller that sees
+// entry.runID != "" is guaranteed that registration has already completed successfully.
+// There is no "registering-in-progress" window that a second caller could observe.
+//
+// If no run is active and a sink is configured, m.mu is held through Register so that
+// a concurrent caller that sees the new runID is guaranteed it is already registered.
+// Registration failure rolls back the reservation under the same lock. The caller MUST
+// defer releaseRun.
+//
+// If no run is active and no sink is configured, returns (proposedID, noop, nil).
+// The returned cleanup func is always safe to defer.
+func (m *Manager) acquireRun(ctx context.Context, userID, proposedID string) (runID string, cleanup func(), err error) {
+	m.mu.Lock()
+	e := m.entry(userID)
+	if e.runID != "" {
+		e.runRefs++
+		inherited := e.runID
+		m.mu.Unlock()
+		return inherited, func() { m.releaseRun(userID, inherited) }, nil
+	}
+	if m.runLogSink == nil {
+		m.mu.Unlock()
+		return proposedID, func() {}, nil
+	}
+	// Reserve the slot and call Register while still holding m.mu. This mirrors
+	// Start()'s pattern and establishes the invariant above: the lock is only
+	// released after a definitive success or failure, so no concurrent caller can
+	// ever see a runID that is mid-registration.
+	e.runID = proposedID
+	e.runRefs = 1
+	e.status.AutomationRunID = proposedID
+
+	if regErr := m.runLogSink.Register(ctx, userID, proposedID); regErr != nil {
+		e.runID = ""
+		e.runRefs = 0
+		e.status.AutomationRunID = ""
+		m.mu.Unlock()
+		return "", func() {}, regErr
+	}
+	m.mu.Unlock()
+	return proposedID, func() { m.releaseRun(userID, proposedID) }, nil
+}
+
+// releaseRun decrements the reference count for userID's active run.
+// When the count reaches zero, it clears the run slot and calls Unregister.
+// Safe to call even if runID no longer matches the active run (no-op in that case).
+func (m *Manager) releaseRun(userID, runID string) {
+	m.mu.Lock()
+	e := m.entry(userID)
+	if e.runID != runID {
+		m.mu.Unlock()
+		return
+	}
+	e.runRefs--
+	unregister := e.runRefs <= 0
+	if unregister {
+		e.runID = ""
+		e.runRefs = 0
+		if e.status.AutomationRunID == runID {
+			e.status.AutomationRunID = ""
+		}
+	}
+	m.mu.Unlock()
+	if unregister && m.runLogSink != nil {
+		m.runLogSink.Unregister(userID, runID)
+	}
+}
+
 // Start builds the bot config from DB and launches the loop for userID.
 func (m *Manager) Start(ctx context.Context, userID string, platform domain.Platform) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	e := m.entry(userID)
-	if e.status.State == domain.BotStateRunning {
+	if e.status.State == domain.BotStateRunning || e.runID != "" {
 		return errors.New("bot is already running")
 	}
 
@@ -191,6 +272,29 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 	if err != nil {
 		return err
 	}
+	runID := cfg.AutomationRunID
+
+	// Reserve the run slot under the manager lock before any external operations.
+	e.runID = runID
+	e.runRefs = 1
+	e.status.AutomationRunID = runID
+
+	// Register the log sink while the lock prevents concurrent starts.
+	if m.runLogSink != nil {
+		if regErr := m.runLogSink.Register(ctx, userID, runID); regErr != nil {
+			// Registration failed — release the reservation and clear status.
+			e.runID = ""
+			e.runRefs = 0
+			e.status.AutomationRunID = ""
+			return fmt.Errorf("register run log sink: %w", regErr)
+		}
+	}
+
+	// Build a run-scoped logger with user_id, automation_run_id, and per-line log_id.
+	runLogger := log.Logger.
+		With().Str("user_id", userID).Str("automation_run_id", runID).Logger().
+		Hook(logIDHook{})
+	cfg.Logger = &runLogger
 
 	botCtx, cancel := context.WithCancel(m.ctx)
 	e.cancel = cancel
@@ -201,13 +305,15 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 		location = targets[0].Location
 	}
 	e.status = domain.BotStatus{
-		State:      domain.BotStateRunning,
-		Platform:   platform,
-		Location:   location,
-		StartedAt:  &now,
-		DailyLimit: cfg.Settings.HumanBehavior.DailyApplicationLimit,
+		State:           domain.BotStateRunning,
+		AutomationRunID: runID,
+		Platform:        platform,
+		Location:        location,
+		StartedAt:       &now,
+		DailyLimit:      cfg.Settings.HumanBehavior.DailyApplicationLimit,
 	}
 
+	capturedRunID := runID
 	go func() {
 		if m.quotaSessions != nil {
 			m.quotaSessions.BeginSubscriberSession(userID)
@@ -217,9 +323,15 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 		cancel()
 		m.mu.Lock()
 		fin := time.Now()
-		e.status.State = e.bot.State()
-		e.status.FinishedAt = &fin
+		// Update State/FinishedAt if this goroutine's run is still the active one.
+		// Do NOT clear runID or AutomationRunID here — releaseRun handles that
+		// once all operations sharing this run (e.g., concurrent approvals) finish.
+		if e.status.AutomationRunID == capturedRunID {
+			e.status.State = e.bot.State()
+			e.status.FinishedAt = &fin
+		}
 		m.mu.Unlock()
+		m.releaseRun(userID, capturedRunID)
 	}()
 
 	return nil
@@ -327,6 +439,23 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("role", req.Role).Msg("approve: setup bot")
 		finishAttempt(m.db, ac, OutcomeFailed, "setup", "bot_setup_failed", err.Error())
 		return err
+	}
+
+	// Wire the run log sink. acquireRun atomically reserves or inherits the active run
+	// registration, preventing a concurrent Start from wiping this operation's logs.
+	// If a search run is active, this operation inherits its run ID so approval logs
+	// appear in the same stream. The returned cleanup must always be deferred.
+	acquiredRunID, cleanupRun, acquireErr := m.acquireRun(ctx, userID, b.cfg.AutomationRunID)
+	if acquireErr != nil {
+		finishAttempt(m.db, ac, OutcomeFailed, "setup", "sink_register_failed", acquireErr.Error())
+		return fmt.Errorf("runSubmit: register run log sink: %w", acquireErr)
+	}
+	defer cleanupRun()
+	if acquiredRunID != b.cfg.AutomationRunID {
+		b.cfg.AutomationRunID = acquiredRunID
+		b.log = log.Logger.With().
+			Str("user_id", userID).Str("automation_run_id", acquiredRunID).Logger().
+			Hook(logIDHook{})
 	}
 
 	// Reject immediately if this job has already been attempted twice.
@@ -1087,40 +1216,42 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		return nil, gs, err
 	}
 
-	b := &Bot{
-		cfg: Config{
-			Platform:        platform,
-			Settings:        gs,
-			Cookies:         cookies,
-			DB:              m.db,
-			UserID:          userID,
-			AutomationRunID: runID,
-			Tailor:          tailor,
-			Scorer:          scorer,
-			HalalChecker:    halal,
-			Renderer:        m.renderer,
-			Profile:         &profile,
-			MarketDir:       m.marketDir,
-			LLMTracker:      tracker,
-			Sessions:        m.sessions,
-			Documents:       m.documents,
-		},
-		state:  domain.BotStateIdle,
-		stopCh: make(chan struct{}),
+	runLogger := log.Logger.
+		With().Str("user_id", userID).Str("automation_run_id", runID).Logger().
+		Hook(logIDHook{})
+
+	cfg := Config{
+		Platform:        platform,
+		Settings:        gs,
+		Cookies:         cookies,
+		DB:              m.db,
+		UserID:          userID,
+		AutomationRunID: runID,
+		Tailor:          tailor,
+		Scorer:          scorer,
+		HalalChecker:    halal,
+		Renderer:        m.renderer,
+		Profile:         &profile,
+		MarketDir:       m.marketDir,
+		LLMTracker:      tracker,
+		Sessions:        m.sessions,
+		Documents:       m.documents,
+		Logger:          &runLogger,
 	}
+
 	if m.browserMeterSvc != nil {
 		inc, incErr := m.browserMeterSvc.BrowserIncrementDuration()
 		if incErr != nil || inc <= 0 {
 			inc = 30 * time.Second
 		}
-		b.cfg.BrowserMeter = NewLiveBrowserMeter(m.browserMeterSvc, userID, runID, inc, nil)
+		cfg.BrowserMeter = NewLiveBrowserMeter(m.browserMeterSvc, userID, runID, inc, nil)
 	}
 	if platform == domain.PlatformSeek {
 		if raw, err := m.secrets.Get(userID, "cred:seek"); err == nil {
 			var cred struct{ Email, Password string }
 			if json.Unmarshal([]byte(raw), &cred) == nil {
-				b.cfg.SeekEmail = cred.Email
-				b.cfg.SeekPassword = cred.Password
+				cfg.SeekEmail = cred.Email
+				cfg.SeekPassword = cred.Password
 			}
 		}
 	}
@@ -1128,12 +1259,12 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		if raw, err := m.secrets.Get(userID, "cred:linkedin"); err == nil {
 			var cred struct{ Email, Password string }
 			if json.Unmarshal([]byte(raw), &cred) == nil {
-				b.cfg.LinkedInEmail = cred.Email
-				b.cfg.LinkedInPassword = cred.Password
+				cfg.LinkedInEmail = cred.Email
+				cfg.LinkedInPassword = cred.Password
 			}
 		}
 	}
-	return b, gs, nil
+	return New(cfg), gs, nil
 }
 
 // ApplyFromURL opens a browser at jobURL, scores the job, checks for Easy/Quick Apply,
@@ -1198,6 +1329,26 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	if err != nil {
 		finishAttempt(m.db, ac, OutcomeFailed, "setup", "bot_setup_failed", err.Error())
 		return ApplyFromURLResult{}, err
+	}
+
+	// Wire the run log sink. acquireRun atomically reserves or inherits the active run
+	// registration, preventing a concurrent Start from wiping this operation's logs.
+	// If a search run is active, this operation inherits its run ID so direct-apply logs
+	// appear in the active stream without wiping the search run's history.
+	// The returned cleanup must always be deferred.
+	{
+		acquiredRunID, cleanupRun, acquireErr := m.acquireRun(ctx, userID, b.cfg.AutomationRunID)
+		if acquireErr != nil {
+			finishAttempt(m.db, ac, OutcomeFailed, "setup", "sink_register_failed", acquireErr.Error())
+			return ApplyFromURLResult{}, fmt.Errorf("applyFromURL: register run log sink: %w", acquireErr)
+		}
+		defer cleanupRun()
+		if acquiredRunID != b.cfg.AutomationRunID {
+			b.cfg.AutomationRunID = acquiredRunID
+			b.log = log.Logger.With().
+				Str("user_id", userID).Str("automation_run_id", acquiredRunID).Logger().
+				Hook(logIDHook{})
+		}
 	}
 
 	// Open browser and navigate — use persistent browsers for LinkedIn and Seek

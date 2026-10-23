@@ -226,7 +226,7 @@ export function LogPanel({ lines, connected, onClear, className, currentJob }: P
           </div>
         )}
         {filteredLines.map((line, idx) => (
-          <div key={line.id}>
+          <div key={line.id || `${line.time}-${idx}`}>
           {idx > 0 && line.message.includes(': processing,') && (
             <div className="my-1.5 border-t border-[var(--color-border)] opacity-40" />
           )}

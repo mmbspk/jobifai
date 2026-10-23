@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { useQueryClient } from '@tanstack/react-query'
 import { userApi, type AuthTokens, type Me } from '../api/user'
 import { apiGet, apiPut } from '../api/client'
+import { notifyLogout } from '../hooks/useLogs'
 
 interface AuthState {
   user: Me | null
@@ -50,6 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         scheduleRefresh(tokens.expires_in)
       } catch {
         clearTokens()
+        notifyLogout()
         setUser(null)
       }
     }, delay)
@@ -124,6 +126,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearTokens()
     if (refreshTimer.current) clearTimeout(refreshTimer.current)
     queryClient.clear()
+    notifyLogout()
     setUser(null)
   }, [queryClient])
 
@@ -131,6 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearTokens()
     if (refreshTimer.current) clearTimeout(refreshTimer.current)
     queryClient.clear()
+    notifyLogout()
     setUser(null)
   }, [queryClient])
 
