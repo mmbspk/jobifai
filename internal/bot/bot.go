@@ -1071,7 +1071,7 @@ func (b *Bot) navigateLinkedInSearch(page *rod.Page, keyword string, target doma
 		Str("location", target.Location).
 		Str("arrangement", arrangement).
 		Msg("linkedin: searching")
-	b.log.Debug().Str("url", searchURL).Msg("linkedin: navigating to search URL")
+	b.log.Debug().Str("url", redactURL(searchURL)).Msg("linkedin: navigating to search URL")
 	if err := page.Timeout(30 * time.Second).Navigate(searchURL); err != nil {
 		b.log.Warn().Err(err).Msg("linkedin: navigate timed out, proceeding anyway")
 	}
@@ -1242,7 +1242,7 @@ func (b *Bot) processJob(ctx context.Context, br *rod.Browser, job linkedInJob) 
 }
 
 func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linkedInJob, reevaluate bool) bool {
-	b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: processing, %q @ %s", job.Title, job.Company)
+	b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: processing, %q @ %s", job.Title, job.Company)
 
 	if reason := b.alreadyAppliedReason(job.ID); reason != "" && !(reevaluate && (reason == "in approved queue" || reason == "in Top Matches")) {
 		b.log.Info().Str("job_id", job.ID).Msgf("linkedin: skip (%s): %q @ %s", reason, job.Title, job.Company)
@@ -1278,8 +1278,8 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	var details scraper.JobDetails
 	jobPage, pageErr := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if pageErr != nil {
-		b.log.Info().Err(pageErr).
-			Str("job_id", job.ID).Str("url", job.URL).
+		b.log.Info().Str("error", sanitizeErr(pageErr)).
+			Str("job_id", job.ID).Str("url", redactURL(job.URL)).
 			Str("role", job.Title).Str("company", job.Company).
 			Msg("linkedin: browser page open failed — skipping")
 		b.preserveLinkedInReview(ctx, job, 0, "Not scored: browser page could not be opened.", fmt.Errorf("%w: %v", errLinkedInUnknown, pageErr))
@@ -1335,7 +1335,7 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 		details.PostedDate = job.PostedDate
 	}
 	if controlUnverified {
-		b.log.Warn().Err(controlError).Str("job_id", job.ID).Str("url", job.URL).
+		b.log.Warn().Err(controlError).Str("job_id", job.ID).Str("url", redactURL(job.URL)).
 			Msg("linkedin: application control unverified; evaluating verified listing without applying")
 	} else if easyApply {
 		b.log.Info().Msgf("linkedin: Easy Apply detected: %q @ %s", job.Title, job.Company)
@@ -1399,7 +1399,7 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 			CreatedAt:            time.Now(),
 		})
-		b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: routed to Top Matches (not Easy Apply): %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Str("company", job.Company).Msgf("linkedin: routed to Top Matches (not Easy Apply): %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -1483,10 +1483,10 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 	}
 	if result.Score < minScore {
 		b.recordSkipped(job, fmt.Sprintf("score %d < %d", result.Score, minScore), result.Score, result.Reasoning, nil)
-		b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Int("min_score", minScore).Msgf("linkedin: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Int("score", result.Score).Int("min_score", minScore).Msgf("linkedin: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
 		return result.Score, result.Reasoning, nil, false
 	}
-	b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Msgf("linkedin: score %d/%d, %q @ %s", result.Score, 10, job.Title, job.Company)
+	b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Int("score", result.Score).Msgf("linkedin: score %d/%d, %q @ %s", result.Score, 10, job.Title, job.Company)
 
 	// Halal check, only runs after score passes to avoid wasted LLM calls.
 	// HARAM → skip; DOUBTFUL → let through but carry verdict for storage.
@@ -1501,11 +1501,11 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
-			b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("linkedin: halal skip (HARAM) %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("linkedin: halal skip (HARAM) %q @ %s", job.Title, job.Company)
 			return result.Score, result.Reasoning, nil, false
 		} else if verdict.Verdict == "DOUBTFUL" {
 			halalVerdict, _ = json.Marshal(verdict)
-			b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("linkedin: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("linkedin: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
 		}
 	}
 
@@ -1675,7 +1675,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	beginAttempt(b.cfg.DB, ac)
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
-		b.log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: document work guard")
+		b.log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("linkedin: document work guard")
 		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "document_work_guard", "begin_work_failed", err.Error())
 		return false
 	}
@@ -1685,7 +1685,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	}
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: open job page")
+		b.log.Error().Str("error", sanitizeErr(err)).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("linkedin: open job page")
 		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
 		return false
 	}
@@ -1714,7 +1714,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			finishAttempt(b.cfg.DB, ac, outcome, stage, code, err.Error())
 			return false
 		}
-		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("linkedin: easy apply failed")
+		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("linkedin: easy apply failed")
 		reason := "easy apply: " + err.Error()
 		if skipReasonBelongsInTopMatches(reason) {
 			b.savePendingReview(ctx, &domain.PendingReview{
@@ -1730,7 +1730,7 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 				HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 				CreatedAt:            time.Now(),
 			})
-			b.log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("reason", reason).Msgf("linkedin: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("reason", reason).Msgf("linkedin: routed to Top Matches (not automatable): %q @ %s", job.Title, job.Company)
 			finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "not_automatable", reason)
 			return false
 		}
@@ -1782,7 +1782,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	}
 
 	if info, err := page.Eval(`() => window.location.href`); err == nil {
-		b.log.Info().Str("url", info.Value.String()).Msg("easy apply: page URL after load")
+		b.log.Info().Str("url", redactURL(info.Value.String())).Msg("easy apply: page URL after load")
 	}
 
 	// Entry identity check — before any CTA interaction or preparation scan.
@@ -1825,7 +1825,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	if err := clickCTA(); err != nil {
 		return err
 	}
-	b.log.Info().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("easy apply: verified job button clicked")
+	b.log.Info().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Msg("easy apply: verified job button clicked")
 
 	// Wait for the Easy Apply modal. LinkedIn SDUI may render it in an iframe /
 	// shadow root without classic .jobs-easy-apply-* class names. Detect by

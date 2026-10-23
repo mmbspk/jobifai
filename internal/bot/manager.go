@@ -519,14 +519,14 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	if req.Platform == "seek" && gs.Browser.RemoteDebugPort == 0 {
 		seekBr, brErr := m.getSeekBrowser(userID, gs)
 		if brErr != nil {
-			log.Error().Err(brErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("role", req.Role).Msg("approve: seek browser")
+			log.Error().Err(brErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("role", req.Role).Msg("approve: seek browser")
 			finishAttempt(m.db, ac, classifyApplyOutcome(brErr), "browser", "seek_browser_error", brErr.Error())
 			return brErr
 		}
 		p, pageErr := seekBr.Page(proto.TargetCreateTarget{URL: req.Link})
 		if pageErr != nil {
 			m.InvalidateSeekBrowser(userID)
-			log.Error().Err(pageErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("role", req.Role).Msg("approve: open seek job tab")
+			log.Error().Str("error", sanitizeErr(pageErr)).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("role", req.Role).Msg("approve: open seek job tab")
 			finishAttempt(m.db, ac, classifyApplyOutcome(pageErr), "open_page", "browser_error", pageErr.Error())
 			return pageErr
 		}
@@ -534,7 +534,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	} else {
 		newBr, newPage, launchErr := b.launchBrowser(m.ctx)
 		if launchErr != nil {
-			log.Error().Err(launchErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("role", req.Role).Msg("approve: launch browser")
+			log.Error().Err(launchErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("role", req.Role).Msg("approve: launch browser")
 			finishAttempt(m.db, ac, classifyApplyOutcome(launchErr), "browser", "launch_failed", launchErr.Error())
 			return launchErr
 		}
@@ -542,7 +542,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			ownsBr = true
 		}
 		if navErr := newPage.Navigate(req.Link); navErr != nil {
-			log.Error().Err(navErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("role", req.Role).Msg("approve: navigate to job")
+			log.Error().Str("error", sanitizeErr(navErr)).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("role", req.Role).Msg("approve: navigate to job")
 			_ = newPage.Close()
 			if ownsBr {
 				_ = newBr.Close()
@@ -607,7 +607,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			return applyErr
 		}
 		if errors.Is(applyErr, errAlreadyApplied) {
-			log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("company", req.Company).Str("role", req.Role).Msg("approve: already applied, recording ✓")
+			log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("company", req.Company).Str("role", req.Role).Msg("approve: already applied, recording ✓")
 			// fall through to success path so queues are cleaned up; finishAttempt below uses OutcomeAlreadyApplied
 		} else if errors.Is(applyErr, quota.ErrExceeded) {
 			// Quota exhausted mid-run: preserve pending_review state for retry after top-up.
@@ -621,7 +621,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 				applyLabel = "quick apply"
 			}
 			fullReason := applyLabel + ": " + applyErr.Error()
-			log.Error().Err(applyErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", req.Link).Str("company", req.Company).Str("role", req.Role).Msgf("approve: %s failed", applyLabel)
+			log.Error().Err(applyErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("company", req.Company).Str("role", req.Role).Msgf("approve: %s failed", applyLabel)
 			if skipReasonBelongsInTopMatches(fullReason) {
 				genResume, genCover := managerLazy.peek()
 				savedResume := genResume
@@ -762,7 +762,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	if _, err := m.db.Exec(`DELETE FROM jobs_approved_queue WHERE job_id = ? AND user_id = ?`, req.JobID, userID); err != nil {
 		log.Error().Err(err).Str("job_id", req.JobID).Msg("runSubmit: failed to delete from approved queue")
 	}
-	log.Info().Str("attempt_id", ac.AttemptID).Str("company", req.Company).Str("role", req.Role).Str("job_id", req.JobID).Str("url", req.Link).Msg("approve: submitted ✓")
+	log.Info().Str("attempt_id", ac.AttemptID).Str("company", req.Company).Str("role", req.Role).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Msg("approve: submitted ✓")
 	finalOutcome := OutcomeSubmittedConfirmed
 	if errors.Is(applyErr, errAlreadyApplied) {
 		finalOutcome = OutcomeAlreadyApplied
@@ -1420,7 +1420,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 
 	// Log where we actually landed — helps diagnose session/redirect issues.
 	if cu, cuErr := jobPage.Eval(`() => window.location.href`); cuErr == nil {
-		log.Debug().Str("url", cu.Value.String()).Str("platform", string(platform)).Msg("ai apply: page loaded")
+		log.Debug().Str("url", redactURL(cu.Value.String())).Str("platform", string(platform)).Msg("ai apply: page loaded")
 	}
 
 	// Validate we actually landed on a job page. LinkedIn may redirect when the
@@ -1516,7 +1516,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		// Always surface as already_applied — never nil (which the UI treats as fresh Applied ✓).
 		var alreadyTracked int
 		if err := m.db.QueryRow(`SELECT COUNT(*) FROM jobs_applied WHERE user_id=? AND link=?`, userID, jobURL).Scan(&alreadyTracked); err != nil {
-			log.Warn().Err(err).Str("url", jobURL).Msg("ai apply: failed to check already-tracked status")
+			log.Warn().Err(err).Str("url", redactURL(jobURL)).Msg("ai apply: failed to check already-tracked status")
 		}
 		if alreadyTracked == 0 {
 			rid := newJobID()
@@ -1526,12 +1526,12 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 				rid, userID, string(platform), company, role, location, jobURL, "", "", 0, "",
 				time.Now().UTC().Format(time.RFC3339),
 			); err != nil {
-				log.Error().Err(err).Str("url", jobURL).Msg("ai apply: failed to record manually-applied job")
+				log.Error().Err(err).Str("url", redactURL(jobURL)).Msg("ai apply: failed to record manually-applied job")
 			} else if m.retention != nil {
 				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
 			}
 			if _, err := m.db.Exec(`DELETE FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL); err != nil {
-				log.Error().Err(err).Str("url", jobURL).Msg("ai apply: failed to delete pending review for manually-applied job")
+				log.Error().Err(err).Str("url", redactURL(jobURL)).Msg("ai apply: failed to delete pending review for manually-applied job")
 			}
 		}
 		ac.Role = role
@@ -1680,16 +1680,16 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		}
 		// Quota exhausted mid-run: do not write jobs_skipped and do not consume an attempt.
 		if errors.Is(applyErr, quota.ErrExceeded) {
-			log.Warn().Err(applyErr).Str("job_id", jobID).Str("url", jobURL).Msg("ai apply: browser quota exceeded mid-run")
+			log.Warn().Err(applyErr).Str("job_id", jobID).Str("url", redactURL(jobURL)).Msg("ai apply: browser quota exceeded mid-run")
 			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", applyErr.Error())
 			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, applyErr
 		}
-		log.Error().Err(applyErr).Str("job_id", jobID).Str("url", jobURL).Str("role", role).Msg("ai apply: failed")
+		log.Error().Err(applyErr).Str("job_id", jobID).Str("url", redactURL(jobURL)).Str("role", role).Msg("ai apply: failed")
 		fullReason := applyLabel + ": " + applyErr.Error()
 		if skipReasonBelongsInTopMatches(fullReason) {
 			var pendingCount int
 			if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL).Scan(&pendingCount); err != nil {
-				log.Warn().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: pending check failed")
+				log.Warn().Err(err).Str("user_id", userID).Str("url", redactURL(jobURL)).Msg("ai apply: pending check failed")
 			}
 			if pendingCount == 0 {
 				if _, err := m.db.ExecContext(ctx,
@@ -1699,7 +1699,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 					 VALUES(?,?,?,?,?,?,?,?,?,?,?,0,datetime('now'))`,
 					jobID, userID, company, role, location, string(platform), jobURL, "", "", score, scoreReason,
 				); err != nil {
-					log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert pending review failed")
+					log.Error().Err(err).Str("user_id", userID).Str("url", redactURL(jobURL)).Msg("ai apply: insert pending review failed")
 				}
 			}
 			finishAttempt(m.db, ac, OutcomeBlocked, "apply", "not_automatable", fullReason)
@@ -1708,7 +1708,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		}
 		var skippedCount int
 		if err := m.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs_skipped WHERE user_id=? AND link=?`, userID, jobURL).Scan(&skippedCount); err != nil {
-			log.Warn().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: skipped check failed")
+			log.Warn().Err(err).Str("user_id", userID).Str("url", redactURL(jobURL)).Msg("ai apply: skipped check failed")
 		}
 		if skippedCount == 0 {
 			if _, err := m.db.ExecContext(ctx,
@@ -1717,7 +1717,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 				jobID, userID, string(platform), company, role, location, jobURL,
 				applyLabel+": "+applyErr.Error(), score, scoreReason,
 			); err != nil {
-				log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: insert skipped failed")
+				log.Error().Err(err).Str("user_id", userID).Str("url", redactURL(jobURL)).Msg("ai apply: insert skipped failed")
 			}
 		}
 		if isSeekSubmitUnconfirmedError(applyErr) {
@@ -1753,7 +1753,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 			}
 		}
 		if !confirmed {
-			log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", jobURL).Str("role", role).Msg("ai apply: bot reported success but job page does not show Applied")
+			log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", redactURL(jobURL)).Str("role", role).Msg("ai apply: bot reported success but job page does not show Applied")
 			finishAttempt(m.db, ac, OutcomeSubmissionUnknown, "confirmation", "confirmation_failed", "submit clicked but Applied indicator absent from page")
 			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason},
 				fmt.Errorf("%s failed: application was not confirmed on the job page (this may be an external Apply job — only Easy/Quick Apply is supported)", applyLabel)
@@ -1762,7 +1762,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		// URL after submission is treated as submission-unknown rather than a confirmed apply.
 		if platform == domain.PlatformLinkedIn {
 			if err := verifyLinkedInCompletion(jobPage, jobURL, company); err != nil {
-				log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", jobURL).
+				log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", redactURL(jobURL)).
 					Msg("ai apply: post-apply identity check failed")
 				b.recordListingFailure(ctx, platform, job, score, scoreReason, halalJSON, fmt.Errorf("%w: %v", errLinkedInSubmissionUnknown, err))
 				finishAttempt(m.db, ac, OutcomeSubmissionUnknown, "submitted", "job_identity_drift", err.Error())
@@ -1779,14 +1779,14 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		jobID, userID, string(platform), company, role, location, jobURL, resumePath, coverPath, lazy.resumeVersionID, lazy.coverVersionID, lazy.packJSONForPersist(), score, string(halalJSON),
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
-		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", jobURL).Msg("ai apply: insert applied failed")
+		log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", redactURL(jobURL)).Msg("ai apply: insert applied failed")
 	} else if m.retention != nil {
 		m.retention.AfterSuccessfulSubmit(m.ctx, userID)
 	}
 	if _, err := m.db.ExecContext(ctx, `DELETE FROM jobs_pending_review WHERE user_id = ? AND link = ?`, userID, jobURL); err != nil {
-		log.Error().Err(err).Str("user_id", userID).Str("url", jobURL).Msg("ai apply: delete pending review failed")
+		log.Error().Err(err).Str("user_id", userID).Str("url", redactURL(jobURL)).Msg("ai apply: delete pending review failed")
 	}
-	log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", jobURL).Str("role", role).Str("company", company).Msg("ai apply: submitted ✓")
+	log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", redactURL(jobURL)).Str("role", role).Str("company", company).Msg("ai apply: submitted ✓")
 	finalOutcome := OutcomeSubmittedConfirmed
 	if errors.Is(applyErr, errAlreadyApplied) {
 		finalOutcome = OutcomeAlreadyApplied

@@ -5,12 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -50,36 +48,14 @@ func main() {
 
 	// ── Logger (phase 1: before DB so startup errors are structured) ────────
 	// LOG_FORMAT=json|console; defaults to json in production, console otherwise.
-	logFmt := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_FORMAT")))
-	if logFmt == "" {
-		if billing.IsProduction() {
-			logFmt = "json"
-		} else {
-			logFmt = "console"
-		}
-	}
-	if logFmt != "json" && logFmt != "console" {
-		fmt.Fprintf(os.Stderr, "invalid LOG_FORMAT=%q (must be \"json\" or \"console\")\n", logFmt)
+	logFmt, logEnv := logEnvFromEnv()
+	logBroadcaster := jobws.NewBroadcaster()
+	stdoutWriter, logErr := buildBaseWriter(logFmt, billing.IsProduction(), os.Stdout)
+	if logErr != nil {
+		fmt.Fprintln(os.Stderr, logErr.Error())
 		os.Exit(1)
 	}
-	var stdoutWriter io.Writer
-	if logFmt == "json" {
-		stdoutWriter = os.Stdout
-	} else {
-		stdoutWriter = zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
-	}
-	logEnv := strings.TrimSpace(os.Getenv("JOBIFAI_ENV"))
-	if logEnv == "" {
-		logEnv = "development"
-	}
-	logBroadcaster := jobws.NewBroadcaster()
-	log.Logger = zerolog.New(zerolog.MultiLevelWriter(stdoutWriter, logBroadcaster)).
-		With().
-		Timestamp().
-		Str("service", "jobifai").
-		Str("env", logEnv).
-		Str("build_sha", version.GitSHA).
-		Logger()
+	log.Logger = buildLogger(logEnv, version.GitSHA, zerolog.MultiLevelWriter(stdoutWriter, logBroadcaster))
 
 	// ── Database ────────────────────────────────────────────────────────
 	if err := os.MkdirAll("data", 0o750); err != nil {

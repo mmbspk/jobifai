@@ -1,6 +1,6 @@
 # Binary
-jobifai
-server
+/jobifai
+/server
 
 # Database
 *.db

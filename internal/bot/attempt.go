@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -129,6 +130,18 @@ func redactURL(raw string) string {
 	u.Fragment = ""
 	u.User = nil
 	return u.String()
+}
+
+var urlInErrRE = regexp.MustCompile(`https?://\S+`)
+
+// sanitizeErr strips URL tokens from an error message to prevent query strings
+// and credentials from reaching logs. Use for errors from rod.Navigate and similar
+// calls where the target URL may be embedded in the error text.
+func sanitizeErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	return urlInErrRE.ReplaceAllString(err.Error(), "[url-redacted]")
 }
 
 // newAttemptID generates a v4 UUID without importing an external package.

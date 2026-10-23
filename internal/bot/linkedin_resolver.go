@@ -256,8 +256,8 @@ func linkedInNeedsReview(err error) bool {
 }
 
 func logLinkedInResolution(r linkedInResolution, job linkedInJob, attemptID, stage string) {
-	log.Info().Str("attempt_id", attemptID).Str("job_id", job.ID).Str("url", job.URL).
-		Str("observed_url", r.URL).
+	log.Info().Str("attempt_id", attemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).
+		Str("observed_url", redactURL(r.URL)).
 		Str("stage", stage).Str("observed_job_id", r.ObservedID).
 		Str("classification", r.Kind).Str("reason_code", r.Reason).
 		Str("control_label", r.Label).Str("control_destination", r.Destination).
@@ -298,11 +298,11 @@ func (b *Bot) preserveLinkedInReviewWithVerdict(ctx context.Context, job linkedI
         '$.listing_review_diagnostic', json_extract(excluded.document_refs_json,'$.listing_review_diagnostic')) WHERE jobs_pending_review.user_id=excluded.user_id`,
 		job.ID, b.cfg.UserID, job.Company, job.Title, job.Location, string(domain.PlatformLinkedIn), job.URL, score, reasoning, string(pack), string(halalVerdict))
 	if dbErr != nil {
-		log.Error().Err(dbErr).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: could not preserve listing for manual review")
+		log.Error().Err(dbErr).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("linkedin: could not preserve listing for manual review")
 		return
 	}
 	if count, err := result.RowsAffected(); err != nil || count == 0 {
-		log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("linkedin: manual review row was not written; job key may belong to another user")
+		log.Warn().Err(err).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("linkedin: manual review row was not written; job key may belong to another user")
 		return
 	}
 	if b.seenCache != nil {

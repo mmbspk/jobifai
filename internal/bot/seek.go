@@ -505,7 +505,7 @@ func (b *Bot) filterSeekJobs(jobs []seekJob) []seekJob {
 func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resolvedLocation string, target domain.SearchTarget) ([]seekJob, error) {
 	searchURL := buildSeekSearchURL(keyword, b.cfg.Preferences, target, resolvedLocation)
 	b.log.Info().Str("keyword", keyword).Msg("seek: searching")
-	b.log.Debug().Str("url", searchURL).Msg("seek: navigating to search URL")
+	b.log.Debug().Str("url", redactURL(searchURL)).Msg("seek: navigating to search URL")
 
 	if err := page.Navigate(searchURL); err != nil {
 		return nil, fmt.Errorf("navigate: %w", err)
@@ -873,7 +873,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 }
 
 func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job seekJob, reevaluate bool) bool {
-	b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Str("company", job.Company).Msgf("seek: processing, %q @ %s", job.Title, job.Company)
+	b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Str("company", job.Company).Msgf("seek: processing, %q @ %s", job.Title, job.Company)
 
 	if reason := b.alreadyAppliedReason(job.ID); reason != "" && !(reevaluate && (reason == "in approved queue" || reason == "in Top Matches")) {
 		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
@@ -893,7 +893,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 
 	details := b.fetchSeekJobDetails(ctx, br, &job)
 	if b.isSeekSessionExpired() {
-		b.log.Error().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: aborting %q @ %s — session expired", job.Title, job.Company)
+		b.log.Error().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("seek: aborting %q @ %s — session expired", job.Title, job.Company)
 		return false
 	}
 	// Detail page may have updated AlreadyApplied (covers manual applications).
@@ -955,7 +955,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 			HalalVerdict:         unmarshalHalalVerdict(halalVerdict),
 			CreatedAt:            time.Now(),
 		})
-		b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: routed to Top Matches (not Quick Apply): %q @ %s", job.Title, job.Company)
+		b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("seek: routed to Top Matches (not Quick Apply): %q @ %s", job.Title, job.Company)
 		return false
 	}
 
@@ -985,7 +985,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 		b.log.Info().Str("job_id", job.ID).Int("score", result.Score).Int("min_score", minScore).Msgf("seek: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
 		return result.Score, result.Reasoning, nil, false
 	}
-	b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Int("score", result.Score).Msgf("seek: score %d/10, %q @ %s", result.Score, job.Title, job.Company)
+	b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Int("score", result.Score).Msgf("seek: score %d/10, %q @ %s", result.Score, job.Title, job.Company)
 
 	// Halal check, only runs after score passes to avoid wasted LLM calls.
 	// HARAM → skip; DOUBTFUL → let through but carry verdict for storage.
@@ -1000,11 +1000,11 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 		} else if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSeekSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
-			b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: halal skip (HARAM) %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("seek: halal skip (HARAM) %q @ %s", job.Title, job.Company)
 			return result.Score, result.Reasoning, nil, false
 		} else if verdict.Verdict == "DOUBTFUL" {
 			halalVerdict, _ = json.Marshal(verdict)
-			b.log.Info().Str("job_id", job.ID).Str("url", job.URL).Msgf("seek: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
+			b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("seek: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
 		}
 	}
 
@@ -1017,7 +1017,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *seekJob) scraper.JobDetails {
 	page, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		b.log.Warn().Err(err).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: open job page for details")
+		b.log.Warn().Err(err).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("seek: open job page for details")
 		return scraper.JobDetails{PostedDate: job.PostedDate}
 	}
 	defer func() { _ = page.Close() }()
@@ -1030,7 +1030,7 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 
 	// Log the actual URL — catches session-expired redirects to login.
 	if info, err := page.Info(); err == nil {
-		b.log.Debug().Str("url", info.URL).Msgf("seek: detail page loaded for %q", job.Title)
+		b.log.Debug().Str("url", redactURL(info.URL)).Msgf("seek: detail page loaded for %q", job.Title)
 		if isSeekLoginPage(info.URL) {
 			if recoverErr := b.seekEnsureLoggedIn(page); recoverErr != nil {
 				b.log.Error().Err(recoverErr).Msgf("seek: detail page redirected to login for %q — session expired", job.Title)
@@ -1288,7 +1288,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	beginAttempt(b.cfg.DB, ac)
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
-		b.log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: document work guard")
+		b.log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: document work guard")
 		finishAttempt(b.cfg.DB, ac, OutcomeFailed, "document_work_guard", "begin_work_failed", err.Error())
 		return seekSubmitCannotApply
 	}
@@ -1297,14 +1297,14 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 		lazy.attemptID = ac.AttemptID
 	}
 	if !job.EasyApply {
-		b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
+		b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
 		b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
 		finishAttempt(b.cfg.DB, ac, OutcomeSkipped, "routing", "not_quick_apply", "routed to Top Matches")
 		return seekSubmitTopMatches
 	}
 	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: open job page")
+		b.log.Error().Str("error", sanitizeErr(err)).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: open job page")
 		b.recordSeekSkipped(job, "seek apply: open job page: "+err.Error(), score, reasoning, halalVerdict)
 		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
 		return seekSubmitCannotApply
@@ -1312,15 +1312,15 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	defer func() { _ = jobPage.Close() }()
 
 	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
-		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: apply failed")
+		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: apply failed")
 		if isSeekSubmitUnconfirmedError(err) {
-			b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: submit clicked but outcome unconfirmed — recording submission_unknown")
+			b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("seek: submit clicked but outcome unconfirmed — recording submission_unknown")
 			b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
 			finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed", err.Error())
 			return seekSubmitCannotApply
 		}
 		if isSeekApplyBlockedError(err) {
-			b.log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Str("role", job.Title).Msg("seek: not automatable — routing to Top Matches")
+			b.log.Warn().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: not automatable — routing to Top Matches")
 			b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
 			finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "apply", "ats_blocked", err.Error())
 			return seekSubmitTopMatches
@@ -1328,7 +1328,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 		if isSeekSessionExpiredError(err) {
 			b.markSeekSessionExpired()
 			seekDumpUploadDebug(jobPage, "stepup_auth")
-			b.log.Error().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", job.URL).Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
+			b.log.Error().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("seek: Quick Apply requires step-up authentication — please re-login interactively via Settings → Secrets, not just cookie paste")
 		}
 		b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
 		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "apply", "apply_error", err.Error())
@@ -1437,7 +1437,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 		b.log.Info().Msg("seek: possible silent Quick Apply success page — verifying on job page")
 		if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err != nil {
-			b.log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: success-page signal without job-page Applied confirmation")
+			b.log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Msg("seek: success-page signal without job-page Applied confirmation")
 			return fmt.Errorf("seek showed a possible success page but the job page does not confirm the application — try again or apply manually on Seek")
 		}
 		b.log.Info().Msg("seek: Quick Apply submitted silently (pre-filled) ✓")
@@ -1495,7 +1495,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 		if hasFields && !filled {
 			if msgs := b.seekValidationMessages(page); len(msgs) > 0 {
-				b.log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Strs("errors", msgs).Int("step", step+1).Msg("seek: validation errors with unfilled fields")
+				b.log.Warn().Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Strs("errors", msgs).Int("step", step+1).Msg("seek: validation errors with unfilled fields")
 			}
 			if shot, err := page.Screenshot(false, nil); err == nil {
 				_ = os.WriteFile(fmt.Sprintf("debug_seek_step_%d_unfilled.png", step+1), shot, 0o644)
@@ -1511,7 +1511,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			// Save a debug snapshot to help diagnose what's on the page.
 			if shot, err := page.Screenshot(false, nil); err == nil {
 				_ = os.WriteFile("debug_seek_apply_stuck.png", shot, 0o644)
-				b.log.Warn().Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Msg("seek: screenshot saved to debug_seek_apply_stuck.png")
+				b.log.Warn().Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Msg("seek: screenshot saved to debug_seek_apply_stuck.png")
 			}
 			return fmt.Errorf("no continue or submit button found at form step %d", step+1)
 		}
@@ -1548,7 +1548,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if isSubmit {
 			b.log.Info().Msgf("seek: submit clicked (%q), verifying confirmation", btnText)
 			if err := b.seekWaitSubmitConfirmation(page, lazy.job.ID, jobURL); err != nil {
-				b.log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).
+				b.log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).
 					Msg("seek: submit confirmation failed — outcome unknown, manual reconciliation required")
 				return fmt.Errorf("%w: %w", errSeekSubmitUnconfirmed, err)
 			}
@@ -1573,7 +1573,7 @@ func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string) e
 
 		if b.seekIsPostApplySuccess(page) {
 			if err := b.seekVerifyAppliedOnJobPage(page, jobURL); err != nil {
-				b.log.Warn().Err(err).Str("job_id", jobID).Str("url", jobURL).Msg("seek: post-submit success UI without job-page Applied confirmation")
+				b.log.Warn().Err(err).Str("job_id", jobID).Str("url", redactURL(jobURL)).Msg("seek: post-submit success UI without job-page Applied confirmation")
 				return fmt.Errorf("application may not have been recorded on Seek: %w", err)
 			}
 			b.log.Info().Msg("seek: Quick Apply submitted successfully ✓")
@@ -1612,7 +1612,7 @@ func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string) e
 	}
 
 	if info, _ := page.Info(); info != nil {
-		b.log.Warn().Str("url", info.URL).Str("title", info.Title).Msg("seek: could not confirm submission — page state")
+		b.log.Warn().Str("url", redactURL(info.URL)).Str("title", info.Title).Msg("seek: could not confirm submission — page state")
 	}
 	if shot, err := page.Screenshot(false, nil); err == nil {
 		_ = os.WriteFile("debug_seek_submit_unconfirmed.png", shot, 0o644)
@@ -1680,7 +1680,7 @@ func (b *Bot) seekWaitPastLogin(page *rod.Page) (onLogin bool, err error) {
 		return false, nil // landed directly on the form
 	}
 
-	b.log.Debug().Msgf("seek: post-click URL: %s", info.URL)
+	b.log.Debug().Str("url", redactURL(info.URL)).Msg("seek: post-click URL")
 	b.log.Info().Msg("seek: Quick Apply landed on login page, waiting for auth0 silent redirect (up to 15s)")
 
 	deadline := time.Now().Add(15 * time.Second)
@@ -1691,7 +1691,7 @@ func (b *Bot) seekWaitPastLogin(page *rod.Page) (onLogin bool, err error) {
 			continue
 		}
 		if !isSeekLoginPage(cur.URL) {
-			b.log.Info().Msgf("seek: auth0 silently redirected to form (%s)", cur.URL)
+			b.log.Info().Str("url", redactURL(cur.URL)).Msg("seek: auth0 silently redirected to form")
 			_ = page.Timeout(15 * time.Second).WaitLoad()
 			_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
 			return false, nil
@@ -1780,7 +1780,7 @@ func (b *Bot) ensureSeekApplyFormVisible(page *rod.Page, jobURL string) error {
 	if info, err := page.Info(); err == nil {
 		curURL = info.URL
 	}
-	b.log.Warn().Str("url", curURL).Msg("seek: apply form not visible after click, attempting recovery")
+	b.log.Warn().Str("url", redactURL(curURL)).Msg("seek: apply form not visible after click, attempting recovery")
 
 	jobID := seekJobIDFromURL(jobURL)
 	if jobID == "" {
@@ -1850,9 +1850,9 @@ func (b *Bot) ensureSeekApplyFormVisible(page *rod.Page, jobURL string) error {
 
 func (b *Bot) seekNavigateDirectApply(page *rod.Page, jobID string) {
 	applyURL := "https://au.seek.com/job/" + jobID + "/apply"
-	b.log.Info().Str("job_id", jobID).Str("url", applyURL).Msg("seek: trying direct apply URL")
+	b.log.Info().Str("job_id", jobID).Str("url", redactURL(applyURL)).Msg("seek: trying direct apply URL")
 	if err := page.Navigate(applyURL); err != nil {
-		b.log.Warn().Err(err).Msg("seek: direct apply navigate failed")
+		b.log.Warn().Str("error", sanitizeErr(err)).Msg("seek: direct apply navigate failed")
 		return
 	}
 	_ = page.Timeout(30 * time.Second).WaitLoad()
@@ -1897,7 +1897,7 @@ func (b *Bot) seekWaitForApplyForm(page *rod.Page, timeout time.Duration) (found
 			if info, err := page.Info(); err == nil {
 				cur = info.URL
 			}
-			b.log.Info().Str("url", cur).Msg("seek: still waiting for apply form")
+			b.log.Info().Str("url", redactURL(cur)).Msg("seek: still waiting for apply form")
 			lastLog = time.Now()
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -2121,7 +2121,7 @@ func (b *Bot) seekOpenQuickApplyForm(page *rod.Page, blockSilentSubmit bool) err
 		}
 		resolved := resolveSeekHrefOnPage(raw, page)
 		if isSeekHostedApplyHref(resolved) {
-			b.log.Info().Str("url", resolved).Msg("seek: opening apply via button href")
+			b.log.Info().Str("url", redactURL(resolved)).Msg("seek: opening apply via button href")
 			if err := page.Navigate(resolved); err != nil {
 				return fmt.Errorf("navigate apply href: %w", err)
 			}
@@ -2156,7 +2156,7 @@ func (b *Bot) seekClickQuickApply(page *rod.Page) error {
 		}
 		resolved := resolveSeekHrefOnPage(raw, page)
 		if isSeekHostedApplyHref(resolved) {
-			b.log.Info().Str("url", resolved).Msg("seek: opening apply via button href")
+			b.log.Info().Str("url", redactURL(resolved)).Msg("seek: opening apply via button href")
 			if err := page.Navigate(resolved); err != nil {
 				return fmt.Errorf("navigate apply href: %w", err)
 			}

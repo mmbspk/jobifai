@@ -877,7 +877,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		for _, p := range pages {
 			if probe, err := p.Timeout(10 * time.Second).Eval(jsHasVisibleFormContent); err == nil {
 				if n := probe.Value.Int(); n > 0 {
-					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Int("visible_inputs", n).Msg("form: jsScanFields returned 0 fields but DOM has visible inputs, possible selector break")
+					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Int("visible_inputs", n).Msg("form: jsScanFields returned 0 fields but DOM has visible inputs, possible selector break")
 					if shot, err := page.Screenshot(false, nil); err == nil {
 						_ = os.WriteFile("debug_zero_fields.png", shot, 0o644)
 						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Msg("form: screenshot saved for selector-break diagnosis")
@@ -948,14 +948,14 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					continue
 				}
 				if f.HasFile && f.Required {
-					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Int("index", f.Index).Str("kind", kindLabel).Msg("form: required upload missing generated file — not substituting platform attachment")
+					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Int("index", f.Index).Str("kind", kindLabel).Msg("form: required upload missing generated file — not substituting platform attachment")
 					return filled, true, fmt.Errorf("documents: required %s upload failed", kindLabel)
 				}
 				if f.HasFile {
 					log.Debug().Int("index", f.Index).Str("kind", kindLabel).Msg("form: optional field already has platform attachment")
 					continue
 				}
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
 					Msg("form: no PDF path for optional file field")
 				continue
 			}
@@ -987,7 +987,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				return filled, true, qErr
 			}
 			if answer == fallback && raw == "" && fallback != "" {
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("fallback", fallback).Msg("form: radio fallback to first option")
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Str("fallback", fallback).Msg("form: radio fallback to first option")
 			}
 			if answer == "" {
 				continue
@@ -1016,7 +1016,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 			}
 			if !radioOK {
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("answer", answer).Str("optionID", optionID).Msg("form: radio fill failed")
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Str("answer", answer).Str("optionID", optionID).Msg("form: radio fill failed")
 				continue
 			}
 			log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: radio answered")
@@ -1033,7 +1033,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				return filled, true, qErr
 			}
 			if answer == fallback && raw == "" && fallback != "" {
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("fallback", fallback).Msg("form: checkbox fallback to first option")
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Str("fallback", fallback).Msg("form: checkbox fallback to first option")
 			}
 			var targetID string
 			for _, opt := range f.Options {
@@ -1051,7 +1051,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: checkbox answered")
 					filled = true
 				} else {
-					log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Msg("form: checkbox fill failed")
+					log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Msg("form: checkbox fill failed")
 				}
 			}
 
@@ -1068,7 +1068,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					filled = true
 					break
 				}
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Msg("form: open-ended question has no textarea to fill")
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Msg("form: open-ended question has no textarea to fill")
 			}
 			fallback := ""
 			if len(f.Options) > 0 {
@@ -1088,7 +1088,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					// LLM returned prose that doesn't match dropdown options — try textarea.
 					filled = true
 				} else {
-					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("answer", answer).
+					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Str("answer", answer).
 						Strs("options", labels).Msg("form: select answer did not match any option")
 				}
 			}
@@ -1170,9 +1170,9 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 				if !confirmed {
 					if dbg, err := page.Eval(jsTypeaheadDebug); err == nil {
-						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("dom", dbg.Value.String()).Str("question", f.Question).Msg("form: typeahead dropdown not detected")
+						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("dom", dbg.Value.String()).Str("question", f.Question).Msg("form: typeahead dropdown not detected")
 					} else {
-						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Msg("form: typeahead dropdown not detected")
+						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Msg("form: typeahead dropdown not detected")
 					}
 				}
 				if confirmed {
@@ -1341,15 +1341,15 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 			if isFormFillFatalLLM(err) {
 				return "", fmt.Errorf("form question: %w", err)
 			}
-			log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Msg("form: LLM answer failed")
+			log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", question).Msg("form: LLM answer failed")
 		} else {
-			log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Msg("form: LLM returned empty answer")
+			log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", question).Msg("form: LLM returned empty answer")
 		}
 	}
 
 	// ── Last resort: first option or empty ────────────────────────────────────
 	if len(options) > 0 {
-		log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Str("fallback", options[0]).Msg("form: answered via last-resort fallback")
+		log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", question).Str("fallback", options[0]).Msg("form: answered via last-resort fallback")
 		return options[0], nil
 	}
 	return "", nil

@@ -280,7 +280,6 @@ func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) (_ []byte, ret
 		durationMS := time.Since(start).Milliseconds()
 		if retErr != nil {
 			log.Error().
-				Err(retErr).
 				Str("event", "document_render").
 				Str("schema_version", "1").
 				Bool("success", false).

@@ -193,3 +193,74 @@ func TestLinkedInReviewOutcome_BoundedCodes(t *testing.T) {
 		assert.NotEqual(t, tc.err.Error(), code, "reason code must not be raw error text")
 	}
 }
+
+// ── sanitizeErr: strip URLs from rod navigation error messages ────────────────
+
+func TestSanitizeErr(t *testing.T) {
+	cases := []struct {
+		name  string
+		input error
+		want  string
+	}{
+		{"nil error", nil, ""},
+		{"no url in message", errors.New("context deadline exceeded"), "context deadline exceeded"},
+		{"rod navigate with https url",
+			errors.New("page Navigate: context deadline exceeded https://www.linkedin.com/jobs/view/123?trackingId=abc&refId=xyz"),
+			"page Navigate: context deadline exceeded [url-redacted]"},
+		{"rod navigate with http url",
+			errors.New("page Navigate: net::ERR_NAME_NOT_RESOLVED http://example.com/apply?ref=seek"),
+			"page Navigate: net::ERR_NAME_NOT_RESOLVED [url-redacted]"},
+		{"multiple urls in message",
+			errors.New("navigate from https://seek.com/job/1?q=a to https://seek.com/apply?ref=b failed"),
+			"navigate from [url-redacted] to [url-redacted] failed"},
+		{"credentials in url",
+			errors.New("connect: dial tcp https://user:pass@host.com/path error"),
+			"connect: dial tcp [url-redacted] error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, sanitizeErr(tc.input))
+			if tc.input != nil {
+				// The raw error text with its URL must not appear in the output.
+				assert.NotContains(t, sanitizeErr(tc.input), "trackingId",
+					"sanitizeErr must strip query params embedded in error text")
+				assert.NotContains(t, sanitizeErr(tc.input), "user:pass",
+					"sanitizeErr must strip credentials embedded in error text")
+			}
+		})
+	}
+}
+
+// ── captured-output: no raw secret URL in any log line ───────────────────────
+
+// TestNoRawSecretURLInLogOutput is the end-to-end redaction invariant test.
+// It feeds a URL containing credentials and tracking parameters through the two
+// sanitization paths (redactURL via finishAttempt, sanitizeErr via a nav error)
+// and asserts the secret token never appears anywhere in the captured log output —
+// not in the "url" field, not in the "error" field, not anywhere.
+func TestNoRawSecretURLInLogOutput(t *testing.T) {
+	const secretToken = "secret-credential-token-99"
+	rawURL := "https://user:" + secretToken + "@www.linkedin.com/jobs/view/99?trackingId=" + secretToken
+
+	db := openAttemptTestDB(t)
+	ac := newAttemptContext("u-secret", "linkedin", "job-99", rawURL, "Nurse", "Hospital", "automated_linkedin", "run-secret")
+	beginAttempt(db, ac)
+
+	buf := &bytes.Buffer{}
+	orig := log.Logger
+	log.Logger = zerolog.New(buf)
+	t.Cleanup(func() { log.Logger = orig })
+
+	// Path 1: finishAttempt logs attempt_result with URL via redactURL.
+	finishAttempt(db, ac, OutcomeFailed, "open_page", "browser_error", "rod: timeout")
+
+	// Path 2: a rod navigation error embeds the raw URL; sanitizeErr must strip it.
+	navErr := errors.New("page Navigate: net::ERR_TIMED_OUT " + rawURL)
+	log.Logger.Error().Str("error", sanitizeErr(navErr)).Str("job_id", "job-99").Msg("test: open job page")
+
+	// The secret token must not appear anywhere in any log line.
+	output := buf.String()
+	assert.NotContains(t, output, secretToken,
+		"secret credential/tracking token must never appear in log output")
+}
+

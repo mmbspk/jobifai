@@ -13,7 +13,7 @@ func (b *Bot) processEvaluationRetry(ctx context.Context, br *rod.Browser, j app
 	if err := b.cfg.DB.QueryRowContext(ctx, `SELECT
  (SELECT COUNT(*) FROM jobs_applied WHERE user_id=? AND (id=? OR link=?))+
  (SELECT COUNT(*) FROM apply_attempts WHERE user_id=? AND (job_id=? OR url=?) AND outcome IN ('submission_unknown','in_progress'))`, b.cfg.UserID, j.JobID, j.Link, b.cfg.UserID, j.JobID, j.Link).Scan(&unsafe); err != nil || unsafe > 0 {
-		log.Warn().Err(err).Str("job_id", j.JobID).Str("url", j.Link).Msg("retry: evaluation blocked by unresolved or active application")
+		log.Warn().Err(err).Str("job_id", j.JobID).Str("url", redactURL(j.Link)).Msg("retry: evaluation blocked by unresolved or active application")
 		return false
 	}
 	// The explicit retry supersedes a cached skip, but never an Applied entry.
@@ -35,7 +35,7 @@ func (b *Bot) processEvaluationRetry(ctx context.Context, br *rod.Browser, j app
  (SELECT COUNT(*) FROM jobs_skipped WHERE user_id=? AND id=?)+
  (SELECT COUNT(*) FROM jobs_pending_review WHERE user_id=? AND job_id=?)`, b.cfg.UserID, j.JobID, j.Link, b.cfg.UserID, j.JobID, b.cfg.UserID, j.JobID).Scan(&done); err == nil && done > 0 && b.seenCache.reason(j.JobID) != "in approved queue" {
 		if _, err = b.cfg.DB.ExecContext(ctx, `DELETE FROM jobs_approved_queue WHERE user_id=? AND job_id=? AND needs_evaluation=1`, b.cfg.UserID, j.JobID); err != nil {
-			log.Error().Err(err).Str("job_id", j.JobID).Str("url", j.Link).Msg("retry: could not consume evaluation request")
+			log.Error().Err(err).Str("job_id", j.JobID).Str("url", redactURL(j.Link)).Msg("retry: could not consume evaluation request")
 		}
 	}
 	return submitted

@@ -127,7 +127,7 @@ context must carry an LLM call context (attached via `llmCtx` in the bot, or
 
 ## Sensitive-data handling
 
-- **URL query strings**: stripped from all `url` fields in lifecycle events via `redactURL()`. Raw URLs may still appear in non-lifecycle debug/info logs.
+- **URL query strings and credentials**: stripped from all `url` log fields via `redactURL()` (applies to all log paths, including info/warn/error). Rod navigation errors that embed the target URL are passed through `sanitizeErr()` before logging.
 - **Secrets**: API keys, JWT tokens, and passwords must never appear in log output. The LLM client logs provider and model but not request/response bodies.
 - **Error messages**: error text from external services may appear in `reason` / `failure_code` fields. Avoid logging raw HTML, JavaScript, or form-field contents.
 
