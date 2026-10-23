@@ -2521,7 +2521,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 
 		jobPage, err := br.Page(proto.TargetCreateTarget{URL: j.Link})
 		if err != nil {
-			b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: open job page")
+			b.log.Error().Str("error", sanitizeErr(err)).Str("url", redactURL(j.Link)).Str("attempt_id", ac.AttemptID).Str("job_id", j.JobID).Str("role", j.Role).Msg("approved queue: open job page")
 			finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
 			continue
 		}

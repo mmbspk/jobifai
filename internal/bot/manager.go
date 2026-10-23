@@ -621,7 +621,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 				applyLabel = "quick apply"
 			}
 			fullReason := applyLabel + ": " + applyErr.Error()
-			log.Error().Err(applyErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("company", req.Company).Str("role", req.Role).Msgf("approve: %s failed", applyLabel)
+			log.Error().Str("error", sanitizeErr(applyErr)).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("company", req.Company).Str("role", req.Role).Msgf("approve: %s failed", applyLabel)
 			if skipReasonBelongsInTopMatches(fullReason) {
 				genResume, genCover := managerLazy.peek()
 				savedResume := genResume

@@ -1017,7 +1017,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *seekJob) scraper.JobDetails {
 	page, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
-		b.log.Warn().Err(err).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("seek: open job page for details")
+		b.log.Warn().Str("error", sanitizeErr(err)).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("seek: open job page for details")
 		return scraper.JobDetails{PostedDate: job.PostedDate}
 	}
 	defer func() { _ = page.Close() }()
@@ -1312,7 +1312,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	defer func() { _ = jobPage.Close() }()
 
 	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
-		b.log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: apply failed")
+		b.log.Error().Str("error", sanitizeErr(err)).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: apply failed")
 		if isSeekSubmitUnconfirmedError(err) {
 			b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("seek: submit clicked but outcome unconfirmed — recording submission_unknown")
 			b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)

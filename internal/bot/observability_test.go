@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -254,9 +255,14 @@ func TestNoRawSecretURLInLogOutput(t *testing.T) {
 	// Path 1: finishAttempt logs attempt_result with URL via redactURL.
 	finishAttempt(db, ac, OutcomeFailed, "open_page", "browser_error", "rod: timeout")
 
-	// Path 2: a rod navigation error embeds the raw URL; sanitizeErr must strip it.
-	navErr := errors.New("page Navigate: net::ERR_TIMED_OUT " + rawURL)
-	log.Logger.Error().Str("error", sanitizeErr(navErr)).Str("job_id", "job-99").Msg("test: open job page")
+	// Path 2: seekApply wraps rod navigation errors (seek.go:2126→1315). b.log
+	// matches the production bot-scoped logger; the exact statement shape from
+	// submitSeekApplication (seek.go:1315) is reproduced here. A direct call
+	// through the production function is not possible without a browser.
+	navErr := fmt.Errorf("navigate apply href: %w",
+		fmt.Errorf("page Navigate: net::ERR_TIMED_OUT %s", rawURL))
+	b := &Bot{log: zerolog.New(buf)}
+	b.log.Error().Str("error", sanitizeErr(navErr)).Str("attempt_id", ac.AttemptID).Str("job_id", "job-99").Str("url", redactURL(rawURL)).Str("role", "Nurse").Msg("seek: apply failed")
 
 	// The secret token must not appear anywhere in any log line.
 	output := buf.String()
