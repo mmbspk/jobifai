@@ -1284,7 +1284,7 @@ func (b *Bot) routeSeekToTopMatches(ctx context.Context, job seekJob, score int,
 }
 
 func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job seekJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) seekSubmitOutcome {
-	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformSeek), job.ID, job.URL, job.Title, job.Company, "automated_seek")
+	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformSeek), job.ID, job.URL, job.Title, job.Company, "automated_seek", b.cfg.AutomationRunID)
 	beginAttempt(b.cfg.DB, ac)
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {

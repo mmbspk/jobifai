@@ -304,6 +304,12 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 	if targets := cfg.Preferences.EffectiveSearchTargets(); len(targets) > 0 {
 		location = targets[0].Location
 	}
+
+	runLogger.Info().
+		Str("event", "run_start").
+		Str("schema_version", "1").
+		Str("platform", string(platform)).
+		Msg("run started")
 	e.status = domain.BotStatus{
 		State:           domain.BotStateRunning,
 		AutomationRunID: runID,
@@ -331,6 +337,12 @@ func (m *Manager) Start(ctx context.Context, userID string, platform domain.Plat
 			e.status.FinishedAt = &fin
 		}
 		m.mu.Unlock()
+		runLogger.Info().
+			Str("event", "run_end").
+			Str("schema_version", "1").
+			Str("platform", string(platform)).
+			Str("outcome", string(e.bot.State())).
+			Msg("run ended")
 		m.releaseRun(userID, capturedRunID)
 	}()
 
@@ -425,7 +437,7 @@ func (m *Manager) SubmitSync(ctx context.Context, userID string, req SubmitReque
 // runSubmit executes the full apply flow for a queued job and records the result.
 // Called directly by SubmitSync and inside a goroutine by SubmitNow.
 func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitRequest) error {
-	ac := newAttemptContext(userID, req.Platform, req.JobID, req.Link, req.Role, req.Company, "runSubmit")
+	ac := newAttemptContext(userID, req.Platform, req.JobID, req.Link, req.Role, req.Company, "runSubmit", "")
 	beginAttempt(m.db, ac)
 	if m.submitWorkGuard != nil {
 		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
@@ -457,6 +469,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			Str("user_id", userID).Str("automation_run_id", acquiredRunID).Logger().
 			Hook(logIDHook{})
 	}
+	ac.AutomationRunID = acquiredRunID
 
 	// Reject immediately if this job has already been attempted twice.
 	var attemptCount int
@@ -1278,7 +1291,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 
 	// Begin attempt before any guard so every subsequent failure is captured.
 	// jobID and meta are unknown until the page loads — they are filled in below.
-	ac := newAttemptContext(userID, string(platform), "", jobURL, "", "", "applyFromURL")
+	ac := newAttemptContext(userID, string(platform), "", jobURL, "", "", "applyFromURL", "")
 	beginAttempt(m.db, ac)
 
 	if m.submitWorkGuard != nil {
@@ -1349,6 +1362,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 				Str("user_id", userID).Str("automation_run_id", acquiredRunID).Logger().
 				Hook(logIDHook{})
 		}
+		ac.AutomationRunID = acquiredRunID
 	}
 
 	// Open browser and navigate — use persistent browsers for LinkedIn and Seek

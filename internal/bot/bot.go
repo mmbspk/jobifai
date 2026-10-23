@@ -1015,6 +1015,11 @@ func (b *Bot) stopReason(ctx context.Context) string {
 	}
 	if b.cfg.BrowserMeter != nil {
 		if !DestructiveActionAllowed(b.cfg.BrowserMeter) {
+			b.log.Info().
+				Str("event", "quota_stop").
+				Str("schema_version", "1").
+				Str("automation_run_id", b.cfg.AutomationRunID).
+				Msg("run stopped: browser automation quota exceeded")
 			return "browser automation quota exceeded"
 		}
 	}
@@ -1655,7 +1660,7 @@ func (b *Bot) queueForReview(ctx context.Context, p *domain.PendingReview) {
 }
 
 func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
-	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformLinkedIn), job.ID, job.URL, job.Title, job.Company, "automated_linkedin")
+	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformLinkedIn), job.ID, job.URL, job.Title, job.Company, "automated_linkedin", b.cfg.AutomationRunID)
 	beginAttempt(b.cfg.DB, ac)
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
@@ -1684,6 +1689,14 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			return true
 		}
 		if linkedInNeedsReview(err) {
+			b.log.Info().
+				Str("event", "user_action_required").
+				Str("schema_version", "1").
+				Str("attempt_id", ac.AttemptID).
+				Str("job_id", job.ID).
+				Str("platform", string(domain.PlatformLinkedIn)).
+				Str("reason", err.Error()).
+				Msg("user action required: LinkedIn review needed")
 			b.preserveLinkedInReview(ctx, job, score, reasoning, err)
 			outcome, stage, code := linkedInReviewOutcome(err)
 			finishAttempt(b.cfg.DB, ac, outcome, stage, code, err.Error())
@@ -2491,7 +2504,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		b.log.Info().Str("job_id", j.JobID).Str("company", j.Company).Str("title", j.Role).Msg("approved queue: submitting")
 		b.humanPause()
 
-		ac := newAttemptContext(b.cfg.UserID, platform, j.JobID, j.Link, j.Role, j.Company, "automated_queue")
+		ac := newAttemptContext(b.cfg.UserID, platform, j.JobID, j.Link, j.Role, j.Company, "automated_queue", b.cfg.AutomationRunID)
 		beginAttempt(b.cfg.DB, ac)
 
 		jobPage, err := br.Page(proto.TargetCreateTarget{URL: j.Link})
@@ -2588,6 +2601,13 @@ func (b *Bot) recordApplyFailure(j approvedJob, score int, err error) {
 		label = "quick apply"
 	}
 	if plat == string(domain.PlatformLinkedIn) && linkedInNeedsReview(err) {
+		b.log.Info().
+			Str("event", "user_action_required").
+			Str("schema_version", "1").
+			Str("job_id", j.JobID).
+			Str("platform", plat).
+			Str("reason", err.Error()).
+			Msg("user action required: LinkedIn review needed")
 		b.preserveLinkedInReview(context.Background(), linkedInJob{ID: j.JobID, URL: j.Link, Title: j.Role, Company: j.Company, Location: j.Location}, score, "", err)
 		return
 	}

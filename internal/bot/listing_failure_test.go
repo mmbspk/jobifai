@@ -75,7 +75,7 @@ func TestListingFailures_StopOnlyConsecutiveDistinctFailures(t *testing.T) {
 
 func TestMarkAttemptSubmitDispatch_DurableAndUserScoped(t *testing.T) {
 	db := testDB(t)
-	ac := newAttemptContext("u1", "linkedin", "123", "https://www.linkedin.com/jobs/view/123", "Role", "Company", "test")
+	ac := newAttemptContext("u1", "linkedin", "123", "https://www.linkedin.com/jobs/view/123", "Role", "Company", "test", "")
 	beginAttempt(db, ac)
 	require.Error(t, markAttemptSubmitDispatch(db, ac.AttemptID, "u2"))
 	require.NoError(t, markAttemptSubmitDispatch(db, ac.AttemptID, "u1"))
@@ -89,7 +89,7 @@ func TestEvaluationRetry_UnknownSubmissionCannotReachBrowser(t *testing.T) {
 	db := testDB(t)
 	b := New(Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn})
 	j := approvedJob{JobID: "123", Platform: "linkedin", Link: "https://www.linkedin.com/jobs/view/123", NeedsEvaluation: true}
-	ac := newAttemptContext("u1", "linkedin", j.JobID, j.Link, "Role", "Company", "test")
+	ac := newAttemptContext("u1", "linkedin", j.JobID, j.Link, "Role", "Company", "test", "")
 	beginAttempt(db, ac)
 	finishAttempt(db, ac, OutcomeSubmissionUnknown, "confirmation", "unknown", "")
 	for _, variant := range []string{"https://www.linkedin.com/jobs/view/123/", "https://www.linkedin.com/jobs/view/123?trackingId=example", "https://linkedin.com/jobs/view/123/"} {
@@ -101,7 +101,7 @@ func TestEvaluationRetry_UnknownSubmissionCannotReachBrowser(t *testing.T) {
 
 func TestUnresolvedSubmission_BlocksOtherAttemptsAndMatchesURL(t *testing.T) {
 	db := testDB(t)
-	ac := newAttemptContext("u1", "linkedin", "legacy-id", "https://www.linkedin.com/jobs/view/123", "Role", "Company", "test")
+	ac := newAttemptContext("u1", "linkedin", "legacy-id", "https://www.linkedin.com/jobs/view/123", "Role", "Company", "test", "")
 	beginAttempt(db, ac)
 	require.NoError(t, unresolvedSubmission(db, "u1", ac.JobID, ac.URL, ac.AttemptID))
 	require.NoError(t, unresolvedSubmission(db, "u2", ac.JobID, ac.URL, ""))

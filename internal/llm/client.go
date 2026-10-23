@@ -510,7 +510,7 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (string, error)
 		return "", billingPersistErr(err)
 	}
 	log.Info().
-		Str("event", "llm_call").
+		Str("event", "llm_request_result").
 		Str("task", CallContextFrom(ctx).Task).
 		Str("provider", c.cfg.Provider).
 		Str("requested_model", c.cfg.Model).
@@ -704,6 +704,20 @@ func (c *Client) openaiChat(ctx context.Context, msgs []Message) (string, error)
 	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
 		return "", billingPersistErr(err)
 	}
+	log.Info().
+		Str("event", "llm_request_result").
+		Str("task", CallContextFrom(ctx).Task).
+		Str("provider", c.cfg.Provider).
+		Str("requested_model", c.cfg.Model).
+		Str("actual_model", bu.ActualModel).
+		Bool("actual_model_verified", bu.ActualModelVerified).
+		Int64("input_tokens", bu.TokenUsage.InputTokens).
+		Int64("output_tokens", bu.TokenUsage.OutputTokens).
+		Int64("duration_ms", time.Since(start).Milliseconds()).
+		Bool("success", true).
+		Str("job_id", CallContextFrom(ctx).JobID).
+		Str("run_id", CallContextFrom(ctx).AutomationRunID).
+		Msg("llm call completed")
 	return or.Choices[0].Message.Content, nil
 }
 
@@ -767,7 +781,20 @@ func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (string, error)
 	if err := c.recordUsage(ctx, bu, time.Since(start).Milliseconds(), true, "", true); err != nil {
 		return "", billingPersistErr(err)
 	}
-	log.Debug().Bool("llm_call", true).Msgf("llm: ollama/%s%s ✓", c.cfg.Model, taskLabel(ctx))
+	log.Info().
+		Str("event", "llm_request_result").
+		Str("task", CallContextFrom(ctx).Task).
+		Str("provider", c.cfg.Provider).
+		Str("requested_model", c.cfg.Model).
+		Str("actual_model", bu.ActualModel).
+		Bool("actual_model_verified", bu.ActualModelVerified).
+		Int64("input_tokens", bu.TokenUsage.InputTokens).
+		Int64("output_tokens", bu.TokenUsage.OutputTokens).
+		Int64("duration_ms", time.Since(start).Milliseconds()).
+		Bool("success", true).
+		Str("job_id", CallContextFrom(ctx).JobID).
+		Str("run_id", CallContextFrom(ctx).AutomationRunID).
+		Msg("llm call completed")
 	return or.Message.Content, nil
 }
 

@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +34,7 @@ import (
 	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/resource"
 	"github.com/user/jobifai/internal/resume"
+	"github.com/user/jobifai/internal/version"
 	jobws "github.com/user/jobifai/internal/ws"
 	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
 )
@@ -44,12 +48,38 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defer shutdownCancel()
 
-	// ── Logger + WebSocket broadcaster ──────────────────────────────────
+	// ── Logger (phase 1: before DB so startup errors are structured) ────────
+	// LOG_FORMAT=json|console; defaults to json in production, console otherwise.
+	logFmt := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_FORMAT")))
+	if logFmt == "" {
+		if billing.IsProduction() {
+			logFmt = "json"
+		} else {
+			logFmt = "console"
+		}
+	}
+	if logFmt != "json" && logFmt != "console" {
+		fmt.Fprintf(os.Stderr, "invalid LOG_FORMAT=%q (must be \"json\" or \"console\")\n", logFmt)
+		os.Exit(1)
+	}
+	var stdoutWriter io.Writer
+	if logFmt == "json" {
+		stdoutWriter = os.Stdout
+	} else {
+		stdoutWriter = zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+	}
+	logEnv := strings.TrimSpace(os.Getenv("JOBIFAI_ENV"))
+	if logEnv == "" {
+		logEnv = "development"
+	}
 	logBroadcaster := jobws.NewBroadcaster()
-	log.Logger = log.Output(zerolog.MultiLevelWriter(
-		zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339},
-		logBroadcaster,
-	))
+	log.Logger = zerolog.New(zerolog.MultiLevelWriter(stdoutWriter, logBroadcaster)).
+		With().
+		Timestamp().
+		Str("service", "jobifai").
+		Str("env", logEnv).
+		Str("build_sha", version.GitSHA).
+		Logger()
 
 	// ── Database ────────────────────────────────────────────────────────
 	if err := os.MkdirAll("data", 0o750); err != nil {
@@ -65,13 +95,9 @@ func main() {
 		log.Fatal().Err(err).Msg("stripe configuration")
 	}
 
-	// ── Run log sink (re-wires logger to include DB persistence) ────────
+	// ── Run log sink (adds DB persistence to the writer chain) ─────────────
 	runLogSink := bot.NewRunLogSink(database)
-	log.Logger = log.Output(zerolog.MultiLevelWriter(
-		zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339},
-		logBroadcaster,
-		runLogSink,
-	))
+	log.Logger = log.Logger.Output(zerolog.MultiLevelWriter(stdoutWriter, logBroadcaster, runLogSink))
 
 	// ── Config + Secrets ────────────────────────────────────────────────
 	machineKey, err := config.MachineKey(database)

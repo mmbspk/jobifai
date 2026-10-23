@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
@@ -263,6 +264,7 @@ func renderCoverLetterHTML(body, css string) string {
 // ── go-rod PDF rendering ──────────────────────────────────────────────────
 
 func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) ([]byte, error) {
+	start := time.Now()
 	l := launcher.New().Headless(true)
 	if bin := os.Getenv("ROD_BROWSER_BIN"); bin != "" {
 		l = l.Bin(bin)
@@ -306,6 +308,12 @@ func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) ([]byte, error
 	if _, err := buf.ReadFrom(pdf); err != nil {
 		return nil, fmt.Errorf("read pdf: %w", err)
 	}
+	log.Info().
+		Str("event", "document_render").
+		Str("schema_version", "1").
+		Int("size_bytes", buf.Len()).
+		Int64("duration_ms", time.Since(start).Milliseconds()).
+		Msg("document rendered")
 	return buf.Bytes(), nil
 }
 
