@@ -184,6 +184,7 @@ const jsClickApplyNavigation = `() => {
 }`
 
 // jsLinkedInAtFinalReviewFunction is shared by prepare completion, jsScanFields, and the visible-input probe.
+// Relies on resolveApplyContainer() from jsLinkedInApplyContainerFn being in scope (injected by init()).
 const jsLinkedInAtFinalReviewFunction = `function linkedInAtFinalReviewPage() {
 	function isVisible(el) {
 		try {
@@ -203,22 +204,36 @@ const jsLinkedInAtFinalReviewFunction = `function linkedInAtFinalReviewPage() {
 		if (btn.hasAttribute('data-live-test-easy-apply-submit-button') || btn.hasAttribute('data-easy-apply-submit-button')) return true;
 		return t.includes('submit application') || t === 'submit' || t.startsWith('submit ');
 	}
-	const shells = [...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-easy-apply-modal]')];
-	for (const shell of shells) {
-		if (!isVisible(shell)) continue;
+	// Use shared container resolver so this function works for <dialog open> (new SDUI
+	// layout), legacy .jobs-easy-apply-modal, and Seek forms without duplication.
+	const shell = typeof resolveApplyContainer === 'function' ? resolveApplyContainer() : null;
+	if (shell) {
+		if (!isVisible(shell)) return false;
 		const headings = [...shell.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"]')].filter(isVisible);
 		const hasReviewHeading = headings.some(h => {
 			const t = (h.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
 			return t.includes('review') && t.includes('application');
 		});
 		const submitBtn = [...shell.querySelectorAll('button,[role="button"]')].find(b => isVisible(b) && isSubmitBtn(b));
+		return !!(hasReviewHeading && submitBtn);
+	}
+	// Fallback: legacy multi-shell scan for contexts without resolveApplyContainer.
+	const shells = [...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-easy-apply-modal]')];
+	for (const s of shells) {
+		if (!isVisible(s)) continue;
+		const headings = [...s.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"]')].filter(isVisible);
+		const hasReviewHeading = headings.some(h => {
+			const t = (h.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
+			return t.includes('review') && t.includes('application');
+		});
+		const submitBtn = [...s.querySelectorAll('button,[role="button"]')].find(b => isVisible(b) && isSubmitBtn(b));
 		if (hasReviewHeading && submitBtn) return true;
 	}
 	return false;
 }`
 
 const jsLinkedInAtFinalReview = `() => {
-` + jsLinkedInAtFinalReviewFunction + `
+` + jsLinkedInApplyContainerFn + jsLinkedInAtFinalReviewFunction + `
 	return linkedInAtFinalReviewPage();
 }`
 
