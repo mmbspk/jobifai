@@ -8,7 +8,7 @@ let nextId = 0
 
 function makeLine(overrides: Partial<LogLine> = {}): LogLine {
   return {
-    id: nextId++,
+    id: String(nextId++),
     level: 'info',
     message: 'test message',
     time: new Date('2026-05-07T10:00:00Z').toISOString(),
