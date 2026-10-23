@@ -367,6 +367,36 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		return err
 	}
 
+	// Wire the run log sink. If a search run is already active for this user, inherit its
+	// run ID so approval logs appear in the same stream. Otherwise register a fresh run
+	// and publish it to status so the frontend knows which run ID to track.
+	m.mu.Lock()
+	activeRunID := m.entry(userID).runID
+	m.mu.Unlock()
+	if activeRunID != "" {
+		b.cfg.AutomationRunID = activeRunID
+		b.log = log.Logger.With().
+			Str("user_id", userID).Str("automation_run_id", activeRunID).Logger().
+			Hook(logIDHook{})
+	} else if m.runLogSink != nil {
+		submitRunID := b.cfg.AutomationRunID
+		if regErr := m.runLogSink.Register(ctx, userID, submitRunID); regErr != nil {
+			finishAttempt(m.db, ac, OutcomeFailed, "setup", "sink_register_failed", regErr.Error())
+			return fmt.Errorf("runSubmit: register run log sink: %w", regErr)
+		}
+		m.mu.Lock()
+		m.entry(userID).status.AutomationRunID = submitRunID
+		m.mu.Unlock()
+		defer func() {
+			m.runLogSink.Unregister(userID, submitRunID)
+			m.mu.Lock()
+			if e := m.entry(userID); e.status.AutomationRunID == submitRunID {
+				e.status.AutomationRunID = ""
+			}
+			m.mu.Unlock()
+		}()
+	}
+
 	// Reject immediately if this job has already been attempted twice.
 	var attemptCount int
 	_ = m.db.QueryRow(
@@ -1240,13 +1270,36 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		return ApplyFromURLResult{}, err
 	}
 
-	// Register the run log sink so apply-from-URL logs are persisted like regular runs.
-	if m.runLogSink != nil {
-		runID := b.cfg.AutomationRunID
-		if regErr := m.runLogSink.Register(ctx, userID, runID); regErr != nil {
-			log.Error().Err(regErr).Str("user_id", userID).Msg("applyFromURL: run log sink register failed — logs will not persist")
-		} else {
-			defer m.runLogSink.Unregister(userID, runID)
+	// Wire the run log sink. If a search run is already active, inherit its run ID so
+	// direct-apply logs appear in the active stream without wiping the search run's history.
+	// If no search is running, register a fresh run and publish it to status.
+	// Registration failure aborts (consistent with Start() policy).
+	{
+		m.mu.Lock()
+		activeRunID := m.entry(userID).runID
+		m.mu.Unlock()
+		if activeRunID != "" {
+			b.cfg.AutomationRunID = activeRunID
+			b.log = log.Logger.With().
+				Str("user_id", userID).Str("automation_run_id", activeRunID).Logger().
+				Hook(logIDHook{})
+		} else if m.runLogSink != nil {
+			applyRunID := b.cfg.AutomationRunID
+			if regErr := m.runLogSink.Register(ctx, userID, applyRunID); regErr != nil {
+				finishAttempt(m.db, ac, OutcomeFailed, "setup", "sink_register_failed", regErr.Error())
+				return ApplyFromURLResult{}, fmt.Errorf("applyFromURL: register run log sink: %w", regErr)
+			}
+			m.mu.Lock()
+			m.entry(userID).status.AutomationRunID = applyRunID
+			m.mu.Unlock()
+			defer func() {
+				m.runLogSink.Unregister(userID, applyRunID)
+				m.mu.Lock()
+				if e := m.entry(userID); e.status.AutomationRunID == applyRunID {
+					e.status.AutomationRunID = ""
+				}
+				m.mu.Unlock()
+			}()
 		}
 	}
 

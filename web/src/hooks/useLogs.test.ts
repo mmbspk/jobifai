@@ -322,4 +322,78 @@ describe('useLogs store', () => {
     await waitFor(() => expect(result.current.displayedRunId).toBe('run-empty'))
     expect(result.current.lines).toHaveLength(0)
   })
+
+  test('wipe() while seed is in-flight discards the seed response', async () => {
+    const uid = nextId()
+    let resolveSeed!: (v: unknown) => void
+    ;(botApi.runLogs as Mock)
+      .mockImplementationOnce(() => new Promise(r => { resolveSeed = r }))
+      .mockResolvedValue({ run_id: '', lines: [] })
+
+    const { result } = renderHook(() => useLogs(uid))
+    await waitFor(() => expect(botApi.runLogs).toHaveBeenCalledTimes(1))
+
+    // Wipe before the seed resolves.
+    await act(async () => { result.current.wipe() })
+    expect(result.current.lines).toHaveLength(0)
+
+    // Resolve the seed — wipe() incremented seedNonce so this response is discarded.
+    await act(async () => { resolveSeed(makeSeedResponse('run-A', ['la1', 'la2'])) })
+
+    // Lines remain empty; run-A seed was discarded.
+    expect(result.current.lines).toHaveLength(0)
+    expect(result.current.lines.map(l => l.id)).not.toContain('la1')
+  })
+
+  test('wipe() does not clear displayedRunId, so subsequent WS lines for same run are accepted', async () => {
+    const uid = nextId()
+    ;(botApi.runLogs as Mock).mockResolvedValue(makeSeedResponse('run-A', ['la1']))
+
+    const { result } = renderHook(() => useLogs(uid))
+    await waitFor(() => expect(result.current.lines).toHaveLength(1))
+    expect(result.current.displayedRunId).toBe('run-A')
+
+    await act(async () => { result.current.wipe() })
+    expect(result.current.lines).toHaveLength(0)
+
+    // WS line for the same run still accepted (displayedRunId preserved).
+    deliver(wsLine({ logId: 'la2', runId: 'run-A' }))
+    await waitFor(() => expect(result.current.lines).toHaveLength(1))
+    expect(result.current.lines[0].id).toBe('la2')
+  })
+
+  test('logout resets store and re-login with same account triggers fresh seed', async () => {
+    const uid = nextId()
+
+    // Initial login: seed run-A.
+    ;(botApi.runLogs as Mock)
+      .mockResolvedValueOnce(makeSeedResponse('run-A', ['la1']))
+      .mockResolvedValue({ run_id: '', lines: [] })
+
+    const { result, rerender } = renderHook(({ id }: { id: string }) => useLogs(id), {
+      initialProps: { id: uid },
+    })
+    await waitFor(() => expect(result.current.lines).toHaveLength(1))
+    expect(result.current.displayedRunId).toBe('run-A')
+
+    // Deliver a WS line so there's state beyond the seed.
+    deliver(wsLine({ logId: 'la2', runId: 'run-A' }))
+    await waitFor(() => expect(result.current.lines).toHaveLength(2))
+
+    // Logout.
+    await act(async () => { rerender({ id: '' }) })
+
+    // Store is reset: lines empty, displayedRunId cleared.
+    expect(result.current.lines).toHaveLength(0)
+    expect(result.current.displayedRunId).toBe('')
+
+    // Re-login with the same account: should trigger a fresh seed (not skipped).
+    ;(botApi.runLogs as Mock).mockResolvedValue(makeSeedResponse('run-B', ['lb1']))
+    await act(async () => { rerender({ id: uid }) })
+
+    await waitFor(() => expect(botApi.runLogs).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result.current.lines.map(l => l.id)).toContain('lb1'))
+    expect(result.current.lines.map(l => l.id)).not.toContain('la1')
+    expect(result.current.lines.map(l => l.id)).not.toContain('la2')
+  })
 })

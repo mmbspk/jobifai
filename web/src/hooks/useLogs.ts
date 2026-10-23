@@ -97,6 +97,9 @@ const store = {
   },
 
   // wipe() is called by the manual "clear" button. Empties the display without re-seeding.
+  // Increments seedNonce to discard any in-flight REST response so it cannot restore lines.
+  // Preserves displayedRunId so subsequent WS events for the current run are still accepted
+  // and a wrong-run event cannot claim the run slot after the wipe.
   wipe() {
     this.lines = []
     this.batchBuf = []
@@ -105,7 +108,8 @@ const store = {
       this.batchTimer = null
     }
     this.seenIds = new Set()
-    this.displayedRunId = ''
+    this.seedNonce++  // Invalidate any in-flight seed response.
+    this.seeded = true // Suppress automatic re-seed; run identity in displayedRunId is preserved.
     this.notify()
   },
 
@@ -228,6 +232,25 @@ const store = {
     ws.onerror = () => ws.close()
   },
 
+  // disconnect() closes the WS and cancels the retry timer without reconnecting.
+  // Called on logout so the socket is not left open with no authenticated user.
+  disconnect() {
+    if (this.ws) {
+      this.ws.onopen = null
+      this.ws.onmessage = null
+      this.ws.onclose = null
+      this.ws.onerror = null
+      this.ws.close()
+      this.ws = null
+    }
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer)
+      this.retryTimer = null
+    }
+    this.connected = false
+    this.notify()
+  },
+
   closeAndRebind() {
     if (this.ws) {
       // Null all handlers before close so in-flight events cannot mutate state for the new user.
@@ -279,8 +302,18 @@ export function useLogs(userId: string) {
   const prevUserIdRef = useRef(userId)
 
   // Handle account switch: reset store and rebind WS for the new user.
+  // On logout (userId = ''), reset store and disconnect without reconnecting so
+  // the socket is not left open. Update prevUserIdRef to '' so a re-login with
+  // the same account still triggers a fresh reset.
   useEffect(() => {
-    if (!userId) return
+    if (!userId) {
+      if (store.userId !== '') {
+        store.reset('')
+        store.disconnect()
+      }
+      prevUserIdRef.current = ''
+      return
+    }
     if (userId !== prevUserIdRef.current || userId !== store.userId) {
       prevUserIdRef.current = userId
       store.reset(userId)
