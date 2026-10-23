@@ -114,15 +114,20 @@ func newAttemptContext(userID, platform, jobID, url, role, company, entryPoint, 
 	}
 }
 
-// redactURL strips the query string from a URL for safe structured logging.
-// Returns the original string if parsing fails.
+// redactURL strips query strings, fragments, and embedded credentials from a
+// URL before it is written to a structured log field.
+// Malformed input returns a safe placeholder rather than propagating garbage.
 func redactURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
 	u, err := url.Parse(raw)
-	if err != nil || u.RawQuery == "" {
-		return raw
+	if err != nil {
+		return "[redacted-malformed-url]"
 	}
 	u.RawQuery = ""
 	u.Fragment = ""
+	u.User = nil
 	return u.String()
 }
 

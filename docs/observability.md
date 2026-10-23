@@ -14,7 +14,7 @@ field names below apply to the raw JSON in both modes.
 | `service` | string | Always `"jobifai"` |
 | `env` | string | `JOBIFAI_ENV` value; defaults to `"development"` |
 | `build_sha` | string | Short git SHA from `-ldflags` at build time |
-| `log_id` | UUID string | Unique per line; shared by WS stream and REST seed endpoint (Story #101) |
+| `log_id` | UUID string | Unique per line; stamped by `logIDHook` on the bot's scoped logger. Present on all lines emitted through the bot logger; not present on lines from the global logger (e.g. HTTP handler logs, LLM result events) |
 
 ## Run-scoped fields (bot run lines)
 
@@ -54,7 +54,7 @@ interrupted).
 
 | Field | Description |
 |---|---|
-| `attempt_id` | UUID; stable across retries of the same job |
+| `attempt_id` | UUID; freshly generated for each attempt — not stable across separate retries of the same job |
 | `automation_run_id` | Run that owns this attempt (empty for standalone direct-apply) |
 | `user_id` | |
 | `job_id` | Platform job ID |
@@ -76,42 +76,53 @@ manual user action (e.g. LinkedIn asks for a review step).
 | `attempt_id` | Present for `submitEasyApply` path; absent for `recordApplyFailure` path |
 | `job_id` | |
 | `platform` | |
-| `reason` | Raw error message (may contain LinkedIn error text) |
+| `reason_code` | Bounded reason code (e.g. `linkedin_submit_unconfirmed`, `external_apply`, `linkedin_listing_unverified`) — never raw error text |
 
 ### `quota_stop`
 
-Emitted once when the browser billing meter reports quota exhausted and the
-run stops iterating jobs.  Not emitted on manual stop or context cancellation.
+Emitted at most once per run when the browser billing meter reports quota
+exhausted and the run stops iterating jobs. Not emitted on manual stop or
+context cancellation.
 
 | Field | Description |
 |---|---|
 | `automation_run_id` | |
+| `failure_code` | `browser_quota_exceeded` when the jobifai credit balance is exhausted; `browser_meter_failure` for other meter errors |
 
 ### `llm_request_result`
 
-Emitted after every successful LLM API call (all providers: Claude, OpenAI-compatible, Ollama).
+Emitted after every LLM API call (all providers: Claude, OpenAI-compatible, Ollama) — both success and failure paths.
 
 | Field | Description |
 |---|---|
+| `user_id` | From `CallContext` |
+| `automation_run_id` | From `CallContext` (empty when not set) |
+| `job_id` | From `CallContext` (empty when not set) |
 | `task` | Task label from `CallContext` |
 | `provider` | `"claude"` / `"openai"` / `"ollama"` |
 | `requested_model` | Model string from config |
-| `actual_model` | Model string returned by the API |
-| `actual_model_verified` | `true` when the API confirmed the actual model |
-| `input_tokens` | Prompt tokens billed |
-| `output_tokens` | Completion tokens billed |
+| `actual_model` | Model string returned by the API (omitted on failure) |
+| `actual_model_verified` | `true` when the API confirmed the actual model (omitted on failure) |
+| `input_tokens` | Prompt tokens billed (omitted on failure) |
+| `output_tokens` | Completion tokens billed (omitted on failure) |
 | `duration_ms` | Network + decode time |
-| `success` | Always `true` for this event (failures use `level: error`) |
-| `job_id` | From `CallContext` (empty when not set) |
-| `run_id` | `automation_run_id` from `CallContext` |
+| `success` | `true` on success; `false` on any error |
+| `failure_code` | Bounded error code (`cancelled`, `timeout`, `rate_limited`, `auth_failed`, `provider_unavailable`, `provider_error`). Present only on failure |
 
 ### `document_render`
 
-Emitted after a resume or cover-letter PDF is produced by `htmlToPDF`.
+Emitted after `htmlToPDF` completes — both success and failure paths.  The
+context must carry an LLM call context (attached via `llmCtx` in the bot, or
+`WithCallContext` elsewhere) for correlation fields to be populated.
 
 | Field | Description |
 |---|---|
-| `size_bytes` | Byte length of the rendered PDF |
+| `success` | `true` on success; `false` on failure |
+| `doc_type` | `"resume"` or `"cover_letter"` (empty if called without `WithDocType`) |
+| `user_id` | From call context |
+| `automation_run_id` | From call context |
+| `job_id` | From call context |
+| `size_bytes` | Byte length of the rendered PDF (success only) |
 | `duration_ms` | Time from Chrome launch to PDF read |
 
 ## Sensitive-data handling

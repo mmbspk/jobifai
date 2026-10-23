@@ -227,6 +227,8 @@ type Bot struct {
 	seenCache          *jobSeenCache
 	listingFailureCode string
 	listingFailedJobs  map[string]bool
+
+	quotaStopOnce bool // guards quota_stop event; set after first emission per run
 }
 
 // SetKeyword stores the keyword currently being searched (thread-safe).
@@ -1015,11 +1017,20 @@ func (b *Bot) stopReason(ctx context.Context) string {
 	}
 	if b.cfg.BrowserMeter != nil {
 		if !DestructiveActionAllowed(b.cfg.BrowserMeter) {
-			b.log.Info().
-				Str("event", "quota_stop").
-				Str("schema_version", "1").
-				Str("automation_run_id", b.cfg.AutomationRunID).
-				Msg("run stopped: browser automation quota exceeded")
+			if !b.quotaStopOnce {
+				b.quotaStopOnce = true
+				meterErr := b.cfg.BrowserMeter.Err()
+				failureCode := "browser_quota_exceeded"
+				if meterErr != nil && !isJobifaiQuotaExceeded(meterErr) {
+					failureCode = "browser_meter_failure"
+				}
+				b.log.Info().
+					Str("event", "quota_stop").
+					Str("schema_version", "1").
+					Str("automation_run_id", b.cfg.AutomationRunID).
+					Str("failure_code", failureCode).
+					Msg("run stopped: browser quota or meter failure")
+			}
 			return "browser automation quota exceeded"
 		}
 	}
@@ -1597,7 +1608,7 @@ func (b *Bot) generateDocs(ctx context.Context, job linkedInJob, jobDesc string)
 	if market != nil {
 		renderOpts = &resume.RenderOptions{SectionLabels: market.LabelsOrDefault()}
 	}
-	if pdf, err := b.cfg.Renderer.RenderResume(ctx, profile, "", cssOverride, renderOpts); err == nil {
+	if pdf, err := b.cfg.Renderer.RenderResume(b.llmCtx(ctx, "render resume", job.ID), profile, "", cssOverride, renderOpts); err == nil {
 		resumePath = b.savePDF(pdf, job.Company, job.Title, "resume")
 	}
 	coverPath = b.generateCoverLetter(ctx, profile, job, jobDesc, market, cssOverride)
@@ -1643,7 +1654,7 @@ func (b *Bot) generateCoverLetter(ctx context.Context, profile *domain.ResumePro
 	if err != nil {
 		return ""
 	}
-	pdf, err := b.cfg.Renderer.RenderCoverLetter(ctx, body, "", cssOverride)
+	pdf, err := b.cfg.Renderer.RenderCoverLetter(b.llmCtx(ctx, "render cover letter", job.ID), body, "", cssOverride)
 	if err != nil {
 		return ""
 	}
@@ -1689,13 +1700,14 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 			return true
 		}
 		if linkedInNeedsReview(err) {
+			_, _, reviewCode := linkedInReviewOutcome(err)
 			b.log.Info().
 				Str("event", "user_action_required").
 				Str("schema_version", "1").
 				Str("attempt_id", ac.AttemptID).
 				Str("job_id", job.ID).
 				Str("platform", string(domain.PlatformLinkedIn)).
-				Str("reason", err.Error()).
+				Str("reason_code", reviewCode).
 				Msg("user action required: LinkedIn review needed")
 			b.preserveLinkedInReview(ctx, job, score, reasoning, err)
 			outcome, stage, code := linkedInReviewOutcome(err)
@@ -2601,12 +2613,13 @@ func (b *Bot) recordApplyFailure(j approvedJob, score int, err error) {
 		label = "quick apply"
 	}
 	if plat == string(domain.PlatformLinkedIn) && linkedInNeedsReview(err) {
+		_, _, reviewCode := linkedInReviewOutcome(err)
 		b.log.Info().
 			Str("event", "user_action_required").
 			Str("schema_version", "1").
 			Str("job_id", j.JobID).
 			Str("platform", plat).
-			Str("reason", err.Error()).
+			Str("reason_code", reviewCode).
 			Msg("user action required: LinkedIn review needed")
 		b.preserveLinkedInReview(context.Background(), linkedInJob{ID: j.JobID, URL: j.Link, Title: j.Role, Company: j.Company, Location: j.Location}, score, "", err)
 		return

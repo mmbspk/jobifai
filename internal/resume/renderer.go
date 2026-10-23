@@ -15,7 +15,16 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/llm"
 )
+
+type renderDocTypeKey struct{}
+
+// WithDocType attaches the document type (e.g. "resume", "cover_letter") to the context
+// so htmlToPDF can include it in lifecycle log events.
+func WithDocType(ctx context.Context, docType string) context.Context {
+	return context.WithValue(ctx, renderDocTypeKey{}, docType)
+}
 
 // PDFRenderer renders a ResumeProfile (or cover-letter text) to a PDF via
 // a headless Chrome page using go-rod.
@@ -48,7 +57,7 @@ func (r *PDFRenderer) RenderResume(ctx context.Context, profile *domain.ResumePr
 	if err != nil {
 		return nil, err
 	}
-	return r.htmlToPDF(ctx, html)
+	return r.htmlToPDF(WithDocType(ctx, "resume"), html)
 }
 
 // RenderCoverLetter generates a PDF from a cover-letter text body.
@@ -58,7 +67,7 @@ func (r *PDFRenderer) RenderCoverLetter(ctx context.Context, body string, styleN
 		return nil, err
 	}
 	html := renderCoverLetterHTML(body, css)
-	return r.htmlToPDF(ctx, html)
+	return r.htmlToPDF(WithDocType(ctx, "cover_letter"), html)
 }
 
 // ── CSS loading ───────────────────────────────────────────────────────────
@@ -263,8 +272,27 @@ func renderCoverLetterHTML(body, css string) string {
 
 // ── go-rod PDF rendering ──────────────────────────────────────────────────
 
-func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) ([]byte, error) {
+func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) (_ []byte, retErr error) {
 	start := time.Now()
+	cc := llm.CallContextFrom(ctx)
+	docType, _ := ctx.Value(renderDocTypeKey{}).(string)
+	defer func() {
+		durationMS := time.Since(start).Milliseconds()
+		if retErr != nil {
+			log.Error().
+				Err(retErr).
+				Str("event", "document_render").
+				Str("schema_version", "1").
+				Bool("success", false).
+				Str("doc_type", docType).
+				Str("user_id", cc.UserID).
+				Str("automation_run_id", cc.AutomationRunID).
+				Str("job_id", cc.JobID).
+				Int64("duration_ms", durationMS).
+				Msg("document render failed")
+		}
+	}()
+
 	l := launcher.New().Headless(true)
 	if bin := os.Getenv("ROD_BROWSER_BIN"); bin != "" {
 		l = l.Bin(bin)
@@ -311,6 +339,11 @@ func (r *PDFRenderer) htmlToPDF(ctx context.Context, html string) ([]byte, error
 	log.Info().
 		Str("event", "document_render").
 		Str("schema_version", "1").
+		Bool("success", true).
+		Str("doc_type", docType).
+		Str("user_id", cc.UserID).
+		Str("automation_run_id", cc.AutomationRunID).
+		Str("job_id", cc.JobID).
 		Int("size_bytes", buf.Len()).
 		Int64("duration_ms", time.Since(start).Milliseconds()).
 		Msg("document rendered")
