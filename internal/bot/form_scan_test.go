@@ -1,7 +1,9 @@
 package bot
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 
@@ -116,7 +118,7 @@ func TestJsScanFields_NativeDialog_ResumeButton_Detected(t *testing.T) {
 	require.NotNil(t, resumeField, "must detect resume upload slot; got fields: %v", fields)
 	require.True(t, resumeField.UploadViaButton, "must set UploadViaButton=true (no <input type=file> in DOM)")
 	require.Equal(t, documents.KindResume, resumeField.DocumentKind)
-	require.True(t, resumeField.Required, "section has aria-required=true")
+	require.True(t, resumeField.Required, "section label has asterisk — required must be detected from label text")
 }
 
 // TestJsScanFields_NativeDialog_FinalReview proves jsLinkedInAtFinalReview detects
@@ -228,4 +230,159 @@ func TestJsScanFields_LegacyLinkedIn_Regression(t *testing.T) {
 	require.NotNil(t, coverFile)
 	require.Equal(t, documents.KindCoverLetter, coverFile.DocumentKind)
 	require.True(t, coverFile.Required)
+}
+
+// TestJsScanFields_NativeDialog_ResumeAtPositions verifies that jsScanFields detects
+// the upload-via-button resume field regardless of where it appears in the form.
+func TestJsScanFields_NativeDialog_ResumeAtPositions(t *testing.T) {
+	makeDialog := func(extra string) string {
+		return fmt.Sprintf(`<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    %s
+    <div id="resume-section">
+      <label>Resume <span aria-hidden="true">*</span></label>
+      <div>
+        <input type="radio" name="resume-select" id="r-lib1" value="lib1">
+        <label for="r-lib1">my_resume_2026.pdf</label>
+      </div>
+      <button type="button"><span><span>Upload resume</span></span></button>
+    </div>
+    <footer><button type="button"><span>Next</span></button></footer>
+  </div>
+</dialog>
+</body></html>`, extra)
+	}
+
+	cases := []struct {
+		name  string
+		extra string
+	}{
+		{"position_first", ""},
+		{"position_after_text_field", `<div data-test-form-element="">
+          <label for="location">City</label>
+          <input id="location" type="text" value="Berlin" style="display:block;width:200px;height:40px">
+        </div>`},
+		{"position_after_multiple_fields", `<div data-test-form-element="">
+          <label for="name">Full name</label>
+          <input id="name" type="text" value="Alex Smith" style="display:block;width:200px;height:40px">
+        </div>
+        <fieldset>
+          <legend>Years of experience</legend>
+          <input type="radio" name="yoe" id="yoe1" value="1-3" checked>
+          <label for="yoe1">1–3 years</label>
+        </fieldset>`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			page := rodTestPage(t, makeDialog(tc.extra))
+			fields := evalScanFields(t, page)
+
+			var resumeField *formField
+			for i := range fields {
+				if fields[i].Type == "file" {
+					resumeField = &fields[i]
+					break
+				}
+			}
+			require.NotNil(t, resumeField, "must detect resume upload slot at position %s; got fields: %v", tc.name, fields)
+			require.True(t, resumeField.UploadViaButton, "must set UploadViaButton=true")
+			require.True(t, resumeField.Required, "must detect required from asterisk label")
+			require.Equal(t, documents.KindResume, resumeField.DocumentKind)
+		})
+	}
+}
+
+// TestScanApplyStepsForPrepare_NativeDialog verifies that scanApplyStepsForPrepare
+// completes successfully on a native-dialog multi-step form, reaches the final submit
+// step, and does NOT click Submit. Resume section has an unchecked radio; no document
+// path is available so the upload slot is silently skipped.
+func TestScanApplyStepsForPrepare_NativeDialog(t *testing.T) {
+	// Each sub-test varies which step contains the resume section.
+	cases := []struct {
+		name       string
+		resumeStep int
+	}{
+		{"resume_at_step1", 1},
+		{"resume_at_step2", 2},
+		{"resume_at_step3", 3},
+	}
+
+	br := launchTestBrowser(t)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			submitClicks := 0
+
+			buildStep := func(n int) string {
+				var content string
+				if n == tc.resumeStep {
+					content = `<div id="resume-section">
+            <label>Resume <span aria-hidden="true">*</span></label>
+            <div>
+              <input type="radio" name="resume-select" id="r-lib1" value="lib1">
+              <label for="r-lib1">my_resume_2026.pdf</label>
+            </div>
+            <button type="button"><span><span>Upload resume</span></span></button>
+          </div>`
+				} else if n < 4 {
+					content = `<div data-test-form-element="">
+            <label for="q` + fmt.Sprintf("%d", n) + `">Question ` + fmt.Sprintf("%d", n) + `</label>
+            <input id="q` + fmt.Sprintf("%d", n) + `" type="text" value="answer" style="display:block;width:200px;height:40px">
+          </div>`
+				}
+				if n < 4 {
+					return fmt.Sprintf(`<div id="step-%d">
+          <p>%d/4 pages</p>
+          %s
+          <footer>
+            <button type="button" onclick="goTo(%d)"><span>Next</span></button>
+          </footer>
+        </div>`, n, n, content, n+1)
+				}
+				// Step 4: final review with submit button
+				submitClicks++ // will be counted if test code mutates this variable — but onclick in HTML can't do that
+				return `<div id="step-4" style="display:none">
+          <h2>Review your application</h2>
+          <button data-easy-apply-submit-button="" type="button"><span>Submit application</span></button>
+        </div>`
+			}
+
+			html := fmt.Sprintf(`<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" data-job-id="%s" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    %s
+    %s
+    %s
+    %s
+  </div>
+</dialog>
+<script>
+  function goTo(n) {
+    document.querySelectorAll('[id^="step-"]').forEach(function(s) { s.style.display = 'none'; });
+    document.getElementById('step-' + n).style.display = '';
+  }
+</script>
+</body></html>`,
+				"4479748087",
+				buildStep(1), buildStep(2), buildStep(3), buildStep(4))
+
+			srv := fixtureServer(t, "4479748087", "", html, "")
+			page := navigateAndWait(t, br, srv.URL+"/jobs/view/4479748087")
+
+			b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+			lazy := &lazyDocGen{
+				b:                b,
+				job:              linkedInJob{ID: "4479748087", URL: srv.URL + "/jobs/view/4479748087"},
+				reviewPrepareOnly: true,
+				ctx:              context.Background(),
+			}
+
+			err := b.scanApplyStepsForPrepare(context.Background(), page, lazy)
+			require.NoError(t, err, "scan must complete without error")
+			require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true after reaching final step")
+			require.Empty(t, lazy.holdReason, "no unexpected hold — upload was skipped (no PDF path), not failed")
+		})
+	}
 }

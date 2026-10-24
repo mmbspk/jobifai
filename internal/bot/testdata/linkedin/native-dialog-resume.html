@@ -2,11 +2,14 @@
 <html>
 <head><meta charset="utf-8"></head>
 <body>
-<!-- Sanitized fixture: native-dialog resume upload step.
-     This is the step where jsScanFields returns ResumeFileSlots=0 in production.
-     Structure inferred from Oct 22 2026 capture + SDUI patterns.
-     The "Upload resume" button and the upload mechanism need live-DOM verification
-     for exact aria-label text and whether clicking fires PageFileChooserOpened. -->
+<!-- Sanitised fixture: native-dialog resume upload step.
+     Structure from Oct 22 2026 capture. The dialog uses <dialog open> without
+     role="dialog" (LinkedIn SDUI). The resume section has:
+       - an asterisk label (required signal from label text, not aria-required)
+       - an existing library entry as an unchecked radio choice
+       - an "Upload resume" button for uploading a new file
+     No <input type="file"> is present in the DOM; it appears only after clicking
+     the Upload button or via CDP file-chooser interception. -->
 
 <dialog data-testid="dialog" aria-labelledby="dialog-header" open="">
   <button type="button" aria-label="Dismiss">✕</button>
@@ -22,17 +25,18 @@
         <p>2/4 pages</p>
 
         <div data-testid="lazy-column" data-component-type="LazyColumn">
-          <p>Resume</p>
 
-          <!-- Resume section: button only — NO <input type="file"> in the DOM.
-               The file input is created dynamically when the button is clicked
-               (or the button triggers a CDP file chooser directly). This is why
-               jsScanFields returns ResumeFileSlots=0 in production — the file
-               input scan finds nothing, and the button is not yet detected.
-               aria-required on the section marks this field as required.
-               [UNCONFIRMED]: exact aria-label text; verify against live DOM. -->
-          <div id="resume-section" aria-required="true">
-            <label>Resume (required)</label>
+          <!-- Resume section: NO <input type="file"> in DOM.
+               Required is signalled by the asterisk in the label text.
+               The library entry is an unchecked radio (no resume selected yet). -->
+          <div id="resume-section">
+            <label>Resume <span aria-hidden="true">*</span></label>
+
+            <div>
+              <input type="radio" name="resume-select" id="r-lib1" value="lib1">
+              <label for="r-lib1">my_resume_2026.pdf</label>
+            </div>
+
             <button type="button" id="upload-resume-btn">
               <span><span>Upload resume</span></span>
             </button>

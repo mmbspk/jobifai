@@ -9,6 +9,7 @@ import (
 
 // jsFindApplyPrimary locates the LinkedIn Easy Apply CTA without clicking it.
 const jsFindApplyPrimary = `() => {
+` + jsLinkedInApplyContainerFn + `
 	function allInDOM(root, sel) {
 		const r = [];
 		const walk = (node) => {
@@ -86,8 +87,10 @@ const jsFindApplyPrimary = `() => {
 		if (t === 'next' || t.startsWith('next ') || t === 'done' || t.startsWith('done ')) return 'next';
 		return '';
 	}
+	const container = resolveApplyContainer();
+	if (!container) return { found: false, enabled: false, label: '', kind: '' };
 	const priority = ['submit', 'review', 'continue', 'next'];
-	const candidates = allInDOM(document, 'button, [role="button"], a[role="button"]')
+	const candidates = allInDOM(container, 'button, [role="button"], a[role="button"]')
 		.filter(b => !isMessagingChrome(b) && !isExcludedRail(b) && actionKind(b));
 	for (const kind of priority) {
 		const btn = candidates.find(b => actionKind(b) === kind && isVisible(b));
@@ -104,6 +107,7 @@ const jsFindApplyPrimary = `() => {
 }`
 
 const jsClickApplyNavigation = `() => {
+` + jsLinkedInApplyContainerFn + `
 	function allInDOM(root, sel) {
 		const r = [];
 		const walk = (node) => {
@@ -170,11 +174,12 @@ const jsClickApplyNavigation = `() => {
 				try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch (e2) {}
 			}
 		}
-		try { btn.click(); } catch (e) {}
 		return { ok: true, label: label };
 	}
+	const container = resolveApplyContainer();
+	if (!container) return { ok: false, label: 'apply container not found' };
 	const navKinds = ['review', 'continue', 'next'];
-	const candidates = allInDOM(document, 'button, [role="button"], a[role="button"]')
+	const candidates = allInDOM(container, 'button, [role="button"], a[role="button"]')
 		.filter(b => navKinds.includes(actionKind(b)));
 	for (const kind of navKinds) {
 		const btn = candidates.find(b => actionKind(b) === kind && isVisible(b) && isEnabled(b));
@@ -204,36 +209,25 @@ const jsLinkedInAtFinalReviewFunction = `function linkedInAtFinalReviewPage() {
 		if (btn.hasAttribute('data-live-test-easy-apply-submit-button') || btn.hasAttribute('data-easy-apply-submit-button')) return true;
 		return t.includes('submit application') || t === 'submit' || t.startsWith('submit ');
 	}
-	// Use shared container resolver so this function works for <dialog open> (new SDUI
-	// layout), legacy .jobs-easy-apply-modal, and Seek forms without duplication.
-	const shell = typeof resolveApplyContainer === 'function' ? resolveApplyContainer() : null;
-	if (shell) {
-		if (!isVisible(shell)) return false;
+	const legacyShells = [...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-easy-apply-modal]')];
+	const container = resolveApplyContainer();
+	const shells = [...new Set(container ? [container, ...legacyShells] : legacyShells)];
+	for (const shell of shells) {
+		if (!isVisible(shell)) continue;
 		const headings = [...shell.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"]')].filter(isVisible);
 		const hasReviewHeading = headings.some(h => {
 			const t = (h.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
 			return t.includes('review') && t.includes('application');
 		});
 		const submitBtn = [...shell.querySelectorAll('button,[role="button"]')].find(b => isVisible(b) && isSubmitBtn(b));
-		return !!(hasReviewHeading && submitBtn);
-	}
-	// Fallback: legacy multi-shell scan for contexts without resolveApplyContainer.
-	const shells = [...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-easy-apply-modal]')];
-	for (const s of shells) {
-		if (!isVisible(s)) continue;
-		const headings = [...s.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"]')].filter(isVisible);
-		const hasReviewHeading = headings.some(h => {
-			const t = (h.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
-			return t.includes('review') && t.includes('application');
-		});
-		const submitBtn = [...s.querySelectorAll('button,[role="button"]')].find(b => isVisible(b) && isSubmitBtn(b));
 		if (hasReviewHeading && submitBtn) return true;
 	}
 	return false;
 }`
 
 const jsLinkedInAtFinalReview = `() => {
-` + jsLinkedInApplyContainerFn + jsLinkedInAtFinalReviewFunction + `
+` + jsLinkedInApplyContainerFn + `
+` + jsLinkedInAtFinalReviewFunction + `
 	return linkedInAtFinalReviewPage();
 }`
 
