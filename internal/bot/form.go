@@ -8,6 +8,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -24,6 +25,12 @@ import (
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
+// errUploadIdentityUnverifiable is returned by linkedInWaitForResumeAccepted when the
+// uploaded resume cannot be confirmed as the intended file (e.g. checked radio label
+// does not match the expected filename). Triggers a HOLD rather than a hard failure.
+var errUploadIdentityUnverifiable = errors.New(
+	"linkedin: resume upload identity could not be verified — please confirm selection manually")
+
 type formFieldOption struct {
 	ID    string `json:"id"`
 	Value string `json:"value"`
@@ -37,11 +44,12 @@ type formField struct {
 	ID        string            `json:"id"`          // select / text element id
 	Question  string            `json:"question"`    // visible label text
 	Options   []formFieldOption `json:"options"`     // radio / select choices
-	HasFile      bool              `json:"hasFile"`      // file already attached
-	DocumentKind string            `json:"documentKind"` // resume | cover_letter | unknown
-	Required     bool              `json:"required"`     // file field marked required on form
-	InputType    string            `json:"inputType"`    // text | number | textarea
-	Typeahead    bool              `json:"isTypeahead"`  // combobox requiring dropdown selection
+	HasFile        bool              `json:"hasFile"`         // file already attached
+	DocumentKind   string            `json:"documentKind"`    // resume | cover_letter | unknown
+	Required       bool              `json:"required"`        // file field marked required on form
+	InputType      string            `json:"inputType"`       // text | number | textarea
+	Typeahead      bool              `json:"isTypeahead"`     // combobox requiring dropdown selection
+	UploadViaButton bool             `json:"uploadViaButton"` // slot has no visible input; upload via button click + HandleFileDialog
 }
 
 func (f formField) optionLabels() []string {
@@ -97,23 +105,23 @@ const jsScanFieldsInner = `
 		} catch(e) { return false; }
 	}
 
-	// Anchor on platform-specific apply-form selectors, VISIBLE only.
-	// Seek anchors are listed first; they don't match LinkedIn's DOM, so on
-	// LinkedIn the next anchors win. Conversely, on Seek the LinkedIn anchors
-	// don't match, so we land on a Seek-specific container and don't pick up
-	// the search/refine sidebar's <form>.
-	const anchor =
-		allInDOM(document, "[data-testid='quick-apply-form']").find(isVisible) ||
-		allInDOM(document, "[data-automation='apply-form']").find(isVisible) ||
-		allInDOM(document, "form[data-testid*='applicationForm']").find(isVisible) ||
-		allInDOM(document, '[data-test-form-element]').find(isVisible) ||
-		allInDOM(document, 'fieldset[data-test-form-builder-radio-button-form-component]').find(isVisible) ||
-		allInDOM(document, '.jobs-easy-apply-content').find(isVisible) ||
-		allInDOM(document, '.jobs-easy-apply-modal').find(isVisible);
+	// Locate the active apply-form container using the shared resolver (defined by
+	// jsLinkedInApplyContainerFn, injected before this block). Priority:
+	//   1. LinkedIn native <dialog open> (new SDUI layout, identified by data-sdui-screen)
+	//   2. Legacy LinkedIn class-based modal
+	//   3. Seek form selectors
+	//   4. Semantic fallback preserved below for unknown/future layouts.
+	const anchor = resolveApplyContainer();
 
 	let container = document.body;
 	if (anchor) {
-		container = anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor;
+		// For <dialog open> and .jobs-easy-apply-content: the anchor IS the container.
+		// For older [data-test-form-element] anchors: wrap to nearest form ancestor.
+		const isTopLevelContainer = anchor.tagName === 'DIALOG'
+			|| anchor.matches('.jobs-easy-apply-content,.jobs-easy-apply-modal,[data-testid]');
+		container = isTopLevelContainer
+			? anchor
+			: (anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor);
 	} else {
 		// Semantic fallback: when all platform-specific selectors miss, scope to
 		// any visible dialog or form with at least one required input. Skip
@@ -192,6 +200,61 @@ const jsScanFieldsInner = `
 			question, documentKind: classifyDocumentKind(question), required,
 		});
 	});
+
+	// ── Upload-via-button resume slots (LinkedIn native SDUI layout) ─────────
+	// LinkedIn's new Easy Apply has no visible <input type="file"> in the DOM.
+	// Instead it shows an "Upload resume" button. Since the file input scan above
+	// found nothing (ResumeFileSlots=0), we detect the button here.
+	// Only runs when no visible file input was already found in this section.
+	(function() {
+		function classifyDocumentKindBtn(lbl) {
+			const q = (lbl || '').toLowerCase();
+			if (q.includes('cover')) return 'cover_letter';
+			if (q.includes('resume') || q.includes('r\xe9sum\xe9') || q.includes('cv')) return 'resume';
+			return 'resume'; // default for upload buttons without qualifier
+		}
+		allInDOM(container, 'button,[role="button"]').filter(isVisible).forEach(btn => {
+			const lbl = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.textContent || '')).trim();
+			if (!/\bupload\b/i.test(lbl) || !/\b(resume|cv|r\xe9sum\xe9)\b/i.test(lbl)) return;
+
+			// Find the enclosing form section for this button.
+			const sectionEl = btn.closest('[data-test-form-element],.artdeco-form-element,.fb-form-element,fieldset,[role="group"]')
+			                  || btn.parentElement;
+
+			// Skip if the section already has a visible file input (old layout coexisting
+			// with the button — e.g. LinkedIn A/B experiment). The file-input scan above
+			// already produced the field; adding a button field would double-count.
+			const sectionHasVisibleInput = !!(sectionEl && allInDOM(sectionEl, 'input[type="file"]').some(el => {
+				const a = (el.accept || '').toLowerCase();
+				return (!a || a.includes('pdf') || a.includes('doc') || a.includes('rtf') || a.includes('txt'))
+				    && isContainerVisible(el);
+			}));
+			if (sectionHasVisibleInput) return;
+
+			// hasFile: "Change resume" / "Replace resume" button nearby means a resume was
+			// previously selected (analogous to el.files.length > 0 for hidden inputs).
+			const hasFile = !!(sectionEl && allInDOM(sectionEl, 'button,[role="button"]').some(el => {
+				const t = ((el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '')).toLowerCase();
+				return /\b(change|replace)\b/.test(t) && /\b(resume|cv)\b/.test(t);
+			}));
+
+			// Requiredness: read from section semantics — input.required is always false
+			// when no file input exists. aria-required on the section is confirmed from
+			// the native-dialog-resume.html fixture (aria-required="true" on the wrapper).
+			const required = !!(
+				(sectionEl && (sectionEl.getAttribute('aria-required') === 'true'
+				               || sectionEl.querySelector('[aria-required="true"]')))
+				|| /[\*✱]/.test((sectionEl && sectionEl.querySelector('label,legend,[class*="label"]') || {}).textContent || '')
+			);
+
+			const docKind = classifyDocumentKindBtn(lbl);
+			fields.push({
+				type: 'file', index: -1, hasFile, uploadViaButton: true,
+				question: lbl.replace(/\s+/g, ' ').trim() || 'Resume',
+				documentKind: docKind, required,
+			});
+		});
+	})();
 
 	// ── Radio groups, unanswered ones whose CONTAINER is visible ────────────
 	// NOTE: LinkedIn hides the actual <input type="radio"> with CSS (opacity:0 / size:0)
@@ -335,6 +398,9 @@ const jsScanFieldsInner = `
 	// for every text input) can be disambiguated when filling.
 	let textIdx = 0;
 	allInDOM(container, 'input[type="text"], input[type="number"], input[type="tel"], input[type="email"], textarea').filter(el => {
+		// Exclude reCAPTCHA injected textareas (hidden by LinkedIn/Google on form pages).
+		if (el.name === 'g-recaptcha-response' || el.id === 'g-recaptcha-response') return false;
+		if (el.closest('[id*="recaptcha" i],[class*="recaptcha" i],[id*="captcha" i],[class*="captcha" i]')) return false;
 		// Textareas are often opacity/size-hidden until focused — use container visibility.
 		if (el.tagName === 'TEXTAREA') return isContainerVisible(el);
 		return isVisible(el);
@@ -388,20 +454,135 @@ const jsHasVisibleFormContentInner = `
 				} catch(e) { return false; }
 			}
 			if (linkedInAtFinalReviewPage()) return 0;
-			const root = document.querySelector('[role="dialog"], form') || document.body;
+			const root = resolveApplyContainer();
+			if (!root) return 0;
 			return [...root.querySelectorAll('input:not([type="hidden"]), select, textarea')]
 				.filter(el => isVisible(el) && (!el.value.trim() || el.getAttribute('aria-invalid') === 'true')).length;
 `
 
 var jsScanFields string
 var jsHasVisibleFormContent string
+var jsLinkedInClickUploadResume string
+var jsLinkedInCheckResumeAccepted string
+
+// jsLinkedInApplyContainerFn defines resolveApplyContainer() — the single source of truth
+// for locating the active Easy Apply dialog. Uses document.querySelectorAll (no allInDOM
+// dependency) so it can be embedded in any JS constant. Priority:
+//  1. LinkedIn native <dialog open> — confirmed by data-sdui-screen*="EasyApply" inside
+//  2. Legacy LinkedIn class-based modal (.jobs-easy-apply-content, .jobs-easy-apply-modal)
+//  3. Seek form selectors
+//
+// Embedded before jsScanFieldsInner, jsLinkedInAtFinalReviewFunction, and jsClickApplyNavigation
+// so resolveApplyContainer() is in scope wherever those functions run.
+const jsLinkedInApplyContainerFn = `
+function resolveApplyContainer() {
+	function rectVisible(el) {
+		try { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2; }
+		catch(e) { return false; }
+	}
+	// LinkedIn's new SDUI Easy Apply: <dialog open> without role="dialog" attribute.
+	// Identified by the SDUI screen value confirmed in Oct/Sep 2026 captures.
+	for (const d of document.querySelectorAll('dialog[open]')) {
+		if (!rectVisible(d)) continue;
+		if (d.querySelector('[data-sdui-screen*="EasyApply"]')) return d;
+	}
+	// Legacy LinkedIn: class-based modal (retained for accounts/regions not yet migrated).
+	for (const sel of ['.jobs-easy-apply-content', '.jobs-easy-apply-modal']) {
+		const el = document.querySelector(sel);
+		if (el && rectVisible(el)) return el;
+	}
+	// LinkedIn role="dialog" fallback: covers older A/B modal variants where the apply
+	// container has role="dialog" but not the SDUI-era class names. Only unambiguous
+	// when exactly one such element is visible (multiple visible dialogs = skip).
+	{
+		const roleDialogs = [...document.querySelectorAll('[role="dialog"]')].filter(rectVisible);
+		if (roleDialogs.length === 1) return roleDialogs[0];
+	}
+	// Seek form selectors.
+	for (const sel of [
+		"[data-testid='quick-apply-form']",
+		"[data-automation='apply-form']",
+		"form[data-testid*='applicationForm']",
+	]) {
+		const el = document.querySelector(sel);
+		if (el && rectVisible(el)) return el;
+	}
+	return null;
+}
+`
 
 func init() {
 	jsScanFields = `() => {
-` + jsLinkedInAtFinalReviewFunction + jsScanFieldsInner + `
+` + jsLinkedInApplyContainerFn + jsLinkedInAtFinalReviewFunction + jsScanFieldsInner + `
 }`
 	jsHasVisibleFormContent = `() => {
-` + jsLinkedInAtFinalReviewFunction + jsHasVisibleFormContentInner + `
+` + jsLinkedInApplyContainerFn + jsLinkedInAtFinalReviewFunction + jsHasVisibleFormContentInner + `
+}`
+
+	jsLinkedInClickUploadResume = `() => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return { ok: false, reason: 'apply container not found — upload cannot be scoped' };
+	const btns = [...container.querySelectorAll('button,[role="button"]')];
+	const btn = btns.find(b => {
+		try {
+			const r = b.getBoundingClientRect();
+			if (r.width < 2 && r.height < 2) return false;
+		} catch(e) { return false; }
+		const lbl = ((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '')).trim();
+		return /\bupload\b/i.test(lbl) && /\b(resume|cv|r\xe9sum\xe9)\b/i.test(lbl);
+	});
+	if (!btn) return { ok: false, reason: 'Upload resume button not found in container' };
+	try { btn.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
+	try { btn.focus(); } catch(e) {}
+	const view = btn.ownerDocument && btn.ownerDocument.defaultView || window;
+	const opts = { bubbles: true, cancelable: true, view };
+	for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+		try {
+			if (type.startsWith('pointer')) {
+				btn.dispatchEvent(new PointerEvent(type, Object.assign({ pointerId: 1, pointerType: 'mouse' }, opts)));
+			} else {
+				btn.dispatchEvent(new MouseEvent(type, opts));
+			}
+		} catch(e) {
+			try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch(e2) {}
+		}
+	}
+	return { ok: true };
+}`
+
+	jsLinkedInCheckResumeAccepted = `(expectedFilename) => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return { accepted: false, error: false, filenameVisible: false };
+	const hasError = !!container.querySelector('[aria-invalid="true"],.artdeco-inline-feedback--error');
+	if (hasError) return { accepted: false, error: true, filenameVisible: false };
+	const base = (expectedFilename || '').toLowerCase();
+	const stem = base.replace(/\.[^.]+$/, '').replace(/[_\-]/g, ' ');
+	function nameMatch(text) {
+		const t = (text || '').toLowerCase();
+		return !!base && (t.includes(base) || (!!stem && t.includes(stem)));
+	}
+	// Primary: a checked radio in the resume section — proves which entry is selected.
+	const radios = [...container.querySelectorAll('input[type="radio"]')];
+	if (radios.length > 0) {
+		const checked = radios.find(r => r.checked);
+		if (!checked) return { accepted: false, error: false, filenameVisible: false };
+		const labelEl = container.querySelector('label[for="' + checked.id + '"]') ||
+			checked.closest('label') || checked.parentElement;
+		const filenameVisible = nameMatch(labelEl && labelEl.textContent);
+		return { accepted: true, error: false, filenameVisible };
+	}
+	// Secondary (upload-only layout without radio choices): require Change/Replace button.
+	const changeBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
+		const t = ((b.getAttribute('aria-label')||'')+' '+(b.textContent||'')).toLowerCase();
+		return /\b(change|replace)\b/.test(t) && /\b(resume|cv)\b/.test(t);
+	});
+	if (!changeBtn) return { accepted: false, error: false, filenameVisible: false };
+	const section = changeBtn.closest('[data-test-form-element],.artdeco-form-element,fieldset,[role="group"]') ||
+		changeBtn.parentElement;
+	const filenameVisible = nameMatch(section && section.textContent);
+	return { accepted: true, error: false, filenameVisible };
 }`
 }
 
@@ -914,7 +1095,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		switch f.Type {
 
 		case "file":
-			if lazy.reviewPrepareOnly {
+			if lazy.reviewPrepareOnly && !(f.UploadViaButton && f.Required) {
 				continue
 			}
 			resumePath, coverPath := lazy.get()
@@ -967,8 +1148,15 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				default:
 					uploadErr = b.seekUploadResume(page, path)
 				}
+			} else if f.UploadViaButton {
+				uploadErr = b.formUploadViaButton(ctx, page, path)
 			} else {
 				uploadErr = b.formUploadFile(page, path, f.Index)
+			}
+			if errors.Is(uploadErr, errUploadIdentityUnverifiable) {
+				lazy.holdReason = uploadErr.Error()
+				filled = true
+				continue
 			}
 			if uploadErr != nil {
 				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kindLabel, uploadErr)
@@ -1248,6 +1436,130 @@ func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int) error {
 		allInDOM(document, 'input[data-rod-upload-target]').forEach(el => el.removeAttribute('data-rod-upload-target'));
 	}`)
 	return nil
+}
+
+// formUploadViaButton handles LinkedIn's native-dialog "Upload resume" button layout.
+// chooserCtx is derived from the operation ctx so cancellation propagates to the
+// file-chooser goroutine. The goroutine is always joined before returning.
+func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath string) error {
+	chooserCtx, chooserCancel := context.WithCancel(ctx)
+	defer chooserCancel()
+	ctxPage := page.Context(chooserCtx)
+
+	var chooserEvent proto.PageFileChooserOpened
+	chooserReady := ctxPage.WaitEvent(&chooserEvent)
+
+	interceptOn := proto.PageSetInterceptFileChooserDialog{Enabled: true}
+	if err := interceptOn.Call(page); err != nil {
+		return fmt.Errorf("linkedin: file chooser intercept setup: %w", err)
+	}
+	defer func() { _ = proto.PageSetInterceptFileChooserDialog{Enabled: false}.Call(page) }()
+
+	// Click BEFORE starting the goroutine so a failed click needs no goroutine join.
+	clickRes, clickErr := page.Timeout(5 * time.Second).Eval(jsLinkedInClickUploadResume)
+	if clickErr != nil {
+		return fmt.Errorf("linkedin: upload button click: %w", clickErr)
+	}
+	if clickRes == nil || !clickRes.Value.Get("ok").Bool() {
+		reason := "unknown"
+		if clickRes != nil {
+			reason = clickRes.Value.Get("reason").String()
+		}
+		return fmt.Errorf("linkedin: %s", reason)
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		chooserReady()
+		if chooserCtx.Err() != nil {
+			waitCh <- chooserCtx.Err()
+			return
+		}
+		waitCh <- proto.DOMSetFileInputFiles{
+			Files:         []string{filePath},
+			BackendNodeID: chooserEvent.BackendNodeID,
+		}.Call(ctxPage)
+	}()
+
+	// Brief DOM-settle before checking for a limit indicator.
+	time.Sleep(400 * time.Millisecond)
+	if limitErr := linkedInHandleResumeLimitDialog(page); limitErr != nil {
+		chooserCancel()
+		<-waitCh
+		return limitErr
+	}
+
+	timer := time.NewTimer(12 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		chooserCancel()
+		<-waitCh
+		return ctx.Err()
+	case err := <-waitCh:
+		if err != nil {
+			return fmt.Errorf("linkedin: file chooser deliver: %w", err)
+		}
+	case <-timer.C:
+		chooserCancel()
+		<-waitCh
+		return fmt.Errorf("linkedin: file chooser did not open within 12 s — " +
+			"upload mechanism may differ from CDP file-chooser; inspect live DOM")
+	}
+
+	return linkedInWaitForResumeAccepted(ctx, page, filePath)
+}
+
+// linkedInHandleResumeLimitDialog checks for a resume-library-full indicator immediately
+// after the upload button is clicked. Returns an actionable error if found, nil otherwise.
+// The selectors are unconfirmed — update them after observing the limit dialog in live DOM.
+func linkedInHandleResumeLimitDialog(page *rod.Page) error {
+	res, err := page.Timeout(2 * time.Second).Eval(`() => {
+		// [UNCONFIRMED] — verify selector from live LinkedIn DOM when library is full.
+		return !!(document.querySelector('[aria-label*="resume limit" i],[data-test*="resume-limit"],[data-testid*="resume-limit"]'));
+	}`)
+	if err != nil {
+		return nil // eval error means no limit element — not a limit situation
+	}
+	if res.Value.Bool() {
+		return fmt.Errorf("linkedin: resume library full — remove an old resume from your LinkedIn profile and retry")
+	}
+	return nil
+}
+
+// linkedInWaitForResumeAccepted polls within the resolved container for evidence
+// that LinkedIn accepted the uploaded resume. Verifies the accepted entry matches
+// filePath by checking the checked radio label. Returns errUploadIdentityUnverifiable
+// (a HOLD sentinel) when the file was accepted but identity cannot be confirmed.
+func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page, filePath string) error {
+	base := filePath
+	if i := strings.LastIndexAny(filePath, "/\\"); i >= 0 {
+		base = filePath[i+1:]
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		res, evalErr := page.Timeout(3 * time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
+		if evalErr != nil {
+			log.Warn().Err(evalErr).Msg("linkedin: waitForResumeAccepted eval error")
+		} else {
+			if res.Value.Get("error").Bool() {
+				return fmt.Errorf("linkedin: upload rejected by LinkedIn (error indicator visible)")
+			}
+			if res.Value.Get("accepted").Bool() {
+				if !res.Value.Get("filenameVisible").Bool() {
+					return errUploadIdentityUnverifiable
+				}
+				return nil
+			}
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return fmt.Errorf("linkedin: resume acceptance not confirmed within 10 s")
 }
 
 // ── answerFormQuestion ────────────────────────────────────────────────────────

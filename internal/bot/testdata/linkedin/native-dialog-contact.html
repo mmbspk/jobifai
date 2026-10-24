@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body>
+<!-- Sanitized fixture based on live captures (Oct 22 2026 / Sep 20 2026).
+     Confirmed structure: <dialog open data-testid="dialog"> with
+     data-sdui-screen="...easyapply.EasyApply" inside.
+     No role="dialog" attribute; no .jobs-easy-apply-* classes.
+     Nav button text is plain "Next" inside nested spans, no data-* attributes. -->
+
+<!-- Page-level navigation bar (must not be picked up by container detection) -->
+<nav data-testid="primary-nav">
+  <button type="button" aria-label="Home">Home</button>
+</nav>
+
+<!-- The Easy Apply dialog: <dialog open> without role="dialog" -->
+<dialog data-testid="dialog" aria-labelledby="dialog-header" open="">
+  <button type="button" aria-label="Dismiss">✕</button>
+
+  <div>
+    <header id="dialog-header">
+      <h2>Apply to Test Company</h2>
+    </header>
+
+    <!-- SDUI screen identifier (confirmed from captures) -->
+    <div data-testid="dialog-content">
+      <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+
+        <!-- Progress indicator -->
+        <p>1/4 pages</p>
+
+        <!-- Contact info step -->
+        <div data-testid="lazy-column" data-component-type="LazyColumn">
+          <p>Contact info</p>
+
+          <div>
+            <label for="first-name-input">First name*</label>
+            <input required="" id="first-name-input" type="text" value="Test" />
+          </div>
+
+          <div>
+            <label for="last-name-input">Last name*</label>
+            <input required="" id="last-name-input" type="text" value="User" />
+          </div>
+
+          <div>
+            <label for="email-input">Email address*</label>
+            <select required="" id="email-input">
+              <option value="test@example.com">test@example.com</option>
+            </select>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Footer with navigation button (plain text, no data-* attributes) -->
+    <footer>
+      <button type="button">
+        <span><span>Next</span></span>
+      </button>
+    </footer>
+  </div>
+</dialog>
+
+<!-- Job details page behind the dialog (must not interfere with container) -->
+<div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.JobDetails">
+  <h1>Software Engineer</h1>
+</div>
+
+</body>
+</html>
