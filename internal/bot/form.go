@@ -8,6 +8,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -23,6 +24,12 @@ import (
 )
 
 // ── Data types ────────────────────────────────────────────────────────────────
+
+// errUploadIdentityUnverifiable is returned by linkedInWaitForResumeAccepted when the
+// uploaded resume cannot be confirmed as the intended file (e.g. checked radio label
+// does not match the expected filename). Triggers a HOLD rather than a hard failure.
+var errUploadIdentityUnverifiable = errors.New(
+	"linkedin: resume upload identity could not be verified — please confirm selection manually")
 
 type formFieldOption struct {
 	ID    string `json:"id"`
@@ -447,7 +454,8 @@ const jsHasVisibleFormContentInner = `
 				} catch(e) { return false; }
 			}
 			if (linkedInAtFinalReviewPage()) return 0;
-			const root = document.querySelector('[role="dialog"], form') || document.body;
+			const root = resolveApplyContainer();
+			if (!root) return 0;
 			return [...root.querySelectorAll('input:not([type="hidden"]), select, textarea')]
 				.filter(el => isVisible(el) && (!el.value.trim() || el.getAttribute('aria-invalid') === 'true')).length;
 `
@@ -483,6 +491,13 @@ function resolveApplyContainer() {
 		const el = document.querySelector(sel);
 		if (el && rectVisible(el)) return el;
 	}
+	// LinkedIn role="dialog" fallback: covers older A/B modal variants where the apply
+	// container has role="dialog" but not the SDUI-era class names. Only unambiguous
+	// when exactly one such element is visible (multiple visible dialogs = skip).
+	{
+		const roleDialogs = [...document.querySelectorAll('[role="dialog"]')].filter(rectVisible);
+		if (roleDialogs.length === 1) return roleDialogs[0];
+	}
 	// Seek form selectors.
 	for (const sel of [
 		"[data-testid='quick-apply-form']",
@@ -506,7 +521,8 @@ func init() {
 
 	jsLinkedInClickUploadResume = `() => {
 ` + jsLinkedInApplyContainerFn + `
-	const container = resolveApplyContainer() || document.body;
+	const container = resolveApplyContainer();
+	if (!container) return { ok: false, reason: 'apply container not found — upload cannot be scoped' };
 	const btns = [...container.querySelectorAll('button,[role="button"]')];
 	const btn = btns.find(b => {
 		try {
@@ -532,22 +548,41 @@ func init() {
 			try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch(e2) {}
 		}
 	}
-	try { btn.click(); } catch(e) {}
 	return { ok: true };
 }`
 
-	jsLinkedInCheckResumeAccepted = `() => {
+	jsLinkedInCheckResumeAccepted = `(expectedFilename) => {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer();
-	if (!container) return { accepted: false, error: false };
-	const btns = [...container.querySelectorAll('button,[role="button"]')];
-	const changed = btns.some(b => {
-		const t = ((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '')).toLowerCase();
+	if (!container) return { accepted: false, error: false, filenameVisible: false };
+	const hasError = !!container.querySelector('[aria-invalid="true"],.artdeco-inline-feedback--error');
+	if (hasError) return { accepted: false, error: true, filenameVisible: false };
+	const base = (expectedFilename || '').toLowerCase();
+	const stem = base.replace(/\.[^.]+$/, '').replace(/[_\-]/g, ' ');
+	function nameMatch(text) {
+		const t = (text || '').toLowerCase();
+		return !!base && (t.includes(base) || (!!stem && t.includes(stem)));
+	}
+	// Primary: a checked radio in the resume section — proves which entry is selected.
+	const radios = [...container.querySelectorAll('input[type="radio"]')];
+	if (radios.length > 0) {
+		const checked = radios.find(r => r.checked);
+		if (!checked) return { accepted: false, error: false, filenameVisible: false };
+		const labelEl = container.querySelector('label[for="' + checked.id + '"]') ||
+			checked.closest('label') || checked.parentElement;
+		const filenameVisible = nameMatch(labelEl && labelEl.textContent);
+		return { accepted: true, error: false, filenameVisible };
+	}
+	// Secondary (upload-only layout without radio choices): require Change/Replace button.
+	const changeBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
+		const t = ((b.getAttribute('aria-label')||'')+' '+(b.textContent||'')).toLowerCase();
 		return /\b(change|replace)\b/.test(t) && /\b(resume|cv)\b/.test(t);
 	});
-	// [UNCONFIRMED] error selector — verify from a live rejected-upload scenario.
-	const hasError = !!container.querySelector('[aria-invalid="true"],.artdeco-inline-feedback--error');
-	return { accepted: changed && !hasError, error: hasError };
+	if (!changeBtn) return { accepted: false, error: false, filenameVisible: false };
+	const section = changeBtn.closest('[data-test-form-element],.artdeco-form-element,fieldset,[role="group"]') ||
+		changeBtn.parentElement;
+	const filenameVisible = nameMatch(section && section.textContent);
+	return { accepted: true, error: false, filenameVisible };
 }`
 }
 
@@ -1118,6 +1153,11 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			} else {
 				uploadErr = b.formUploadFile(page, path, f.Index)
 			}
+			if errors.Is(uploadErr, errUploadIdentityUnverifiable) {
+				lazy.holdReason = uploadErr.Error()
+				filled = true
+				continue
+			}
 			if uploadErr != nil {
 				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kindLabel, uploadErr)
 			}
@@ -1399,25 +1439,23 @@ func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int) error {
 }
 
 // formUploadViaButton handles LinkedIn's native-dialog "Upload resume" button layout.
-// The upload mechanism (whether clicking fires a CDP file-chooser event or shows a
-// secondary dialog) has not been confirmed from live DOM — HandleFileDialog covers the
-// CDP-file-chooser path. If the timeout fires, the error message directs investigation.
+// chooserCtx is derived from the operation ctx so cancellation propagates to the
+// file-chooser goroutine. The goroutine is always joined before returning.
 func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath string) error {
-	// Set up file-chooser interception BEFORE clicking so the CDP event is not missed.
+	chooserCtx, chooserCancel := context.WithCancel(ctx)
+	defer chooserCancel()
+	ctxPage := page.Context(chooserCtx)
+
+	var chooserEvent proto.PageFileChooserOpened
+	chooserReady := ctxPage.WaitEvent(&chooserEvent)
+
 	interceptOn := proto.PageSetInterceptFileChooserDialog{Enabled: true}
 	if err := interceptOn.Call(page); err != nil {
 		return fmt.Errorf("linkedin: file chooser intercept setup: %w", err)
 	}
-	// Unconditional cleanup even if the click or chooser wait fails.
-	defer func() {
-		interceptOff := proto.PageSetInterceptFileChooserDialog{Enabled: false}
-		_ = interceptOff.Call(page)
-	}()
+	defer func() { _ = proto.PageSetInterceptFileChooserDialog{Enabled: false}.Call(page) }()
 
-	var chooserEvent proto.PageFileChooserOpened
-	chooserReady := page.WaitEvent(&chooserEvent)
-
-	// Click the "Upload resume" button within the resolved container.
+	// Click BEFORE starting the goroutine so a failed click needs no goroutine join.
 	clickRes, clickErr := page.Timeout(5 * time.Second).Eval(jsLinkedInClickUploadResume)
 	if clickErr != nil {
 		return fmt.Errorf("linkedin: upload button click: %w", clickErr)
@@ -1430,36 +1468,46 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 		return fmt.Errorf("linkedin: %s", reason)
 	}
 
-	// Brief DOM-settle before checking for a limit indicator.
-	// This is NOT a timeout inference — the limit dialog, if present, should appear
-	// within milliseconds of the button click.
-	time.Sleep(400 * time.Millisecond)
-	if limitErr := linkedInHandleResumeLimitDialog(page); limitErr != nil {
-		return limitErr
-	}
-
-	// Wait for the CDP file-chooser event (PageFileChooserOpened) and deliver the file.
 	waitCh := make(chan error, 1)
 	go func() {
-		chooserReady() // blocks until event fires or page closes
+		chooserReady()
+		if chooserCtx.Err() != nil {
+			waitCh <- chooserCtx.Err()
+			return
+		}
 		waitCh <- proto.DOMSetFileInputFiles{
 			Files:         []string{filePath},
 			BackendNodeID: chooserEvent.BackendNodeID,
-		}.Call(page)
+		}.Call(ctxPage)
 	}()
+
+	// Brief DOM-settle before checking for a limit indicator.
+	time.Sleep(400 * time.Millisecond)
+	if limitErr := linkedInHandleResumeLimitDialog(page); limitErr != nil {
+		chooserCancel()
+		<-waitCh
+		return limitErr
+	}
+
+	timer := time.NewTimer(12 * time.Second)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
+		chooserCancel()
+		<-waitCh
 		return ctx.Err()
 	case err := <-waitCh:
 		if err != nil {
 			return fmt.Errorf("linkedin: file chooser deliver: %w", err)
 		}
-	case <-time.After(12 * time.Second):
+	case <-timer.C:
+		chooserCancel()
+		<-waitCh
 		return fmt.Errorf("linkedin: file chooser did not open within 12 s — " +
 			"upload mechanism may differ from CDP file-chooser; inspect live DOM")
 	}
 
-	return linkedInWaitForResumeAccepted(ctx, page)
+	return linkedInWaitForResumeAccepted(ctx, page, filePath)
 }
 
 // linkedInHandleResumeLimitDialog checks for a resume-library-full indicator immediately
@@ -1480,9 +1528,14 @@ func linkedInHandleResumeLimitDialog(page *rod.Page) error {
 }
 
 // linkedInWaitForResumeAccepted polls within the resolved container for evidence
-// that LinkedIn accepted the uploaded resume (button label changes to "Change resume").
-// Also detects rejection (aria-invalid indicator).
-func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page) error {
+// that LinkedIn accepted the uploaded resume. Verifies the accepted entry matches
+// filePath by checking the checked radio label. Returns errUploadIdentityUnverifiable
+// (a HOLD sentinel) when the file was accepted but identity cannot be confirmed.
+func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page, filePath string) error {
+	base := filePath
+	if i := strings.LastIndexAny(filePath, "/\\"); i >= 0 {
+		base = filePath[i+1:]
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -1490,7 +1543,7 @@ func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page) error {
 			return ctx.Err()
 		default:
 		}
-		res, evalErr := page.Timeout(3 * time.Second).Eval(jsLinkedInCheckResumeAccepted)
+		res, evalErr := page.Timeout(3 * time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
 		if evalErr != nil {
 			log.Warn().Err(evalErr).Msg("linkedin: waitForResumeAccepted eval error")
 		} else {
@@ -1498,6 +1551,9 @@ func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page) error {
 				return fmt.Errorf("linkedin: upload rejected by LinkedIn (error indicator visible)")
 			}
 			if res.Value.Get("accepted").Bool() {
+				if !res.Value.Get("filenameVisible").Bool() {
+					return errUploadIdentityUnverifiable
+				}
 				return nil
 			}
 		}
