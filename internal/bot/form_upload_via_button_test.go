@@ -196,3 +196,120 @@ func TestFormUploadViaButton_ContextCancelled(t *testing.T) {
 	require.True(t, errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled),
 		"must return context error when cancelled before chooser fires, got: %v", err)
 }
+
+// TestFormUploadViaButton_TrustedClick_DeliversFile is the end-to-end test that calls the
+// production formUploadViaButton with a trusted Rod click and verifies the file is delivered.
+// The button's click listener synchronously creates an <input type=file> and calls f.click().
+// The change handler creates a checked radio with the uploaded filename, simulating LinkedIn's
+// actual behavior after a successful upload.
+func TestFormUploadViaButton_TrustedClick_DeliversFile(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <div id="resume-section">
+      <label>Resume <span aria-hidden="true">*</span></label>
+      <button type="button" id="upload-btn">
+        <span><span>Upload resume</span></span>
+      </button>
+    </div>
+    <footer><button type="button"><span>Next</span></button></footer>
+  </div>
+</dialog>
+<script>
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.id = 'file-chooser';
+  f.style.display = 'none';
+  f.addEventListener('change', function() {
+    var name = f.files[0] ? f.files[0].name : 'unknown.pdf';
+    var wrap = document.createElement('div');
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'resume-select';
+    radio.id = 'r-uploaded';
+    radio.checked = true;
+    var label = document.createElement('label');
+    label.htmlFor = 'r-uploaded';
+    label.textContent = name;
+    wrap.appendChild(radio);
+    wrap.appendChild(label);
+    document.getElementById('resume-section').insertBefore(wrap, document.getElementById('upload-btn'));
+    f.remove();
+  });
+  document.body.appendChild(f);
+  f.click();
+});
+</script>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "my_tailored_resume.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	err := b.formUploadViaButton(context.Background(), page, tmpFile)
+	require.NoError(t, err, "trusted click must deliver file and confirm radio selection")
+
+	// Verify the radio with the correct filename is present and checked.
+	res, err := page.Eval(jsLinkedInCheckResumeAccepted, "my_tailored_resume.pdf")
+	require.NoError(t, err)
+	require.True(t, res.Value.Get("accepted").Bool())
+	require.True(t, res.Value.Get("filenameVisible").Bool())
+}
+
+// TestFormUploadViaButton_DuplicateFilename_Unverifiable verifies that when the expected
+// filename was already selected before upload and the section radio count does not increase
+// after upload, errUploadIdentityUnverifiable is returned rather than a false success.
+func TestFormUploadViaButton_DuplicateFilename_Unverifiable(t *testing.T) {
+	// Resume section already has "my_tailored_resume.pdf" checked.
+	// Upload button click creates a file input but the change handler does NOT
+	// add a new radio — simulating LinkedIn reusing the existing library entry.
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <div id="resume-section">
+      <label>Resume <span aria-hidden="true">*</span></label>
+      <div>
+        <input type="radio" name="resume-select" id="r-existing" checked>
+        <label for="r-existing">my_tailored_resume.pdf</label>
+      </div>
+      <button type="button" id="upload-btn">
+        <span><span>Upload resume</span></span>
+      </button>
+    </div>
+    <footer><button type="button"><span>Next</span></button></footer>
+  </div>
+</dialog>
+<script>
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.style.display = 'none';
+  // change handler intentionally does NOT add a new radio (duplicate scenario)
+  f.addEventListener('change', function() { f.remove(); });
+  document.body.appendChild(f);
+  f.click();
+});
+</script>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "my_tailored_resume.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	err := b.formUploadViaButton(context.Background(), page, tmpFile)
+	require.True(t, errors.Is(err, errUploadIdentityUnverifiable),
+		"pre-existing same filename with no new radio must return errUploadIdentityUnverifiable, got: %v", err)
+}

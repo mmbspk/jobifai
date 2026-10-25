@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -437,6 +438,8 @@ var jsHasVisibleFormContent string
 var jsLinkedInClickUploadResume string
 var jsLinkedInCheckResumeAccepted string
 var jsLinkedInFinalReviewResumeCheck string
+var jsLinkedInFindUploadButton string
+var jsLinkedInResumePreUploadState string
 
 // jsLinkedInApplyContainerFn defines resolveApplyContainer() — the single source of truth
 // for locating the active Easy Apply dialog. Uses document.querySelectorAll (no allInDOM
@@ -537,9 +540,9 @@ func init() {
 
 	const base = (expectedFilename || '').toLowerCase();
 	function extractFilename(text) {
-		const t = (text || '').toLowerCase().trim();
-		const m = t.match(/\b([\w\-\.]+\.(pdf|doc|docx|txt|rtf))\b/);
-		return m ? m[1] : null;
+		const t = (text || '').trim();
+		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
+		return m ? m[1].toLowerCase() : null;
 	}
 
 	// Locate the resume section strictly via the "Upload resume" button.
@@ -578,9 +581,9 @@ func init() {
 	const base = (expectedFilename || '').toLowerCase();
 	if (!base) return { verified: true };
 	function extractFilename(text) {
-		const t = (text || '').toLowerCase().trim();
-		const m = t.match(/\b([\w\-\.]+\.(pdf|doc|docx|txt|rtf))\b/);
-		return m ? m[1] : null;
+		const t = (text || '').trim();
+		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
+		return m ? m[1].toLowerCase() : null;
 	}
 	const headings = [...container.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"],[class*="heading"]')];
 	const resumeHeading = headings.find(h => /\bresume\b/i.test(h.textContent || ''));
@@ -589,6 +592,48 @@ func init() {
 	if (!section) return { verified: false };
 	const extracted = extractFilename(section.textContent);
 	return { verified: extracted !== null && extracted === base };
+}`
+
+	jsLinkedInFindUploadButton = `() => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return null;
+	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
+		const t = (b.textContent || '').toLowerCase();
+		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
+	});
+	return uploadBtn || null;
+}`
+
+	jsLinkedInResumePreUploadState = `() => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return { count: 0, checkedFilename: '' };
+	function extractFilename(text) {
+		const t = (text || '').trim().toLowerCase();
+		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
+		return m ? m[1] : null;
+	}
+	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
+		const t = (b.textContent || '').toLowerCase();
+		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
+	});
+	if (!uploadBtn) return { count: 0, checkedFilename: '' };
+	let section = uploadBtn.parentElement;
+	while (section && section !== container) {
+		if (section.querySelector('input[type="radio"]')) break;
+		section = section.parentElement;
+	}
+	if (!section || section === container) return { count: 0, checkedFilename: '' };
+	const radios = [...section.querySelectorAll('input[type="radio"]')];
+	const checked = radios.find(r => r.checked);
+	let checkedFilename = '';
+	if (checked) {
+		const labelEl = section.querySelector('label[for="' + checked.id + '"]') ||
+			checked.closest('label') || checked.parentElement;
+		checkedFilename = extractFilename(labelEl && labelEl.textContent) || '';
+	}
+	return { count: radios.length, checkedFilename };
 }`
 }
 
@@ -1462,16 +1507,23 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	defer func() { _ = proto.PageSetInterceptFileChooserDialog{Enabled: false}.Call(page) }()
 
 	// Click BEFORE starting the goroutine so a failed click needs no goroutine join.
-	clickRes, clickErr := ctxPage.Timeout(5 * time.Second).Eval(jsLinkedInClickUploadResume)
-	if clickErr != nil {
-		return fmt.Errorf("linkedin: upload button click: %w", clickErr)
+	// Capture pre-upload state for duplicate-filename guard.
+	var preCount int
+	var preCheckedFilename string
+	if preRes, preErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState); preErr == nil {
+		preCount = int(preRes.Value.Get("count").Num())
+		preCheckedFilename = preRes.Value.Get("checkedFilename").String()
 	}
-	if clickRes == nil || !clickRes.Value.Get("ok").Bool() {
-		reason := "unknown"
-		if clickRes != nil {
-			reason = clickRes.Value.Get("reason").String()
-		}
-		return fmt.Errorf("linkedin: %s", reason)
+
+	// Find the upload button element for a trusted Rod click.
+	// Rod's Click uses CDP Input.dispatchMouseEvent — a trusted user gesture.
+	// This is required so that <input type=file>.click() inside the handler opens the chooser.
+	btn, btnErr := ctxPage.Timeout(5 * time.Second).ElementByJS(rod.Eval(jsLinkedInFindUploadButton))
+	if btnErr != nil {
+		return fmt.Errorf("upload: button not found: %w", btnErr)
+	}
+	if clickErr := btn.Click(proto.InputMouseButtonLeft, 1); clickErr != nil {
+		return fmt.Errorf("upload: click failed: %w", clickErr)
 	}
 
 	waitCh := make(chan error, 1)
@@ -1513,7 +1565,21 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 			"upload mechanism may differ from CDP file-chooser; inspect live DOM")
 	}
 
-	return linkedInWaitForResumeAccepted(ctx, page, filePath)
+	if err := linkedInWaitForResumeAccepted(ctx, page, filePath); err != nil {
+		return err
+	}
+	// Duplicate-filename guard: if the expected file was already selected and the
+	// section radio count did not increase, we cannot confirm the new file was uploaded.
+	base := strings.ToLower(filepath.Base(filePath))
+	if preCheckedFilename == base {
+		if postRes, postErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState); postErr == nil {
+			postCount := int(postRes.Value.Get("count").Num())
+			if postCount <= preCount {
+				return errUploadIdentityUnverifiable
+			}
+		}
+	}
+	return nil
 }
 
 // linkedInHandleResumeLimitDialog checks for a resume-library-full indicator immediately
