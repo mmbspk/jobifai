@@ -450,3 +450,167 @@ func TestScanApplyStepsForPrepare_NativeDialog(t *testing.T) {
 		})
 	}
 }
+
+// TestScanApplyStepsForPrepare_UploadNavigateFinalReview is a connected integration
+// test that exercises the full upload → navigate → final-review path through
+// scanApplyStepsForPrepare. It uses a 3-step native dialog served via fixtureServer
+// so that verifyJobIdentity accepts the localhost URL:
+//
+//   - Step 1: resume section with an upload button; Rod's trusted .Click() triggers
+//     the CDP file chooser; the change handler creates a checked radio with the
+//     uploaded filename and sets window._uploadedResumeName.
+//   - Step 2: a text field (filler step, skipped in reviewPrepareOnly mode).
+//   - Step 3: final-review heading + ReviewSection + submit button; the "Next"
+//     JS on step 2→3 propagates window._uploadedResumeName into the review section.
+//
+// Sub-tests:
+//  1. correct_upload   — radio gets the real filename → prepareScanComplete=true
+//  2. wrong_file_from_upload — change handler hard-codes "wrong_resume.pdf" →
+//     errUploadIdentityUnverifiable → holdReason set, prepareScanComplete=false
+func TestScanApplyStepsForPrepare_UploadNavigateFinalReview(t *testing.T) {
+	br := launchTestBrowser(t)
+
+	const jobID = "scan-upload-job1"
+
+	// buildHTML creates the 3-step dialog HTML. When wrongFile is true the change
+	// handler hard-codes "wrong_resume.pdf" instead of using f.files[0].name.
+	buildHTML := func(wrongFile bool) string {
+		changeBody := `
+    var name = f.files[0] ? f.files[0].name : 'unknown.pdf';
+    window._uploadedResumeName = name;
+    var wrap = document.createElement('div');
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'resume-select';
+    radio.id = 'r-uploaded';
+    radio.checked = true;
+    var lbl = document.createElement('label');
+    lbl.htmlFor = 'r-uploaded';
+    lbl.textContent = name;
+    wrap.appendChild(radio);
+    wrap.appendChild(lbl);
+    document.getElementById('resume-section').insertBefore(wrap, document.getElementById('upload-btn'));
+    f.remove();`
+		if wrongFile {
+			changeBody = `
+    window._uploadedResumeName = 'wrong_resume.pdf';
+    var wrap = document.createElement('div');
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'resume-select';
+    radio.id = 'r-uploaded';
+    radio.checked = true;
+    var lbl = document.createElement('label');
+    lbl.htmlFor = 'r-uploaded';
+    lbl.textContent = 'wrong_resume.pdf';
+    wrap.appendChild(radio);
+    wrap.appendChild(lbl);
+    document.getElementById('resume-section').insertBefore(wrap, document.getElementById('upload-btn'));
+    f.remove();`
+		}
+		return `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" data-job-id="` + jobID + `" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+
+    <!-- Step 1: resume upload (visible) -->
+    <div id="step-1">
+      <div id="resume-section">
+        <label>Resume <span aria-hidden="true">*</span></label>
+        <button type="button" id="upload-btn">
+          <span><span>Upload resume</span></span>
+        </button>
+      </div>
+      <footer>
+        <button type="button" id="next-1"><span>Next</span></button>
+      </footer>
+    </div>
+
+    <!-- Step 2: text field (hidden) -->
+    <div id="step-2" style="display:none">
+      <div data-test-form-element="">
+        <label for="city">City</label>
+        <input id="city" type="text" style="display:block;width:200px;height:40px">
+      </div>
+      <footer>
+        <button type="button" id="next-2"><span>Next</span></button>
+      </footer>
+    </div>
+
+    <!-- Step 3: final review (hidden) -->
+    <div id="step-3" style="display:none">
+      <h2>Review your application</h2>
+      <section data-component-type="ReviewSection">
+        <h3>Resume</h3>
+        <p id="review-resume-name"></p>
+      </section>
+      <button data-easy-apply-submit-button="" id="submit-btn">Submit application</button>
+    </div>
+
+  </div>
+</dialog>
+<script>
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.style.display = 'none';
+  f.addEventListener('change', function() {` + changeBody + `
+  });
+  document.body.appendChild(f);
+  f.click();
+});
+document.getElementById('next-1').addEventListener('click', function() {
+  document.getElementById('step-1').style.display = 'none';
+  document.getElementById('step-2').style.display = '';
+});
+document.getElementById('next-2').addEventListener('click', function() {
+  document.getElementById('step-2').style.display = 'none';
+  document.getElementById('step-3').style.display = '';
+  document.getElementById('review-resume-name').textContent = window._uploadedResumeName || '';
+});
+</script>
+</body></html>`
+	}
+
+	cases := []struct {
+		name         string
+		wrongFile    bool
+		wantComplete bool
+	}{
+		{name: "correct_upload", wrongFile: false, wantComplete: true},
+		{name: "wrong_file_from_upload", wrongFile: true, wantComplete: false},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			html := buildHTML(tc.wrongFile)
+			srv := fixtureServer(t, jobID, "", html, "")
+			page := navigateAndWait(t, br, srv.URL+"/jobs/view/"+jobID)
+
+			tmpFile := filepath.Join(t.TempDir(), "my_tailored_resume.pdf")
+			require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+			b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+			b.cfg.Settings.GenerateNewResumeDocs = true
+			lazy := &lazyDocGen{
+				b:                 b,
+				job:               linkedInJob{ID: jobID, URL: srv.URL + "/jobs/view/" + jobID},
+				reviewPrepareOnly: true,
+				ctx:               context.Background(),
+			}
+			lazy.once.Do(func() { lazy.resume = tmpFile })
+
+			err := b.scanApplyStepsForPrepare(context.Background(), page, lazy)
+
+			if tc.wantComplete {
+				require.NoError(t, err, "correct upload must complete without error")
+				require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true on success")
+				require.Empty(t, lazy.holdReason, "holdReason must be empty on success")
+			} else {
+				require.Error(t, err, "wrong-file upload must return an error")
+				require.False(t, lazy.prepareScanComplete, "prepareScanComplete must be false when upload identity unverifiable")
+				require.NotEmpty(t, lazy.holdReason, "holdReason must be set when upload identity unverifiable")
+			}
+		})
+	}
+}

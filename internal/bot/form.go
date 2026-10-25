@@ -590,7 +590,11 @@ func init() {
 	if (!resumeHeading) return { verified: false };
 	const section = resumeHeading.closest('[data-component-type],[class*="section"],fieldset,section') || resumeHeading.parentElement;
 	if (!section) return { verified: false };
-	const extracted = extractFilename(section.textContent);
+	const bodyText = [...section.children]
+		.filter(el => el !== resumeHeading && !/^(H[1-6]|LEGEND)$/.test(el.tagName))
+		.map(el => el.textContent)
+		.join('\n');
+	const extracted = extractFilename(bodyText);
 	return { verified: extracted !== null && extracted === base };
 }`
 
@@ -605,35 +609,34 @@ func init() {
 	return uploadBtn || null;
 }`
 
-	jsLinkedInResumePreUploadState = `() => {
+	jsLinkedInResumePreUploadState = `(expectedFilename) => {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer();
-	if (!container) return { count: 0, checkedFilename: '' };
+	if (!container) return { filenameExisted: false };
 	function extractFilename(text) {
-		const t = (text || '').trim().toLowerCase();
+		const t = (text || '').trim();
 		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
-		return m ? m[1] : null;
+		return m ? m[1].toLowerCase() : null;
 	}
+	const base = (expectedFilename || '').toLowerCase();
 	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
 		const t = (b.textContent || '').toLowerCase();
 		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
 	});
-	if (!uploadBtn) return { count: 0, checkedFilename: '' };
+	if (!uploadBtn) return { filenameExisted: false };
 	let section = uploadBtn.parentElement;
 	while (section && section !== container) {
 		if (section.querySelector('input[type="radio"]')) break;
 		section = section.parentElement;
 	}
-	if (!section || section === container) return { count: 0, checkedFilename: '' };
+	if (!section || section === container) return { filenameExisted: false };
 	const radios = [...section.querySelectorAll('input[type="radio"]')];
-	const checked = radios.find(r => r.checked);
-	let checkedFilename = '';
-	if (checked) {
-		const labelEl = section.querySelector('label[for="' + checked.id + '"]') ||
-			checked.closest('label') || checked.parentElement;
-		checkedFilename = extractFilename(labelEl && labelEl.textContent) || '';
-	}
-	return { count: radios.length, checkedFilename };
+	const filenameExisted = radios.some(r => {
+		const labelEl = section.querySelector('label[for="' + r.id + '"]') ||
+			r.closest('label') || r.parentElement;
+		return extractFilename(labelEl && labelEl.textContent) === base;
+	});
+	return { filenameExisted };
 }`
 }
 
@@ -1507,13 +1510,13 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	defer func() { _ = proto.PageSetInterceptFileChooserDialog{Enabled: false}.Call(page) }()
 
 	// Click BEFORE starting the goroutine so a failed click needs no goroutine join.
-	// Capture pre-upload state for duplicate-filename guard.
-	var preCount int
-	var preCheckedFilename string
-	if preRes, preErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState); preErr == nil {
-		preCount = int(preRes.Value.Get("count").Num())
-		preCheckedFilename = preRes.Value.Get("checkedFilename").String()
+	// Capture pre-upload state for duplicate-filename guard (fail-closed: any eval error aborts).
+	base := strings.ToLower(filepath.Base(filePath))
+	preRes, preErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState, base)
+	if preErr != nil {
+		return fmt.Errorf("upload: cannot read pre-upload resume state: %w", preErr)
 	}
+	preFilenameExisted := preRes.Value.Get("filenameExisted").Bool()
 
 	// Find the upload button element for a trusted Rod click.
 	// Rod's Click uses CDP Input.dispatchMouseEvent — a trusted user gesture.
@@ -1568,16 +1571,10 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	if err := linkedInWaitForResumeAccepted(ctx, page, filePath); err != nil {
 		return err
 	}
-	// Duplicate-filename guard: if the expected file was already selected and the
-	// section radio count did not increase, we cannot confirm the new file was uploaded.
-	base := strings.ToLower(filepath.Base(filePath))
-	if preCheckedFilename == base {
-		if postRes, postErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState); postErr == nil {
-			postCount := int(postRes.Value.Get("count").Num())
-			if postCount <= preCount {
-				return errUploadIdentityUnverifiable
-			}
-		}
+	// Duplicate-filename guard: if the filename already existed in ANY library entry
+	// (checked or not), we cannot confirm a fresh upload occurred.
+	if preFilenameExisted {
+		return errUploadIdentityUnverifiable
 	}
 	return nil
 }

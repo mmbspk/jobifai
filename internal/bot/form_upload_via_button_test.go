@@ -313,3 +313,86 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 	require.True(t, errors.Is(err, errUploadIdentityUnverifiable),
 		"pre-existing same filename with no new radio must return errUploadIdentityUnverifiable, got: %v", err)
 }
+
+// TestLinkedInFinalReviewResumeCheck_HeadingAndFilename is a regression test for the
+// heading-bleeds-into-filename bug. When the review section has an <h3>Resume</h3>
+// heading and the filename as a sibling <p>, section.textContent would have yielded
+// "Resume\nMy Resume 2026.pdf" causing extractFilename to misidentify the string.
+// After the fix only non-heading children are searched, so the correct filename is found.
+func TestLinkedInFinalReviewResumeCheck_HeadingAndFilename(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <h2>Review your application</h2>
+    <section data-component-type="ReviewSection">
+      <h3>Resume</h3>
+      <p>My Resume 2026.pdf</p>
+    </section>
+    <button data-easy-apply-submit-button="">Submit application</button>
+  </div>
+</dialog>
+</body></html>`
+	page := rodTestPage(t, html)
+
+	res, err := page.Eval(jsLinkedInFinalReviewResumeCheck, "My Resume 2026.pdf")
+	require.NoError(t, err)
+	require.True(t, res.Value.Get("verified").Bool(),
+		"filename in non-heading element must be verified even when heading text precedes it in section")
+
+	// Wrong filename must still fail.
+	res2, err2 := page.Eval(jsLinkedInFinalReviewResumeCheck, "other_resume.pdf")
+	require.NoError(t, err2)
+	require.False(t, res2.Value.Get("verified").Bool())
+}
+
+// TestFormUploadViaButton_UnselectedDuplicate_Unverifiable tests that a pre-existing
+// UNCHECKED radio entry with the same filename triggers the duplicate guard.
+// LinkedIn may silently select an existing library entry rather than uploading a new
+// file — this is indistinguishable from a fresh upload without the all-entry check.
+func TestFormUploadViaButton_UnselectedDuplicate_Unverifiable(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <div id="resume-section">
+      <label>Resume <span aria-hidden="true">*</span></label>
+      <div>
+        <input type="radio" name="resume-select" id="r-existing">
+        <label for="r-existing">my_tailored_resume.pdf</label>
+      </div>
+      <button type="button" id="upload-btn">
+        <span><span>Upload resume</span></span>
+      </button>
+    </div>
+    <footer><button type="button"><span>Next</span></button></footer>
+  </div>
+</dialog>
+<script>
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.style.display = 'none';
+  f.addEventListener('change', function() {
+    // Simulate LinkedIn selecting the existing entry instead of adding a new one.
+    document.getElementById('r-existing').checked = true;
+    f.remove();
+  });
+  document.body.appendChild(f);
+  f.click();
+});
+</script>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "my_tailored_resume.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	err := b.formUploadViaButton(context.Background(), page, tmpFile)
+	require.True(t, errors.Is(err, errUploadIdentityUnverifiable),
+		"pre-existing unselected entry with same filename must be caught, got: %v", err)
+}
