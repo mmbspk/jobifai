@@ -4,7 +4,7 @@ MAIN    := ./cmd/server
 IMAGE   := $(APP):latest
 DB      := data/$(APP).db
 
-.PHONY: all build run dev start test test-web test-coverage test-all test-all-e2e lint clean docker docker-run web-dev web-build e2e-server test-e2e test-e2e-ui deploy-gcp deploy-gcp-rollout
+.PHONY: all build run dev start test test-web test-coverage test-all test-all-e2e lint clean docker docker-run web-dev web-build e2e-server test-e2e test-e2e-ui deploy-gcp deploy-gcp-rollout obs-up obs-down obs-logs
 
 # Application packages only (excludes vendored Go under web/node_modules).
 GO_PACKAGES := $(shell go list ./... | grep -v node_modules)
@@ -120,3 +120,15 @@ deploy-gcp:
 ## deploy-gcp-rollout: pull latest image on VM only (no local build)
 deploy-gcp-rollout:
 	./infra/gcp/deploy.sh --rollout-only
+
+## obs-up: start local observability stack (Loki + Grafana + Alloy file-source)
+obs-up:
+	docker compose -f infra/observability/docker-compose.observability.yml up -d
+
+## obs-down: stop and remove local observability stack
+obs-down:
+	docker compose -f infra/observability/docker-compose.observability.yml down
+
+## obs-logs: show Alloy logs from the local stack
+obs-logs:
+	docker compose -f infra/observability/docker-compose.observability.yml logs -f alloy

@@ -1,0 +1,86 @@
+// Grafana Alloy configuration for jobifai production log collection.
+// Reads the jobifai container's stdout via the Docker socket and ships
+// structured JSON logs to Grafana Cloud Loki.
+//
+// Required environment variables (set in /opt/jobifai/.env on the VM):
+//   GRAFANA_LOKI_URL  — full push URL, e.g. https://logs-xxx.grafana.net/loki/api/v1/push
+//   GRAFANA_LOKI_USER — numeric tenant ID shown next to the endpoint URL
+//   GRAFANA_LOKI_API_KEY — API key with Logs Push scope (not the admin key)
+//
+// Durability: best-effort delivery. Alloy resumes collection from saved positions
+// on restart; logs already read into memory but not yet acknowledged may be lost.
+// After max_backoff_retries is exhausted, the in-flight batch is dropped.
+
+// Discover all containers on the Docker host.
+discovery.docker "all" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Keep only the jobifai app container, identified by both Compose project
+// and service labels so other projects on the same host are excluded.
+discovery.relabel "jobifai" {
+  targets = discovery.docker.all.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "^jobifai$"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "^jobifai$"
+    action        = "keep"
+  }
+}
+
+// Tail the container's stdout and stderr via the Docker log driver.
+// Positions are persisted to --storage.path so Alloy resumes after restart.
+loki.source.docker "jobifai_logs" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.jobifai.output
+  forward_to = [loki.process.json_fields.receiver]
+}
+
+// Parse the JSON log body and promote level + env as low-cardinality stream labels.
+// High-cardinality IDs (user_id, automation_run_id, log_id, job_id) are left in
+// the body and queried via | json | field="value" in LogQL.
+loki.process "json_fields" {
+  forward_to = [loki.write.grafana_cloud.receiver]
+
+  stage.json {
+    expressions = {
+      level = "level",
+      env   = "env",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level = "level",
+      env   = "env",
+    }
+  }
+}
+
+// Ship to Grafana Cloud Loki.
+// After max_backoff_retries (10) attempts the in-flight batch is dropped.
+loki.write "grafana_cloud" {
+  endpoint {
+    url = sys.env("GRAFANA_LOKI_URL")
+
+    basic_auth {
+      username = sys.env("GRAFANA_LOKI_USER")
+      password = sys.env("GRAFANA_LOKI_API_KEY")
+    }
+
+    // Exponential backoff 500ms → 5min; drop batch after 10 failed attempts.
+    min_backoff_period  = "500ms"
+    max_backoff_period  = "5m"
+    max_backoff_retries = 10
+  }
+
+  external_labels = {
+    service = "jobifai",
+  }
+}

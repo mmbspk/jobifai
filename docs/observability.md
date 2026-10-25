@@ -140,3 +140,93 @@ context must carry an LLM call context (attached via `llmCtx` in the bot, or
 
 The `service`, `env`, and `build_sha` base fields are stamped on all lines
 before the database opens, so startup failures are structured.
+
+## Log collection
+
+### Collector
+
+**Production**: Grafana Alloy v1.21.2 sidecar. Reads the `jobifai` container's
+stdout/stderr via the Docker socket (`loki.source.docker`). Positions are
+persisted to a named volume (`alloy_data`) so Alloy resumes collection after
+restart; reading position ≠ Loki acknowledgement — in-flight lines not yet
+acknowledged may be lost on Alloy restart.
+
+**Local smoke test**: `loki.source.file` tailing `/tmp/jobifai-smoke.log`; start
+with `make obs-up` (see §Local smoke test below).
+
+### Stream labels
+
+```
+{service="jobifai", env="production", level="info|warn|error|debug"}
+```
+
+`level` and `env` are promoted from the JSON body by `loki.process`. High-cardinality
+IDs (`user_id`, `automation_run_id`, `log_id`, `job_id`) stay in the JSON body and
+are queried via `| json | field="value"` in LogQL.
+
+### Durability
+
+Delivery is **best-effort**. Alloy retries failed batches with exponential
+backoff (500 ms → 5 min, up to 10 attempts). After retry exhaustion the batch
+is dropped. Docker log rotation (max 100 MB × 5 files = 500 MB buffer) means
+logs older than the buffer window are unrecoverable.
+
+Alloy resumes from saved positions on restart; it does not guarantee delivery of
+lines that were read into memory but not yet acknowledged at the time of the crash.
+
+### Free-tier limits
+
+Grafana Cloud Free (verified October 2026 at grafana.com/pricing):
+
+| Limit | Value |
+|---|---|
+| Ingestion | 50 GB / month |
+| Retention | 14 days |
+
+Pushes beyond the ingestion limit return 429. No automatic paid upgrade.
+
+### Retry configuration
+
+```
+min_backoff_period  = 500ms
+max_backoff_period  = 5m
+max_backoff_retries = 10
+```
+
+After 10 failed attempts the in-flight batch is dropped. Alloy's UI
+(`http://127.0.0.1:12345` via SSH tunnel — see runbook) shows a graph of
+delivery attempts and drops.
+
+### Required environment variables (on VM in `/opt/jobifai/.env`)
+
+| Variable | Description |
+|---|---|
+| `LOG_FORMAT` | Must be `json` for structured collection |
+| `JOBIFAI_ENV` | Set to `production`; stamped on all log lines |
+| `GRAFANA_LOKI_URL` | Full push URL ending in `/loki/api/v1/push` |
+| `GRAFANA_LOKI_USER` | Numeric tenant ID (not the org slug) |
+| `GRAFANA_LOKI_API_KEY` | API key with **Logs Push** scope only |
+
+### Local smoke test
+
+```bash
+make obs-up                                          # start Loki + Grafana + Alloy
+LOG_FORMAT=json JOBIFAI_ENV=local-smoke make run 2>&1 | tee /tmp/jobifai-smoke.log
+# Explore: http://127.0.0.1:3000 → Explore → {service="jobifai"}
+# Alloy UI: http://127.0.0.1:12345
+make obs-down                                        # stop stack and remove containers
+```
+
+Alloy in the local stack reads `/tmp/jobifai-smoke.log` via a bind-mount of the host
+`/tmp` directory. `loki.source.docker` cannot see a host-process binary; the
+file-source variant is intentional.
+
+### Further setup and runbook
+
+See [docs/runbooks/observability-setup.md](runbooks/observability-setup.md) for:
+- Grafana Cloud credentials setup
+- Production deployment order and pre-flight checks
+- Readiness verification and Alloy UI access
+- LogQL queries for lifecycle events
+- Recovery tests (positions file + connectivity interruption)
+- Troubleshooting guide

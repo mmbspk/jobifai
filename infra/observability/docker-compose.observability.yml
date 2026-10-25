@@ -1,0 +1,62 @@
+# Local smoke-test stack: Loki + Grafana + Alloy (file source).
+#
+# Prerequisite: the jobifai binary must be built (make build).
+#
+# Usage:
+#   docker compose -f infra/observability/docker-compose.observability.yml up -d
+#   LOG_FORMAT=json JOBIFAI_ENV=local-smoke make run 2>&1 | tee /tmp/jobifai-smoke.log
+#
+# Explore logs:
+#   http://127.0.0.1:3000  →  Explore  →  Loki  →  {service="jobifai"}
+# Alloy UI:
+#   http://127.0.0.1:12345
+#
+# Note: loki.source.docker cannot see a host-process binary, so this config uses
+# loki.source.file via a bind-mount of /tmp. For end-to-end Docker-source testing,
+# deploy to the VM and validate there (see docs/runbooks/observability-setup.md).
+
+services:
+  loki:
+    image: grafana/loki:3.2.0
+    ports:
+      - "127.0.0.1:3100:3100"
+    command: -config.file=/etc/loki/config.yaml
+    volumes:
+      - ./loki/local-config.yaml:/etc/loki/config.yaml:ro
+      - loki_data:/loki
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - loki
+
+  alloy:
+    image: grafana/alloy:v1.21.2
+    ports:
+      - "127.0.0.1:12345:12345"
+    volumes:
+      - ./alloy/config.local.alloy:/etc/alloy/config.alloy:ro
+      # Bind-mount host /tmp read-only so loki.source.file can tail jobifai-smoke.log.
+      - /tmp:/var/log/host-tmp:ro
+      - alloy_data:/var/lib/alloy/data
+    command: >
+      run
+      --server.http.listen-addr=0.0.0.0:12345
+      --storage.path=/var/lib/alloy/data
+      /etc/alloy/config.alloy
+    depends_on:
+      - loki
+
+volumes:
+  loki_data:
+  grafana_data:
+  alloy_data:
