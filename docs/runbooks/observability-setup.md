@@ -226,11 +226,14 @@ LOG_FORMAT=json JOBIFAI_ENV=local-smoke make run 2>&1 | tee /tmp/jobifai-smoke.l
 sleep 5  # let a few lines arrive in Loki
 
 # 2. Note a unique marker already in Loki (search in Grafana for a recent log_id).
-# 3. Stop Alloy (not the whole stack).
+
+# 3. Capture marker and time window, then stop Alloy.
+MARKER="recovery-test-A-$(date +%s)"
+START=$(date -u +%s)000000000
 docker compose -f infra/observability/docker-compose.observability.yml stop alloy
 
 # 4. Emit identifiable lines while Alloy is stopped.
-echo '{"time":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","level":"info","message":"test-recovery-A","marker":"recovery-test-A-'"$(date +%s)"'","service":"jobifai","env":"local-smoke"}' \
+echo '{"time":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","level":"info","message":"test-recovery-A","marker":"'"$MARKER"'","service":"jobifai","env":"local-smoke"}' \
   >> /tmp/jobifai-smoke.log
 
 # 5. Restart Alloy.
@@ -238,8 +241,6 @@ docker compose -f infra/observability/docker-compose.observability.yml start all
 sleep 10  # allow Alloy to resume and flush
 
 # 6. Query Loki for the marker.
-MARKER="recovery-test-A-$(date +%s)"
-START=$(date -u +%s)000000000  # anchor to now; adjust if test took > 5 min
 END=$(($(date -u +%s) + 60))000000000
 curl -sG "http://127.0.0.1:3100/loki/api/v1/query_range" \
   --data-urlencode "query={service=\"jobifai\"} |= \"${MARKER}\"" \
@@ -247,10 +248,11 @@ curl -sG "http://127.0.0.1:3100/loki/api/v1/query_range" \
   --data-urlencode "end=${END}" \
   --data-urlencode 'limit=10' | python3 -c "
 import sys, json
+MARKER = '${MARKER}'
 d = json.load(sys.stdin)
 streams = d.get('data', {}).get('result', [])
 lines = [v[1] for r in streams for v in r.get('values', [])]
-found = [l for l in lines if '${MARKER}' in l]
+found = [l for l in lines if MARKER in l]
 print(f'Lines in Loki with marker: {len(found)} (expected: 1)')
 assert len(found) >= 1, 'FAIL: marker not found'
 print('PASS')
@@ -272,11 +274,12 @@ make obs-up
 LOG_FORMAT=json JOBIFAI_ENV=local-smoke make run 2>&1 | tee /tmp/jobifai-smoke.log &
 sleep 5
 
-# 2. Stop Loki (Alloy keeps running).
+# 2. Capture marker and time window, then stop Loki (Alloy keeps running).
+MARKER="recovery-test-B-$(date +%s)"
+START=$(date -u +%s)000000000
 docker compose -f infra/observability/docker-compose.observability.yml stop loki
 
 # 3. Emit identifiable lines while Loki is unavailable.
-MARKER="recovery-test-B-$(date +%s)"
 for i in $(seq 1 5); do
   echo '{"time":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","level":"info","message":"test-recovery-B","marker":"'"$MARKER"'","seq":'"$i"',"service":"jobifai","env":"local-smoke"}' \
     >> /tmp/jobifai-smoke.log
@@ -290,7 +293,6 @@ docker compose -f infra/observability/docker-compose.observability.yml start lok
 sleep 30  # allow Alloy to detect Loki is back and flush its queue
 
 # 6. Query for the marker.
-START=$(date -u +%s)000000000  # set before step 1 if needed; 60s window
 END=$(($(date -u +%s) + 60))000000000
 curl -sG "http://127.0.0.1:3100/loki/api/v1/query_range" \
   --data-urlencode "query={service=\"jobifai\"} |= \"${MARKER}\"" \
@@ -298,13 +300,15 @@ curl -sG "http://127.0.0.1:3100/loki/api/v1/query_range" \
   --data-urlencode "end=${END}" \
   --data-urlencode 'limit=20' | python3 -c "
 import sys, json
+MARKER = '${MARKER}'
 d = json.load(sys.stdin)
 streams = d.get('data', {}).get('result', [])
 lines = [v[1] for r in streams for v in r.get('values', [])]
-found = [l for l in lines if '${MARKER}' in l]
+found = [l for l in lines if MARKER in l]
 seqs = sorted(json.loads(l).get('seq', '?') for l in found)
 print(f'Lines with marker: {len(found)}/5 (expected: 5), seqs={seqs}')
 assert len(found) == 5, f'FAIL: expected 5 lines, got {len(found)}'
+assert seqs == [1, 2, 3, 4, 5], f'FAIL: wrong sequences, got {seqs}'
 print('PASS')
 "
 ```
