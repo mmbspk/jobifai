@@ -1,0 +1,49 @@
+// Local smoke-test Alloy configuration.
+// The app runs on the host via `make run`, so loki.source.docker cannot see it.
+// Instead this config tails a log file written by the developer.
+//
+// Usage:
+//   docker compose -f infra/observability/docker-compose.observability.yml up -d
+//   LOG_FORMAT=json JOBIFAI_ENV=local-smoke make run 2>&1 | tee /tmp/jobifai-smoke.log
+//   Open http://127.0.0.1:3000 → Explore → {service="jobifai"}
+
+// Tail the log file written by the host-side app process.
+// The host /tmp is bind-mounted into the container as /var/log/host-tmp (read-only).
+loki.source.file "smoke" {
+  targets = [{
+    __path__ = "/var/log/host-tmp/jobifai-smoke.log",
+    service  = "jobifai",
+    env      = "local-smoke",
+  }]
+  forward_to = [loki.process.json_fields.receiver]
+}
+
+// Parse JSON; promote level + env as stream labels.
+loki.process "json_fields" {
+  forward_to = [loki.write.local_loki.receiver]
+
+  stage.json {
+    expressions = {
+      level = "level",
+      env   = "env",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level = "level",
+      env   = "env",
+    }
+  }
+}
+
+// Write to the local Loki instance in the same Compose network.
+loki.write "local_loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+
+  external_labels = {
+    service = "jobifai",
+  }
+}

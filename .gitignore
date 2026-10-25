@@ -38,8 +38,8 @@ tmp/
 .env
 .env.*
 
-# Local deployment (GCP scripts, env, secrets — not published)
-infra/
+# Deployment secrets — never commit (scripts and configs are tracked)
+infra/**/deploy.env
 
 # Coverage
 coverage.out

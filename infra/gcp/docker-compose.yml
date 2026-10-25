@@ -1,0 +1,78 @@
+# Jobifai on GCP VM — extend with DealFindio services under profile "dealfindio" later.
+# Run from /opt/jobifai on the VM after image is pulled.
+
+name: jobifai
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - jobifai
+    networks:
+      - edge
+
+  jobifai:
+    image: ${JOBIFAI_IMAGE:-australia-southeast1-docker.pkg.dev/jobifai-494014/jobifai/jobifai:latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ${DATA_ROOT:-/mnt/disks/jobifai}/data:/app/data
+      - ${DATA_ROOT:-/mnt/disks/jobifai}/job_applications:/app/job_applications
+      - ${DATA_ROOT:-/mnt/disks/jobifai}/resume_style:/app/resume_style
+    expose:
+      - "8081"
+    networks:
+      - edge
+    # Chromium + bot: allow headroom on e2-standard-2
+    mem_limit: 6g
+    # Bounded log rotation so Alloy can recover positions on restart.
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  alloy:
+    image: grafana/alloy:v1.21.2
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.25"
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+    # Alloy listens on 0.0.0.0 so the readiness check works via the host-loopback
+    # published port (127.0.0.1:12345 on the VM). No external access is granted.
+    command: >
+      run
+      --server.http.listen-addr=0.0.0.0:12345
+      --storage.path=/var/lib/alloy/data
+      /etc/alloy/config.alloy
+    ports:
+      - "127.0.0.1:12345:12345"
+    environment:
+      - GRAFANA_LOKI_URL
+      - GRAFANA_LOKI_USER
+      - GRAFANA_LOKI_API_KEY
+    networks:
+      - edge
+    depends_on:
+      - jobifai
+
+networks:
+  edge:
+    name: jobifai_edge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  alloy_data:

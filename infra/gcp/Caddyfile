@@ -1,0 +1,14 @@
+# Canonical host — avoids Google OAuth state cookie mismatch (www vs apex).
+www.jobifai.com.au {
+	redir https://jobifai.com.au{uri} permanent
+}
+
+jobifai.com.au {
+	encode gzip
+	reverse_proxy jobifai:8081
+}
+
+# DealFindio (enable when stack is added on same VM):
+# api.dealfindio.com.au {
+# 	reverse_proxy dealfindio-api:8010
+# }

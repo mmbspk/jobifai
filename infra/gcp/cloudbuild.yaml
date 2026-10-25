@@ -1,0 +1,15 @@
+# Optional: gcloud builds submit --config=infra/gcp/cloudbuild.yaml .
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - australia-southeast1-docker.pkg.dev/jobifai-494014/jobifai/jobifai:$SHORT_SHA
+      - -t
+      - australia-southeast1-docker.pkg.dev/jobifai-494014/jobifai/jobifai:latest
+      - .
+images:
+  - australia-southeast1-docker.pkg.dev/jobifai-494014/jobifai/jobifai:$SHORT_SHA
+  - australia-southeast1-docker.pkg.dev/jobifai-494014/jobifai/jobifai:latest
+options:
+  machineType: E2_HIGHCPU_8
