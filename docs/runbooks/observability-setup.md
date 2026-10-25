@@ -33,15 +33,26 @@ GRAFANA_LOKI_USER=<numeric tenant ID>
 GRAFANA_LOKI_API_KEY=<Logs Push API key>
 ```
 
-**Never** commit `.env` or print its contents. To verify the variables are set
-without revealing values, SSH to the VM and run:
+**Never** commit `.env` or print its contents. After deploy, verify the variables
+are non-empty inside the running containers (not in the file, which can have `KEY=`
+with no value):
 
 ```bash
-for var in LOG_FORMAT JOBIFAI_ENV GRAFANA_LOKI_URL GRAFANA_LOKI_USER GRAFANA_LOKI_API_KEY; do
-  if grep -q "^${var}=" /opt/jobifai/.env 2>/dev/null; then
-    echo "${var}: SET"
+# Run from /opt/jobifai/ where docker-compose.yml lives.
+# Alloy credentials:
+for var in GRAFANA_LOKI_URL GRAFANA_LOKI_USER GRAFANA_LOKI_API_KEY; do
+  if docker compose exec -T alloy sh -c "val=\$(printenv ${var}); [ -n \"\$val\" ]" 2>/dev/null; then
+    echo "${var}: SET (non-empty)"
   else
-    echo "${var}: MISSING"
+    echo "${var}: MISSING or empty"
+  fi
+done
+# App log format (jobifai container):
+for var in LOG_FORMAT JOBIFAI_ENV; do
+  if docker compose exec -T jobifai sh -c "val=\$(printenv ${var}); [ -n \"\$val\" ]" 2>/dev/null; then
+    echo "${var}: SET (non-empty)"
+  else
+    echo "${var}: MISSING or empty"
   fi
 done
 ```
@@ -53,12 +64,23 @@ Alloy, verify this matches the running project name to avoid renaming existing
 networks and volumes. SSH to the VM and run:
 
 ```bash
-docker ps --format '{{.Names}}' | grep -oE '^[^-]+' | sort -u
+# Inspect the com.docker.compose.project label on running containers.
+docker ps --format '{{.Label "com.docker.compose.project"}}' | sort -u | grep -v '^$'
 ```
 
-If the output contains `jobifai`, the project name already matches and the deploy
-is safe. If it shows a different prefix (e.g. the directory name), stop here and
-reconcile before proceeding.
+All running containers must report `jobifai`. If any show a different project name,
+stop here and reconcile before proceeding.
+
+Also verify that the expected named volumes already exist under the `jobifai_` prefix:
+
+```bash
+docker volume ls --filter "label=com.docker.compose.project=jobifai" \
+  --format '{{.Name}}'
+```
+
+Expected volumes (after initial deploy without Alloy): `jobifai_caddy_data`,
+`jobifai_caddy_config`. If volumes with different names exist, adding `name: jobifai`
+will create new empty volumes instead of reusing them — stop and reconcile first.
 
 ---
 
@@ -216,9 +238,23 @@ docker compose -f infra/observability/docker-compose.observability.yml start all
 sleep 10  # allow Alloy to resume and flush
 
 # 6. Query Loki for the marker.
-curl -sG "http://127.0.0.1:3100/loki/api/v1/query" \
-  --data-urlencode 'query={service="jobifai"} |= "recovery-test-A"' \
-  --data-urlencode 'limit=5' | python3 -m json.tool | grep -A1 '"values"'
+MARKER="recovery-test-A-$(date +%s)"
+START=$(date -u +%s)000000000  # anchor to now; adjust if test took > 5 min
+END=$(($(date -u +%s) + 60))000000000
+curl -sG "http://127.0.0.1:3100/loki/api/v1/query_range" \
+  --data-urlencode "query={service=\"jobifai\"} |= \"${MARKER}\"" \
+  --data-urlencode "start=${START}" \
+  --data-urlencode "end=${END}" \
+  --data-urlencode 'limit=10' | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+streams = d.get('data', {}).get('result', [])
+lines = [v[1] for r in streams for v in r.get('values', [])]
+found = [l for l in lines if '${MARKER}' in l]
+print(f'Lines in Loki with marker: {len(found)} (expected: 1)')
+assert len(found) >= 1, 'FAIL: marker not found'
+print('PASS')
+"
 ```
 
 Expected: the marker line appears in Loki because Alloy resumed from the saved
@@ -254,9 +290,23 @@ docker compose -f infra/observability/docker-compose.observability.yml start lok
 sleep 30  # allow Alloy to detect Loki is back and flush its queue
 
 # 6. Query for the marker.
-curl -sG "http://127.0.0.1:3100/loki/api/v1/query" \
-  --data-urlencode 'query={service="jobifai"} |= "'"$MARKER"'"' \
-  --data-urlencode 'limit=10' | python3 -m json.tool | grep -c '"ts"'
+START=$(date -u +%s)000000000  # set before step 1 if needed; 60s window
+END=$(($(date -u +%s) + 60))000000000
+curl -sG "http://127.0.0.1:3100/loki/api/v1/query_range" \
+  --data-urlencode "query={service=\"jobifai\"} |= \"${MARKER}\"" \
+  --data-urlencode "start=${START}" \
+  --data-urlencode "end=${END}" \
+  --data-urlencode 'limit=20' | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+streams = d.get('data', {}).get('result', [])
+lines = [v[1] for r in streams for v in r.get('values', [])]
+found = [l for l in lines if '${MARKER}' in l]
+seqs = sorted(json.loads(l).get('seq', '?') for l in found)
+print(f'Lines with marker: {len(found)}/5 (expected: 5), seqs={seqs}')
+assert len(found) == 5, f'FAIL: expected 5 lines, got {len(found)}'
+print('PASS')
+"
 ```
 
 Expected: 5 lines found (Alloy retried and delivered once Loki came back).
@@ -265,24 +315,33 @@ occur only after retry exhaustion (10 attempts, 500 ms → 5 min backoff).
 
 ### Production connectivity interruption (pending — requires VM access)
 
-When VM access is available, test Alloy-scoped interruption without touching the
-app or VM-wide networking:
+Tests Alloy's retry behavior on production without restarting it (restart discards
+the in-memory buffer and tests a different failure mode). Use Docker network
+disconnect to sever Alloy's network access while keeping the process running.
 
 ```bash
-# On the VM only — scoped to Alloy's outbound connectivity.
-# Option 1: temporarily point GRAFANA_LOKI_URL at a non-existent endpoint,
-#            then restart only Alloy (not the app).
-OLD_URL=$(grep GRAFANA_LOKI_URL /opt/jobifai/.env | cut -d= -f2-)
-sed -i 's|GRAFANA_LOKI_URL=.*|GRAFANA_LOKI_URL=https://invalid.example.com/loki/api/v1/push|' /opt/jobifai/.env
-docker compose -f /opt/jobifai/docker-compose.yml restart alloy
-# ... emit logs, observe retries via tunnel to http://127.0.0.1:12345 ...
-# Restore:
-sed -i "s|GRAFANA_LOKI_URL=.*|GRAFANA_LOKI_URL=${OLD_URL}|" /opt/jobifai/.env
-docker compose -f /opt/jobifai/docker-compose.yml restart alloy
+# Run from /opt/jobifai/ on the VM.
+ALLOY_ID=$(docker compose ps -q alloy)
+
+# 1. Disconnect Alloy from the production network (keeps process running).
+docker network disconnect jobifai_edge "$ALLOY_ID"
+
+# 2. Emit uniquely identifiable lines via the app or by appending to a known log path.
+#    Alloy reads them but cannot deliver while disconnected.
+
+# 3. Restore network access.
+docker network connect jobifai_edge "$ALLOY_ID"
+
+# 4. Wait for Alloy to reconnect and flush (first retry fires after 500 ms).
+sleep 30
+
+# 5. Verify delivery in Grafana Cloud:
+#    {service="jobifai", env="production"} |= "<unique marker>"
+#    — lines emitted in step 2 should appear.
 ```
 
-Rollback: restoring the URL and restarting Alloy is the full cleanup. The app
-continues running without interruption throughout.
+Rollback: `docker network connect jobifai_edge "$ALLOY_ID"` is the only cleanup
+needed. The app (`jobifai`) and `caddy` containers are never touched.
 
 ---
 
@@ -305,7 +364,7 @@ continues running without interruption throughout.
 |---------|-------------|
 | 401 from Loki | Wrong API key or wrong scope (need `logs:write`, not admin key) |
 | 404 from Loki | `GRAFANA_LOKI_URL` does not end with `/loki/api/v1/push` |
-| Container not discovered | Compose project label mismatch — check `docker ps --format '{{.Names}}'` prefix; must be `jobifai` |
+| Container not discovered | Compose project label mismatch — run `docker ps --format '{{.Label "com.docker.compose.project"}}' \| sort -u` on the VM; must show only `jobifai` |
 | `/-/ready` returns 503 | Alloy has not finished startup; retry after a few seconds |
 | No data in Grafana | Check time range, Loki datasource URL, Alloy UI Pipeline graph at `http://127.0.0.1:12345` |
 | `GRAFANA_LOKI_USER` wrong | Must be the **numeric** tenant ID, not the org slug |
