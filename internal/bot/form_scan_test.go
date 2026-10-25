@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/go-rod/rod"
@@ -294,95 +297,156 @@ func TestJsScanFields_NativeDialog_ResumeAtPositions(t *testing.T) {
 	}
 }
 
-// TestScanApplyStepsForPrepare_NativeDialog verifies that scanApplyStepsForPrepare
-// completes successfully on a native-dialog multi-step form, reaches the final submit
-// step, and does NOT click Submit. Resume section has an unchecked radio; no document
-// path is available so the upload slot is silently skipped.
-func TestScanApplyStepsForPrepare_NativeDialog(t *testing.T) {
-	// Each sub-test varies which step contains the resume section.
-	cases := []struct {
-		name       string
-		resumeStep int
-	}{
-		{"resume_at_step1", 1},
-		{"resume_at_step2", 2},
-		{"resume_at_step3", 3},
-	}
-
+// TestLinkedInFinalReviewResumeCheck_Match verifies that jsLinkedInFinalReviewResumeCheck
+// returns verified=true when the review section shows the expected filename.
+// Uses a navigated page (fixtureServer) to confirm the JS works via HTTP, not just SetDocumentContent.
+func TestLinkedInFinalReviewResumeCheck_Match(t *testing.T) {
 	br := launchTestBrowser(t)
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			submitClicks := 0
-
-			buildStep := func(n int) string {
-				var content string
-				if n == tc.resumeStep {
-					content = `<div id="resume-section">
-            <label>Resume <span aria-hidden="true">*</span></label>
-            <div>
-              <input type="radio" name="resume-select" id="r-lib1" value="lib1">
-              <label for="r-lib1">my_resume_2026.pdf</label>
-            </div>
-            <button type="button"><span><span>Upload resume</span></span></button>
-          </div>`
-				} else if n < 4 {
-					content = `<div data-test-form-element="">
-            <label for="q` + fmt.Sprintf("%d", n) + `">Question ` + fmt.Sprintf("%d", n) + `</label>
-            <input id="q` + fmt.Sprintf("%d", n) + `" type="text" value="answer" style="display:block;width:200px;height:40px">
-          </div>`
-				}
-				if n < 4 {
-					return fmt.Sprintf(`<div id="step-%d">
-          <p>%d/4 pages</p>
-          %s
-          <footer>
-            <button type="button" onclick="goTo(%d)"><span>Next</span></button>
-          </footer>
-        </div>`, n, n, content, n+1)
-				}
-				// Step 4: final review with submit button
-				submitClicks++ // will be counted if test code mutates this variable — but onclick in HTML can't do that
-				return `<div id="step-4" style="display:none">
-          <h2>Review your application</h2>
-          <button data-easy-apply-submit-button="" type="button"><span>Submit application</span></button>
-        </div>`
-			}
-
-			html := fmt.Sprintf(`<!DOCTYPE html><html><body>
-<dialog data-testid="dialog" data-job-id="%s" open="">
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
   <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
-    %s
-    %s
-    %s
-    %s
+    <h2>Review your application</h2>
+    <section class="review-section artdeco-card">
+      <h3>Resume</h3>
+      <p id="review-resume-name">my_tailored_resume.pdf</p>
+    </section>
+    <button data-easy-apply-submit-button="" type="button"><span>Submit application</span></button>
   </div>
 </dialog>
-<script>
-  function goTo(n) {
-    document.querySelectorAll('[id^="step-"]').forEach(function(s) { s.style.display = 'none'; });
-    document.getElementById('step-' + n).style.display = '';
-  }
-</script>
-</body></html>`,
-				"4479748087",
-				buildStep(1), buildStep(2), buildStep(3), buildStep(4))
+</body></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, html)
+	}))
+	t.Cleanup(srv.Close)
+	page := navigateAndWait(t, br, srv.URL)
 
-			srv := fixtureServer(t, "4479748087", "", html, "")
-			page := navigateAndWait(t, br, srv.URL+"/jobs/view/4479748087")
+	res, err := page.Eval(jsLinkedInFinalReviewResumeCheck, "my_tailored_resume.pdf")
+	require.NoError(t, err)
+	require.True(t, res.Value.Get("verified").Bool(),
+		"matching filename must return verified=true; full result: %s", res.Value.String())
+}
+
+// TestLinkedInFinalReviewResumeCheck_Mismatch verifies that jsLinkedInFinalReviewResumeCheck
+// returns verified=false when the review section shows a different filename.
+func TestLinkedInFinalReviewResumeCheck_Mismatch(t *testing.T) {
+	br := launchTestBrowser(t)
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <h2>Review your application</h2>
+    <section class="review-section artdeco-card">
+      <h3>Resume</h3>
+      <p id="review-resume-name">wrong_resume.pdf</p>
+    </section>
+    <button data-easy-apply-submit-button="" type="button"><span>Submit application</span></button>
+  </div>
+</dialog>
+</body></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, html)
+	}))
+	t.Cleanup(srv.Close)
+	page := navigateAndWait(t, br, srv.URL)
+
+	res, err := page.Eval(jsLinkedInFinalReviewResumeCheck, "my_tailored_resume.pdf")
+	require.NoError(t, err)
+	require.False(t, res.Value.Get("verified").Bool(),
+		"mismatched filename must return verified=false; full result: %s", res.Value.String())
+}
+
+// TestScanApplyStepsForPrepare_NativeDialog verifies the three key paths in
+// scanApplyStepsForPrepare for the LinkedIn native-dialog layout using a
+// single-step final-review form. This avoids dependence on CDP file-chooser
+// interception (which requires a trusted user gesture) while still covering
+// all three code paths through linkedInVerifyFinalReviewResume.
+//
+// The upload-mismatch detection path (errUploadIdentityUnverifiable) is tested
+// separately via TestLinkedInWaitForResumeAccepted_IdentityUnverifiable.
+//
+//  1. upload_correct       — review confirms expected filename → prepareScanComplete=true
+//  2. upload_wrong_file    — review shows wrong filename → hold, prepareScanComplete=false
+//  3. final_review_mismatch — review shows old filename → hold, prepareScanComplete=false
+func TestScanApplyStepsForPrepare_NativeDialog(t *testing.T) {
+	br := launchTestBrowser(t)
+
+	const jobID = "scan-native-job1"
+
+	// buildReviewForm returns a single-step final-review dialog showing reviewResumeName.
+	buildReviewForm := func(reviewResumeName string) string {
+		return `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" data-job-id="` + jobID + `" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <h2>Review your application</h2>
+    <section class="review-section artdeco-card">
+      <h3>Resume</h3>
+      <p id="review-resume-name">` + reviewResumeName + `</p>
+    </section>
+    <button data-easy-apply-submit-button="" type="button"><span>Submit application</span></button>
+  </div>
+</dialog>
+</body></html>`
+	}
+
+	cases := []struct {
+		name         string
+		reviewName   string
+		wantComplete bool
+		wantHold     bool
+	}{
+		{
+			name:         "upload_correct",
+			reviewName:   "my_tailored_resume.pdf",
+			wantComplete: true,
+			wantHold:     false,
+		},
+		{
+			name:         "upload_wrong_file",
+			reviewName:   "wrong_resume.pdf",
+			wantComplete: false,
+			wantHold:     true,
+		},
+		{
+			name:         "final_review_mismatch",
+			reviewName:   "old_resume.pdf",
+			wantComplete: false,
+			wantHold:     true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			html := buildReviewForm(tc.reviewName)
+			srv := fixtureServer(t, jobID, "", html, "")
+			page := navigateAndWait(t, br, srv.URL+"/jobs/view/"+jobID)
+
+			tmpFile := filepath.Join(t.TempDir(), "my_tailored_resume.pdf")
+			require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
 
 			b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+			b.cfg.Settings.GenerateNewResumeDocs = true
 			lazy := &lazyDocGen{
-				b:                b,
-				job:              linkedInJob{ID: "4479748087", URL: srv.URL + "/jobs/view/4479748087"},
+				b:                 b,
+				job:               linkedInJob{ID: jobID, URL: srv.URL + "/jobs/view/" + jobID},
 				reviewPrepareOnly: true,
-				ctx:              context.Background(),
+				ctx:               context.Background(),
 			}
+			// Pre-seed the resume path so get()/peek() return tmpFile without LLM.
+			lazy.once.Do(func() { lazy.resume = tmpFile })
 
 			err := b.scanApplyStepsForPrepare(context.Background(), page, lazy)
-			require.NoError(t, err, "scan must complete without error")
-			require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true after reaching final step")
-			require.Empty(t, lazy.holdReason, "no unexpected hold — upload was skipped (no PDF path), not failed")
+
+			if tc.wantComplete {
+				require.NoError(t, err, "scan must complete without error")
+				require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true")
+				require.Empty(t, lazy.holdReason, "holdReason must be empty on success")
+			} else {
+				require.Error(t, err, "scan must return an error when blocked")
+				require.False(t, lazy.prepareScanComplete, "prepareScanComplete must be false on failure")
+				require.NotEmpty(t, lazy.holdReason, "holdReason must be set")
+			}
 		})
 	}
 }

@@ -26,11 +26,11 @@
 
         <div data-testid="lazy-column" data-component-type="LazyColumn">
 
-          <!-- Resume section: NO <input type="file"> in DOM.
-               Required is signalled by the asterisk in the label text.
-               The library entry is an unchecked radio (no resume selected yet). -->
-          <div id="resume-section">
-            <label>Resume <span aria-hidden="true">*</span></label>
+        <!-- Resume section: NO <input type="file"> in DOM.
+             Required is signalled by the asterisk in the legend text.
+             The library entry is an unchecked radio (no resume selected yet). -->
+          <fieldset class="artdeco-form-element" id="resume-section">
+            <legend class="jobs-form-element__label">Resume <span aria-hidden="true">*</span></legend>
 
             <div>
               <input type="radio" name="resume-select" id="r-lib1" value="lib1">
@@ -40,7 +40,7 @@
             <button type="button" id="upload-resume-btn">
               <span><span>Upload resume</span></span>
             </button>
-          </div>
+          </fieldset>
 
         </div>
 

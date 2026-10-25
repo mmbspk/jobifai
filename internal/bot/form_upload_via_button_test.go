@@ -3,7 +3,10 @@ package bot
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -140,7 +143,7 @@ func TestLinkedInCheckResumeAccepted_ContainerNotFound(t *testing.T) {
 // is returned — triggering a HOLD rather than a hard failure.
 func TestLinkedInWaitForResumeAccepted_IdentityUnverifiable(t *testing.T) {
 	// Page has "other_resume.pdf" checked; we expect "my_resume_2026.pdf".
-	page := rodTestPage(t, nativeDialogWithResume("other_resume.pdf", false))
+	page := rodTestPage(t, nativeDialogWithResume("other_resume.pdf", true))
 
 	err := linkedInWaitForResumeAccepted(context.Background(), page, "/uploads/my_resume_2026.pdf")
 	require.True(t, errors.Is(err, errUploadIdentityUnverifiable),
@@ -151,8 +154,45 @@ func TestLinkedInWaitForResumeAccepted_IdentityUnverifiable(t *testing.T) {
 // radio label matches the expected filename, nil is returned.
 func TestLinkedInWaitForResumeAccepted_AcceptsCorrectFile(t *testing.T) {
 	// Page has "my_resume_2026.pdf" checked; same filename is expected.
-	page := rodTestPage(t, nativeDialogWithResume("my_resume_2026.pdf", false))
+	page := rodTestPage(t, nativeDialogWithResume("my_resume_2026.pdf", true))
 
 	err := linkedInWaitForResumeAccepted(context.Background(), page, "/uploads/my_resume_2026.pdf")
 	require.NoError(t, err, "matching filename must be accepted without error")
+}
+
+// TestFormUploadViaButton_ContextCancelled verifies context cancellation unblocks
+// formUploadViaButton before the file chooser fires.
+func TestFormUploadViaButton_ContextCancelled(t *testing.T) {
+	// Upload button triggers file chooser via setTimeout at t=500ms.
+	// Context times out at 200ms — must return DeadlineExceeded before chooser fires.
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <div id="resume-section">
+      <label>Resume <span aria-hidden="true">*</span></label>
+      <button type="button" id="upload-btn" onclick="setTimeout(function(){var f=document.createElement('input');f.type='file';f.id='r-chooser';document.body.appendChild(f);f.click();},500)">
+        <span><span>Upload resume</span></span>
+      </button>
+    </div>
+    <footer><button type="button"><span>Next</span></button></footer>
+  </div>
+</dialog>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "resume.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	err := b.formUploadViaButton(ctx, page, tmpFile)
+	require.True(t, errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled),
+		"must return context error when cancelled before chooser fires, got: %v", err)
 }

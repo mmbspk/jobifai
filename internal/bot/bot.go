@@ -2376,6 +2376,9 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			return fmt.Errorf("read application action: %w", peekErr)
 		}
 		if kind == "submit" && found && enabled {
+			if lazy.policyBlocked() {
+				return fmt.Errorf("easy apply: %s", lazy.holdReason)
+			}
 			if err := markAttemptSubmitDispatch(b.cfg.DB, lazy.attemptID, b.cfg.UserID); err != nil {
 				return err
 			}

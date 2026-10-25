@@ -110,45 +110,17 @@ const jsScanFieldsInner = `
 	//   1. LinkedIn native <dialog open> (new SDUI layout, identified by data-sdui-screen)
 	//   2. Legacy LinkedIn class-based modal
 	//   3. Seek form selectors
-	//   4. Semantic fallback preserved below for unknown/future layouts.
+	// No semantic fallback: an unresolvable container means no apply form is present.
 	const anchor = resolveApplyContainer();
+	if (!anchor) return JSON.stringify([]);
 
-	let container = document.body;
-	if (anchor) {
-		// For <dialog open> and .jobs-easy-apply-content: the anchor IS the container.
-		// For older [data-test-form-element] anchors: wrap to nearest form ancestor.
-		const isTopLevelContainer = anchor.tagName === 'DIALOG'
-			|| anchor.matches('.jobs-easy-apply-content,.jobs-easy-apply-modal,[data-testid]');
-		container = isTopLevelContainer
-			? anchor
-			: (anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor);
-	} else {
-		// Semantic fallback: when all platform-specific selectors miss, scope to
-		// any visible dialog or form with at least one required input. Skip
-		// candidates that look like search/refine UI (Seek's job-search page has
-		// a sidebar <form> with "Show salary range refinements" / "Pay" radios).
-		function looksLikeSearchUI(scope) {
-			if (!scope) return false;
-			if (scope.closest("[role='search'], [data-automation*='searchBar'], [data-automation*='refine'], [data-automation*='filter']")) return true;
-			const head = scope.querySelector('legend, h1, h2, h3, [role="heading"]');
-			const txt = (head && head.textContent || '').toLowerCase();
-			return txt.includes('refinement') || txt.includes('sort by') || txt.includes('keyword') || txt.includes('classification');
-		}
-		const dialog = document.querySelector('[role="dialog"]');
-		const form = dialog ? dialog.querySelector('form') : document.querySelector('form');
-		const scope = form || dialog;
-		if (scope && !looksLikeSearchUI(scope)) {
-			// Match any non-hidden input — Seek doesn't set [required] even for
-			// mandatory fields, so we can't key off required alone.
-			const hasInputs = [...scope.querySelectorAll(
-				'input:not([type="hidden"]), select, textarea'
-			)].some(isVisible);
-			if (hasInputs) {
-				container = scope;
-				console.warn('jsScanFields: using semantic fallback container');
-			}
-		}
-	}
+	// For <dialog open> and .jobs-easy-apply-content: the anchor IS the container.
+	// For older [data-test-form-element] anchors: wrap to nearest form ancestor.
+	const isTopLevelContainer = anchor.tagName === 'DIALOG'
+		|| anchor.matches('.jobs-easy-apply-content,.jobs-easy-apply-modal,[data-testid]');
+	const container = isTopLevelContainer
+		? anchor
+		: (anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor);
 
 	const isSeekApply = !!(container.closest && container.closest(
 		"[data-testid='quick-apply-form'], [data-automation='apply-form'], form[data-testid*='applicationForm']"
@@ -464,6 +436,7 @@ var jsScanFields string
 var jsHasVisibleFormContent string
 var jsLinkedInClickUploadResume string
 var jsLinkedInCheckResumeAccepted string
+var jsLinkedInFinalReviewResumeCheck string
 
 // jsLinkedInApplyContainerFn defines resolveApplyContainer() — the single source of truth
 // for locating the active Easy Apply dialog. Uses document.querySelectorAll (no allInDOM
@@ -482,9 +455,13 @@ function resolveApplyContainer() {
 	}
 	// LinkedIn's new SDUI Easy Apply: <dialog open> without role="dialog" attribute.
 	// Identified by the SDUI screen value confirmed in Oct/Sep 2026 captures.
-	for (const d of document.querySelectorAll('dialog[open]')) {
-		if (!rectVisible(d)) continue;
-		if (d.querySelector('[data-sdui-screen*="EasyApply"]')) return d;
+	// Only unambiguous when exactly one such element is visible.
+	{
+		const easyApplyDialogs = [...document.querySelectorAll('dialog[open]')].filter(
+			d => rectVisible(d) && d.querySelector('[data-sdui-screen*="EasyApply"]')
+		);
+		if (easyApplyDialogs.length === 1) return easyApplyDialogs[0];
+		if (easyApplyDialogs.length > 1) return null; // ambiguous
 	}
 	// Legacy LinkedIn: class-based modal (retained for accounts/regions not yet migrated).
 	for (const sel of ['.jobs-easy-apply-content', '.jobs-easy-apply-modal']) {
@@ -557,32 +534,61 @@ func init() {
 	if (!container) return { accepted: false, error: false, filenameVisible: false };
 	const hasError = !!container.querySelector('[aria-invalid="true"],.artdeco-inline-feedback--error');
 	if (hasError) return { accepted: false, error: true, filenameVisible: false };
+
 	const base = (expectedFilename || '').toLowerCase();
-	const stem = base.replace(/\.[^.]+$/, '').replace(/[_\-]/g, ' ');
-	function nameMatch(text) {
-		const t = (text || '').toLowerCase();
-		return !!base && (t.includes(base) || (!!stem && t.includes(stem)));
+	function extractFilename(text) {
+		const t = (text || '').toLowerCase().trim();
+		const m = t.match(/\b([\w\-\.]+\.(pdf|doc|docx|txt|rtf))\b/);
+		return m ? m[1] : null;
 	}
-	// Primary: a checked radio in the resume section — proves which entry is selected.
-	const radios = [...container.querySelectorAll('input[type="radio"]')];
-	if (radios.length > 0) {
-		const checked = radios.find(r => r.checked);
-		if (!checked) return { accepted: false, error: false, filenameVisible: false };
-		const labelEl = container.querySelector('label[for="' + checked.id + '"]') ||
-			checked.closest('label') || checked.parentElement;
-		const filenameVisible = nameMatch(labelEl && labelEl.textContent);
-		return { accepted: true, error: false, filenameVisible };
-	}
-	// Secondary (upload-only layout without radio choices): require Change/Replace button.
-	const changeBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
-		const t = ((b.getAttribute('aria-label')||'')+' '+(b.textContent||'')).toLowerCase();
-		return /\b(change|replace)\b/.test(t) && /\b(resume|cv)\b/.test(t);
+
+	// Locate the resume section strictly via the "Upload resume" button.
+	// Only the upload button anchors the section — no Change/Replace fallback.
+	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
+		const t = (b.textContent || '').toLowerCase();
+		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
 	});
-	if (!changeBtn) return { accepted: false, error: false, filenameVisible: false };
-	const section = changeBtn.closest('[data-test-form-element],.artdeco-form-element,fieldset,[role="group"]') ||
-		changeBtn.parentElement;
-	const filenameVisible = nameMatch(section && section.textContent);
+	if (!uploadBtn) return { accepted: false, error: false, filenameVisible: false };
+
+	// Walk up to smallest ancestor that also contains radio inputs.
+	let section = uploadBtn.parentElement;
+	while (section && section !== container) {
+		if (section.querySelector('input[type="radio"]')) break;
+		section = section.parentElement;
+	}
+	if (!section || section === container) {
+		return { accepted: false, error: false, filenameVisible: false };
+	}
+
+	const radios = [...section.querySelectorAll('input[type="radio"]')];
+	const checked = radios.find(r => r.checked);
+	if (!checked) return { accepted: false, error: false, filenameVisible: false };
+
+	const labelEl = section.querySelector('label[for="' + checked.id + '"]') ||
+		checked.closest('label') || checked.parentElement;
+	const extracted = extractFilename(labelEl && labelEl.textContent);
+	const filenameVisible = extracted !== null && extracted === base;
 	return { accepted: true, error: false, filenameVisible };
+}`
+
+	jsLinkedInFinalReviewResumeCheck = `(expectedFilename) => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return { verified: false };
+	const base = (expectedFilename || '').toLowerCase();
+	if (!base) return { verified: true };
+	function extractFilename(text) {
+		const t = (text || '').toLowerCase().trim();
+		const m = t.match(/\b([\w\-\.]+\.(pdf|doc|docx|txt|rtf))\b/);
+		return m ? m[1] : null;
+	}
+	const headings = [...container.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"],[class*="heading"]')];
+	const resumeHeading = headings.find(h => /\bresume\b/i.test(h.textContent || ''));
+	if (!resumeHeading) return { verified: false };
+	const section = resumeHeading.closest('[data-component-type],[class*="section"],fieldset,section') || resumeHeading.parentElement;
+	if (!section) return { verified: false };
+	const extracted = extractFilename(section.textContent);
+	return { verified: extracted !== null && extracted === base };
 }`
 }
 
@@ -1456,7 +1462,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	defer func() { _ = proto.PageSetInterceptFileChooserDialog{Enabled: false}.Call(page) }()
 
 	// Click BEFORE starting the goroutine so a failed click needs no goroutine join.
-	clickRes, clickErr := page.Timeout(5 * time.Second).Eval(jsLinkedInClickUploadResume)
+	clickRes, clickErr := ctxPage.Timeout(5 * time.Second).Eval(jsLinkedInClickUploadResume)
 	if clickErr != nil {
 		return fmt.Errorf("linkedin: upload button click: %w", clickErr)
 	}

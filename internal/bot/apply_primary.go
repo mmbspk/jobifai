@@ -209,9 +209,9 @@ const jsLinkedInAtFinalReviewFunction = `function linkedInAtFinalReviewPage() {
 		if (btn.hasAttribute('data-live-test-easy-apply-submit-button') || btn.hasAttribute('data-easy-apply-submit-button')) return true;
 		return t.includes('submit application') || t === 'submit' || t.startsWith('submit ');
 	}
-	const legacyShells = [...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-easy-apply-modal]')];
 	const container = resolveApplyContainer();
-	const shells = [...new Set(container ? [container, ...legacyShells] : legacyShells)];
+	if (!container) return false;
+	const shells = [container];
 	for (const shell of shells) {
 		if (!isVisible(shell)) continue;
 		const headings = [...shell.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"]')].filter(isVisible);
