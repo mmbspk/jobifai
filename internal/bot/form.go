@@ -1524,40 +1524,38 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	}
 	defer func() { _ = proto.PageSetInterceptFileChooserDialog{Enabled: false}.Call(page) }()
 
-	// Click BEFORE starting the goroutine so a failed click needs no goroutine join.
-	// Capture pre-upload state with a retry loop: the section may render before its
-	// radio children appear. After retries, a found-but-empty section is a confirmed
-	// empty library (stateVerified stays false but sectionFound true → proceed).
+	// Capture pre-upload state. Section may render before radio children appear;
+	// retry up to 3 times. Empty or unverifiable libraries are held for manual review.
 	base := strings.ToLower(filepath.Base(filePath))
 	var preFilenameExisted bool
-	{
-		preVerified := false
-		for attempt := 0; attempt < 3; attempt++ {
-			r, evalErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState, base)
-			if evalErr != nil {
-				return fmt.Errorf("upload: cannot read pre-upload resume state: %w", evalErr)
-			}
-			if r.Value.Get("stateVerified").Bool() {
-				preFilenameExisted = r.Value.Get("filenameExisted").Bool()
-				preVerified = true
-				break
-			}
-			if !r.Value.Get("sectionFound").Bool() {
-				// Section unresolved — walk reached container. Hold immediately.
-				return errUploadIdentityUnverifiable
-			}
-			// Section found but no radios — possibly still loading. Retry.
-			if attempt < 2 {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(500 * time.Millisecond):
-				}
+	preUploadOK := false
+	for attempt := 0; attempt < 3; attempt++ {
+		r, evalErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState, base)
+		if evalErr != nil {
+			return fmt.Errorf("upload: cannot read pre-upload resume state: %w", evalErr)
+		}
+		if r.Value.Get("stateVerified").Bool() {
+			preFilenameExisted = r.Value.Get("filenameExisted").Bool()
+			preUploadOK = true
+			break
+		}
+		if !r.Value.Get("sectionFound").Bool() {
+			// Section unresolved — walk reached container. Hold immediately.
+			return errUploadIdentityUnverifiable
+		}
+		// Section found but no radios — possibly still loading. Retry.
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(500 * time.Millisecond):
 			}
 		}
-		// preVerified false here means: section found consistently with no radios →
-		// confirmed empty library. preFilenameExisted remains false; proceed.
-		_ = preVerified
+	}
+	if !preUploadOK {
+		// Section found consistently with no radios — cannot distinguish loaded-empty
+		// from still-loading. Hold for manual review.
+		return errUploadIdentityUnverifiable
 	}
 
 	// Find the upload button element for a trusted Rod click.

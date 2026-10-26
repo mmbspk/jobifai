@@ -475,7 +475,13 @@ func TestScanApplyStepsForPrepare_UploadNavigateFinalReview(t *testing.T) {
 	// buildHTML creates the 3-step dialog HTML. When wrongFile is true the change
 	// handler hard-codes "wrong_resume.pdf" instead of using f.files[0].name.
 	buildHTML := func(wrongFile bool) string {
-		changeBody := `
+		// pruneRadios removes all pre-existing radio wrapper divs from the resume
+		// section before the upload radio is inserted. This prevents the pre-existing
+		// "library_resume.pdf" library entry (added for the pre-upload state check)
+		// from remaining after upload and confusing the radio-answer fallback.
+		pruneRadios := `
+    [...document.getElementById('resume-section').querySelectorAll('input[type="radio"]')].forEach(function(r){var p=r.parentElement;if(p&&p!==document.getElementById('resume-section'))p.remove();});`
+		changeBody := pruneRadios + `
     var name = f.files[0] ? f.files[0].name : 'unknown.pdf';
     window._uploadedResumeName = name;
     var wrap = document.createElement('div');
@@ -492,7 +498,7 @@ func TestScanApplyStepsForPrepare_UploadNavigateFinalReview(t *testing.T) {
     document.getElementById('resume-section').insertBefore(wrap, document.getElementById('upload-btn'));
     f.remove();`
 		if wrongFile {
-			changeBody = `
+			changeBody = pruneRadios + `
     window._uploadedResumeName = 'wrong_resume.pdf';
     var wrap = document.createElement('div');
     var radio = document.createElement('input');
@@ -516,6 +522,10 @@ func TestScanApplyStepsForPrepare_UploadNavigateFinalReview(t *testing.T) {
     <div id="step-1">
       <fieldset id="resume-section">
         <legend>Resume <span aria-hidden="true">*</span></legend>
+        <div>
+          <input type="radio" name="resume-select" id="r-lib1">
+          <label for="r-lib1">library_resume.pdf</label>
+        </div>
         <button type="button" id="upload-btn">
           <span><span>Upload resume</span></span>
         </button>
