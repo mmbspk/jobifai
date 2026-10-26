@@ -612,7 +612,7 @@ func init() {
 	jsLinkedInResumePreUploadState = `(expectedFilename) => {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer();
-	if (!container) return { filenameExisted: false };
+	if (!container) return { filenameExisted: false, stateVerified: false };
 	function extractFilename(text) {
 		const t = (text || '').trim();
 		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
@@ -623,20 +623,20 @@ func init() {
 		const t = (b.textContent || '').toLowerCase();
 		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
 	});
-	if (!uploadBtn) return { filenameExisted: false };
+	if (!uploadBtn) return { filenameExisted: false, stateVerified: false };
 	let section = uploadBtn.parentElement;
 	while (section && section !== container) {
 		if (section.querySelector('input[type="radio"]')) break;
 		section = section.parentElement;
 	}
-	if (!section || section === container) return { filenameExisted: false };
+	if (!section || section === container) return { filenameExisted: false, stateVerified: true };
 	const radios = [...section.querySelectorAll('input[type="radio"]')];
 	const filenameExisted = radios.some(r => {
 		const labelEl = section.querySelector('label[for="' + r.id + '"]') ||
 			r.closest('label') || r.parentElement;
 		return extractFilename(labelEl && labelEl.textContent) === base;
 	});
-	return { filenameExisted };
+	return { filenameExisted, stateVerified: true };
 }`
 }
 
@@ -1515,6 +1515,9 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	preRes, preErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState, base)
 	if preErr != nil {
 		return fmt.Errorf("upload: cannot read pre-upload resume state: %w", preErr)
+	}
+	if !preRes.Value.Get("stateVerified").Bool() {
+		return errUploadIdentityUnverifiable
 	}
 	preFilenameExisted := preRes.Value.Get("filenameExisted").Bool()
 

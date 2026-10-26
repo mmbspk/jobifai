@@ -543,7 +543,7 @@ func TestScanApplyStepsForPrepare_UploadNavigateFinalReview(t *testing.T) {
         <h3>Resume</h3>
         <p id="review-resume-name"></p>
       </section>
-      <button data-easy-apply-submit-button="" id="submit-btn">Submit application</button>
+      <button data-easy-apply-submit-button="" id="submit-btn" onclick="window._submitClicks=(window._submitClicks||0)+1;">Submit application</button>
     </div>
 
   </div>
@@ -602,12 +602,27 @@ document.getElementById('next-2').addEventListener('click', function() {
 
 			err := b.scanApplyStepsForPrepare(context.Background(), page, lazy)
 
+			// Assert zero Submit clicks regardless of outcome.
+			submitClicks, evalErr := page.Eval(`() => window._submitClicks || 0`)
+			require.NoError(t, evalErr)
+			require.EqualValues(t, 0, submitClicks.Value.Num(), "Submit must not be clicked during preparation scan")
+
 			if tc.wantComplete {
 				require.NoError(t, err, "correct upload must complete without error")
 				require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true on success")
 				require.Empty(t, lazy.holdReason, "holdReason must be empty on success")
+
+				// Verify file was delivered and the correct filename is selected.
+				acceptRes, aErr := page.Eval(jsLinkedInCheckResumeAccepted, "my_tailored_resume.pdf")
+				require.NoError(t, aErr)
+				require.True(t, acceptRes.Value.Get("accepted").Bool(), "uploaded radio must be checked")
+				require.True(t, acceptRes.Value.Get("filenameVisible").Bool(), "uploaded filename must match")
+
+				// Verify we reached and passed the final-review step.
+				frRes, frErr := page.Eval(jsLinkedInAtFinalReview)
+				require.NoError(t, frErr)
+				require.True(t, frRes.Value.Bool(), "page must be at final review after preparation scan")
 			} else {
-				require.Error(t, err, "wrong-file upload must return an error")
 				require.False(t, lazy.prepareScanComplete, "prepareScanComplete must be false when upload identity unverifiable")
 				require.NotEmpty(t, lazy.holdReason, "holdReason must be set when upload identity unverifiable")
 			}
