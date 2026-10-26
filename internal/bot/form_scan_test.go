@@ -634,12 +634,123 @@ document.getElementById('next-2').addEventListener('click', function() {
 
 				// Verify we reached and passed the final-review step.
 				frRes, frErr := page.Eval(jsLinkedInAtFinalReview)
-				require.NoError(t, frErr)
-				require.True(t, frRes.Value.Bool(), "page must be at final review after preparation scan")
+			require.NoError(t, frErr)
+			require.True(t, frRes.Value.Bool(), "page must be at final review after preparation scan")
 			} else {
 				require.False(t, lazy.prepareScanComplete, "prepareScanComplete must be false when upload identity unverifiable")
 				require.NotEmpty(t, lazy.holdReason, "holdReason must be set when upload identity unverifiable")
 			}
 		})
 	}
+}
+
+// TestFillFormStep_UnrelatedRadioBeforeResumeGroup verifies that the post-upload
+// confirmation path targets the correct radio group and not the first radio it sees.
+//
+// The scan returns fields in a fixed order: upload-via-button first, then all radio
+// groups. An approach that relies on "first radio after file in scan order" would
+// incorrectly treat "work-auth" as the resume group. This test catches that.
+//
+// Layout (step 1 only, no navigation):
+//   - "Work authorisation?" radio (group "work-auth") — BEFORE the resume section
+//   - Resume fieldset with library_resume.pdf (unchecked) + upload button + radio group "resume-select"
+//
+// After fillFormStep:
+//   - "work-auth" is answered via normal (LLM-less fallback) path — option "Yes" selected
+//   - "resume-select" is confirmed via jsFindCheckedRadioLabel (my_tailored_resume.pdf)
+//   - library_resume.pdf is NOT re-selected and still exists in the DOM
+func TestFillFormStep_UnrelatedRadioBeforeResumeGroup(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+
+    <div data-test-form-element="">
+      <legend>Work authorisation?</legend>
+      <div><input type="radio" name="work-auth" id="wa-yes" value="Yes"><label for="wa-yes">Yes</label></div>
+      <div><input type="radio" name="work-auth" id="wa-no"  value="No" ><label for="wa-no">No</label></div>
+    </div>
+
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
+      <div>
+        <input type="radio" name="resume-select" id="r-lib1">
+        <label for="r-lib1">library_resume.pdf</label>
+      </div>
+      <button type="button" id="upload-btn">
+        <span><span>Upload resume</span></span>
+      </button>
+    </fieldset>
+
+  </div>
+</dialog>
+<script>
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.id = 'file-chooser';
+  f.style.display = 'none';
+  f.addEventListener('change', function() {
+    var name = f.files[0] ? f.files[0].name : 'unknown.pdf';
+    var wrap = document.createElement('div');
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'resume-select';
+    radio.id = 'r-uploaded';
+    radio.checked = true;
+    var label = document.createElement('label');
+    label.htmlFor = 'r-uploaded';
+    label.textContent = name;
+    wrap.appendChild(radio);
+    wrap.appendChild(label);
+    document.getElementById('resume-section').insertBefore(wrap, document.getElementById('upload-btn'));
+    f.remove();
+  });
+  document.body.appendChild(f);
+  f.click();
+});
+</script>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "my_tailored_resume.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	b.cfg.Settings.GenerateNewResumeDocs = true
+	lazy := &lazyDocGen{
+		b:   b,
+		job: linkedInJob{ID: "unrelated-radio-test"},
+		ctx: context.Background(),
+	}
+	lazy.once.Do(func() { lazy.resume = tmpFile })
+
+	filled, _, err := b.fillFormStep(context.Background(), page, lazy)
+	require.NoError(t, err)
+	require.True(t, filled)
+	require.Empty(t, lazy.holdReason, "holdReason must be empty: both groups should resolve cleanly")
+
+	// The work-auth radio must have been answered via the normal (fallback) path.
+	// Without LLM, the fallback picks the first scanned option: "Yes".
+	waRes, waErr := page.Eval(`() => {
+		const checked = [...document.querySelectorAll('input[name="work-auth"]')].find(r => r.checked);
+		return checked ? checked.value : '';
+	}`)
+	require.NoError(t, waErr)
+	require.Equal(t, "Yes", waRes.Value.String(), "work-auth radio must be answered via normal fallback (first option)")
+
+	// my_tailored_resume.pdf must be selected in the resume group.
+	acceptRes, aErr := page.Eval(jsLinkedInCheckResumeAccepted, "my_tailored_resume.pdf")
+	require.NoError(t, aErr)
+	require.True(t, acceptRes.Value.Get("accepted").Bool(), "my_tailored_resume.pdf must be selected after upload")
+	require.True(t, acceptRes.Value.Get("filenameVisible").Bool(), "uploaded filename must be visible in resume group")
+
+	// library_resume.pdf must still be in the DOM — post-upload logic must not remove it.
+	libRes, libErr := page.Eval(`() => !!document.getElementById('r-lib1')`)
+	require.NoError(t, libErr)
+	require.True(t, libRes.Value.Bool(), "library_resume.pdf must still exist in DOM after upload")
 }

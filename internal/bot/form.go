@@ -50,7 +50,8 @@ type formField struct {
 	Required       bool              `json:"required"`        // file field marked required on form
 	InputType      string            `json:"inputType"`       // text | number | textarea
 	Typeahead      bool              `json:"isTypeahead"`     // combobox requiring dropdown selection
-	UploadViaButton bool             `json:"uploadViaButton"` // slot has no visible input; upload via button click + HandleFileDialog
+	UploadViaButton  bool   `json:"uploadViaButton"`  // slot has no visible input; upload via button click + HandleFileDialog
+	ResumeGroupName  string `json:"resumeGroupName"`  // radio group name inside the same section (empty if ambiguous or absent)
 }
 
 func (f formField) optionLabels() []string {
@@ -221,10 +222,21 @@ const jsScanFieldsInner = `
 			);
 
 			const docKind = classifyDocumentKindBtn(lbl);
+
+			// Identify the radio group within this section.
+			// Use the single unique group name if exactly one exists; empty otherwise
+			// to avoid guessing when the section is ambiguous or has no radios yet.
+			let resumeGroupName = '';
+			if (sectionEl) {
+				const sectionRadios = allInDOM(sectionEl, 'input[type="radio"]');
+				const groupNames = [...new Set(sectionRadios.map(r => r.name).filter(Boolean))];
+				if (groupNames.length === 1) resumeGroupName = groupNames[0];
+			}
+
 			fields.push({
 				type: 'file', index: -1, hasFile, uploadViaButton: true,
 				question: lbl.replace(/\s+/g, ' ').trim() || 'Resume',
-				documentKind: docKind, required,
+				documentKind: docKind, required, resumeGroupName,
 			});
 		});
 	})();
@@ -728,10 +740,13 @@ const jsFillRadioByID = `(id) => {
 }`
 
 // jsFindCheckedRadioLabel returns the visible label text of the currently-checked radio
-// input in the named group, or "" if none is checked. Used after a file upload to confirm
-// which resume entry the upload handler selected.
+// input in the named group, scoped to the active apply container. Returns "" if none is
+// checked. Used after a file upload to confirm the upload handler's selection.
 const jsFindCheckedRadioLabel = `(name) => {
-	const radios = [...document.querySelectorAll('input[type="radio"]')].filter(r => r.name === name);
+	const scope = document.querySelector('[data-sdui-screen]')
+	           || document.querySelector('dialog[open]')
+	           || document.documentElement;
+	const radios = [...scope.querySelectorAll('input[type="radio"]')].filter(r => r.name === name);
 	const checked = radios.find(r => r.checked);
 	if (!checked) return '';
 	const lbl = document.querySelector('label[for="' + checked.id + '"]')
@@ -1172,10 +1187,13 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		}
 	}
 
-	// hadSuccessfulUpload is set after formUploadViaButton completes without error.
-	// It signals the next radio-fill that the newly-uploaded entry (added to the DOM
-	// by the upload handler) should be preferred over any pre-existing library entries.
-	var hadSuccessfulUpload bool
+	// uploadedResumeGroup is set from f.ResumeGroupName after a via-button upload succeeds.
+	// It gates post-upload confirmation to the specific radio group in the upload section;
+	// unrelated radio groups that precede or follow the resume section use normal answering.
+	var uploadedResumeGroup string
+	// uploadedFilename is the bare filename (lowercased) delivered to the upload section.
+	// The post-upload confirmation verifies the DOM-checked label matches this exactly.
+	var uploadedFilename string
 
 	for _, f := range fields {
 		b.shortPause() // human-like pause before each field interaction
@@ -1251,44 +1269,38 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			log.Info().Str("path", path).Str("kind", kindLabel).Msg("form: file uploaded")
 			filled = true
 			if f.UploadViaButton {
-				// Signal the next radio-fill to prefer the newly-uploaded entry, which may
-				// have been added to the DOM after the initial scan.
-				hadSuccessfulUpload = true
+				if f.ResumeGroupName != "" {
+					// Track the upload section's radio group and the delivered filename for
+					// post-upload confirmation. The radio fill uses these to verify the DOM
+					// reflects the correct selection without re-clicking.
+					uploadedResumeGroup = f.ResumeGroupName
+					uploadedFilename = strings.ToLower(filepath.Base(path))
+				} else {
+					// Section has no uniquely-identifiable radio group — cannot confirm
+					// which entry was selected. Hold for manual review.
+					lazy.holdReason = errUploadIdentityUnverifiable.Error()
+				}
 			}
 
 		case "radio":
-			// After a via-button upload, the upload handler adds a checked radio entry that
-			// was not present at scan time. Read the DOM to find it rather than relying on
-			// the stale scan-time options, which contain only pre-existing library entries.
-			if hadSuccessfulUpload {
-				hadSuccessfulUpload = false // consume the flag; applies to the first radio only
+			// After a via-button upload, confirm the resume group's post-upload selection
+			// directly from the DOM. The upload handler leaves the new entry checked; we
+			// verify its label matches the intended filename rather than re-clicking, so
+			// neither library entries nor the confirmed entry are disturbed.
+			// Unrelated radio groups (f.Name != uploadedResumeGroup) always go through normal answering.
+			if f.Name == uploadedResumeGroup {
+				uploadedResumeGroup = "" // consume — applies to this group only
 				if r2, evalErr2 := page.Timeout(3 * time.Second).Eval(jsFindCheckedRadioLabel, f.Name); evalErr2 == nil {
-					if checkedLabel := r2.Value.String(); checkedLabel != "" {
-						radioOK := false
-						optionID := ""
-						for _, opt := range f.Options {
-							if strings.EqualFold(opt.Label, checkedLabel) {
-								optionID = opt.ID
-								break
-							}
-						}
-						if optionID != "" {
-							if r3, err3 := page.Eval(jsFillRadioByID, optionID); err3 == nil && r3.Value.Bool() {
-								radioOK = true
-							}
-						}
-						if !radioOK {
-							if r3, err3 := page.Eval(jsFillRadio, f.Name, checkedLabel); err3 == nil && r3.Value.Bool() {
-								radioOK = true
-							}
-						}
-						if radioOK {
-							log.Info().Str("question", f.Question).Str("answer", checkedLabel).Msg("form: radio confirmed post-upload selection")
-							filled = true
-							continue
-						}
+					if checkedLabel := r2.Value.String(); strings.EqualFold(checkedLabel, uploadedFilename) {
+						log.Info().Str("question", f.Question).Str("answer", checkedLabel).Msg("form: resume radio confirmed post-upload selection")
+						filled = true
+						continue
 					}
 				}
+				// No checked radio or label does not match the uploaded filename — hold.
+				lazy.holdReason = errUploadIdentityUnverifiable.Error()
+				filled = true
+				continue
 			}
 			fallback := ""
 			if len(f.Options) > 0 {
