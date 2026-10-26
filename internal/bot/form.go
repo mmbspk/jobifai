@@ -452,6 +452,7 @@ var jsLinkedInCheckResumeAccepted string
 var jsLinkedInFinalReviewResumeCheck string
 var jsLinkedInFindUploadButton string
 var jsLinkedInResumePreUploadState string
+var jsFindCheckedRadioLabel string
 
 // jsLinkedInApplyContainerFn defines resolveApplyContainer() — the single source of truth
 // for locating the active Easy Apply dialog. Uses document.querySelectorAll (no allInDOM
@@ -509,6 +510,24 @@ func init() {
 }`
 	jsHasVisibleFormContent = `() => {
 ` + jsLinkedInApplyContainerFn + jsLinkedInAtFinalReviewFunction + jsHasVisibleFormContentInner + `
+}`
+
+	// jsFindCheckedRadioLabel finds the checked radio in the named group, scoped to the
+	// verified apply container so same-named groups on background SDUI screens are ignored.
+	// Label lookup is also scoped to the container so document-wide label[for] collisions
+	// cannot cross-contaminate the result. Returns "" when the container is missing or
+	// no radio in the group is checked.
+	jsFindCheckedRadioLabel = `(name) => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return '';
+	const radios = [...container.querySelectorAll('input[type="radio"]')].filter(r => r.name === name);
+	const checked = radios.find(r => r.checked);
+	if (!checked) return '';
+	const lbl = container.querySelector('label[for="' + checked.id + '"]')
+	          || checked.closest('label')
+	          || checked.parentElement;
+	return lbl ? lbl.textContent.trim() : (checked.value || '');
 }`
 
 	jsLinkedInClickUploadResume = `() => {
@@ -739,21 +758,8 @@ const jsFillRadioByID = `(id) => {
 	return true;
 }`
 
-// jsFindCheckedRadioLabel returns the visible label text of the currently-checked radio
-// input in the named group, scoped to the active apply container. Returns "" if none is
-// checked. Used after a file upload to confirm the upload handler's selection.
-const jsFindCheckedRadioLabel = `(name) => {
-	const scope = document.querySelector('[data-sdui-screen]')
-	           || document.querySelector('dialog[open]')
-	           || document.documentElement;
-	const radios = [...scope.querySelectorAll('input[type="radio"]')].filter(r => r.name === name);
-	const checked = radios.find(r => r.checked);
-	if (!checked) return '';
-	const lbl = document.querySelector('label[for="' + checked.id + '"]')
-	          || checked.closest('label')
-	          || checked.parentElement;
-	return lbl ? lbl.textContent.trim() : (checked.value || '');
-}`
+// jsFindCheckedRadioLabel is built in init() — requires resolveApplyContainer()
+// from jsLinkedInApplyContainerFn to scope the lookup to the active apply dialog.
 
 // jsFillSelect sets a native <select> using React-compatible native value setter.
 // Uses shadow DOM walking to find the element.

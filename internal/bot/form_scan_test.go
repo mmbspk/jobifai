@@ -754,3 +754,116 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 	require.NoError(t, libErr)
 	require.True(t, libRes.Value.Bool(), "library_resume.pdf must still exist in DOM after upload")
 }
+
+// TestFillFormStep_ResumeConfirmationScopedToApplyContainer verifies that
+// jsFindCheckedRadioLabel reads only radios inside the resolved apply container,
+// not same-named groups on other SDUI screens present on the page simultaneously.
+//
+// A background job-details [data-sdui-screen] holds a same-named radio group
+// ("resume-select") with "wrong_resume.pdf" checked. It is wrapped in a <form> so
+// the browser keeps it in a separate radio-button group from the dialog's unowned
+// radios — otherwise the browser itself would uncheck it when any dialog radio is
+// checked, making the assertion about background state unreliable.
+//
+// Without resolveApplyContainer() scoping, document.querySelectorAll would reach
+// into the background form, find "wrong_resume.pdf" first (alphabetically earlier in
+// the DOM), and return the wrong label — causing confirmation to fail with a hold.
+func TestFillFormStep_ResumeConfirmationScopedToApplyContainer(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+
+<!-- Background SDUI screen wrapped in its own <form> so the radio group it owns
+     is isolated from the dialog's document-level (unowned) radios. Without this
+     isolation the browser itself would uncheck rd-background when r-uploaded is
+     checked (same name, same owner → same group), making the DOM assertion below
+     meaningless. The <form> boundary creates a distinct group while preserving the
+     same name, which is the condition the test needs. -->
+<form id="bg-form" style="position:absolute;width:1px;height:1px;overflow:hidden">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.jobdetails.JobDetails">
+    <input type="radio" name="resume-select" id="rd-background" value="wrong" checked>
+    <label for="rd-background">wrong_resume.pdf</label>
+  </div>
+</form>
+
+<!-- Easy Apply dialog (active apply container). Radios here are unowned (no
+     enclosing <form>), so they form a document-level group separate from the
+     <form id="bg-form"> group above. -->
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
+      <div>
+        <input type="radio" name="resume-select" id="r-lib1">
+        <label for="r-lib1">library_resume.pdf</label>
+      </div>
+      <button type="button" id="upload-btn">
+        <span><span>Upload resume</span></span>
+      </button>
+    </fieldset>
+  </div>
+</dialog>
+<script>
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.id = 'file-chooser';
+  f.style.display = 'none';
+  f.addEventListener('change', function() {
+    var name = f.files[0] ? f.files[0].name : 'unknown.pdf';
+    var wrap = document.createElement('div');
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'resume-select';
+    radio.id = 'r-uploaded';
+    radio.checked = true;
+    var label = document.createElement('label');
+    label.htmlFor = 'r-uploaded';
+    label.textContent = name;
+    wrap.appendChild(radio);
+    wrap.appendChild(label);
+    document.getElementById('resume-section').insertBefore(wrap, document.getElementById('upload-btn'));
+    f.remove();
+  });
+  document.body.appendChild(f);
+  f.click();
+});
+</script>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "my_tailored_resume.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	b.cfg.Settings.GenerateNewResumeDocs = true
+	lazy := &lazyDocGen{
+		b:   b,
+		job: linkedInJob{ID: "scoping-test"},
+		ctx: context.Background(),
+	}
+	lazy.once.Do(func() { lazy.resume = tmpFile })
+
+	filled, _, err := b.fillFormStep(context.Background(), page, lazy)
+	require.NoError(t, err)
+	require.True(t, filled)
+	require.Empty(t, lazy.holdReason,
+		"holdReason must be empty: jsFindCheckedRadioLabel must read from the dialog, not the background SDUI screen with wrong_resume.pdf")
+
+	// The dialog's resume group must have the uploaded file selected.
+	acceptRes, aErr := page.Eval(jsLinkedInCheckResumeAccepted, "my_tailored_resume.pdf")
+	require.NoError(t, aErr)
+	require.True(t, acceptRes.Value.Get("accepted").Bool(),
+		"my_tailored_resume.pdf must be selected in the dialog's resume group")
+
+	// The background screen's radio must be undisturbed — fill must only touch the dialog.
+	// This is meaningful because the <form> boundary keeps the two radio groups separate;
+	// without the boundary the browser would uncheck rd-background itself regardless of scoping.
+	bgRes, bgErr := page.Eval(`() => document.getElementById('rd-background').checked`)
+	require.NoError(t, bgErr)
+	require.True(t, bgRes.Value.Bool(),
+		"background SDUI screen radio must remain checked — fill must not touch the background form's group")
+}
