@@ -612,7 +612,7 @@ func init() {
 	jsLinkedInResumePreUploadState = `(expectedFilename) => {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer();
-	if (!container) return { filenameExisted: false, stateVerified: false };
+	if (!container) return { filenameExisted: false, stateVerified: false, sectionFound: false };
 	function extractFilename(text) {
 		const t = (text || '').trim();
 		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
@@ -623,20 +623,35 @@ func init() {
 		const t = (b.textContent || '').toLowerCase();
 		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
 	});
-	if (!uploadBtn) return { filenameExisted: false, stateVerified: false };
+	if (!uploadBtn) return { filenameExisted: false, stateVerified: false, sectionFound: false };
+	// Walk up from upload button to find the resume section.
+	// Only fieldset, section, or [role=group] elements identify the section boundary.
+	// Generic div/span ancestors are never accepted, even if they contain radios elsewhere,
+	// because the SDUI form screen div wraps radios from all steps — not just resume.
 	let section = uploadBtn.parentElement;
 	while (section && section !== container) {
-		if (section.querySelector('input[type="radio"]')) break;
+		if (section.tagName === 'FIELDSET' ||
+			section.tagName === 'SECTION' ||
+			section.getAttribute('role') === 'group') {
+			break;
+		}
 		section = section.parentElement;
 	}
-	if (!section || section === container) return { filenameExisted: false, stateVerified: true };
+	if (!section || section === container) {
+		// No named section and no radio-containing ancestor below container — unresolved.
+		return { filenameExisted: false, stateVerified: false, sectionFound: false };
+	}
 	const radios = [...section.querySelectorAll('input[type="radio"]')];
+	if (radios.length === 0) {
+		// Section identified but no radios yet — possibly still loading.
+		return { filenameExisted: false, stateVerified: false, sectionFound: true };
+	}
 	const filenameExisted = radios.some(r => {
 		const labelEl = section.querySelector('label[for="' + r.id + '"]') ||
 			r.closest('label') || r.parentElement;
 		return extractFilename(labelEl && labelEl.textContent) === base;
 	});
-	return { filenameExisted, stateVerified: true };
+	return { filenameExisted, stateVerified: true, sectionFound: true };
 }`
 }
 
@@ -1510,16 +1525,40 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	defer func() { _ = proto.PageSetInterceptFileChooserDialog{Enabled: false}.Call(page) }()
 
 	// Click BEFORE starting the goroutine so a failed click needs no goroutine join.
-	// Capture pre-upload state for duplicate-filename guard (fail-closed: any eval error aborts).
+	// Capture pre-upload state with a retry loop: the section may render before its
+	// radio children appear. After retries, a found-but-empty section is a confirmed
+	// empty library (stateVerified stays false but sectionFound true → proceed).
 	base := strings.ToLower(filepath.Base(filePath))
-	preRes, preErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState, base)
-	if preErr != nil {
-		return fmt.Errorf("upload: cannot read pre-upload resume state: %w", preErr)
+	var preFilenameExisted bool
+	{
+		preVerified := false
+		for attempt := 0; attempt < 3; attempt++ {
+			r, evalErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState, base)
+			if evalErr != nil {
+				return fmt.Errorf("upload: cannot read pre-upload resume state: %w", evalErr)
+			}
+			if r.Value.Get("stateVerified").Bool() {
+				preFilenameExisted = r.Value.Get("filenameExisted").Bool()
+				preVerified = true
+				break
+			}
+			if !r.Value.Get("sectionFound").Bool() {
+				// Section unresolved — walk reached container. Hold immediately.
+				return errUploadIdentityUnverifiable
+			}
+			// Section found but no radios — possibly still loading. Retry.
+			if attempt < 2 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(500 * time.Millisecond):
+				}
+			}
+		}
+		// preVerified false here means: section found consistently with no radios →
+		// confirmed empty library. preFilenameExisted remains false; proceed.
+		_ = preVerified
 	}
-	if !preRes.Value.Get("stateVerified").Bool() {
-		return errUploadIdentityUnverifiable
-	}
-	preFilenameExisted := preRes.Value.Get("filenameExisted").Bool()
 
 	// Find the upload button element for a trusted Rod click.
 	// Rod's Click uses CDP Input.dispatchMouseEvent — a trusted user gesture.

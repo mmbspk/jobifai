@@ -29,11 +29,11 @@ func nativeDialogWithResume(checkedFilename string, uploadBtnPresent bool) strin
 	return `<!DOCTYPE html><html><body>
 <dialog data-testid="dialog" open="">
   <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
-    <div id="resume-section">
-      <label>Resume <span aria-hidden="true">*</span></label>
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
       ` + radioChecked + `
       ` + uploadBtn + `
-    </div>
+    </fieldset>
     <footer><button type="button"><span>Next</span></button></footer>
   </div>
 </dialog>
@@ -168,12 +168,12 @@ func TestFormUploadViaButton_ContextCancelled(t *testing.T) {
 	const html = `<!DOCTYPE html><html><body>
 <dialog data-testid="dialog" open="">
   <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
-    <div id="resume-section">
-      <label>Resume <span aria-hidden="true">*</span></label>
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
       <button type="button" id="upload-btn" onclick="setTimeout(function(){var f=document.createElement('input');f.type='file';f.id='r-chooser';document.body.appendChild(f);f.click();},500)">
         <span><span>Upload resume</span></span>
       </button>
-    </div>
+    </fieldset>
     <footer><button type="button"><span>Next</span></button></footer>
   </div>
 </dialog>
@@ -206,12 +206,12 @@ func TestFormUploadViaButton_TrustedClick_DeliversFile(t *testing.T) {
 	const html = `<!DOCTYPE html><html><body>
 <dialog data-testid="dialog" open="">
   <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
-    <div id="resume-section">
-      <label>Resume <span aria-hidden="true">*</span></label>
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
       <button type="button" id="upload-btn">
         <span><span>Upload resume</span></span>
       </button>
-    </div>
+    </fieldset>
     <footer><button type="button"><span>Next</span></button></footer>
   </div>
 </dialog>
@@ -273,8 +273,8 @@ func TestFormUploadViaButton_DuplicateFilename_Unverifiable(t *testing.T) {
 	const html = `<!DOCTYPE html><html><body>
 <dialog data-testid="dialog" open="">
   <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
-    <div id="resume-section">
-      <label>Resume <span aria-hidden="true">*</span></label>
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
       <div>
         <input type="radio" name="resume-select" id="r-existing" checked>
         <label for="r-existing">my_tailored_resume.pdf</label>
@@ -282,7 +282,7 @@ func TestFormUploadViaButton_DuplicateFilename_Unverifiable(t *testing.T) {
       <button type="button" id="upload-btn">
         <span><span>Upload resume</span></span>
       </button>
-    </div>
+    </fieldset>
     <footer><button type="button"><span>Next</span></button></footer>
   </div>
 </dialog>
@@ -353,8 +353,8 @@ func TestFormUploadViaButton_UnselectedDuplicate_Unverifiable(t *testing.T) {
 	const html = `<!DOCTYPE html><html><body>
 <dialog data-testid="dialog" open="">
   <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
-    <div id="resume-section">
-      <label>Resume <span aria-hidden="true">*</span></label>
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
       <div>
         <input type="radio" name="resume-select" id="r-existing">
         <label for="r-existing">my_tailored_resume.pdf</label>
@@ -362,7 +362,7 @@ func TestFormUploadViaButton_UnselectedDuplicate_Unverifiable(t *testing.T) {
       <button type="button" id="upload-btn">
         <span><span>Upload resume</span></span>
       </button>
-    </div>
+    </fieldset>
     <footer><button type="button"><span>Next</span></button></footer>
   </div>
 </dialog>
@@ -395,4 +395,90 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 	err := b.formUploadViaButton(context.Background(), page, tmpFile)
 	require.True(t, errors.Is(err, errUploadIdentityUnverifiable),
 		"pre-existing unselected entry with same filename must be caught, got: %v", err)
+}
+
+// nativeDialogShell wraps inner HTML in the outer native-dialog structure so
+// resolveApplyContainer() works in JS eval tests.
+func nativeDialogShell(inner string) string {
+	return `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+` + inner + `
+  </div>
+</dialog>
+</body></html>`
+}
+
+// TestLinkedInResumePreUploadState_ContainerOnlyLayout verifies that when radios and the
+// upload wrapper share only the application container (no named fieldset/section ancestor
+// of the button), the function returns stateVerified:false with sectionFound:false — so
+// the Go caller holds immediately without retrying.
+func TestLinkedInResumePreUploadState_ContainerOnlyLayout(t *testing.T) {
+	html := nativeDialogShell(`
+    <div class="radio-wrapper">
+      <input type="radio" id="r1"><label for="r1">old.pdf</label>
+    </div>
+    <div class="upload-wrapper">
+      <button><span><span>Upload resume</span></span></button>
+    </div>`)
+	page := rodTestPage(t, html)
+
+	res, err := page.Eval(jsLinkedInResumePreUploadState, "old.pdf")
+	require.NoError(t, err)
+	require.False(t, res.Value.Get("stateVerified").Bool(), "unresolved section must not be verified")
+	require.False(t, res.Value.Get("sectionFound").Bool(), "sectionFound must be false when walk reaches container")
+}
+
+// TestLinkedInResumePreUploadState_EmptyFieldset verifies that when the upload button is
+// inside a fieldset with no radios (possibly still loading), the function returns
+// stateVerified:false with sectionFound:true — so the Go caller retries before concluding
+// it is a confirmed empty library.
+func TestLinkedInResumePreUploadState_EmptyFieldset(t *testing.T) {
+	html := nativeDialogShell(`
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
+      <button><span><span>Upload resume</span></span></button>
+    </fieldset>`)
+	page := rodTestPage(t, html)
+
+	res, err := page.Eval(jsLinkedInResumePreUploadState, "any_resume.pdf")
+	require.NoError(t, err)
+	require.False(t, res.Value.Get("stateVerified").Bool(), "empty fieldset must not return stateVerified:true immediately")
+	require.True(t, res.Value.Get("sectionFound").Bool(), "sectionFound must be true when fieldset is identified")
+	require.False(t, res.Value.Get("filenameExisted").Bool())
+}
+
+// TestLinkedInResumePreUploadState_SeparateWrappersInFieldset verifies that when radios
+// and the upload button are in sibling <div> wrappers inside a common <fieldset>, duplicate
+// detection still works correctly (the fieldset is found via the FIELDSET tag check during
+// the walk, not via a radio-containing ancestor of the button).
+func TestLinkedInResumePreUploadState_SeparateWrappersInFieldset(t *testing.T) {
+	html := nativeDialogShell(`
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
+      <div class="radio-wrapper">
+        <input type="radio" id="r-lib1" name="resume-select">
+        <label for="r-lib1">existing_resume.pdf</label>
+      </div>
+      <div class="upload-wrapper">
+        <button><span><span>Upload resume</span></span></button>
+      </div>
+    </fieldset>`)
+	page := rodTestPage(t, html)
+
+	t.Run("duplicate_detected", func(t *testing.T) {
+		res, err := page.Eval(jsLinkedInResumePreUploadState, "existing_resume.pdf")
+		require.NoError(t, err)
+		require.True(t, res.Value.Get("stateVerified").Bool(), "radios in sibling wrapper must still be found via fieldset")
+		require.True(t, res.Value.Get("filenameExisted").Bool(), "matching filename in sibling radio wrapper must be detected")
+		require.True(t, res.Value.Get("sectionFound").Bool())
+	})
+
+	t.Run("fresh_upload", func(t *testing.T) {
+		res, err := page.Eval(jsLinkedInResumePreUploadState, "new_resume.pdf")
+		require.NoError(t, err)
+		require.True(t, res.Value.Get("stateVerified").Bool())
+		require.False(t, res.Value.Get("filenameExisted").Bool(), "different filename must not trigger duplicate guard")
+		require.True(t, res.Value.Get("sectionFound").Bool())
+	})
 }

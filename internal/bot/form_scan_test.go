@@ -514,12 +514,12 @@ func TestScanApplyStepsForPrepare_UploadNavigateFinalReview(t *testing.T) {
 
     <!-- Step 1: resume upload (visible) -->
     <div id="step-1">
-      <div id="resume-section">
-        <label>Resume <span aria-hidden="true">*</span></label>
+      <fieldset id="resume-section">
+        <legend>Resume <span aria-hidden="true">*</span></legend>
         <button type="button" id="upload-btn">
           <span><span>Upload resume</span></span>
         </button>
-      </div>
+      </fieldset>
       <footer>
         <button type="button" id="next-1"><span>Next</span></button>
       </footer>
