@@ -727,6 +727,19 @@ const jsFillRadioByID = `(id) => {
 	return true;
 }`
 
+// jsFindCheckedRadioLabel returns the visible label text of the currently-checked radio
+// input in the named group, or "" if none is checked. Used after a file upload to confirm
+// which resume entry the upload handler selected.
+const jsFindCheckedRadioLabel = `(name) => {
+	const radios = [...document.querySelectorAll('input[type="radio"]')].filter(r => r.name === name);
+	const checked = radios.find(r => r.checked);
+	if (!checked) return '';
+	const lbl = document.querySelector('label[for="' + checked.id + '"]')
+	          || checked.closest('label')
+	          || checked.parentElement;
+	return lbl ? lbl.textContent.trim() : (checked.value || '');
+}`
+
 // jsFillSelect sets a native <select> using React-compatible native value setter.
 // Uses shadow DOM walking to find the element.
 const jsFillSelect = `(id, value) => {
@@ -1159,6 +1172,11 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		}
 	}
 
+	// hadSuccessfulUpload is set after formUploadViaButton completes without error.
+	// It signals the next radio-fill that the newly-uploaded entry (added to the DOM
+	// by the upload handler) should be preferred over any pre-existing library entries.
+	var hadSuccessfulUpload bool
+
 	for _, f := range fields {
 		b.shortPause() // human-like pause before each field interaction
 		switch f.Type {
@@ -1232,8 +1250,46 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 			log.Info().Str("path", path).Str("kind", kindLabel).Msg("form: file uploaded")
 			filled = true
+			if f.UploadViaButton {
+				// Signal the next radio-fill to prefer the newly-uploaded entry, which may
+				// have been added to the DOM after the initial scan.
+				hadSuccessfulUpload = true
+			}
 
 		case "radio":
+			// After a via-button upload, the upload handler adds a checked radio entry that
+			// was not present at scan time. Read the DOM to find it rather than relying on
+			// the stale scan-time options, which contain only pre-existing library entries.
+			if hadSuccessfulUpload {
+				hadSuccessfulUpload = false // consume the flag; applies to the first radio only
+				if r2, evalErr2 := page.Timeout(3 * time.Second).Eval(jsFindCheckedRadioLabel, f.Name); evalErr2 == nil {
+					if checkedLabel := r2.Value.String(); checkedLabel != "" {
+						radioOK := false
+						optionID := ""
+						for _, opt := range f.Options {
+							if strings.EqualFold(opt.Label, checkedLabel) {
+								optionID = opt.ID
+								break
+							}
+						}
+						if optionID != "" {
+							if r3, err3 := page.Eval(jsFillRadioByID, optionID); err3 == nil && r3.Value.Bool() {
+								radioOK = true
+							}
+						}
+						if !radioOK {
+							if r3, err3 := page.Eval(jsFillRadio, f.Name, checkedLabel); err3 == nil && r3.Value.Bool() {
+								radioOK = true
+							}
+						}
+						if radioOK {
+							log.Info().Str("question", f.Question).Str("answer", checkedLabel).Msg("form: radio confirmed post-upload selection")
+							filled = true
+							continue
+						}
+					}
+				}
+			}
 			fallback := ""
 			if len(f.Options) > 0 {
 				fallback = f.Options[0].Label

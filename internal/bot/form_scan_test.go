@@ -474,14 +474,11 @@ func TestScanApplyStepsForPrepare_UploadNavigateFinalReview(t *testing.T) {
 
 	// buildHTML creates the 3-step dialog HTML. When wrongFile is true the change
 	// handler hard-codes "wrong_resume.pdf" instead of using f.files[0].name.
+	// The pre-existing library_resume.pdf radio is intentionally kept after upload
+	// so the test validates that fillFormStep prefers the just-uploaded checked
+	// entry over library entries without needing to remove them.
 	buildHTML := func(wrongFile bool) string {
-		// pruneRadios removes all pre-existing radio wrapper divs from the resume
-		// section before the upload radio is inserted. This prevents the pre-existing
-		// "library_resume.pdf" library entry (added for the pre-upload state check)
-		// from remaining after upload and confusing the radio-answer fallback.
-		pruneRadios := `
-    [...document.getElementById('resume-section').querySelectorAll('input[type="radio"]')].forEach(function(r){var p=r.parentElement;if(p&&p!==document.getElementById('resume-section'))p.remove();});`
-		changeBody := pruneRadios + `
+		changeBody := `
     var name = f.files[0] ? f.files[0].name : 'unknown.pdf';
     window._uploadedResumeName = name;
     var wrap = document.createElement('div');
@@ -498,7 +495,7 @@ func TestScanApplyStepsForPrepare_UploadNavigateFinalReview(t *testing.T) {
     document.getElementById('resume-section').insertBefore(wrap, document.getElementById('upload-btn'));
     f.remove();`
 		if wrongFile {
-			changeBody = pruneRadios + `
+			changeBody = `
     window._uploadedResumeName = 'wrong_resume.pdf';
     var wrap = document.createElement('div');
     var radio = document.createElement('input');
@@ -627,6 +624,13 @@ document.getElementById('next-2').addEventListener('click', function() {
 				require.NoError(t, aErr)
 				require.True(t, acceptRes.Value.Get("accepted").Bool(), "uploaded radio must be checked")
 				require.True(t, acceptRes.Value.Get("filenameVisible").Bool(), "uploaded filename must match")
+
+				// Verify the pre-existing library entry was NOT removed — the fixture intentionally
+				// keeps library_resume.pdf in the DOM after upload to exercise the post-upload
+				// radio logic. If it is gone, the test is no longer covering the real scenario.
+				libRes, libErr := page.Eval(`() => !!document.getElementById('r-lib1')`)
+				require.NoError(t, libErr)
+				require.True(t, libRes.Value.Bool(), "library_resume.pdf radio must still exist in DOM after upload")
 
 				// Verify we reached and passed the final-review step.
 				frRes, frErr := page.Eval(jsLinkedInAtFinalReview)
