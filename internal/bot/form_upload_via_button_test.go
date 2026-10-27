@@ -267,6 +267,78 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 	require.True(t, res.Value.Get("filenameVisible").Bool())
 }
 
+// TestFormUploadViaButton_CancelAfterButtonClick is a regression for a confirmed blocking
+// hazard: the three cancellation paths inside formUploadViaButton previously drained <-waitCh
+// unconditionally after chooserCancel(). If chooserReady() had not returned by then, the
+// drain would block indefinitely, preventing the function from returning and hanging any
+// cleanup goroutine that joined on it.
+//
+// The test verifies that cancellation after the button is clicked — but before any file
+// chooser fires — causes the function to return promptly with a context error.
+// Worker/subscription lifetime after return is not asserted here.
+func TestFormUploadViaButton_CancelAfterButtonClick(t *testing.T) {
+	// Upload button sets _clicked on click but does NOT create a file input or call f.click(),
+	// so no PageFileChooserOpened CDP event fires and chooserReady() blocks indefinitely.
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
+      <div>
+        <input type="radio" name="resume-select" id="r-lib1">
+        <label for="r-lib1">library_resume.pdf</label>
+      </div>
+      <button type="button" id="upload-btn" onclick="window._clicked=true">
+        <span><span>Upload resume</span></span>
+      </button>
+    </fieldset>
+  </div>
+</dialog>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "my_tailored_resume.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan error, 1)
+	go func() {
+		result <- (&Bot{cfg: Config{}, seenCache: newJobSeenCache()}).formUploadViaButton(ctx, page, tmpFile)
+	}()
+
+	// Wait for the upload button to be clicked. This confirms the pre-upload check passed,
+	// the goroutine is inside the chooser-wait select, and chooserReady() is blocking.
+	require.Eventually(t,
+		func() bool {
+			r, err := page.Timeout(2*time.Second).Eval(`() => !!window._clicked`)
+			return err == nil && r.Value.Bool()
+		},
+		10*time.Second, 10*time.Millisecond,
+		"upload button must be clicked by formUploadViaButton",
+	)
+
+	// Cancel now — function must return promptly. Without the fix, the ctx.Done() arm
+	// called <-waitCh unconditionally after chooserCancel(); with chooserReady() still
+	// blocking, that drained channel never received a value, hanging forever.
+	cancel()
+
+	select {
+	case err := <-result:
+		require.True(t, errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded),
+			"must return context error after cancellation, got: %v", err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("formUploadViaButton did not return within 4 s after context cancellation — " +
+			"blocking drain at <-waitCh after chooserCancel() may still be present")
+	}
+}
+
 // TestFormUploadViaButton_DuplicateFilename_Unverifiable verifies that when the expected
 // filename was already selected before upload and the section radio count does not increase
 // after upload, errUploadIdentityUnverifiable is returned rather than a false success.

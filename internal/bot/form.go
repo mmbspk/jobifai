@@ -1660,7 +1660,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	time.Sleep(400 * time.Millisecond)
 	if limitErr := linkedInHandleResumeLimitDialog(page); limitErr != nil {
 		chooserCancel()
-		<-waitCh
+		// waitCh is buffered(1); worker sends once and exits. No drain needed.
 		return limitErr
 	}
 
@@ -1669,7 +1669,6 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	select {
 	case <-ctx.Done():
 		chooserCancel()
-		<-waitCh
 		return ctx.Err()
 	case err := <-waitCh:
 		if err != nil {
@@ -1677,7 +1676,6 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 		}
 	case <-timer.C:
 		chooserCancel()
-		<-waitCh
 		return fmt.Errorf("linkedin: file chooser did not open within 12 s — " +
 			"upload mechanism may differ from CDP file-chooser; inspect live DOM")
 	}
