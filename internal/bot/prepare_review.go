@@ -92,6 +92,9 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 	}
 	lazy.ensureMaterialized()
 	if !lazy.prepareScanComplete {
+		if lazy.policyBlocked() {
+			return fmt.Errorf("prepare: %s", lazy.holdReason)
+		}
 		return fmt.Errorf("prepare: scan incomplete — review step not reached")
 	}
 	return nil

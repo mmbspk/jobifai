@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,7 +14,9 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/stretchr/testify/require"
+	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/documents"
+	"github.com/user/jobifai/internal/domain"
 )
 
 func fixtureHTML(t *testing.T, name string) string {
@@ -446,6 +449,11 @@ func TestScanApplyStepsForPrepare_NativeDialog(t *testing.T) {
 				require.Error(t, err, "scan must return an error when blocked")
 				require.False(t, lazy.prepareScanComplete, "prepareScanComplete must be false on failure")
 				require.NotEmpty(t, lazy.holdReason, "holdReason must be set")
+				// Fix C: error must name the actual hold reason, not claim the review was never reached.
+				require.Contains(t, err.Error(), "not confirmed in final-review summary",
+					"error must surface the verification failure, not a generic scan-incomplete message")
+				require.NotContains(t, err.Error(), "review step not reached",
+					"review WAS reached — error must not claim it wasn't")
 			}
 		})
 	}
@@ -866,4 +874,452 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 	require.NoError(t, bgErr)
 	require.True(t, bgRes.Value.Bool(),
 		"background SDUI screen radio must remain checked — fill must not touch the background form's group")
+}
+
+// TestJsScanFields_TextInput_AriaLabelledBy_Detected proves Fix A: a text input whose
+// accessible name comes only from aria-labelledby is detected and its question is taken
+// from the referenced element's textContent. Before Fix A: lbl=null → exclusion gate
+// fires (no label, not required) → field dropped. After Fix A: lbl resolved → returned.
+func TestJsScanFields_TextInput_AriaLabelledBy_Detected(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<div role="dialog">
+  <span id="loc-q">Current location</span>
+  <input id="location" type="text" aria-labelledby="loc-q" style="display:block;width:200px;height:40px">
+</div>
+</body></html>`
+	page := rodTestPage(t, html)
+	fields := evalScanFields(t, page)
+	require.Len(t, fields, 1, "aria-labelledby-labelled text input must be detected")
+	require.Contains(t, fields[0].Question, "Current location")
+}
+
+// TestJsScanFields_TextInput_AriaLabel_Detected proves Fix A: a text input with only
+// aria-label (no <label for>, no aria-labelledby) is detected and the question equals
+// the attribute value. Before Fix A: exclusion gate fires → field dropped.
+func TestJsScanFields_TextInput_AriaLabel_Detected(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<div role="dialog">
+  <input id="yoe" type="text" aria-label="Years of experience" style="display:block;width:200px;height:40px">
+</div>
+</body></html>`
+	page := rodTestPage(t, html)
+	fields := evalScanFields(t, page)
+	require.Len(t, fields, 1, "aria-label-only text input must be detected")
+	require.Equal(t, "Years of experience", fields[0].Question)
+}
+
+// TestJsScanFields_TextInput_AriaLabelledBy_MultiID_Detected verifies that a
+// multi-ID aria-labelledby joins all referenced elements' text with a space.
+func TestJsScanFields_TextInput_AriaLabelledBy_MultiID_Detected(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<div role="dialog">
+  <span id="part1">Earliest</span>
+  <span id="part2">start date</span>
+  <input id="startdate" type="text" aria-labelledby="part1 part2" style="display:block;width:200px;height:40px">
+</div>
+</body></html>`
+	page := rodTestPage(t, html)
+	fields := evalScanFields(t, page)
+	require.Len(t, fields, 1, "multi-ID aria-labelledby text input must be detected")
+	require.Contains(t, fields[0].Question, "Earliest")
+	require.Contains(t, fields[0].Question, "start date")
+}
+
+// TestJsScanFields_TextInput_AriaLabelledBy_EmptyTarget_Skipped verifies that an input
+// whose aria-labelledby target exists but contains only whitespace does not resolve lbl
+// (the IIFE returns null after trim), so the exclusion gate drops the field. A blank
+// label is indistinguishable from no label for accessibility purposes.
+func TestJsScanFields_TextInput_AriaLabelledBy_EmptyTarget_Skipped(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<div role="dialog">
+  <span id="loc-label">   </span>
+  <input id="location" type="text" aria-labelledby="loc-label" style="display:block;width:200px;height:40px">
+</div>
+</body></html>`
+	page := rodTestPage(t, html)
+	fields := evalScanFields(t, page)
+	require.Empty(t, fields, "input with whitespace-only aria-labelledby target must be excluded (inaccessible name)")
+}
+
+// TestJsScanFields_TextInput_AriaLabelledBy_MissingRef_Skipped verifies that a broken
+// aria-labelledby reference (ID absent from DOM) does not resolve lbl, so the exclusion
+// gate drops the field.
+func TestJsScanFields_TextInput_AriaLabelledBy_MissingRef_Skipped(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<div role="dialog">
+  <input id="q" type="text" aria-labelledby="nonexistent-xyz" style="display:block;width:200px;height:40px">
+</div>
+</body></html>`
+	page := rodTestPage(t, html)
+	fields := evalScanFields(t, page)
+	require.Empty(t, fields, "input with broken aria-labelledby reference must be excluded")
+}
+
+// TestJsScanFields_TextInput_AriaLabelledBy_EmptyTarget_FallsBackToAriaLabel is the
+// critical fallback path for Fix A: when aria-labelledby resolves to a whitespace-only
+// target (IIFE → null) the scanner falls through to the aria-label IIFE and uses it.
+// An empty reference must not block a valid aria-label on the same element.
+func TestJsScanFields_TextInput_AriaLabelledBy_EmptyTarget_FallsBackToAriaLabel(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<div role="dialog">
+  <span id="loc-label">   </span>
+  <input id="location" type="text" aria-labelledby="loc-label" aria-label="Current location"
+         style="display:block;width:200px;height:40px">
+</div>
+</body></html>`
+	page := rodTestPage(t, html)
+	fields := evalScanFields(t, page)
+	require.Len(t, fields, 1, "empty aria-labelledby target must fall through to aria-label")
+	require.Equal(t, "Current location", fields[0].Question)
+}
+
+// TestScanApplyStepsForPrepare_PrepareUploadPolicy exercises the full prepare scan
+// across six document-policy paths using a 3-step native-dialog fixture:
+//
+//   - Step 1: resume fieldset with a library radio, an upload button, and an optional
+//     "Change resume" button (sets HasFile=true for site-resume detection).
+//   - Step 2: aria-labelledby text input (hidden) — exercises Fix A in a full-scan context.
+//   - Step 3: final review (hidden) — submit button with _submitClicks counter.
+//
+// Sub-tests:
+//
+//	explicit_version_override        Documents=nil, resume pre-seeded via once.Do
+//	documents_service_materialization Documents service, StoreOriginalUpload → version override
+//	documents_service_default_policy  Documents service, store.SetDefault, NO explicit override
+//	site_resume_skip                  resumeUseSiteOverride, HTML has Change resume → skip upload
+//	site_resume_no_file               resumeUseSiteOverride, HTML has NO Change resume → blocks
+//	cover_skip                        coverSkipOverride, HTML adds optional cover field
+func TestScanApplyStepsForPrepare_PrepareUploadPolicy(t *testing.T) {
+	// job_applications/ is written by ExportApplicationUploadFile using os.Getwd().
+	t.Cleanup(func() { _ = os.RemoveAll("job_applications") })
+
+	br := launchTestBrowser(t)
+	const jobID = "prep-upload-policy-job"
+	ctx := context.Background()
+
+	// buildHTML produces the 3-step dialog HTML.
+	// hasChangeResumeBtn adds a "Change resume" button so HasFile=true.
+	// hasCoverField adds an optional cover-letter <input type="file">.
+	// wrongUploadInDOM hard-codes "wrong_resume.pdf" in the upload change handler so the
+	// DOM radio label does not match the actual uploaded file — triggers upload-identity hold.
+	buildHTML := func(hasChangeResumeBtn, hasCoverField, wrongUploadInDOM bool) string {
+		changeResumeBtn := ""
+		if hasChangeResumeBtn {
+			changeResumeBtn = `
+        <button type="button" class="change-resume-btn">Change resume</button>`
+		}
+		coverField := ""
+		if hasCoverField {
+			coverField = `
+      <div data-test-form-element="">
+        <label for="cover-input">Cover letter</label>
+        <input type="file" id="cover-input" accept=".pdf" style="display:block;width:200px;height:40px">
+      </div>`
+		}
+		uploadChangeBody := `
+    var name = f.files[0] ? f.files[0].name : 'unknown.pdf';
+    window._uploadedResumeName = name;`
+		if wrongUploadInDOM {
+			uploadChangeBody = `
+    var name = 'wrong_resume.pdf';
+    window._uploadedResumeName = name;`
+		}
+		return `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" data-job-id="` + jobID + `" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+
+    <!-- Step 1: resume upload (visible) -->
+    <div id="step-1">
+      <fieldset id="resume-section">
+        <legend>Resume</legend>
+        <div>
+          <input type="radio" name="resume-select" id="r-lib1">
+          <label for="r-lib1">library_resume.pdf</label>
+        </div>` + changeResumeBtn + `
+        <button type="button" id="upload-btn">
+          <span><span>Upload resume</span></span>
+        </button>
+      </fieldset>` + coverField + `
+      <footer>
+        <button type="button" id="next-1"><span>Next</span></button>
+      </footer>
+    </div>
+
+    <!-- Step 2: aria-labelledby text input (hidden) — exercises Fix A -->
+    <div id="step-2" style="display:none">
+      <div data-test-form-element="">
+        <span id="loc-q">Current location</span>
+        <input id="location" type="text" aria-labelledby="loc-q"
+               style="display:block;width:200px;height:40px">
+      </div>
+      <footer>
+        <button type="button" id="next-2"><span>Next</span></button>
+      </footer>
+    </div>
+
+    <!-- Step 3: final review (hidden) -->
+    <div id="step-3" style="display:none">
+      <h2>Review your application</h2>
+      <section data-component-type="ReviewSection">
+        <h3>Resume</h3>
+        <p id="review-resume-name"></p>
+      </section>
+      <button data-easy-apply-submit-button="" id="submit-btn"
+              onclick="window._submitClicks=(window._submitClicks||0)+1;">Submit application</button>
+    </div>
+
+  </div>
+</dialog>
+<script>
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.style.display = 'none';
+  f.addEventListener('change', function() {` + uploadChangeBody + `
+    var wrap = document.createElement('div');
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'resume-select';
+    radio.id = 'r-uploaded';
+    radio.checked = true;
+    var lbl = document.createElement('label');
+    lbl.htmlFor = 'r-uploaded';
+    lbl.textContent = name;
+    wrap.appendChild(radio);
+    wrap.appendChild(lbl);
+    document.getElementById('resume-section').insertBefore(wrap, document.getElementById('upload-btn'));
+    f.remove();
+  });
+  document.body.appendChild(f);
+  f.click();
+});
+document.getElementById('next-1').addEventListener('click', function() {
+  document.getElementById('step-1').style.display = 'none';
+  document.getElementById('step-2').style.display = '';
+});
+document.getElementById('next-2').addEventListener('click', function() {
+  document.getElementById('step-2').style.display = 'none';
+  document.getElementById('step-3').style.display = '';
+  document.getElementById('review-resume-name').textContent = window._uploadedResumeName || '';
+});
+</script>
+</body></html>`
+	}
+
+	cases := []struct {
+		name               string
+		hasChangeResumeBtn bool
+		hasCoverField      bool
+		wrongUploadInDOM   bool
+		wantBlocked        bool
+		wantBlockedMsg     string
+		wantFile           string // expected base filename after prepare; empty for skip/blocked tests
+		setup              func(t *testing.T, b *Bot, lazy *lazyDocGen)
+	}{
+		{
+			name:     "explicit_version_override",
+			wantFile: "my_tailored_resume.pdf",
+			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
+				tmpFile := filepath.Join(t.TempDir(), "my_tailored_resume.pdf")
+				require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+				lazy.resumeOverride = tmpFile
+			},
+		},
+		{
+			name:     "documents_service_materialization",
+			wantFile: "my_tailored_resume.pdf",
+			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
+				db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = db.Close() })
+				blobs, err := documents.NewLocalBlobStore(t.TempDir())
+				require.NoError(t, err)
+				b.cfg.Documents = &documents.Service{Store: documents.NewStore(db), Blobs: blobs}
+				fakePDF := []byte("%PDF-1.4\n%materialization\n")
+				versionID, err := b.cfg.Documents.StoreOriginalUpload(
+					ctx, b.cfg.UserID, "my_tailored_resume.pdf", "application/pdf", bytes.NewReader(fakePDF),
+				)
+				require.NoError(t, err)
+				lazy.resumeVersionOverride = versionID
+				lazy.formCaps = documents.FormDocumentCapabilities{Detected: true, ResumeFileSlots: 1}
+			},
+		},
+		{
+			// Documents != nil, store.SetDefault, NO resumeVersionOverride — exercises the
+			// ResumeDocumentModeDefault path where the resolver picks up the DB default.
+			name:     "documents_service_default_policy",
+			wantFile: "default_resume.pdf",
+			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
+				db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = db.Close() })
+				blobs, err := documents.NewLocalBlobStore(t.TempDir())
+				require.NoError(t, err)
+				store := documents.NewStore(db)
+				b.cfg.Documents = &documents.Service{Store: store, Blobs: blobs}
+				b.cfg.Settings.DocumentPolicies.ResumeMode = domain.ResumeDocumentModeDefault
+				fakePDF := []byte("%PDF-1.4\n%default\n")
+				versionID, err := b.cfg.Documents.StoreOriginalUpload(
+					ctx, b.cfg.UserID, "default_resume.pdf", "application/pdf", bytes.NewReader(fakePDF),
+				)
+				require.NoError(t, err)
+				// SetDefault directly to avoid Service.SetDefault's LoadProfile requirement.
+				require.NoError(t, store.SetDefault(ctx, b.cfg.UserID, "resume", versionID, "", ""))
+				// No resumeVersionOverride — resolver must pick up the DB default.
+				lazy.formCaps = documents.FormDocumentCapabilities{Detected: true, ResumeFileSlots: 1}
+				// Bypass legacy migration (GenerateNewResumeDocs=true would overwrite mode to TailorJob).
+				b.cfg.Settings.DocumentPolicies.Version = domain.DocumentPolicyMigrationVersion
+				b.cfg.Settings.DocumentPolicies.CoverMode = domain.CoverDocumentModeWhenRequired
+			},
+		},
+		{
+			// HTML has "Change resume" button (HasFile=true). resumeUseSiteOverride=true and
+			// SiteResumePresent=true → resolver returns UseSite=true → upload skipped.
+			name:               "site_resume_skip",
+			hasChangeResumeBtn: true,
+			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
+				db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = db.Close() })
+				b.cfg.Documents = &documents.Service{Store: documents.NewStore(db)}
+				b.cfg.Settings.DocumentPolicies.ResumeMode = domain.ResumeDocumentModeSiteHosted
+				// Bypass legacy migration (GenerateNewResumeDocs=true would overwrite mode to TailorJob).
+				b.cfg.Settings.DocumentPolicies.Version = domain.DocumentPolicyMigrationVersion
+				b.cfg.Settings.DocumentPolicies.CoverMode = domain.CoverDocumentModeWhenRequired
+				lazy.resumeUseSiteOverride = true
+			},
+		},
+		{
+			// HTML has NO "Change resume" button (HasFile=false). resumeUseSiteOverride=true but
+			// SiteResumePresent=false → resolver holds → Fix C surfaces the hold reason as error.
+			name:           "site_resume_no_file",
+			wantBlocked:    true,
+			wantBlockedMsg: "no site resume is attached",
+			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
+				db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = db.Close() })
+				b.cfg.Documents = &documents.Service{Store: documents.NewStore(db)}
+				b.cfg.Settings.DocumentPolicies.ResumeMode = domain.ResumeDocumentModeSiteHosted
+				// Bypass legacy migration so SiteHosted mode is preserved and siteMode=true
+				// allows detectSiteResumeOnField to correctly report SiteResumePresent=false.
+				b.cfg.Settings.DocumentPolicies.Version = domain.DocumentPolicyMigrationVersion
+				b.cfg.Settings.DocumentPolicies.CoverMode = domain.CoverDocumentModeWhenRequired
+				lazy.resumeUseSiteOverride = true
+			},
+		},
+		{
+			// HTML has an optional cover-letter file field. coverSkipOverride=true → resolver
+			// sets Cover.Skip=true → cover path stays empty → cover field skipped, resume uploaded.
+			name:          "cover_skip",
+			hasCoverField: true,
+			wantFile:      "my_tailored_resume.pdf",
+			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
+				db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = db.Close() })
+				blobs, err := documents.NewLocalBlobStore(t.TempDir())
+				require.NoError(t, err)
+				b.cfg.Documents = &documents.Service{Store: documents.NewStore(db), Blobs: blobs}
+				b.cfg.Settings.DocumentPolicies.CoverMode = domain.CoverDocumentModeWhenRequired
+				fakePDF := []byte("%PDF-1.4\n%cover-test\n")
+				versionID, err := b.cfg.Documents.StoreOriginalUpload(
+					ctx, b.cfg.UserID, "my_tailored_resume.pdf", "application/pdf", bytes.NewReader(fakePDF),
+				)
+				require.NoError(t, err)
+				lazy.resumeVersionOverride = versionID
+				lazy.coverSkipOverride = true
+				lazy.formCaps = documents.FormDocumentCapabilities{Detected: true, ResumeFileSlots: 1, CoverOptional: true}
+			},
+		},
+		{
+			// Same Documents=nil + resumeOverride setup as explicit_version_override, but
+			// the change handler reports a different filename in the DOM. The final-review
+			// verification must detect the mismatch and set holdReason → wantBlocked.
+			name:             "wrong_file_explicit_override",
+			wrongUploadInDOM: true,
+			wantBlocked:      true,
+			wantBlockedMsg:   "upload identity could not be verified",
+			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
+				tmpFile := filepath.Join(t.TempDir(), "my_tailored_resume.pdf")
+				require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+				lazy.resumeOverride = tmpFile
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			html := buildHTML(tc.hasChangeResumeBtn, tc.hasCoverField, tc.wrongUploadInDOM)
+			srv := fixtureServer(t, jobID, "", html, "")
+			page := navigateAndWait(t, br, srv.URL+"/jobs/view/"+jobID)
+
+			b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+			b.cfg.Settings.GenerateNewResumeDocs = true
+			b.cfg.UserID = "user-" + tc.name
+
+			lazy := &lazyDocGen{
+				b:                 b,
+				job:               linkedInJob{ID: jobID, URL: srv.URL + "/jobs/view/" + jobID},
+				reviewPrepareOnly: true,
+				ctx:               ctx,
+			}
+
+			tc.setup(t, b, lazy)
+
+			err := b.scanApplyStepsForPrepare(ctx, page, lazy)
+
+			submitClicks, evalErr := page.Eval(`() => window._submitClicks || 0`)
+			require.NoError(t, evalErr)
+			require.EqualValues(t, 0, submitClicks.Value.Num(), "Submit must not be clicked during preparation scan")
+
+			if tc.wantBlocked {
+				require.Error(t, err, "blocked prepare must return an error")
+				require.False(t, lazy.prepareScanComplete)
+				require.NotEmpty(t, lazy.holdReason)
+				require.Contains(t, err.Error(), tc.wantBlockedMsg)
+				require.NotContains(t, err.Error(), "review step not reached",
+					"Fix C must surface the real hold reason, not the generic scan-incomplete message")
+				return
+			}
+
+			require.NoError(t, err, "prepare must complete without error for %s", tc.name)
+			require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true for %s", tc.name)
+			require.Empty(t, lazy.holdReason, "holdReason must be empty on success for %s", tc.name)
+
+			if tc.name == "site_resume_skip" {
+				// No new upload: window._uploadedResumeName must be empty.
+				uploadedName, _ := page.Eval(`() => window._uploadedResumeName || ""`)
+				require.Empty(t, uploadedName.Value.String(), "site_resume_skip must not trigger a new upload")
+				return
+			}
+
+			// For all upload-based sub-tests: confirm the correct file was delivered.
+			resumePath, _ := lazy.peek()
+			require.NotEmpty(t, resumePath, "resume path must be set after successful prepare for %s", tc.name)
+			if tc.wantFile != "" {
+				require.Equal(t, tc.wantFile, filepath.Base(resumePath),
+					"exported filename must match intended for %s", tc.name)
+			}
+			resumeBase := filepath.Base(resumePath)
+
+			acceptRes, aErr := page.Eval(jsLinkedInCheckResumeAccepted, resumeBase)
+			require.NoError(t, aErr)
+			require.True(t, acceptRes.Value.Get("accepted").Bool(),
+				"uploaded radio must be checked for %s (%s)", tc.name, resumeBase)
+			require.True(t, acceptRes.Value.Get("filenameVisible").Bool(),
+				"uploaded filename must be visible for %s (%s)", tc.name, resumeBase)
+
+			// Pre-existing library radio must not be removed by the upload flow.
+			libRes, libErr := page.Eval(`() => !!document.getElementById('r-lib1')`)
+			require.NoError(t, libErr)
+			require.True(t, libRes.Value.Bool(), "library radio r-lib1 must still exist after upload")
+
+			// Final review must be reached.
+			frRes, frErr := page.Eval(jsLinkedInAtFinalReview)
+			require.NoError(t, frErr)
+			require.True(t, frRes.Value.Bool(), "page must be at final review after preparation scan for %s", tc.name)
+		})
+	}
 }
