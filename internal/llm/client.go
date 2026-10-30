@@ -42,16 +42,16 @@ type Message struct {
 
 // Client dispatches LLM requests based on the active configuration.
 type Client struct {
-	cfg             domain.LLMConfig
-	apiKey          string
-	httpCli         *http.Client
-	tracker         *UsageTracker // optional; if set, accumulates token usage per call
-	billing         BillingHooks
-	guard           quota.LLMGuard
-	userID          string
-	taskRuntime     TaskRuntime
-	costCeiling     *costCeiling
-	reuse           *ReuseCoordinator
+	cfg              domain.LLMConfig
+	apiKey           string
+	httpCli          *http.Client
+	tracker          *UsageTracker // optional; if set, accumulates token usage per call
+	billing          BillingHooks
+	guard            quota.LLMGuard
+	userID           string
+	taskRuntime      TaskRuntime
+	costCeiling      *costCeiling
+	reuse            *ReuseCoordinator
 	personalProvider bool // true when the user's own API key (not the system key) is being used
 }
 
@@ -212,6 +212,16 @@ func (c *Client) chat(ctx context.Context, msgs []Message, validate func(string)
 		defer cancel()
 	}
 	ctx = c.prepareCallContext(ctx)
+	attempts := 0
+	callStart := time.Now()
+	defer func() {
+		cc := CallContextFrom(ctx)
+		e := log.Info()
+		if retErr != nil {
+			e = log.Error()
+		}
+		e.Str("event", "llm_call_summary").Str("provider", c.cfg.Provider).Str("requested_model", c.cfg.Model).Str("task", cc.Task).Str("user_id", cc.UserID).Str("automation_run_id", cc.AutomationRunID).Str("job_id", cc.JobID).Int("attempts", attempts).Int("task_timeout_sec", c.taskRuntime.TimeoutSec).Int64("duration_ms", time.Since(callStart).Milliseconds()).Bool("success", retErr == nil).Msg("llm call finished")
+	}()
 	if validate == nil && reuseDefersValidation(CallContextFrom(ctx).Task) && c.reuse != nil && !CallContextFrom(ctx).BypassReuse {
 		return "", errors.New("document generation requires ChatValidated")
 	}
@@ -274,6 +284,7 @@ func (c *Client) chat(ctx context.Context, msgs []Message, validate func(string)
 		}
 		call := CallContextFrom(ctx)
 		call.Attempt = attempt
+		attempts = attempt
 		attemptCtx := WithCallContext(ctx, call)
 		switch c.cfg.Provider {
 		case "claude":
@@ -362,6 +373,8 @@ func (c *Client) logLLMResult(ctx context.Context, start time.Time, err error, b
 		Str("user_id", cc.UserID).
 		Str("automation_run_id", cc.AutomationRunID).
 		Str("job_id", cc.JobID).
+		Int("attempt", cc.Attempt).
+		Str("operation_id", cc.OperationID).
 		Int64("duration_ms", time.Since(start).Milliseconds())
 	if err != nil {
 		e = e.Str("failure_code", classifyLLMError(err))
@@ -811,7 +824,11 @@ func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (_ string, retE
 
 // ── shared HTTP helper ─────────────────────────────────────────────────────
 
-func (c *Client) post(ctx context.Context, url string, headers map[string]string, body any) ([]byte, error) {
+func (c *Client) post(ctx context.Context, url string, headers map[string]string, body any) (_ []byte, retErr error) {
+	ctx, setPhase, finish := c.traceHTTP(ctx)
+	status := 0
+	requestID := ""
+	defer func() { finish(status, requestID, retErr) }()
 	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -828,6 +845,12 @@ func (c *Client) post(ctx context.Context, url string, headers map[string]string
 		return nil, fmt.Errorf("llm http: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	status = resp.StatusCode
+	requestID = resp.Header.Get("x-request-id")
+	if requestID == "" {
+		requestID = resp.Header.Get("request-id")
+	}
+	setPhase("reading_body")
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("llm read body: %w", err)

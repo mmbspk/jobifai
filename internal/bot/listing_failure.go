@@ -55,7 +55,7 @@ func (b *Bot) recordListingFailure(ctx context.Context, platform domain.Platform
 		b.seenCache.mark(job.ID, seenSkipped)
 	}
 	log.Warn().Err(err).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("platform", string(platform)).Str("reason_code", code).Msg(message)
-	if code != "submission_unknown" {
+	if code != "submission_unknown" && code != "evaluation_failed" {
 		b.noteListingFailure(job.ID, code)
 	}
 }

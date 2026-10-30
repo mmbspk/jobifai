@@ -989,15 +989,16 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 	if b.cfg.Scorer == nil {
 		return 0, "", nil, false
 	}
-	result, err := b.cfg.Scorer.EvaluateJob(ctx, b.currentProfile(), jobDesc)
+	result, err := b.cfg.Scorer.EvaluateJob(b.llmCtx(ctx, "evaluate job", job.ID), b.currentProfile(), jobDesc)
 	if err != nil {
 		if ctx.Err() == nil {
 			b.recordListingFailure(ctx, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company, Location: job.Location}, 0, "", nil, fmt.Errorf("%w: %w", errJobEvaluationFailed, err))
 		}
-		b.abortOnLLMFailure(err)
+		b.handleEvaluationFailure(ctx, domain.PlatformSeek, job.ID, err)
 		return 0, "", nil, false
 	}
 	if result.Score < minScore {
+		b.resetEvaluationFailures()
 		b.recordSeekSkipped(job, fmt.Sprintf("score %d < %d", result.Score, minScore), result.Score, result.Reasoning, nil)
 		b.log.Info().Str("job_id", job.ID).Int("score", result.Score).Int("min_score", minScore).Msgf("seek: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
 		return result.Score, result.Reasoning, nil, false
@@ -1007,14 +1008,16 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 	// Halal check, only runs after score passes to avoid wasted LLM calls.
 	// HARAM → skip; DOUBTFUL → let through but carry verdict for storage.
 	if b.cfg.HalalChecker != nil {
-		verdict, err := b.cfg.HalalChecker.CheckHalal(ctx, job.Title, job.Company, jobDesc)
+		verdict, err := b.cfg.HalalChecker.CheckHalal(b.llmCtx(ctx, "halal check", job.ID), job.Title, job.Company, jobDesc)
 		if err != nil {
 			if ctx.Err() == nil {
 				b.recordListingFailure(ctx, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company, Location: job.Location}, result.Score, result.Reasoning, nil, fmt.Errorf("%w: halal check: %w", errJobEvaluationFailed, err))
 			}
-			b.abortOnLLMFailure(err)
+			b.handleEvaluationFailure(ctx, domain.PlatformSeek, job.ID, err)
 			return result.Score, result.Reasoning, nil, false
-		} else if verdict.Verdict == "HARAM" {
+		}
+		b.resetEvaluationFailures()
+		if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSeekSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
 			b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("seek: halal skip (HARAM) %q @ %s", job.Title, job.Company)
@@ -1025,6 +1028,7 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 		}
 	}
 
+	b.resetEvaluationFailures()
 	return result.Score, result.Reasoning, halalVerdict, true
 }
 
