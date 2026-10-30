@@ -59,8 +59,8 @@ func (c *Client) traceHTTP(ctx context.Context) (context.Context, func(string), 
 		}) < 0 {
 			e = e.Str("provider_request_id", requestID)
 		}
+		source := "none"
 		if err != nil {
-			source := "none"
 			var ne net.Error
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 				source = "context_deadline"
@@ -73,7 +73,11 @@ func (c *Client) traceHTTP(ctx context.Context) (context.Context, func(string), 
 				e = e.Str("network_operation", op.Op)
 			}
 		}
-		e.Msg("llm HTTP request completed")
+		if err != nil {
+			e.Msgf("llm HTTP failed: attempt=%d phase=%s status=%d timeout_source=%s duration_ms=%d", cc.Attempt, lastPhase, status, source, time.Since(start).Milliseconds())
+		} else {
+			e.Msg("llm HTTP request completed")
+		}
 	}
 	return httptrace.WithClientTrace(ctx, trace), setPhase, finish
 }
