@@ -2579,7 +2579,7 @@ func (b *Bot) recordSeekSkipped(job seekJob, reason string, score int, reasoning
 		`INSERT OR IGNORE INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,halal_verdict,viewed_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, b.cfg.UserID, string(domain.PlatformSeek), job.Company, job.Title,
-		job.Location, job.URL, reason, score, reasoning, halalVerdict,
+		job.Location, job.URL, reason, skippedStoredScore(score, reason), reasoning, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		b.log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record skipped job")
