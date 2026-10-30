@@ -984,7 +984,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (score int, reasoning string, halalVerdict []byte, ok bool) {
 	minScore := b.cfg.Settings.JobSuitabilityScore
 	if minScore == 0 {
-		minScore = 6
+		minScore = 7
 	}
 	if b.cfg.Scorer == nil {
 		return 0, "", nil, false
@@ -2579,7 +2579,7 @@ func (b *Bot) recordSeekSkipped(job seekJob, reason string, score int, reasoning
 		`INSERT OR IGNORE INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,halal_verdict,viewed_at)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		job.ID, b.cfg.UserID, string(domain.PlatformSeek), job.Company, job.Title,
-		job.Location, job.URL, reason, score, reasoning, halalVerdict,
+		job.Location, job.URL, reason, skippedStoredScore(score, reason), reasoning, halalVerdict,
 		time.Now().UTC().Format(time.RFC3339),
 	); err != nil {
 		b.log.Error().Err(err).Str("job_id", job.ID).Msg("seek: failed to record skipped job")

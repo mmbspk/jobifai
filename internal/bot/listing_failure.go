@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
+	"strings"
 )
 
 var errJobDescriptionMissing = errors.New("the full job description could not be read")
@@ -41,7 +42,7 @@ func (b *Bot) recordListingFailure(ctx context.Context, platform domain.Platform
 		result, dbErr := b.cfg.DB.ExecContext(ctx, `INSERT INTO jobs_skipped(id,user_id,platform,company,role,location,link,skip_reason,suitability_score,suitability_reasoning,halal_verdict,viewed_at,failure_code,failure_details_json)
   VALUES(?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?,?) ON CONFLICT(id) DO UPDATE SET skip_reason=excluded.skip_reason,
   suitability_score=excluded.suitability_score,suitability_reasoning=excluded.suitability_reasoning,halal_verdict=excluded.halal_verdict,
-  failure_code=excluded.failure_code,failure_details_json=excluded.failure_details_json,viewed_at=excluded.viewed_at WHERE jobs_skipped.user_id=excluded.user_id`, job.ID, b.cfg.UserID, string(platform), job.Company, job.Title, job.Location, job.URL, prefix+"["+code+"] "+message, score, reasoning, verdict, code, string(details))
+  failure_code=excluded.failure_code,failure_details_json=excluded.failure_details_json,viewed_at=excluded.viewed_at WHERE jobs_skipped.user_id=excluded.user_id`, job.ID, b.cfg.UserID, string(platform), job.Company, job.Title, job.Location, job.URL, prefix+"["+code+"] "+message, skippedStoredScore(score, ""), reasoning, verdict, code, string(details))
 		if dbErr != nil {
 			log.Error().Err(dbErr).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("automation: could not persist listing failure")
 			return
@@ -102,4 +103,13 @@ func listingEvaluationError(description string, scorer JobScorer) error {
 
 func listingScoringContext(job linkedInJob, description, header string) string {
 	return fmt.Sprintf("Job title: %s\nCompany: %s\nLocation: %s\nListing information: %s\n\nJob description:\n%s", job.Title, job.Company, job.Location, header, description)
+}
+
+// Zero is a completed evaluation only on the below-threshold skip path.
+// Pre-evaluation skips and failures historically used zero as a sentinel.
+func skippedStoredScore(score int, reason string) any {
+	if score == 0 && !strings.HasPrefix(reason, "score 0 < ") {
+		return nil
+	}
+	return score
 }

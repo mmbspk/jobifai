@@ -86,7 +86,7 @@ type SkippedJob struct {
 	Location             string        `json:"location,omitempty"`
 	Link                 string        `json:"link"`
 	SkipReason           string        `json:"skip_reason"`
-	SuitabilityScore     int           `json:"suitability_score,omitempty"`
+	SuitabilityScore     *int          `json:"suitability_score,omitempty"`
 	SuitabilityReasoning string        `json:"suitability_reasoning,omitempty"`
 	HalalVerdict         *HalalVerdict `json:"halal_verdict,omitempty"`
 	ViewedAt             time.Time     `json:"viewed_at"`

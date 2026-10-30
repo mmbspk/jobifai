@@ -211,7 +211,7 @@ export function Dashboard() {
                     <strong className="block truncate text-sm font-semibold text-[var(--color-text)]">{job.role}</strong>
                     <span className="block truncate text-xs text-[var(--color-text-muted)]">{job.company}{job.location ? ` · ${job.location}` : ''}</span>
                   </span>
-                  {job.suitability_score != null && job.suitability_score > 0
+                  {job.suitability_score != null
                     ? <ScorePill score={job.suitability_score} compact />
                     : <ChevronRight size={16} className="text-[var(--color-text-dim)]" />}
                 </Link>

@@ -233,7 +233,7 @@ func (h *JobHandlers) Skipped(w http.ResponseWriter, r *http.Request) {
 	todayOnly := r.URL.Query().Get("today") == "true"
 
 	q := `SELECT id,platform,company,role,COALESCE(location,''),link,skip_reason,
-	             COALESCE(suitability_score,0),COALESCE(suitability_reasoning,''),halal_verdict,viewed_at
+	             CASE WHEN suitability_score = 0 AND skip_reason NOT LIKE 'score 0 < %' THEN NULL ELSE suitability_score END,COALESCE(suitability_reasoning,''),halal_verdict,viewed_at
 	      FROM jobs_skipped
 	      WHERE user_id = ? AND skip_reason NOT LIKE 'easy apply:%' AND skip_reason NOT LIKE 'seek apply:%' AND skip_reason NOT LIKE 'quick apply:%'`
 	args := []any{userID}
@@ -289,7 +289,7 @@ func (h *JobHandlers) CannotApply(w http.ResponseWriter, r *http.Request) {
 	platform := r.URL.Query().Get("platform")
 
 	q := `SELECT id,platform,company,role,COALESCE(location,''),link,skip_reason,
-	             COALESCE(suitability_score,0),COALESCE(suitability_reasoning,''),halal_verdict,viewed_at
+	             CASE WHEN suitability_score = 0 AND skip_reason NOT LIKE 'score 0 < %' THEN NULL ELSE suitability_score END,COALESCE(suitability_reasoning,''),halal_verdict,viewed_at
 	      FROM jobs_skipped
 	      WHERE user_id = ? AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`
 	args := []any{userID}
@@ -648,7 +648,7 @@ func (h *JobHandlers) GetJob(w http.ResponseWriter, r *http.Request) {
 	var viewedStr string
 	err = h.svc.DB.QueryRowContext(r.Context(),
 		`SELECT id,platform,company,role,COALESCE(location,''),link,skip_reason,
-		        COALESCE(suitability_score,0),COALESCE(suitability_reasoning,''),viewed_at
+		        CASE WHEN suitability_score = 0 AND skip_reason NOT LIKE 'score 0 < %' THEN NULL ELSE suitability_score END,COALESCE(suitability_reasoning,''),viewed_at
 		 FROM jobs_skipped WHERE id = ? AND user_id = ?`, jobID, userID,
 	).Scan(&sj.ID, &sj.Platform, &sj.Company, &sj.Role, &sj.Location,
 		&sj.Link, &sj.SkipReason, &sj.SuitabilityScore, &sj.SuitabilityReasoning, &viewedStr)

@@ -48,7 +48,7 @@ export interface SkippedJob {
   location?: string
   link: string
   skip_reason: string
-  suitability_score?: number
+  suitability_score?: number | null
   suitability_reasoning?: string
   halal_verdict?: HalalVerdict
   viewed_at: string

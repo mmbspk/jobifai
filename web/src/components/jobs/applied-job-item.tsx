@@ -42,7 +42,7 @@ export function AppliedJobItem({ job, onDelete, deletePending }: Props) {
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
             <PlatformBadge platform={job.platform} size="sm" />
-            {job.suitability_score != null && job.suitability_score > 0 ? (
+            {job.suitability_score != null ? (
               <ScorePill score={job.suitability_score} compact />
             ) : null}
             <span className="text-xs text-[var(--color-text-dim)] tabular-nums" title={formatDate(job.applied_at)}>
