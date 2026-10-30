@@ -62,7 +62,7 @@ export function AdminModelsPage() {
   const [rollbackMsg, setRollbackMsg] = useState('')
 
   const auditQ = useQuery({
-    queryKey: ['admin-policy-audit', auditTask],
+    queryKey: ['admin', 'models', 'policy-audit', auditTask],
     queryFn: () =>
       apiGet<{ audit: Record<string, string>[] }>(
         `/admin/models/policy-audit${auditTask ? `?task=${encodeURIComponent(auditTask)}` : ''}`,
