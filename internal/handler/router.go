@@ -238,6 +238,7 @@ func NewRouter(svc *Services) *chi.Mux {
 			}
 			r.Get("/api/admin/system", adminH.SystemGet)
 			r.Put("/api/admin/system", adminH.SystemSet)
+			r.Patch("/api/admin/system", adminH.SystemPatch)
 			r.Get("/api/admin/system/secrets", adminH.SystemSecretsGet)
 			r.Post("/api/admin/system/secrets/api-key", adminH.SystemSetAPIKey)
 			r.Delete("/api/admin/system/secrets/api-key", adminH.SystemDeleteAPIKey)

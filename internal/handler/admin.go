@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -14,6 +15,9 @@ import (
 
 // AdminHandlers serves deployment-wide defaults and user administration.
 type AdminHandlers struct{ svc *Services }
+
+// Serialize read-modify-write updates to the deployment settings row.
+var systemSettingsMu sync.Mutex
 
 func NewAdminHandlers(svc *Services) *AdminHandlers { return &AdminHandlers{svc: svc} }
 
@@ -56,10 +60,49 @@ func (h *AdminHandlers) SystemSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
+	systemSettingsMu.Lock()
+	defer systemSettingsMu.Unlock()
 	stored := config.SystemGeneralKV(h.svc.Config)
 	stored.LLM = incoming.LLM
 	stored.Browser = incoming.Browser
 	stored.HumanBehavior = incoming.HumanBehavior
+	if err := h.svc.Config.Set(domain.SystemUserID, config.KeyGeneralSettings, stored); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+		return
+	}
+	okMsg(w, "system settings saved")
+}
+
+// PATCH /api/admin/system updates one admin section without overwriting
+// unrelated settings loaded by another screen.
+func (h *AdminHandlers) SystemPatch(w http.ResponseWriter, r *http.Request) {
+	var patch struct {
+		LLM        *domain.LLMConfig `json:"llm"`
+		Automation *struct {
+			Browser       domain.BrowserConfig       `json:"browser"`
+			HumanBehavior domain.HumanBehaviorConfig `json:"human_behavior"`
+		} `json:"automation"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&patch); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
+	if (patch.LLM == nil) == (patch.Automation == nil) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "specify exactly one settings section"})
+		return
+	}
+	systemSettingsMu.Lock()
+	defer systemSettingsMu.Unlock()
+	stored := config.SystemGeneralKV(h.svc.Config)
+	if patch.LLM != nil {
+		stored.LLM = *patch.LLM
+	}
+	if patch.Automation != nil {
+		stored.Browser = patch.Automation.Browser
+		stored.HumanBehavior = patch.Automation.HumanBehavior
+	}
 	if err := h.svc.Config.Set(domain.SystemUserID, config.KeyGeneralSettings, stored); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return

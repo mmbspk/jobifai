@@ -88,7 +88,7 @@ function AdminLayout() {
         <div className="flex-1"><PageHeader title="Admin workspace" description="Monitor operations and manage Jobifai." /></div>
         <Badge variant="admin">Administrator</Badge>
       </div>
-      <div className="grid min-w-0 gap-6 lg:grid-cols-[208px_minmax(0,1fr)] lg:gap-8">
+      <div className="grid min-w-0 gap-6 2xl:grid-cols-[220px_minmax(0,1fr)] 2xl:gap-8">
         <AdminNav />
         <div className="min-w-0 space-y-6">
           <Routes>

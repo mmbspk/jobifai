@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi, beforeEach } from 'vitest'
 import { AdminDefaultsPage } from './Defaults'
+import { AdminQuotaPage } from './Quota'
 
 vi.mock('../../api/admin', () => ({
   adminApi: {
@@ -18,6 +19,7 @@ vi.mock('../../api/admin', () => ({
       settings: { get: vi.fn(), set: vi.fn(), deleteSmtpPass: vi.fn() },
       test: vi.fn(),
     },
+    billing: { summary: vi.fn(), users: vi.fn(), webhookEvents: vi.fn(), reconcileUser: vi.fn() },
     resourceMetering: {
       getDefaults: vi.fn(),
       setDefaults: vi.fn(),
@@ -25,7 +27,12 @@ vi.mock('../../api/admin', () => ({
   },
 }))
 
+vi.mock('../../api/quota', () => ({ quotaApi: { adminDefaults: { get: vi.fn(), set: vi.fn() } } }))
+vi.mock('../../api/client', () => ({ apiGet: vi.fn() }))
+
 import { adminApi } from '../../api/admin'
+import { quotaApi } from '../../api/quota'
+import { apiGet } from '../../api/client'
 
 function makeClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -39,7 +46,16 @@ function renderPage(client = makeClient()) {
   )
 }
 
+function renderMeteringPage(client = makeClient()) {
+  return render(<QueryClientProvider client={client}><AdminQuotaPage /></QueryClientProvider>)
+}
+
 beforeEach(() => {
+  vi.mocked(quotaApi.adminDefaults.get).mockResolvedValue({} as Awaited<ReturnType<typeof quotaApi.adminDefaults.get>>)
+  vi.mocked(apiGet).mockResolvedValue({ users_by_plan: {}, total_credits_burned: 0 })
+  vi.mocked(adminApi.billing.summary).mockResolvedValue({ config: { stripe_configured: false, webhook_configured: false, insecure_webhook_allowed: false }, plan_counts: [] })
+  vi.mocked(adminApi.billing.users).mockResolvedValue([])
+  vi.mocked(adminApi.billing.webhookEvents).mockResolvedValue([])
   vi.mocked(adminApi.app.settings.get).mockResolvedValue({ public_app_url: '' })
   vi.mocked(adminApi.system.get).mockResolvedValue({})
   vi.mocked(adminApi.systemSecrets.get).mockResolvedValue({ has_default_api_key: false })
@@ -61,30 +77,30 @@ beforeEach(() => {
   })
 })
 
-describe('AdminDefaultsPage — Resource metering section', () => {
+describe('AdminQuotaPage — Resource metering section', () => {
   it('renders resource metering section heading', async () => {
-    renderPage()
+    renderMeteringPage()
     await waitFor(() => {
       expect(screen.getByText('Resource metering')).toBeInTheDocument()
     })
   })
 
   it('shows master enable switch', async () => {
-    renderPage()
+    renderMeteringPage()
     await waitFor(() => {
       expect(screen.getByText(/master enable/i)).toBeInTheDocument()
     })
   })
 
   it('shows computed credits/minute from API', async () => {
-    renderPage()
+    renderMeteringPage()
     await waitFor(() => {
       expect(screen.getByText(/0\.05 credits\/minute/i)).toBeInTheDocument()
     })
   })
 
   it('shows computed credits/render from API', async () => {
-    renderPage()
+    renderMeteringPage()
     await waitFor(() => {
       expect(screen.getByText(/1 credits\/render/i)).toBeInTheDocument()
     })
@@ -99,7 +115,7 @@ describe('AdminDefaultsPage — Resource metering section', () => {
       render_credits_per_render: 1,
       per_call_fee_is_ai_only: true,
     })
-    renderPage()
+    renderMeteringPage()
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /save resource metering/i })).toBeInTheDocument()
@@ -119,7 +135,7 @@ describe('AdminDefaultsPage — Resource metering section', () => {
 
   it('shows error message when metering GET fails (not Loading…)', async () => {
     vi.mocked(adminApi.resourceMetering.getDefaults).mockRejectedValue(new Error('unavailable'))
-    renderPage()
+    renderMeteringPage()
     await waitFor(() => {
       expect(screen.getByText(/could not load resource metering settings/i)).toBeInTheDocument()
     })
@@ -136,7 +152,7 @@ describe('AdminDefaultsPage — Resource metering section', () => {
       per_call_fee_is_ai_only: true,
       defaults_persisted: false,
     })
-    renderPage()
+    renderMeteringPage()
     await waitFor(() => {
       expect(screen.getByRole('alert')).toBeInTheDocument()
       expect(screen.getByText(/not yet reviewed/i)).toBeInTheDocument()
@@ -153,7 +169,7 @@ describe('AdminDefaultsPage — Resource metering section', () => {
       per_call_fee_is_ai_only: true,
       defaults_persisted: true,
     })
-    renderPage()
+    renderMeteringPage()
     await waitFor(() => {
       expect(screen.getByText(/resource metering/i)).toBeInTheDocument()
     })

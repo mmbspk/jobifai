@@ -1,5 +1,5 @@
-import { apiDelete, apiGet, apiPost, apiPut } from './client'
-import type { AdminUserDetail, AdminUserRow, AppSettings, EconomicsOverview, GeneralSettings, LLMOverrides, QuotaUserOverrides, ResourceMeteringDefaults, ResourceUsageEventsResponse, ResourceUsageSummaryResponse } from '../types'
+import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from './client'
+import type { AdminUserDetail, AdminUserRow, AppSettings, EconomicsOverview, GeneralSettings, LLMConfig, BrowserConfig, HumanBehaviorConfig, LLMOverrides, QuotaUserOverrides, ResourceMeteringDefaults, ResourceUsageEventsResponse, ResourceUsageSummaryResponse } from '../types'
 import type { AdminPeriod } from '../lib/adminFormat'
 
 export interface SystemSecretsStatus {
@@ -18,6 +18,8 @@ export const adminApi = {
   system: {
     get: () => apiGet<GeneralSettings>('/admin/system'),
     set: (body: GeneralSettings) => apiPut<void>('/admin/system', body),
+    patchLLM: (llm: LLMConfig) => apiPatch<void>('/admin/system', { llm }),
+    patchAutomation: (browser: BrowserConfig, human_behavior: HumanBehaviorConfig) => apiPatch<void>('/admin/system', { automation: { browser, human_behavior } }),
   },
   systemSecrets: {
     get: () => apiGet<SystemSecretsStatus>('/admin/system/secrets'),

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Check, Loader2 } from 'lucide-react'
 import { adminApi } from '../../api/admin'
 import { Button } from '../../components/Button'
@@ -10,6 +11,15 @@ import { Switch } from '../../components/ui/switch'
 import { inputClassName } from '../../components/ui/input'
 import { cn } from '../../lib'
 import type { LLMConfig } from '../../types'
+
+const TASKS = [
+  { key: 'scoring', label: 'Suitability scoring', hint: 'Once per job. Haiku recommended.' },
+  { key: 'halal', label: 'Halal filter', hint: 'No profile sent. Haiku recommended.' },
+  { key: 'tailoring', label: 'Resume tailoring', hint: 'Sonnet+ recommended.' },
+  { key: 'cover_letter', label: 'Cover letter', hint: 'Haiku or Sonnet.' },
+  { key: 'form_filling', label: 'Form Q&A', hint: 'Per question. Haiku recommended.' },
+  { key: 'questions', label: 'Interview questions', hint: 'Batch Q&A.' },
+] as const
 
 export function AdminAIProviderPage() {
   const qc = useQueryClient()
@@ -32,8 +42,7 @@ export function AdminAIProviderPage() {
 
   const saveSystem = useMutation({
     mutationFn: async () => {
-      const base = system ?? {}
-      await adminApi.system.set({ ...base, llm })
+      await adminApi.system.patchLLM(llm)
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['admin-system'] })
@@ -41,6 +50,10 @@ export function AdminAIProviderPage() {
       setTimeout(() => setSaved(false), 2000)
     },
   })
+
+  function setTaskModel(task: string, model: string) {
+    setLlm(prev => ({ ...prev, task_models: { ...prev.task_models, [task]: { ...prev.task_models?.[task], model: model || undefined } } }))
+  }
 
   const handleTest = async () => {
     setTesting(true)
@@ -58,8 +71,8 @@ export function AdminAIProviderPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="AI Provider"
-        description="Configure the default LLM provider and API key. All accounts use this unless a tester has configured a personal provider."
+        title="Provider & task defaults"
+        description="Configure the shared LLM provider and task model defaults. Approved policies may take precedence."
       />
 
       <SettingsSection title="Provider">
@@ -94,13 +107,28 @@ export function AdminAIProviderPage() {
             className={inputClassName}
           />
         )}
-        <Button variant="primary" loading={saveSystem.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => saveSystem.mutate()}>
-          {saved ? 'Saved' : 'Save provider settings'}
-        </Button>
-        {saveSystem.isError && (
-          <p className="text-xs text-[var(--color-danger)]">{(saveSystem.error as Error).message}</p>
-        )}
       </SettingsSection>
+
+      <p className="text-sm text-[var(--color-text-muted)]">See <Link to="/admin/models" className="text-[var(--color-admin)] underline">effective models and approved policies</Link> to confirm which model runs.</p>
+      <SettingsSection title="Default task models" description="Leave blank to inherit the provider default. An approved policy may override a task default.">
+        {TASKS.map(t => (
+          <SettingsField key={t.key} label={t.label} sub={t.hint} layout="column">
+            <input
+              value={llm.task_models?.[t.key]?.model ?? ''}
+              onChange={e => setTaskModel(t.key, e.target.value)}
+              placeholder={llm.model ?? 'inherit default'}
+              className={cn(inputClassName, 'max-w-md')}
+            />
+          </SettingsField>
+        ))}
+      </SettingsSection>
+
+      <Button variant="primary" fullWidth loading={saveSystem.isPending} disabled={!system} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => saveSystem.mutate()}>
+        {saved ? 'Saved' : 'Save AI configuration'}
+      </Button>
+      {saveSystem.isError && (
+        <p className="text-xs text-[var(--color-danger)] text-center">{(saveSystem.error as Error).message}</p>
+      )}
 
       <SettingsSection title="API key" description="Stored encrypted. Used for all accounts that don't have a personal key.">
         <MaskedSecretField
@@ -113,7 +141,7 @@ export function AdminAIProviderPage() {
       </SettingsSection>
 
       <SettingsSection title="Connection test" description="Verify the current provider and API key work by sending a test request.">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Button variant="secondary" onClick={handleTest} disabled={testing}>
             {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Test connection'}
           </Button>

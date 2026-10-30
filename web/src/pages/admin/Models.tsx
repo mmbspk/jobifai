@@ -48,12 +48,26 @@ type RecRow = {
   reason: string
 }
 
+function localTime(value: unknown): string {
+  const date = new Date(String(value ?? ''))
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString()
+}
+
 export function AdminModelsPage() {
   const qc = useQueryClient()
+  const [auditTask, setAuditTask] = useState('')
   const [evalDetailId, setEvalDetailId] = useState<string | null>(null)
   const [recReviewId, setRecReviewId] = useState<string | null>(null)
   const [rollbackTask, setRollbackTask] = useState<string | null>(null)
   const [rollbackMsg, setRollbackMsg] = useState('')
+
+  const auditQ = useQuery({
+    queryKey: ['admin-policy-audit', auditTask],
+    queryFn: () =>
+      apiGet<{ audit: Record<string, string>[] }>(
+        `/admin/models/policy-audit${auditTask ? `?task=${encodeURIComponent(auditTask)}` : ''}`,
+      ),
+  })
 
   const policies = useQuery({
     queryKey: ['admin', 'models', 'policies'],
@@ -308,6 +322,48 @@ export function AdminModelsPage() {
           Source: {catalog.data?.discovery_source ?? '—'} · last refresh: {catalog.data?.last_refresh_at || 'never'} · staged:{' '}
           {catalog.data?.candidates?.length ?? 0}
         </p>
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-semibold text-[var(--color-text-muted)]">Model policy audit</h2>
+          <input
+            className="text-sm rounded border border-[var(--color-border)] px-2 py-1"
+            placeholder="Filter task…"
+            value={auditTask}
+            onChange={e => setAuditTask(e.target.value)}
+          />
+        </div>
+        <div className="overflow-x-auto rounded-[var(--radius-lg)] border border-[var(--color-border)]">
+          <table className="w-full text-sm min-w-[800px]">
+            <thead className="bg-[var(--color-surface-2)] text-left text-[var(--color-text-muted)]">
+              <tr>
+                <th className="px-3 py-2">Time</th>
+                <th className="px-3 py-2">Task</th>
+                <th className="px-3 py-2">By</th>
+                <th className="px-3 py-2">Action</th>
+                <th className="px-3 py-2">Previous</th>
+                <th className="px-3 py-2">New</th>
+                <th className="px-3 py-2">Eval run</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(auditQ.data?.audit ?? []).map((row, i) => (
+                <tr key={i} className="border-t border-[var(--color-border-subtle)]">
+                  <td className="px-3 py-2 text-xs whitespace-nowrap">{localTime(row.timestamp)}</td>
+                  <td className="px-3 py-2 font-mono text-xs">{row.task}</td>
+                  <td className="px-3 py-2 text-xs">{row.changed_by}</td>
+                  <td className="px-3 py-2 text-xs">{row.action}</td>
+                  <td className="px-3 py-2 text-xs">{row.previous}</td>
+                  <td className="px-3 py-2 text-xs">{row.new}</td>
+                  <td className="px-3 py-2 font-mono text-xs max-w-[100px] truncate" title={row.eval_run_id}>
+                    {row.eval_run_id?.slice(0, 8) ?? '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <DialogRoot open={!!evalDetailId} onOpenChange={open => !open && setEvalDetailId(null)}>

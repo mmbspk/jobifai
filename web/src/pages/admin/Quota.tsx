@@ -11,7 +11,8 @@ import { SettingsField, SettingsNumberInput, SettingsSection } from '../../compo
 import { Switch } from '../../components/ui/switch'
 import { inputClassName } from '../../components/ui/input'
 import { Badge } from '../../components/ui/badge'
-import type { QuotaDefaults, TopUpPack } from '../../types'
+import type { QuotaDefaults, TopUpPack, ResourceMeteringDefaults } from '../../types'
+import { cn } from '../../lib'
 
 const DEFAULT_PACKS: TopUpPack[] = [
   { credits: 1000, label: '1,000 credits', stripe_price_id: '' },
@@ -41,6 +42,10 @@ export function AdminQuotaPage() {
       apiGet<{ users_by_plan: Record<string, number>; total_credits_burned: number }>('/admin/quota/summary'),
   })
   const [def, setDef] = useState<QuotaDefaults>(INITIAL)
+  const { data: meteringData, isLoading: meteringLoading, isError: meteringFailed } = useQuery({ queryKey: ['admin-resource-metering'], queryFn: adminApi.resourceMetering.getDefaults })
+  const [metering, setMetering] = useState<Omit<ResourceMeteringDefaults, 'browser_credits_per_minute' | 'render_credits_per_render' | 'per_call_fee_is_ai_only'> | null>(null)
+  const [meteringSaved, setMeteringSaved] = useState(false)
+  const [meteringError, setMeteringError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
@@ -53,6 +58,16 @@ export function AdminQuotaPage() {
     }
   }, [loaded])
 
+  useEffect(() => {
+    if (meteringData) {
+      setMetering({
+        enabled: meteringData.enabled,
+        browser_automation: { ...meteringData.browser_automation },
+        document_render: { ...meteringData.document_render },
+      })
+    }
+  }, [meteringData])
+
   const save = useMutation({
     mutationFn: () => quotaApi.adminDefaults.set(def),
     onSuccess: () => {
@@ -60,6 +75,28 @@ export function AdminQuotaPage() {
       qc.invalidateQueries({ queryKey: ['quota-status'] })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
+    },
+  })
+
+  const saveMetering = useMutation({
+    mutationFn: () => {
+      if (!metering) throw new Error('No metering config')
+      return adminApi.resourceMetering.setDefaults(metering)
+    },
+    onSuccess: (result) => {
+      void qc.invalidateQueries({ queryKey: ['admin-resource-metering'] })
+      void qc.invalidateQueries({ queryKey: ['admin-health'] })
+      setMetering({
+        enabled: result.enabled,
+        browser_automation: { ...result.browser_automation },
+        document_render: { ...result.document_render },
+      })
+      setMeteringSaved(true)
+      setMeteringError(null)
+      setTimeout(() => setMeteringSaved(false), 2000)
+    },
+    onError: (e: Error) => {
+      setMeteringError(e.message)
     },
   })
 
@@ -102,7 +139,7 @@ export function AdminQuotaPage() {
     <div className="space-y-6">
       <div>
         <PageHeader
-          title="Credits & billing"
+          title="Credits, Stripe & metering"
           description="Deployment-wide credit formula, trial limits, Starter/Pro grants, and Stripe price IDs."
         />
       </div>
@@ -329,6 +366,112 @@ export function AdminQuotaPage() {
       <Button variant="primary" fullWidth loading={save.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => save.mutate()}>
         {saved ? 'Saved' : 'Save quota defaults'}
       </Button>
+      <SettingsSection
+        title="Resource metering"
+        description="Controls browser automation and document rendering billing. CreditsPerUSD and ServiceMarkup from Quota defaults apply to resource costs. PerCallFeeUSD applies only to AI calls."
+      >
+        {!metering ? (
+          <p className="text-sm text-[var(--color-text-dim)]">
+            {meteringFailed
+              ? 'Could not load resource metering settings.'
+              : meteringLoading
+                ? 'Loading…'
+                : 'Resource metering service unavailable.'}
+          </p>
+        ) : (
+          <>
+            {meteringData?.defaults_persisted === false && (
+              <div role="alert" className="rounded-[var(--radius-md)] border border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-3 text-sm text-[var(--color-warn-text)]">
+                <strong>Not yet reviewed.</strong> Built-in safe defaults are in use (metering disabled).
+                Review and save these settings before going to production.
+              </div>
+            )}
+            <SettingsField label="Master enable" sub="When off, no resource credits are ever burned.">
+              <Switch
+                checked={metering.enabled}
+                onCheckedChange={v => setMetering(m => m ? { ...m, enabled: v } : m)}
+              />
+            </SettingsField>
+
+            <SettingsField label="Browser automation" sub="Billing for active automation sessions.">
+              <Switch
+                checked={metering.browser_automation.enabled}
+                onCheckedChange={v => setMetering(m => m ? { ...m, browser_automation: { ...m.browser_automation, enabled: v } } : m)}
+              />
+            </SettingsField>
+
+            {metering.browser_automation.enabled && (
+              <div className="ml-4 space-y-3">
+                <SettingsField label="Raw cost per hour (USD)" sub="Infrastructure cost in USD per browser-hour. Converted to micro-USD internally." layout="column">
+                  <input
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    value={(metering.browser_automation.raw_cost_usd_micro_per_hour / 1_000_000).toFixed(4)}
+                    onChange={e => setMetering(m => m ? {
+                      ...m,
+                      browser_automation: { ...m.browser_automation, raw_cost_usd_micro_per_hour: Math.round(parseFloat(e.target.value) * 1_000_000) || 0 },
+                    } : m)}
+                    className={cn(inputClassName, 'max-w-[160px]')}
+                  />
+                  {meteringData && <p className="text-xs text-[var(--color-text-dim)] mt-1">≈ {meteringData.browser_credits_per_minute.toFixed(2)} credits/minute</p>}
+                </SettingsField>
+                <SettingsField label="Billing increment (seconds)" sub="How often a new billable bucket is opened. Valid range: 5–300." layout="column">
+                  <input
+                    type="number"
+                    min="5"
+                    max="300"
+                    value={metering.browser_automation.billing_increment_seconds}
+                    onChange={e => setMetering(m => m ? {
+                      ...m,
+                      browser_automation: { ...m.browser_automation, billing_increment_seconds: parseInt(e.target.value, 10) || 30 },
+                    } : m)}
+                    className={cn(inputClassName, 'max-w-[120px]')}
+                  />
+                </SettingsField>
+              </div>
+            )}
+
+            <SettingsField label="Document rendering" sub="Billing for new PDF renders.">
+              <Switch
+                checked={metering.document_render.enabled}
+                onCheckedChange={v => setMetering(m => m ? { ...m, document_render: { ...m.document_render, enabled: v } } : m)}
+              />
+            </SettingsField>
+
+            {metering.document_render.enabled && (
+              <div className="ml-4 space-y-3">
+                <SettingsField label="Raw cost per render (USD)" sub="Infrastructure cost in USD per successful new PDF render." layout="column">
+                  <input
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    value={(metering.document_render.raw_cost_usd_micro_per_render / 1_000_000).toFixed(4)}
+                    onChange={e => setMetering(m => m ? {
+                      ...m,
+                      document_render: { ...m.document_render, raw_cost_usd_micro_per_render: Math.round(parseFloat(e.target.value) * 1_000_000) || 0 },
+                    } : m)}
+                    className={cn(inputClassName, 'max-w-[160px]')}
+                  />
+                  {meteringData && <p className="text-xs text-[var(--color-text-dim)] mt-1">≈ {meteringData.render_credits_per_render} credits/render</p>}
+                </SettingsField>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 pt-2">
+              <Button
+                variant="primary"
+                loading={saveMetering.isPending}
+                leftIcon={meteringSaved ? <Check size={14} /> : undefined}
+                onClick={() => saveMetering.mutate()}
+              >
+                {meteringSaved ? 'Saved' : 'Save resource metering'}
+              </Button>
+            </div>
+            {meteringError && <p className="text-xs text-[var(--color-danger)]">{meteringError}</p>}
+          </>
+        )}
+      </SettingsSection>
     </div>
   )
 }

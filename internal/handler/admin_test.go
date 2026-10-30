@@ -1,7 +1,10 @@
 package handler_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -53,4 +56,44 @@ func TestAdmin_UsersListAndToggleAdmin(t *testing.T) {
 	wMe2 := authGet(t, router, "/api/me", userToken)
 	require.NoError(t, json.NewDecoder(wMe2.Body).Decode(&me))
 	assert.Equal(t, true, me["is_admin"])
+}
+
+func TestAdmin_SystemPatchPreservesOtherSections(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+	token := registerAndLogin(t, router, "patch-admin@example.com", "password123")
+	setUserAdmin(t, db, "patch-admin@example.com")
+
+	patch := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPatch, "/api/admin/system", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		return w
+	}
+
+	require.Equal(t, http.StatusOK, patch(`{"automation":{"browser":{"show_browser":true},"human_behavior":{"daily_application_limit":42}}}`).Code)
+	require.Equal(t, http.StatusOK, patch(`{"llm":{"provider":"claude","model":"test-model","task_models":{"scoring":{"model":"test-score"}}}}`).Code)
+
+	w := authGet(t, router, "/api/admin/system", token)
+	require.Equal(t, http.StatusOK, w.Code)
+	var got domain.GeneralSettings
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
+	assert.Equal(t, 42, got.HumanBehavior.DailyApplicationLimit)
+	assert.True(t, got.Browser.ShowBrowser)
+	assert.Equal(t, "test-model", got.LLM.Model)
+	assert.Equal(t, "test-score", got.LLM.TaskModels["scoring"].Model)
+
+	// A later automation save cannot replace the AI configuration.
+	require.Equal(t, http.StatusOK, patch(`{"automation":{"browser":{"show_browser":false},"human_behavior":{"daily_application_limit":21}}}`).Code)
+	w = authGet(t, router, "/api/admin/system", token)
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
+	assert.Equal(t, 21, got.HumanBehavior.DailyApplicationLimit)
+	assert.Equal(t, "test-model", got.LLM.Model)
+	assert.Equal(t, "test-score", got.LLM.TaskModels["scoring"].Model)
+
+	assert.Equal(t, http.StatusBadRequest, patch(`{}`).Code)
+	assert.Equal(t, http.StatusBadRequest, patch(`{"llm":{},"automation":{}}`).Code)
+	assert.Equal(t, http.StatusBadRequest, patch(`{"unexpected":true}`).Code)
 }

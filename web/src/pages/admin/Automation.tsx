@@ -7,7 +7,7 @@ import { PageHeader } from '../../components/shell/PageHeader'
 import { SettingsField, SettingsNumberInput, SettingsSection } from '../../components/settings/settings-ui'
 import { Switch } from '../../components/ui/switch'
 import { inputClassName } from '../../components/ui/input'
-import type { BrowserConfig, GeneralSettings, HumanBehaviorConfig } from '../../types'
+import type { BrowserConfig, HumanBehaviorConfig } from '../../types'
 
 export function AdminAutomationPage() {
   const qc = useQueryClient()
@@ -23,8 +23,7 @@ export function AdminAutomationPage() {
 
   const save = useMutation({
     mutationFn: () => {
-      const payload: GeneralSettings = { ...(system ?? {}), browser, human_behavior: hb }
-      return adminApi.system.set(payload)
+      return adminApi.system.patchAutomation(browser, hb)
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-system'] })
@@ -74,7 +73,7 @@ export function AdminAutomationPage() {
         </SettingsField>
       </SettingsSection>
 
-      <Button variant="primary" fullWidth loading={save.isPending} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => save.mutate()}>
+      <Button variant="primary" fullWidth loading={save.isPending} disabled={!system} leftIcon={saved ? <Check size={14} /> : undefined} onClick={() => save.mutate()}>
         {saved ? 'Saved' : 'Save changes'}
       </Button>
     </div>

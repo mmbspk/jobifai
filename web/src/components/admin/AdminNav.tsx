@@ -3,24 +3,28 @@ import { Activity, Bot, ChartNoAxesCombined, CircleDollarSign, CreditCard, KeyRo
 import { cn } from '../../lib'
 
 const groups = [
-  { label: 'Workspace', items: [
+  { label: 'Overview', items: [
     { to: '/admin/overview', label: 'Overview', icon: LayoutDashboard },
-    { to: '/admin/audit', label: 'Audit & operations', icon: Activity },
   ] },
-  { label: 'People & billing', items: [
-    { to: '/admin/users', label: 'Users', icon: Users },
-    { to: '/admin/quota', label: 'Credits & billing', icon: CreditCard },
-    { to: '/admin/economics', label: 'Economics', icon: CircleDollarSign },
+  { label: 'Operations', items: [
+    { to: '/admin/audit', label: 'Jobs, scoring & errors', icon: Activity },
   ] },
-  { label: 'AI & automation', items: [
-    { to: '/admin/ai-provider', label: 'AI Provider', icon: KeyRound },
-    { to: '/admin/llm-usage', label: 'AI usage', icon: ChartNoAxesCombined },
-    { to: '/admin/resource-usage', label: 'Resource usage', icon: Server },
-    { to: '/admin/models', label: 'Models', icon: Bot },
-    { to: '/admin/automation', label: 'Automation', icon: Workflow },
+  { label: 'Users', items: [
+    { to: '/admin/users', label: 'Accounts & overrides', icon: Users },
   ] },
-  { label: 'Configuration', items: [
-    { to: '/admin/defaults', label: 'Defaults', icon: Settings2 },
+  { label: 'AI', items: [
+    { to: '/admin/ai-provider', label: 'Provider & task defaults', icon: KeyRound },
+    { to: '/admin/models', label: 'Model policies & evaluations', icon: Bot },
+  ] },
+  { label: 'Usage & billing', items: [
+    { to: '/admin/llm-usage', label: 'AI calls', icon: ChartNoAxesCombined },
+    { to: '/admin/resource-usage', label: 'Browser & render usage', icon: Server },
+    { to: '/admin/economics', label: 'Costs & economics', icon: CircleDollarSign },
+    { to: '/admin/quota', label: 'Credits, Stripe & metering', icon: CreditCard },
+  ] },
+  { label: 'System settings', items: [
+    { to: '/admin/defaults', label: 'Application & email', icon: Settings2 },
+    { to: '/admin/automation', label: 'Automation defaults', icon: Workflow },
     { to: '/admin/retention', label: 'Document retention', icon: ScrollText },
   ] },
 ] as const
@@ -31,18 +35,18 @@ export function AdminNav() {
   const current = groups.map(group => group.items.find(item => location.pathname === item.to)?.to).find(Boolean) ?? '/admin/overview'
 
   return (
-    <nav aria-label="Admin sections" className="min-w-0 lg:sticky lg:top-8 lg:self-start">
-      <label className="block text-xs font-semibold text-[var(--color-text-muted)] lg:hidden" htmlFor="admin-section">
+    <nav aria-label="Admin sections" className="min-w-0 2xl:sticky 2xl:top-20 2xl:self-start">
+      <label className="block text-xs font-semibold text-[var(--color-text-muted)] 2xl:hidden" htmlFor="admin-section">
         Admin section
       </label>
-      <select id="admin-section" value={current} onChange={event => navigate(event.target.value)} className="mt-2 h-11 w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-sm text-[var(--color-text)] lg:hidden">
+      <select id="admin-section" value={current} onChange={event => navigate(event.target.value)} className="mt-2 h-11 w-full min-w-0 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-sm text-[var(--color-text)] 2xl:hidden">
         {groups.map(group => (
           <optgroup key={group.label} label={group.label}>
             {group.items.map(item => <option key={item.to} value={item.to}>{item.label}</option>)}
           </optgroup>
         ))}
       </select>
-      <div className="hidden space-y-5 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 lg:block">
+      <div className="hidden space-y-5 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] p-3 2xl:block">
         {groups.map(group => (
           <div key={group.label} className="space-y-1">
             <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--color-text-dim)]">{group.label}</p>
