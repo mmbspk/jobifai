@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
@@ -808,7 +807,7 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 
 	dir := browser.ProfileDir(userID, "seek", gs.Browser.ChromeProfilePath)
 	browser.PrepareChromeProfileDir(dir)
-	l := launcher.New().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
+	l := browser.NewLauncher().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
 	wsURL, launchErr := l.Launch()
 	if launchErr != nil && strings.Contains(launchErr.Error(), "SingletonLock") {
 		log.Warn().Err(launchErr).Str("dir", dir).Msg("seek: profile locked, force-unlocking and retrying")
@@ -817,7 +816,7 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 			delete(m.seekBrowsers, userID)
 		}
 		browser.ForceUnlockChromeProfile(dir)
-		wsURL, launchErr = launcher.New().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
+		wsURL, launchErr = browser.NewLauncher().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
 	}
 	if launchErr != nil {
 		return nil, errors.New("launch chrome: " + launchErr.Error())
@@ -841,6 +840,10 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 	}
 	_ = warmPage.Timeout(30 * time.Second).WaitLoad()
 	_ = warmPage.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+	if err := browser.CheckSeekBrowser(warmPage); err != nil {
+		_ = br.Close()
+		return nil, err
+	}
 
 	// Recover with stored credentials when warm-up lands logged out.
 	if state, _ := browser.PageLoginState(warmPage, "seek"); state == browser.LoginStateNo {
@@ -939,7 +942,7 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (
 
 	dir := browser.ProfileDir(userID, "linkedin", gs.Browser.ChromeProfilePath)
 	browser.PrepareChromeProfileDir(dir)
-	l := launcher.New().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
+	l := browser.NewLauncher().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
 	wsURL, launchErr := l.Launch()
 	if launchErr != nil && strings.Contains(launchErr.Error(), "SingletonLock") {
 		log.Warn().Err(launchErr).Str("dir", dir).Msg("linkedin: profile locked, force-unlocking and retrying")
@@ -948,7 +951,7 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (
 			delete(m.linkedInBrowsers, userID)
 		}
 		browser.ForceUnlockChromeProfile(dir)
-		wsURL, launchErr = launcher.New().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
+		wsURL, launchErr = browser.NewLauncher().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
 	}
 	if launchErr != nil {
 		return nil, errors.New("launch chrome: " + launchErr.Error())

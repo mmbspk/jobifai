@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/google/uuid"
 	"github.com/user/jobifai/internal/domain"
@@ -216,7 +215,7 @@ func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool, 
 		return "", fmt.Errorf("browser: unknown platform %q", platform)
 	}
 
-	l := launcher.New().
+	l := NewLauncher().
 		Headless(false).
 		Set("--disable-blink-features", "AutomationControlled").
 		Set("--exclude-switches", "enable-automation").
@@ -235,7 +234,7 @@ func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool, 
 	if err != nil && profileDir != "" && strings.Contains(err.Error(), "SingletonLock") {
 		ForceUnlockChromeProfile(profileDir)
 		time.Sleep(400 * time.Millisecond)
-		url, err = launcher.New().
+		url, err = NewLauncher().
 			Headless(false).
 			Set("--disable-blink-features", "AutomationControlled").
 			Set("--exclude-switches", "enable-automation").
@@ -322,6 +321,11 @@ func (m *Manager) CaptureCookies(ctx context.Context, userID, sessionID string) 
 	}
 
 	_ = page.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
+	if sess.Platform == "seek" {
+		if err := CheckSeekBrowser(page); err != nil {
+			return nil, err
+		}
+	}
 	state, stateErr := PageLoginState(page, sess.Platform)
 	// Only block when we positively see a logged-out UI. Seek's DOM often
 	// returns "unknown" even when signed in (selectors drift); requiring "yes"

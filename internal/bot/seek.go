@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -20,6 +21,8 @@ import (
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/scraper"
 )
+
+var errSeekSearchUnrecognized = errors.New("seek: search page has neither job cards nor a confirmed zero-results indicator")
 
 func init() {
 	registerRunner(domain.PlatformSeek, platformRunnerFunc(runSeek))
@@ -418,6 +421,9 @@ func runSeek(ctx context.Context, b *Bot) {
 			b.SetKeyword(keyword)
 			n := b.processSeekKeyword(ctx, br, page, keyword, limit-appliedToday, resolvedLocation, target)
 			appliedToday += n
+			if b.State() == domain.BotStateError {
+				return
+			}
 			if b.bailIfSeekSessionExpired() {
 				return
 			}
@@ -434,6 +440,9 @@ func runSeek(ctx context.Context, b *Bot) {
 				br, page = newBr, newPage
 				b.log.Info().Msg("seek: browser reconnected, retrying keyword")
 				appliedToday += b.processSeekKeyword(ctx, br, page, keyword, limit-appliedToday, resolvedLocation, target)
+				if b.State() == domain.BotStateError {
+					return
+				}
 			}
 		}
 	}
@@ -448,6 +457,11 @@ func (b *Bot) processSeekKeyword(ctx context.Context, br *rod.Browser, page *rod
 	jobs, err := b.scrapeSeekJobs(ctx, page, keyword, resolvedLocation, target)
 	if err != nil {
 		b.log.Error().Err(err).Str("keyword", keyword).Msg("seek: scrape jobs failed")
+		if errors.Is(err, browser.ErrSeekBrowserUnsupported) || errors.Is(err, errSeekSearchUnrecognized) {
+			b.mu.Lock()
+			b.state = domain.BotStateError
+			b.mu.Unlock()
+		}
 		return 0
 	}
 	if len(jobs) == 0 {
@@ -514,6 +528,9 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 		return nil, fmt.Errorf("wait load: %w", err)
 	}
 	_ = page.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
+	if err := browser.CheckSeekBrowser(page); err != nil {
+		return nil, err
+	}
 	b.log.Info().Str("keyword", keyword).Msg("seek: page loaded, scraping cards")
 
 	cap := b.cfg.Settings.MaxJobsPerKeyword
@@ -550,7 +567,7 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 				_ = os.WriteFile("debug_seek_page.png", shot, 0o644)
 				b.log.Warn().Msg("seek: screenshot saved to debug_seek_page.png")
 			}
-			return nil, nil
+			return nil, errSeekSearchUnrecognized
 		}
 
 		prevCount := len(jobs)
@@ -1997,6 +2014,9 @@ func (b *Bot) seekIsLoggedIn(page *rod.Page) (bool, error) {
 // seekEnsureLoggedIn returns nil when Seek looks authenticated. If not, and
 // stored credentials exist, it runs seekAutoLogin once and re-checks.
 func (b *Bot) seekEnsureLoggedIn(page *rod.Page) error {
+	if err := browser.CheckSeekBrowser(page); err != nil {
+		return err
+	}
 	state, err := browser.PageLoginState(page, "seek")
 	if err == nil && state == browser.LoginStateYes {
 		b.mu.Lock()

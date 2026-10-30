@@ -100,6 +100,8 @@ make docker-run
 
 The container runs Chromium on a virtual display (Xvfb) and exposes a noVNC viewer embedded on **Settings → Platforms** when you use **Connect browser**. Do not run the bare `jobifai` binary on a headless Linux VPS without Xvfb — Chrome will fail with `Missing X server or $DISPLAY`.
 
+Browser launches prefer `ROD_BROWSER_BIN`, then Rod's explicit browser setting, then installed Chrome/Chromium. Rod's bundled browser is used only when no installed browser is found. Keep the selected browser updated. If SEEK shows “Browser Upgrade”, update Chrome locally or rebuild the Docker image with `docker build --pull --no-cache -t jobifai .` to refresh Chromium, then recreate the container and reconnect SEEK. You can select a specific executable with `ROD_BROWSER_BIN` (for example `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` on macOS or `/usr/bin/chromium` in Docker).
+
 **Connect browser on production:** use this Docker image (default `ENTRYPOINT` starts Xvfb and x11vnc). After **Connect browser**, sign in in the noVNC panel on the Platforms page, then **Save session**.
 
 ## API Reference
