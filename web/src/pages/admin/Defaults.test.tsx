@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi, beforeEach } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import { AdminDefaultsPage } from './Defaults'
 import { AdminQuotaPage } from './Quota'
 
@@ -41,7 +42,7 @@ function makeClient() {
 function renderPage(client = makeClient()) {
   return render(
     <QueryClientProvider client={client}>
-      <AdminDefaultsPage />
+      <MemoryRouter><AdminDefaultsPage /></MemoryRouter>
     </QueryClientProvider>,
   )
 }
