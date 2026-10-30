@@ -200,6 +200,7 @@ export function AdminAuditErrorsPage() {
         </div>
       </section>
 
+      <p className="text-sm text-[var(--color-text-muted)]">Model approval history is in <Link className="text-[var(--color-admin)] underline" to="/admin/models">Model policies & evaluations</Link>.</p>
     </div>
   )
 }
