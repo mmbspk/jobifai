@@ -45,7 +45,7 @@ export function TopMatchJobItem({
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 mb-1">
-              {job.suitability_score != null && job.suitability_score > 0 ? (
+              {job.suitability_score != null ? (
                 <ScorePill score={job.suitability_score} showLabel />
               ) : null}
               {job.easy_apply && (

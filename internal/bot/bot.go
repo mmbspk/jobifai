@@ -1479,7 +1479,7 @@ func (b *Bot) fetchJob(ctx context.Context, job linkedInJob) scraper.JobDetails 
 func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (score int, reasoning string, halalVerdict []byte, ok bool) {
 	minScore := b.cfg.Settings.JobSuitabilityScore
 	if minScore == 0 {
-		minScore = 6
+		minScore = 7
 	}
 	if b.cfg.Scorer == nil {
 		return 0, "", nil, false

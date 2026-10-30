@@ -984,7 +984,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (score int, reasoning string, halalVerdict []byte, ok bool) {
 	minScore := b.cfg.Settings.JobSuitabilityScore
 	if minScore == 0 {
-		minScore = 6
+		minScore = 7
 	}
 	if b.cfg.Scorer == nil {
 		return 0, "", nil, false

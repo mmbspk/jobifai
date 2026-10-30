@@ -79,7 +79,7 @@ export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, on
   }
 
   const isDoubtful = halalEnabled && review.halal_verdict?.verdict === 'DOUBTFUL'
-  const hasScore = (review.suitability_score ?? 0) > 0
+  const hasScore = review.suitability_score != null
   const postedDate = review.posted_date
     ? new Date(review.posted_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
     : null
