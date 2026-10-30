@@ -161,23 +161,23 @@ type JobHalalChecker interface {
 
 // Config bundles everything the bot needs to run.
 type Config struct {
-	OnApplied        func() // successful application persistence schedules retention reconciliation
-	Platform         domain.Platform
-	Settings         domain.GeneralSettings
-	Preferences      domain.WorkPreferences
-	Profile          *domain.ResumeProfile
-	ProfileLoader    func() *domain.ResumeProfile // if set, called per-job to get the latest profile
-	Cookies          []browser.Cookie
-	Tailor           ResumeTailor    // nil = no LLM tailoring
-	Scorer           JobScorer       // nil = evaluation unavailable; never a passing score
-	HalalChecker     JobHalalChecker // nil = halal filter disabled
-	CoverLetterTone  string          // "" = default; see domain.GeneralSettings.CoverLetterTone
-	Renderer         ResumeRenderer
-	DB               *sql.DB
-	UserID           string // owner of this bot session
-	AutomationRunID  string // one ID per automation session for LLM billing attribution
-	ApplicationID    string // set when applying to a specific application record
-	RequireReview    bool
+	OnApplied       func() // successful application persistence schedules retention reconciliation
+	Platform        domain.Platform
+	Settings        domain.GeneralSettings
+	Preferences     domain.WorkPreferences
+	Profile         *domain.ResumeProfile
+	ProfileLoader   func() *domain.ResumeProfile // if set, called per-job to get the latest profile
+	Cookies         []browser.Cookie
+	Tailor          ResumeTailor    // nil = no LLM tailoring
+	Scorer          JobScorer       // nil = evaluation unavailable; never a passing score
+	HalalChecker    JobHalalChecker // nil = halal filter disabled
+	CoverLetterTone string          // "" = default; see domain.GeneralSettings.CoverLetterTone
+	Renderer        ResumeRenderer
+	DB              *sql.DB
+	UserID          string // owner of this bot session
+	AutomationRunID string // one ID per automation session for LLM billing attribution
+	ApplicationID   string // set when applying to a specific application record
+	RequireReview   bool
 	// Logger is an optional run-scoped logger with user_id, automation_run_id,
 	// and log_id hook pre-wired. Nil means use the global log.Logger.
 	Logger           *zerolog.Logger
@@ -342,7 +342,7 @@ func (b *Bot) startProfileBrowser() (br *rod.Browser, page *rod.Page, err error)
 	dir := browser.ProfileDir(b.cfg.UserID, string(b.cfg.Platform), b.cfg.Settings.Browser.ChromeProfilePath)
 	browser.PrepareChromeProfileDir(dir) // clears stale singleton locks without force-killing
 
-	l := launcher.New().
+	l := browser.NewLauncher().
 		Headless(!b.cfg.Settings.Browser.ShowBrowser).
 		Set("--disable-blink-features", "AutomationControlled").
 		Set("--exclude-switches", "enable-automation").
@@ -819,7 +819,7 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 		}
 	}
 
-	l := launcher.New().
+	l := browser.NewLauncher().
 		Headless(!b.cfg.Settings.Browser.ShowBrowser).
 		Set("--disable-blink-features", "AutomationControlled").
 		Set("--exclude-switches", "enable-automation")
@@ -834,7 +834,7 @@ func (b *Bot) launchBrowser(ctx context.Context) (*rod.Browser, *rod.Page, error
 	if err != nil && strings.Contains(err.Error(), "SingletonLock") {
 		b.log.Warn().Err(err).Str("dir", dir).Msg("browser: profile locked, force-unlocking and retrying")
 		browser.ForceUnlockChromeProfile(dir)
-		u, err = launcher.New().
+		u, err = browser.NewLauncher().
 			Headless(!b.cfg.Settings.Browser.ShowBrowser).
 			Set("--disable-blink-features", "AutomationControlled").
 			Set("--exclude-switches", "enable-automation").
