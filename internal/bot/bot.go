@@ -161,23 +161,23 @@ type JobHalalChecker interface {
 
 // Config bundles everything the bot needs to run.
 type Config struct {
-	OnApplied        func() // successful application persistence schedules retention reconciliation
-	Platform         domain.Platform
-	Settings         domain.GeneralSettings
-	Preferences      domain.WorkPreferences
-	Profile          *domain.ResumeProfile
-	ProfileLoader    func() *domain.ResumeProfile // if set, called per-job to get the latest profile
-	Cookies          []browser.Cookie
-	Tailor           ResumeTailor    // nil = no LLM tailoring
-	Scorer           JobScorer       // nil = evaluation unavailable; never a passing score
-	HalalChecker     JobHalalChecker // nil = halal filter disabled
-	CoverLetterTone  string          // "" = default; see domain.GeneralSettings.CoverLetterTone
-	Renderer         ResumeRenderer
-	DB               *sql.DB
-	UserID           string // owner of this bot session
-	AutomationRunID  string // one ID per automation session for LLM billing attribution
-	ApplicationID    string // set when applying to a specific application record
-	RequireReview    bool
+	OnApplied       func() // successful application persistence schedules retention reconciliation
+	Platform        domain.Platform
+	Settings        domain.GeneralSettings
+	Preferences     domain.WorkPreferences
+	Profile         *domain.ResumeProfile
+	ProfileLoader   func() *domain.ResumeProfile // if set, called per-job to get the latest profile
+	Cookies         []browser.Cookie
+	Tailor          ResumeTailor    // nil = no LLM tailoring
+	Scorer          JobScorer       // nil = evaluation unavailable; never a passing score
+	HalalChecker    JobHalalChecker // nil = halal filter disabled
+	CoverLetterTone string          // "" = default; see domain.GeneralSettings.CoverLetterTone
+	Renderer        ResumeRenderer
+	DB              *sql.DB
+	UserID          string // owner of this bot session
+	AutomationRunID string // one ID per automation session for LLM billing attribution
+	ApplicationID   string // set when applying to a specific application record
+	RequireReview   bool
 	// Logger is an optional run-scoped logger with user_id, automation_run_id,
 	// and log_id hook pre-wired. Nil means use the global log.Logger.
 	Logger           *zerolog.Logger
@@ -227,6 +227,9 @@ type Bot struct {
 	seenCache          *jobSeenCache
 	listingFailureCode string
 	listingFailedJobs  map[string]bool
+
+	evaluationFailedJobs map[string]bool // distinct jobs since the last completed evaluation
+	automaticStopReason  string
 
 	quotaStopOnce bool // guards quota_stop event; set after first emission per run
 }
@@ -514,6 +517,8 @@ func (b *Bot) Start(ctx context.Context) error {
 	b.stopCh = make(chan struct{})
 	b.listingFailureCode = ""
 	b.listingFailedJobs = nil
+	b.evaluationFailedJobs = nil
+	b.automaticStopReason = ""
 	b.state = domain.BotStateRunning
 	b.mu.Unlock()
 	b.run(ctx)
@@ -1010,6 +1015,12 @@ func (b *Bot) stopped(ctx context.Context) bool {
 func (b *Bot) stopReason(ctx context.Context) string {
 	select {
 	case <-b.stopCh:
+		b.mu.Lock()
+		reason := b.automaticStopReason
+		b.mu.Unlock()
+		if reason != "" {
+			return reason
+		}
 		return "manually stopped"
 	case <-ctx.Done():
 		return "context cancelled: " + ctx.Err().Error()
@@ -1478,10 +1489,11 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 		if ctx.Err() == nil {
 			b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, 0, "", nil, fmt.Errorf("%w: %w", errJobEvaluationFailed, err))
 		}
-		b.abortOnLLMFailure(err)
+		b.handleEvaluationFailure(ctx, domain.PlatformLinkedIn, job.ID, err)
 		return 0, "", nil, false
 	}
 	if result.Score < minScore {
+		b.resetEvaluationFailures()
 		b.recordSkipped(job, fmt.Sprintf("score %d < %d", result.Score, minScore), result.Score, result.Reasoning, nil)
 		b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Int("score", result.Score).Int("min_score", minScore).Msgf("linkedin: skip, score %d < %d for %q @ %s", result.Score, minScore, job.Title, job.Company)
 		return result.Score, result.Reasoning, nil, false
@@ -1496,9 +1508,11 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 			if ctx.Err() == nil {
 				b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, result.Score, result.Reasoning, nil, fmt.Errorf("%w: halal check: %w", errJobEvaluationFailed, err))
 			}
-			b.abortOnLLMFailure(err)
+			b.handleEvaluationFailure(ctx, domain.PlatformLinkedIn, job.ID, err)
 			return result.Score, result.Reasoning, nil, false
-		} else if verdict.Verdict == "HARAM" {
+		}
+		b.resetEvaluationFailures()
+		if verdict.Verdict == "HARAM" {
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
 			b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("linkedin: halal skip (HARAM) %q @ %s", job.Title, job.Company)
@@ -1509,6 +1523,7 @@ func (b *Bot) checkScore(ctx context.Context, job linkedInJob, jobDesc string) (
 		}
 	}
 
+	b.resetEvaluationFailures()
 	return result.Score, result.Reasoning, halalVerdict, true
 }
 
@@ -1547,9 +1562,9 @@ func llmAbortReason(err error) string {
 	case strings.Contains(msg, "connection refused"):
 		return "LLM proxy is not running — connection refused. Start the proxy at the configured address."
 	case strings.Contains(msg, "502") || strings.Contains(msg, "503"):
-		return "LLM service is unavailable (502/503) — a network issue persisted after 3 retry attempts."
+		return "LLM service is unavailable (502/503)."
 	default:
-		return fmt.Sprintf("LLM call failed after 3 attempts: %v", err)
+		return fmt.Sprintf("LLM call failed: %v", err)
 	}
 }
 
@@ -1559,6 +1574,10 @@ func (b *Bot) abortOnLLMFailure(err error) {
 		reason = fmt.Sprintf("LLM call failed: %v", err)
 	}
 	b.log.Error().Msgf("bot: aborting — %s", reason)
+	b.mu.Lock()
+	b.automaticStopReason = reason
+	b.state = domain.BotStateError
+	b.mu.Unlock()
 	b.Stop()
 }
 
