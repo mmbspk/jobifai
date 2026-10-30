@@ -3,6 +3,8 @@ package bot
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/proto"
@@ -43,7 +45,16 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 		}
 		atFinalReview := b.linkedInPrepareAtFinalReview(page)
 		if linkedInPrepareScanComplete(kind, atFinalReview) {
-			lazy.prepareScanComplete = true
+			if atFinalReview && !lazy.policyBlocked() {
+				if resumePath, _ := lazy.peek(); resumePath != "" {
+					if verifyErr := b.linkedInVerifyFinalReviewResume(page, resumePath); verifyErr != nil {
+						lazy.holdReason = verifyErr.Error()
+					}
+				}
+			}
+			if !lazy.policyBlocked() {
+				lazy.prepareScanComplete = true
+			}
 			break
 		}
 		if !found {
@@ -81,7 +92,22 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 	}
 	lazy.ensureMaterialized()
 	if !lazy.prepareScanComplete {
+		if lazy.policyBlocked() {
+			return fmt.Errorf("prepare: %s", lazy.holdReason)
+		}
 		return fmt.Errorf("prepare: scan incomplete — review step not reached")
+	}
+	return nil
+}
+
+func (b *Bot) linkedInVerifyFinalReviewResume(page *rod.Page, resumePath string) error {
+	base := filepath.Base(resumePath)
+	res, err := page.Timeout(5 * time.Second).Eval(jsLinkedInFinalReviewResumeCheck, base)
+	if err != nil {
+		return fmt.Errorf("linkedin: final-review resume verification failed: %w", err)
+	}
+	if !res.Value.Get("verified").Bool() {
+		return fmt.Errorf("linkedin: resume %q not confirmed in final-review summary", base)
 	}
 	return nil
 }

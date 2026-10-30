@@ -9,6 +9,7 @@ import (
 
 // jsFindApplyPrimary locates the LinkedIn Easy Apply CTA without clicking it.
 const jsFindApplyPrimary = `() => {
+` + jsLinkedInApplyContainerFn + `
 	function allInDOM(root, sel) {
 		const r = [];
 		const walk = (node) => {
@@ -86,8 +87,10 @@ const jsFindApplyPrimary = `() => {
 		if (t === 'next' || t.startsWith('next ') || t === 'done' || t.startsWith('done ')) return 'next';
 		return '';
 	}
+	const container = resolveApplyContainer();
+	if (!container) return { found: false, enabled: false, label: '', kind: '' };
 	const priority = ['submit', 'review', 'continue', 'next'];
-	const candidates = allInDOM(document, 'button, [role="button"], a[role="button"]')
+	const candidates = allInDOM(container, 'button, [role="button"], a[role="button"]')
 		.filter(b => !isMessagingChrome(b) && !isExcludedRail(b) && actionKind(b));
 	for (const kind of priority) {
 		const btn = candidates.find(b => actionKind(b) === kind && isVisible(b));
@@ -104,6 +107,7 @@ const jsFindApplyPrimary = `() => {
 }`
 
 const jsClickApplyNavigation = `() => {
+` + jsLinkedInApplyContainerFn + `
 	function allInDOM(root, sel) {
 		const r = [];
 		const walk = (node) => {
@@ -170,11 +174,12 @@ const jsClickApplyNavigation = `() => {
 				try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch (e2) {}
 			}
 		}
-		try { btn.click(); } catch (e) {}
 		return { ok: true, label: label };
 	}
+	const container = resolveApplyContainer();
+	if (!container) return { ok: false, label: 'apply container not found' };
 	const navKinds = ['review', 'continue', 'next'];
-	const candidates = allInDOM(document, 'button, [role="button"], a[role="button"]')
+	const candidates = allInDOM(container, 'button, [role="button"], a[role="button"]')
 		.filter(b => navKinds.includes(actionKind(b)));
 	for (const kind of navKinds) {
 		const btn = candidates.find(b => actionKind(b) === kind && isVisible(b) && isEnabled(b));
@@ -184,6 +189,7 @@ const jsClickApplyNavigation = `() => {
 }`
 
 // jsLinkedInAtFinalReviewFunction is shared by prepare completion, jsScanFields, and the visible-input probe.
+// Relies on resolveApplyContainer() from jsLinkedInApplyContainerFn being in scope (injected by init()).
 const jsLinkedInAtFinalReviewFunction = `function linkedInAtFinalReviewPage() {
 	function isVisible(el) {
 		try {
@@ -203,7 +209,9 @@ const jsLinkedInAtFinalReviewFunction = `function linkedInAtFinalReviewPage() {
 		if (btn.hasAttribute('data-live-test-easy-apply-submit-button') || btn.hasAttribute('data-easy-apply-submit-button')) return true;
 		return t.includes('submit application') || t === 'submit' || t.startsWith('submit ');
 	}
-	const shells = [...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-easy-apply-modal]')];
+	const container = resolveApplyContainer();
+	if (!container) return false;
+	const shells = [container];
 	for (const shell of shells) {
 		if (!isVisible(shell)) continue;
 		const headings = [...shell.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"]')].filter(isVisible);
@@ -218,6 +226,7 @@ const jsLinkedInAtFinalReviewFunction = `function linkedInAtFinalReviewPage() {
 }`
 
 const jsLinkedInAtFinalReview = `() => {
+` + jsLinkedInApplyContainerFn + `
 ` + jsLinkedInAtFinalReviewFunction + `
 	return linkedInAtFinalReviewPage();
 }`

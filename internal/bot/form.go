@@ -8,8 +8,10 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,6 +26,12 @@ import (
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
+// errUploadIdentityUnverifiable is returned by linkedInWaitForResumeAccepted when the
+// uploaded resume cannot be confirmed as the intended file (e.g. checked radio label
+// does not match the expected filename). Triggers a HOLD rather than a hard failure.
+var errUploadIdentityUnverifiable = errors.New(
+	"linkedin: resume upload identity could not be verified — please confirm selection manually")
+
 type formFieldOption struct {
 	ID    string `json:"id"`
 	Value string `json:"value"`
@@ -37,11 +45,13 @@ type formField struct {
 	ID        string            `json:"id"`          // select / text element id
 	Question  string            `json:"question"`    // visible label text
 	Options   []formFieldOption `json:"options"`     // radio / select choices
-	HasFile      bool              `json:"hasFile"`      // file already attached
-	DocumentKind string            `json:"documentKind"` // resume | cover_letter | unknown
-	Required     bool              `json:"required"`     // file field marked required on form
-	InputType    string            `json:"inputType"`    // text | number | textarea
-	Typeahead    bool              `json:"isTypeahead"`  // combobox requiring dropdown selection
+	HasFile        bool              `json:"hasFile"`         // file already attached
+	DocumentKind   string            `json:"documentKind"`    // resume | cover_letter | unknown
+	Required       bool              `json:"required"`        // file field marked required on form
+	InputType      string            `json:"inputType"`       // text | number | textarea
+	Typeahead      bool              `json:"isTypeahead"`     // combobox requiring dropdown selection
+	UploadViaButton  bool   `json:"uploadViaButton"`  // slot has no visible input; upload via button click + HandleFileDialog
+	ResumeGroupName  string `json:"resumeGroupName"`  // radio group name inside the same section (empty if ambiguous or absent)
 }
 
 func (f formField) optionLabels() []string {
@@ -97,50 +107,22 @@ const jsScanFieldsInner = `
 		} catch(e) { return false; }
 	}
 
-	// Anchor on platform-specific apply-form selectors, VISIBLE only.
-	// Seek anchors are listed first; they don't match LinkedIn's DOM, so on
-	// LinkedIn the next anchors win. Conversely, on Seek the LinkedIn anchors
-	// don't match, so we land on a Seek-specific container and don't pick up
-	// the search/refine sidebar's <form>.
-	const anchor =
-		allInDOM(document, "[data-testid='quick-apply-form']").find(isVisible) ||
-		allInDOM(document, "[data-automation='apply-form']").find(isVisible) ||
-		allInDOM(document, "form[data-testid*='applicationForm']").find(isVisible) ||
-		allInDOM(document, '[data-test-form-element]').find(isVisible) ||
-		allInDOM(document, 'fieldset[data-test-form-builder-radio-button-form-component]').find(isVisible) ||
-		allInDOM(document, '.jobs-easy-apply-content').find(isVisible) ||
-		allInDOM(document, '.jobs-easy-apply-modal').find(isVisible);
+	// Locate the active apply-form container using the shared resolver (defined by
+	// jsLinkedInApplyContainerFn, injected before this block). Priority:
+	//   1. LinkedIn native <dialog open> (new SDUI layout, identified by data-sdui-screen)
+	//   2. Legacy LinkedIn class-based modal
+	//   3. Seek form selectors
+	// No semantic fallback: an unresolvable container means no apply form is present.
+	const anchor = resolveApplyContainer();
+	if (!anchor) return JSON.stringify([]);
 
-	let container = document.body;
-	if (anchor) {
-		container = anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor;
-	} else {
-		// Semantic fallback: when all platform-specific selectors miss, scope to
-		// any visible dialog or form with at least one required input. Skip
-		// candidates that look like search/refine UI (Seek's job-search page has
-		// a sidebar <form> with "Show salary range refinements" / "Pay" radios).
-		function looksLikeSearchUI(scope) {
-			if (!scope) return false;
-			if (scope.closest("[role='search'], [data-automation*='searchBar'], [data-automation*='refine'], [data-automation*='filter']")) return true;
-			const head = scope.querySelector('legend, h1, h2, h3, [role="heading"]');
-			const txt = (head && head.textContent || '').toLowerCase();
-			return txt.includes('refinement') || txt.includes('sort by') || txt.includes('keyword') || txt.includes('classification');
-		}
-		const dialog = document.querySelector('[role="dialog"]');
-		const form = dialog ? dialog.querySelector('form') : document.querySelector('form');
-		const scope = form || dialog;
-		if (scope && !looksLikeSearchUI(scope)) {
-			// Match any non-hidden input — Seek doesn't set [required] even for
-			// mandatory fields, so we can't key off required alone.
-			const hasInputs = [...scope.querySelectorAll(
-				'input:not([type="hidden"]), select, textarea'
-			)].some(isVisible);
-			if (hasInputs) {
-				container = scope;
-				console.warn('jsScanFields: using semantic fallback container');
-			}
-		}
-	}
+	// For <dialog open> and .jobs-easy-apply-content: the anchor IS the container.
+	// For older [data-test-form-element] anchors: wrap to nearest form ancestor.
+	const isTopLevelContainer = anchor.tagName === 'DIALOG'
+		|| anchor.matches('.jobs-easy-apply-content,.jobs-easy-apply-modal,[data-testid]');
+	const container = isTopLevelContainer
+		? anchor
+		: (anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor);
 
 	const isSeekApply = !!(container.closest && container.closest(
 		"[data-testid='quick-apply-form'], [data-automation='apply-form'], form[data-testid*='applicationForm']"
@@ -192,6 +174,72 @@ const jsScanFieldsInner = `
 			question, documentKind: classifyDocumentKind(question), required,
 		});
 	});
+
+	// ── Upload-via-button resume slots (LinkedIn native SDUI layout) ─────────
+	// LinkedIn's new Easy Apply has no visible <input type="file"> in the DOM.
+	// Instead it shows an "Upload resume" button. Since the file input scan above
+	// found nothing (ResumeFileSlots=0), we detect the button here.
+	// Only runs when no visible file input was already found in this section.
+	(function() {
+		function classifyDocumentKindBtn(lbl) {
+			const q = (lbl || '').toLowerCase();
+			if (q.includes('cover')) return 'cover_letter';
+			if (q.includes('resume') || q.includes('r\xe9sum\xe9') || q.includes('cv')) return 'resume';
+			return 'resume'; // default for upload buttons without qualifier
+		}
+		allInDOM(container, 'button,[role="button"]').filter(isVisible).forEach(btn => {
+			const lbl = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.textContent || '')).trim();
+			if (!/\bupload\b/i.test(lbl) || !/\b(resume|cv|r\xe9sum\xe9)\b/i.test(lbl)) return;
+
+			// Find the enclosing form section for this button.
+			const sectionEl = btn.closest('[data-test-form-element],.artdeco-form-element,.fb-form-element,fieldset,[role="group"]')
+			                  || btn.parentElement;
+
+			// Skip if the section already has a visible file input (old layout coexisting
+			// with the button — e.g. LinkedIn A/B experiment). The file-input scan above
+			// already produced the field; adding a button field would double-count.
+			const sectionHasVisibleInput = !!(sectionEl && allInDOM(sectionEl, 'input[type="file"]').some(el => {
+				const a = (el.accept || '').toLowerCase();
+				return (!a || a.includes('pdf') || a.includes('doc') || a.includes('rtf') || a.includes('txt'))
+				    && isContainerVisible(el);
+			}));
+			if (sectionHasVisibleInput) return;
+
+			// hasFile: "Change resume" / "Replace resume" button nearby means a resume was
+			// previously selected (analogous to el.files.length > 0 for hidden inputs).
+			const hasFile = !!(sectionEl && allInDOM(sectionEl, 'button,[role="button"]').some(el => {
+				const t = ((el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '')).toLowerCase();
+				return /\b(change|replace)\b/.test(t) && /\b(resume|cv)\b/.test(t);
+			}));
+
+			// Requiredness: read from section semantics — input.required is always false
+			// when no file input exists. aria-required on the section is confirmed from
+			// the native-dialog-resume.html fixture (aria-required="true" on the wrapper).
+			const required = !!(
+				(sectionEl && (sectionEl.getAttribute('aria-required') === 'true'
+				               || sectionEl.querySelector('[aria-required="true"]')))
+				|| /[\*✱]/.test((sectionEl && sectionEl.querySelector('label,legend,[class*="label"]') || {}).textContent || '')
+			);
+
+			const docKind = classifyDocumentKindBtn(lbl);
+
+			// Identify the radio group within this section.
+			// Use the single unique group name if exactly one exists; empty otherwise
+			// to avoid guessing when the section is ambiguous or has no radios yet.
+			let resumeGroupName = '';
+			if (sectionEl) {
+				const sectionRadios = allInDOM(sectionEl, 'input[type="radio"]');
+				const groupNames = [...new Set(sectionRadios.map(r => r.name).filter(Boolean))];
+				if (groupNames.length === 1) resumeGroupName = groupNames[0];
+			}
+
+			fields.push({
+				type: 'file', index: -1, hasFile, uploadViaButton: true,
+				question: lbl.replace(/\s+/g, ' ').trim() || 'Resume',
+				documentKind: docKind, required, resumeGroupName,
+			});
+		});
+	})();
 
 	// ── Radio groups, unanswered ones whose CONTAINER is visible ────────────
 	// NOTE: LinkedIn hides the actual <input type="radio"> with CSS (opacity:0 / size:0)
@@ -335,6 +383,9 @@ const jsScanFieldsInner = `
 	// for every text input) can be disambiguated when filling.
 	let textIdx = 0;
 	allInDOM(container, 'input[type="text"], input[type="number"], input[type="tel"], input[type="email"], textarea').filter(el => {
+		// Exclude reCAPTCHA injected textareas (hidden by LinkedIn/Google on form pages).
+		if (el.name === 'g-recaptcha-response' || el.id === 'g-recaptcha-response') return false;
+		if (el.closest('[id*="recaptcha" i],[class*="recaptcha" i],[id*="captcha" i],[class*="captcha" i]')) return false;
 		// Textareas are often opacity/size-hidden until focused — use container visibility.
 		if (el.tagName === 'TEXTAREA') return isContainerVisible(el);
 		return isVisible(el);
@@ -350,8 +401,19 @@ const jsScanFieldsInner = `
 		                || el.getAttribute('aria-invalid') === 'true';
 		const formEl = el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset');
 		const lbl = labelFor(el.id)
-		            || (formEl && formEl.querySelector('label, legend, .fb-form-element-label, span[data-test-form-element-label]'))
-		            || el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element')?.querySelector('label');
+		    || (function() {
+		        const ids = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+		        if (!ids.length) return null;
+		        const els = ids.map(function(id) { return document.getElementById(id); }).filter(Boolean);
+		        const text = els.map(function(e) { return e.textContent; }).join(' ').replace(/\s+/g, ' ').trim();
+		        return text ? { textContent: text } : null;
+		      })()
+		    || (function() {
+		        const t = (el.getAttribute('aria-label') || '').trim();
+		        return t ? { textContent: t } : null;
+		      })()
+		    || (formEl && formEl.querySelector('label, legend, .fb-form-element-label, span[data-test-form-element-label]'))
+		    || el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element')?.querySelector('label');
 		// Seek Quick Apply often omits required/labels on screening inputs — include
 		// any empty field inside the apply form container.
 		if (!isRequired && !lbl && el.tagName !== 'TEXTAREA' && !isSeekApply) { textIdx++; return; }
@@ -388,20 +450,264 @@ const jsHasVisibleFormContentInner = `
 				} catch(e) { return false; }
 			}
 			if (linkedInAtFinalReviewPage()) return 0;
-			const root = document.querySelector('[role="dialog"], form') || document.body;
+			const root = resolveApplyContainer();
+			if (!root) return 0;
 			return [...root.querySelectorAll('input:not([type="hidden"]), select, textarea')]
 				.filter(el => isVisible(el) && (!el.value.trim() || el.getAttribute('aria-invalid') === 'true')).length;
 `
 
 var jsScanFields string
 var jsHasVisibleFormContent string
+var jsLinkedInClickUploadResume string
+var jsLinkedInCheckResumeAccepted string
+var jsLinkedInFinalReviewResumeCheck string
+var jsLinkedInFindUploadButton string
+var jsLinkedInResumePreUploadState string
+var jsFindCheckedRadioLabel string
+
+// jsLinkedInApplyContainerFn defines resolveApplyContainer() — the single source of truth
+// for locating the active Easy Apply dialog. Uses document.querySelectorAll (no allInDOM
+// dependency) so it can be embedded in any JS constant. Priority:
+//  1. LinkedIn native <dialog open> — confirmed by data-sdui-screen*="EasyApply" inside
+//  2. Legacy LinkedIn class-based modal (.jobs-easy-apply-content, .jobs-easy-apply-modal)
+//  3. Seek form selectors
+//
+// Embedded before jsScanFieldsInner, jsLinkedInAtFinalReviewFunction, and jsClickApplyNavigation
+// so resolveApplyContainer() is in scope wherever those functions run.
+const jsLinkedInApplyContainerFn = `
+function resolveApplyContainer() {
+	function rectVisible(el) {
+		try { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2; }
+		catch(e) { return false; }
+	}
+	// LinkedIn's new SDUI Easy Apply: <dialog open> without role="dialog" attribute.
+	// Identified by the SDUI screen value confirmed in Oct/Sep 2026 captures.
+	// Only unambiguous when exactly one such element is visible.
+	{
+		const easyApplyDialogs = [...document.querySelectorAll('dialog[open]')].filter(
+			d => rectVisible(d) && d.querySelector('[data-sdui-screen*="EasyApply"]')
+		);
+		if (easyApplyDialogs.length === 1) return easyApplyDialogs[0];
+		if (easyApplyDialogs.length > 1) return null; // ambiguous
+	}
+	// Legacy LinkedIn: class-based modal (retained for accounts/regions not yet migrated).
+	for (const sel of ['.jobs-easy-apply-content', '.jobs-easy-apply-modal']) {
+		const el = document.querySelector(sel);
+		if (el && rectVisible(el)) return el;
+	}
+	// LinkedIn role="dialog" fallback: covers older A/B modal variants where the apply
+	// container has role="dialog" but not the SDUI-era class names. Only unambiguous
+	// when exactly one such element is visible (multiple visible dialogs = skip).
+	{
+		const roleDialogs = [...document.querySelectorAll('[role="dialog"]')].filter(rectVisible);
+		if (roleDialogs.length === 1) return roleDialogs[0];
+	}
+	// Seek form selectors.
+	for (const sel of [
+		"[data-testid='quick-apply-form']",
+		"[data-automation='apply-form']",
+		"form[data-testid*='applicationForm']",
+	]) {
+		const el = document.querySelector(sel);
+		if (el && rectVisible(el)) return el;
+	}
+	return null;
+}
+`
 
 func init() {
 	jsScanFields = `() => {
-` + jsLinkedInAtFinalReviewFunction + jsScanFieldsInner + `
+` + jsLinkedInApplyContainerFn + jsLinkedInAtFinalReviewFunction + jsScanFieldsInner + `
 }`
 	jsHasVisibleFormContent = `() => {
-` + jsLinkedInAtFinalReviewFunction + jsHasVisibleFormContentInner + `
+` + jsLinkedInApplyContainerFn + jsLinkedInAtFinalReviewFunction + jsHasVisibleFormContentInner + `
+}`
+
+	// jsFindCheckedRadioLabel finds the checked radio in the named group, scoped to the
+	// verified apply container so same-named groups on background SDUI screens are ignored.
+	// Label lookup is also scoped to the container so document-wide label[for] collisions
+	// cannot cross-contaminate the result. Returns "" when the container is missing or
+	// no radio in the group is checked.
+	jsFindCheckedRadioLabel = `(name) => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return '';
+	const radios = [...container.querySelectorAll('input[type="radio"]')].filter(r => r.name === name);
+	const checked = radios.find(r => r.checked);
+	if (!checked) return '';
+	const lbl = container.querySelector('label[for="' + checked.id + '"]')
+	          || checked.closest('label')
+	          || checked.parentElement;
+	return lbl ? lbl.textContent.trim() : (checked.value || '');
+}`
+
+	jsLinkedInClickUploadResume = `() => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return { ok: false, reason: 'apply container not found — upload cannot be scoped' };
+	const btns = [...container.querySelectorAll('button,[role="button"]')];
+	const btn = btns.find(b => {
+		try {
+			const r = b.getBoundingClientRect();
+			if (r.width < 2 && r.height < 2) return false;
+		} catch(e) { return false; }
+		const lbl = ((b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '')).trim();
+		return /\bupload\b/i.test(lbl) && /\b(resume|cv|r\xe9sum\xe9)\b/i.test(lbl);
+	});
+	if (!btn) return { ok: false, reason: 'Upload resume button not found in container' };
+	try { btn.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch(e) {}
+	try { btn.focus(); } catch(e) {}
+	const view = btn.ownerDocument && btn.ownerDocument.defaultView || window;
+	const opts = { bubbles: true, cancelable: true, view };
+	for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+		try {
+			if (type.startsWith('pointer')) {
+				btn.dispatchEvent(new PointerEvent(type, Object.assign({ pointerId: 1, pointerType: 'mouse' }, opts)));
+			} else {
+				btn.dispatchEvent(new MouseEvent(type, opts));
+			}
+		} catch(e) {
+			try { btn.dispatchEvent(new MouseEvent(type.replace('pointer', 'mouse'), opts)); } catch(e2) {}
+		}
+	}
+	return { ok: true };
+}`
+
+	jsLinkedInCheckResumeAccepted = `(expectedFilename) => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return { accepted: false, error: false, filenameVisible: false };
+	const hasError = !!container.querySelector('[aria-invalid="true"],.artdeco-inline-feedback--error');
+	if (hasError) return { accepted: false, error: true, filenameVisible: false };
+
+	const base = (expectedFilename || '').toLowerCase();
+	function extractFilename(text) {
+		const t = (text || '').trim();
+		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
+		return m ? m[1].toLowerCase() : null;
+	}
+
+	// Locate the resume section strictly via the "Upload resume" button.
+	// Only the upload button anchors the section — no Change/Replace fallback.
+	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
+		const t = (b.textContent || '').toLowerCase();
+		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
+	});
+	if (!uploadBtn) return { accepted: false, error: false, filenameVisible: false };
+
+	// Walk up to smallest ancestor that also contains radio inputs.
+	let section = uploadBtn.parentElement;
+	while (section && section !== container) {
+		if (section.querySelector('input[type="radio"]')) break;
+		section = section.parentElement;
+	}
+	if (!section || section === container) {
+		return { accepted: false, error: false, filenameVisible: false };
+	}
+
+	const radios = [...section.querySelectorAll('input[type="radio"]')];
+	const checked = radios.find(r => r.checked);
+	if (!checked) return { accepted: false, error: false, filenameVisible: false };
+
+	const labelEl = section.querySelector('label[for="' + checked.id + '"]') ||
+		checked.closest('label') || checked.parentElement;
+	const extracted = extractFilename(labelEl && labelEl.textContent);
+	const filenameVisible = extracted !== null && extracted === base;
+	return { accepted: true, error: false, filenameVisible };
+}`
+
+	jsLinkedInFinalReviewResumeCheck = `(expectedFilename) => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return { verified: false };
+	const base = (expectedFilename || '').toLowerCase();
+	if (!base) return { verified: true };
+	function isVisible(el) {
+		try {
+			const rect = el.getBoundingClientRect();
+			if (rect.width < 2 && rect.height < 2) return false;
+			let node = el;
+			while (node && node !== document.documentElement) {
+				const s = window.getComputedStyle(node);
+				if (s.display === 'none' || s.visibility === 'hidden') return false;
+				node = node.parentElement;
+			}
+			return true;
+		} catch (e) { return false; }
+	}
+	function extractFilename(text) {
+		const t = (text || '').trim();
+		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
+		return m ? m[1].toLowerCase() : null;
+	}
+	const headings = [...container.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"],[class*="heading"]')]
+		.filter(isVisible);
+	const resumeHeading = headings.find(h => /\bresume\b/i.test(h.textContent || ''));
+	if (!resumeHeading) return { verified: false };
+	const section = resumeHeading.closest('[data-component-type],[class*="section"],fieldset,section') || resumeHeading.parentElement;
+	if (!section) return { verified: false };
+	const bodyText = [...section.children]
+		.filter(el => el !== resumeHeading && !/^(H[1-6]|LEGEND)$/.test(el.tagName))
+		.map(el => el.textContent)
+		.join('\n');
+	const extracted = extractFilename(bodyText);
+	return { verified: extracted !== null && extracted === base };
+}`
+
+	jsLinkedInFindUploadButton = `() => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return null;
+	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
+		const t = (b.textContent || '').toLowerCase();
+		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
+	});
+	return uploadBtn || null;
+}`
+
+	jsLinkedInResumePreUploadState = `(expectedFilename) => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	if (!container) return { filenameExisted: false, stateVerified: false, sectionFound: false };
+	function extractFilename(text) {
+		const t = (text || '').trim();
+		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
+		return m ? m[1].toLowerCase() : null;
+	}
+	const base = (expectedFilename || '').toLowerCase();
+	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
+		const t = (b.textContent || '').toLowerCase();
+		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
+	});
+	if (!uploadBtn) return { filenameExisted: false, stateVerified: false, sectionFound: false };
+	// Walk up from upload button to find the resume section.
+	// Only fieldset, section, or [role=group] elements identify the section boundary.
+	// Generic div/span ancestors are never accepted, even if they contain radios elsewhere,
+	// because the SDUI form screen div wraps radios from all steps — not just resume.
+	let section = uploadBtn.parentElement;
+	while (section && section !== container) {
+		if (section.tagName === 'FIELDSET' ||
+			section.tagName === 'SECTION' ||
+			section.getAttribute('role') === 'group') {
+			break;
+		}
+		section = section.parentElement;
+	}
+	if (!section || section === container) {
+		// No named section and no radio-containing ancestor below container — unresolved.
+		return { filenameExisted: false, stateVerified: false, sectionFound: false };
+	}
+	const radios = [...section.querySelectorAll('input[type="radio"]')];
+	if (radios.length === 0) {
+		// Section identified but no radios yet — possibly still loading.
+		return { filenameExisted: false, stateVerified: false, sectionFound: true };
+	}
+	const filenameExisted = radios.some(r => {
+		const labelEl = section.querySelector('label[for="' + r.id + '"]') ||
+			r.closest('label') || r.parentElement;
+		return extractFilename(labelEl && labelEl.textContent) === base;
+	});
+	return { filenameExisted, stateVerified: true, sectionFound: true };
 }`
 }
 
@@ -476,6 +782,9 @@ const jsFillRadioByID = `(id) => {
 	el.dispatchEvent(new Event('input',  { bubbles: true }));
 	return true;
 }`
+
+// jsFindCheckedRadioLabel is built in init() — requires resolveApplyContainer()
+// from jsLinkedInApplyContainerFn to scope the lookup to the active apply dialog.
 
 // jsFillSelect sets a native <select> using React-compatible native value setter.
 // Uses shadow DOM walking to find the element.
@@ -877,7 +1186,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		for _, p := range pages {
 			if probe, err := p.Timeout(10 * time.Second).Eval(jsHasVisibleFormContent); err == nil {
 				if n := probe.Value.Int(); n > 0 {
-					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Int("visible_inputs", n).Msg("form: jsScanFields returned 0 fields but DOM has visible inputs, possible selector break")
+					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Int("visible_inputs", n).Msg("form: jsScanFields returned 0 fields but DOM has visible inputs, possible selector break")
 					if shot, err := page.Screenshot(false, nil); err == nil {
 						_ = os.WriteFile("debug_zero_fields.png", shot, 0o644)
 						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Msg("form: screenshot saved for selector-break diagnosis")
@@ -909,14 +1218,19 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		}
 	}
 
+	// uploadedResumeGroup is set from f.ResumeGroupName after a via-button upload succeeds.
+	// It gates post-upload confirmation to the specific radio group in the upload section;
+	// unrelated radio groups that precede or follow the resume section use normal answering.
+	var uploadedResumeGroup string
+	// uploadedFilename is the bare filename (lowercased) delivered to the upload section.
+	// The post-upload confirmation verifies the DOM-checked label matches this exactly.
+	var uploadedFilename string
+
 	for _, f := range fields {
 		b.shortPause() // human-like pause before each field interaction
 		switch f.Type {
 
 		case "file":
-			if lazy.reviewPrepareOnly {
-				continue
-			}
 			resumePath, coverPath := lazy.get()
 			if lazy.policyBlocked() {
 				return filled, true, fmt.Errorf("documents: %s", lazy.holdReason)
@@ -948,14 +1262,14 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					continue
 				}
 				if f.HasFile && f.Required {
-					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Int("index", f.Index).Str("kind", kindLabel).Msg("form: required upload missing generated file — not substituting platform attachment")
+					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Int("index", f.Index).Str("kind", kindLabel).Msg("form: required upload missing generated file — not substituting platform attachment")
 					return filled, true, fmt.Errorf("documents: required %s upload failed", kindLabel)
 				}
 				if f.HasFile {
 					log.Debug().Int("index", f.Index).Str("kind", kindLabel).Msg("form: optional field already has platform attachment")
 					continue
 				}
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Int("index", f.Index).Str("platform", string(b.cfg.Platform)).
 					Msg("form: no PDF path for optional file field")
 				continue
 			}
@@ -967,16 +1281,55 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				default:
 					uploadErr = b.seekUploadResume(page, path)
 				}
+			} else if f.UploadViaButton {
+				uploadErr = b.formUploadViaButton(ctx, page, path)
 			} else {
 				uploadErr = b.formUploadFile(page, path, f.Index)
+			}
+			if errors.Is(uploadErr, errUploadIdentityUnverifiable) {
+				lazy.holdReason = uploadErr.Error()
+				filled = true
+				continue
 			}
 			if uploadErr != nil {
 				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kindLabel, uploadErr)
 			}
 			log.Info().Str("path", path).Str("kind", kindLabel).Msg("form: file uploaded")
 			filled = true
+			if f.UploadViaButton {
+				if f.ResumeGroupName != "" {
+					// Track the upload section's radio group and the delivered filename for
+					// post-upload confirmation. The radio fill uses these to verify the DOM
+					// reflects the correct selection without re-clicking.
+					uploadedResumeGroup = f.ResumeGroupName
+					uploadedFilename = strings.ToLower(filepath.Base(path))
+				} else {
+					// Section has no uniquely-identifiable radio group — cannot confirm
+					// which entry was selected. Hold for manual review.
+					lazy.holdReason = errUploadIdentityUnverifiable.Error()
+				}
+			}
 
 		case "radio":
+			// After a via-button upload, confirm the resume group's post-upload selection
+			// directly from the DOM. The upload handler leaves the new entry checked; we
+			// verify its label matches the intended filename rather than re-clicking, so
+			// neither library entries nor the confirmed entry are disturbed.
+			// Unrelated radio groups (f.Name != uploadedResumeGroup) always go through normal answering.
+			if f.Name == uploadedResumeGroup {
+				uploadedResumeGroup = "" // consume — applies to this group only
+				if r2, evalErr2 := page.Timeout(3 * time.Second).Eval(jsFindCheckedRadioLabel, f.Name); evalErr2 == nil {
+					if checkedLabel := r2.Value.String(); strings.EqualFold(checkedLabel, uploadedFilename) {
+						log.Info().Str("question", f.Question).Str("answer", checkedLabel).Msg("form: resume radio confirmed post-upload selection")
+						filled = true
+						continue
+					}
+				}
+				// No checked radio or label does not match the uploaded filename — hold.
+				lazy.holdReason = errUploadIdentityUnverifiable.Error()
+				filled = true
+				continue
+			}
 			fallback := ""
 			if len(f.Options) > 0 {
 				fallback = f.Options[0].Label
@@ -987,7 +1340,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				return filled, true, qErr
 			}
 			if answer == fallback && raw == "" && fallback != "" {
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Str("fallback", fallback).Msg("form: radio fallback to first option")
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("fallback", fallback).Msg("form: radio fallback to first option")
 			}
 			if answer == "" {
 				continue
@@ -1016,7 +1369,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 			}
 			if !radioOK {
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Str("answer", answer).Str("optionID", optionID).Msg("form: radio fill failed")
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("answer", answer).Str("optionID", optionID).Msg("form: radio fill failed")
 				continue
 			}
 			log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: radio answered")
@@ -1033,7 +1386,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				return filled, true, qErr
 			}
 			if answer == fallback && raw == "" && fallback != "" {
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Str("fallback", fallback).Msg("form: checkbox fallback to first option")
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("fallback", fallback).Msg("form: checkbox fallback to first option")
 			}
 			var targetID string
 			for _, opt := range f.Options {
@@ -1051,7 +1404,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: checkbox answered")
 					filled = true
 				} else {
-					log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Msg("form: checkbox fill failed")
+					log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Msg("form: checkbox fill failed")
 				}
 			}
 
@@ -1068,7 +1421,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					filled = true
 					break
 				}
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Msg("form: open-ended question has no textarea to fill")
+				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Msg("form: open-ended question has no textarea to fill")
 			}
 			fallback := ""
 			if len(f.Options) > 0 {
@@ -1088,7 +1441,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					// LLM returned prose that doesn't match dropdown options — try textarea.
 					filled = true
 				} else {
-					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Str("answer", answer).
+					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("answer", answer).
 						Strs("options", labels).Msg("form: select answer did not match any option")
 				}
 			}
@@ -1170,9 +1523,9 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 				if !confirmed {
 					if dbg, err := page.Eval(jsTypeaheadDebug); err == nil {
-						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("dom", dbg.Value.String()).Str("question", f.Question).Msg("form: typeahead dropdown not detected")
+						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("dom", dbg.Value.String()).Str("question", f.Question).Msg("form: typeahead dropdown not detected")
 					} else {
-						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", f.Question).Msg("form: typeahead dropdown not detected")
+						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Msg("form: typeahead dropdown not detected")
 					}
 				}
 				if confirmed {
@@ -1248,6 +1601,168 @@ func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int) error {
 		allInDOM(document, 'input[data-rod-upload-target]').forEach(el => el.removeAttribute('data-rod-upload-target'));
 	}`)
 	return nil
+}
+
+// formUploadViaButton handles LinkedIn's native-dialog "Upload resume" button layout.
+// chooserCtx is derived from the operation ctx so cancellation propagates to the
+// file-chooser goroutine. The goroutine is always joined before returning.
+func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath string) error {
+	chooserCtx, chooserCancel := context.WithCancel(ctx)
+	defer chooserCancel()
+	ctxPage := page.Context(chooserCtx)
+
+	var chooserEvent proto.PageFileChooserOpened
+	chooserReady := ctxPage.WaitEvent(&chooserEvent)
+
+	interceptOn := proto.PageSetInterceptFileChooserDialog{Enabled: true}
+	if err := interceptOn.Call(page); err != nil {
+		return fmt.Errorf("linkedin: file chooser intercept setup: %w", err)
+	}
+	defer func() { _ = proto.PageSetInterceptFileChooserDialog{Enabled: false}.Call(page) }()
+
+	// Capture pre-upload state. Section may render before radio children appear;
+	// retry up to 3 times. Empty or unverifiable libraries are held for manual review.
+	base := strings.ToLower(filepath.Base(filePath))
+	var preFilenameExisted bool
+	preUploadOK := false
+	for attempt := 0; attempt < 3; attempt++ {
+		r, evalErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState, base)
+		if evalErr != nil {
+			return fmt.Errorf("upload: cannot read pre-upload resume state: %w", evalErr)
+		}
+		if r.Value.Get("stateVerified").Bool() {
+			preFilenameExisted = r.Value.Get("filenameExisted").Bool()
+			preUploadOK = true
+			break
+		}
+		if !r.Value.Get("sectionFound").Bool() {
+			// Section unresolved — walk reached container. Hold immediately.
+			return errUploadIdentityUnverifiable
+		}
+		// Section found but no radios — possibly still loading. Retry.
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+	}
+	if !preUploadOK {
+		// Section found consistently with no radios — cannot distinguish loaded-empty
+		// from still-loading. Hold for manual review.
+		return errUploadIdentityUnverifiable
+	}
+
+	// Find the upload button element for a trusted Rod click.
+	// Rod's Click uses CDP Input.dispatchMouseEvent — a trusted user gesture.
+	// This is required so that <input type=file>.click() inside the handler opens the chooser.
+	btn, btnErr := ctxPage.Timeout(5 * time.Second).ElementByJS(rod.Eval(jsLinkedInFindUploadButton))
+	if btnErr != nil {
+		return fmt.Errorf("upload: button not found: %w", btnErr)
+	}
+	if clickErr := btn.Click(proto.InputMouseButtonLeft, 1); clickErr != nil {
+		return fmt.Errorf("upload: click failed: %w", clickErr)
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		chooserReady()
+		if chooserCtx.Err() != nil {
+			waitCh <- chooserCtx.Err()
+			return
+		}
+		waitCh <- proto.DOMSetFileInputFiles{
+			Files:         []string{filePath},
+			BackendNodeID: chooserEvent.BackendNodeID,
+		}.Call(ctxPage)
+	}()
+
+	// Brief DOM-settle before checking for a limit indicator.
+	time.Sleep(400 * time.Millisecond)
+	if limitErr := linkedInHandleResumeLimitDialog(page); limitErr != nil {
+		chooserCancel()
+		// waitCh is buffered(1); worker sends once and exits. No drain needed.
+		return limitErr
+	}
+
+	timer := time.NewTimer(12 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		chooserCancel()
+		return ctx.Err()
+	case err := <-waitCh:
+		if err != nil {
+			return fmt.Errorf("linkedin: file chooser deliver: %w", err)
+		}
+	case <-timer.C:
+		chooserCancel()
+		return fmt.Errorf("linkedin: file chooser did not open within 12 s — " +
+			"upload mechanism may differ from CDP file-chooser; inspect live DOM")
+	}
+
+	if err := linkedInWaitForResumeAccepted(ctx, page, filePath); err != nil {
+		return err
+	}
+	// Duplicate-filename guard: if the filename already existed in ANY library entry
+	// (checked or not), we cannot confirm a fresh upload occurred.
+	if preFilenameExisted {
+		return errUploadIdentityUnverifiable
+	}
+	return nil
+}
+
+// linkedInHandleResumeLimitDialog checks for a resume-library-full indicator immediately
+// after the upload button is clicked. Returns an actionable error if found, nil otherwise.
+// The selectors are unconfirmed — update them after observing the limit dialog in live DOM.
+func linkedInHandleResumeLimitDialog(page *rod.Page) error {
+	res, err := page.Timeout(2 * time.Second).Eval(`() => {
+		// [UNCONFIRMED] — verify selector from live LinkedIn DOM when library is full.
+		return !!(document.querySelector('[aria-label*="resume limit" i],[data-test*="resume-limit"],[data-testid*="resume-limit"]'));
+	}`)
+	if err != nil {
+		return nil // eval error means no limit element — not a limit situation
+	}
+	if res.Value.Bool() {
+		return fmt.Errorf("linkedin: resume library full — remove an old resume from your LinkedIn profile and retry")
+	}
+	return nil
+}
+
+// linkedInWaitForResumeAccepted polls within the resolved container for evidence
+// that LinkedIn accepted the uploaded resume. Verifies the accepted entry matches
+// filePath by checking the checked radio label. Returns errUploadIdentityUnverifiable
+// (a HOLD sentinel) when the file was accepted but identity cannot be confirmed.
+func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page, filePath string) error {
+	base := filePath
+	if i := strings.LastIndexAny(filePath, "/\\"); i >= 0 {
+		base = filePath[i+1:]
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		res, evalErr := page.Timeout(3 * time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
+		if evalErr != nil {
+			log.Warn().Err(evalErr).Msg("linkedin: waitForResumeAccepted eval error")
+		} else {
+			if res.Value.Get("error").Bool() {
+				return fmt.Errorf("linkedin: upload rejected by LinkedIn (error indicator visible)")
+			}
+			if res.Value.Get("accepted").Bool() {
+				if !res.Value.Get("filenameVisible").Bool() {
+					return errUploadIdentityUnverifiable
+				}
+				return nil
+			}
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return fmt.Errorf("linkedin: resume acceptance not confirmed within 10 s")
 }
 
 // ── answerFormQuestion ────────────────────────────────────────────────────────
@@ -1341,15 +1856,15 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 			if isFormFillFatalLLM(err) {
 				return "", fmt.Errorf("form question: %w", err)
 			}
-			log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", question).Msg("form: LLM answer failed")
+			log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Msg("form: LLM answer failed")
 		} else {
-			log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", question).Msg("form: LLM returned empty answer")
+			log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Msg("form: LLM returned empty answer")
 		}
 	}
 
 	// ── Last resort: first option or empty ────────────────────────────────────
 	if len(options) > 0 {
-		log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Str("question", question).Str("fallback", options[0]).Msg("form: answered via last-resort fallback")
+		log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Str("fallback", options[0]).Msg("form: answered via last-resort fallback")
 		return options[0], nil
 	}
 	return "", nil
