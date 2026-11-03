@@ -1113,7 +1113,8 @@ document.getElementById('next-2').addEventListener('click', function() {
 		wrongUploadInDOM   bool
 		wantBlocked        bool
 		wantBlockedMsg     string
-		wantFile           string // expected base filename after prepare; empty for skip/blocked tests
+		wantFile           string // exact base filename; use only for resumeOverride (non-materialization) paths
+		wantVersionScoped  bool   // true when UploadPayloadForVersion is called and produces a version-scoped name
 		setup              func(t *testing.T, b *Bot, lazy *lazyDocGen)
 	}{
 		{
@@ -1126,8 +1127,8 @@ document.getElementById('next-2').addEventListener('click', function() {
 			},
 		},
 		{
-			name:     "documents_service_materialization",
-			wantFile: "my_tailored_resume.pdf",
+			name:              "documents_service_materialization",
+			wantVersionScoped: true,
 			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
 				db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 				require.NoError(t, err)
@@ -1147,8 +1148,8 @@ document.getElementById('next-2').addEventListener('click', function() {
 		{
 			// Documents != nil, store.SetDefault, NO resumeVersionOverride — exercises the
 			// ResumeDocumentModeDefault path where the resolver picks up the DB default.
-			name:     "documents_service_default_policy",
-			wantFile: "default_resume.pdf",
+			name:              "documents_service_default_policy",
+			wantVersionScoped: true,
 			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
 				db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 				require.NoError(t, err)
@@ -1211,9 +1212,9 @@ document.getElementById('next-2').addEventListener('click', function() {
 		{
 			// HTML has an optional cover-letter file field. coverSkipOverride=true → resolver
 			// sets Cover.Skip=true → cover path stays empty → cover field skipped, resume uploaded.
-			name:          "cover_skip",
-			hasCoverField: true,
-			wantFile:      "my_tailored_resume.pdf",
+			name:              "cover_skip",
+			hasCoverField:     true,
+			wantVersionScoped: true,
 			setup: func(t *testing.T, b *Bot, lazy *lazyDocGen) {
 				db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 				require.NoError(t, err)
@@ -1298,7 +1299,10 @@ document.getElementById('next-2').addEventListener('click', function() {
 			// For all upload-based sub-tests: confirm the correct file was delivered.
 			resumePath, _ := lazy.peek()
 			require.NotEmpty(t, resumePath, "resume path must be set after successful prepare for %s", tc.name)
-			if tc.wantFile != "" {
+			if tc.wantVersionScoped {
+				require.True(t, isVersionScopedFilename(filepath.Base(resumePath)),
+					"materialization path must produce a version-scoped filename, got %s for %s", filepath.Base(resumePath), tc.name)
+			} else if tc.wantFile != "" {
 				require.Equal(t, tc.wantFile, filepath.Base(resumePath),
 					"exported filename must match intended for %s", tc.name)
 			}

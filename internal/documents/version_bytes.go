@@ -3,14 +3,29 @@ package documents
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
 // VersionUploadPayload is file bytes + metadata for platform upload.
 type VersionUploadPayload struct {
-	Data     []byte
-	Filename string
+	Data      []byte
+	Filename  string
 	MediaType string
+}
+
+// uploadFilename returns a version-scoped filename for platform uploads.
+// Using a per-version name prevents the duplicate-filename guard from firing when the
+// user already has a file with the same base name in the job-site library.
+func uploadFilename(versionID, base, ext string) string {
+	shortID := versionID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	if base == "" {
+		base = "document"
+	}
+	return base + "_" + shortID + ext
 }
 
 // UploadPayloadForVersion returns bytes for upload (rendered PDF or original upload).
@@ -28,17 +43,19 @@ func (s *Service) UploadPayloadForVersion(ctx context.Context, userID, versionID
 		if mediaType == "" {
 			mediaType = "application/octet-stream"
 		}
-		return VersionUploadPayload{Data: raw, Filename: filename, MediaType: mediaType}, nil
+		ext := filepath.Ext(filename)
+		stem := strings.TrimSuffix(filepath.Base(filename), ext)
+		return VersionUploadPayload{Data: raw, Filename: uploadFilename(versionID, stem, ext), MediaType: mediaType}, nil
 	case ContentResumeJSON, ContentCoverText:
 		pdf, _, _, err := s.PDFBytes(ctx, userID, versionID)
 		if err != nil {
 			return VersionUploadPayload{}, err
 		}
-		name := "resume.pdf"
+		base, ext := "resume", ".pdf"
 		if p.ContentKind == ContentCoverText {
-			name = "cover_letter.pdf"
+			base = "cover_letter"
 		}
-		return VersionUploadPayload{Data: pdf, Filename: name, MediaType: "application/pdf"}, nil
+		return VersionUploadPayload{Data: pdf, Filename: uploadFilename(versionID, base, ext), MediaType: "application/pdf"}, nil
 	default:
 		return VersionUploadPayload{}, fmt.Errorf("unsupported content kind for upload")
 	}

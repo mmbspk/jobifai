@@ -473,6 +473,59 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 		"pre-existing unselected entry with same filename must be caught, got: %v", err)
 }
 
+// TestFormUploadViaButton_PreExistingVersionScopedWrongSelection_Holds verifies that a
+// version-scoped filename is reused ONLY when the SELECTED attachment matches the intended
+// version's exact filename. Here the intended version-scoped file pre-exists but a DIFFERENT
+// version-scoped file is checked, so identity cannot be confirmed and the run must hold.
+func TestFormUploadViaButton_PreExistingVersionScopedWrongSelection_Holds(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
+      <div>
+        <input type="radio" name="resume-select" id="r-intended">
+        <label for="r-intended">resume_abc12345.pdf</label>
+      </div>
+      <div>
+        <input type="radio" name="resume-select" id="r-other" checked>
+        <label for="r-other">resume_99999999.pdf</label>
+      </div>
+      <button type="button" id="upload-btn">
+        <span><span>Upload resume</span></span>
+      </button>
+    </fieldset>
+    <footer><button type="button"><span>Next</span></button></footer>
+  </div>
+</dialog>
+<script>
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.style.display = 'none';
+  // Simulate LinkedIn leaving a DIFFERENT version-scoped entry selected (no new upload).
+  f.addEventListener('change', function() { f.remove(); });
+  document.body.appendChild(f);
+  f.click();
+});
+</script>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "resume_abc12345.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	err := b.formUploadViaButton(context.Background(), page, tmpFile)
+	require.True(t, errors.Is(err, errUploadIdentityUnverifiable),
+		"version-scoped reuse must require the intended exact filename to be selected, got: %v", err)
+}
+
 // nativeDialogShell wraps inner HTML in the outer native-dialog structure so
 // resolveApplyContainer() works in JS eval tests.
 func nativeDialogShell(inner string) string {
@@ -748,4 +801,83 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 	require.NoError(t, err)
 	require.True(t, res.Value.Get("accepted").Bool())
 	require.True(t, res.Value.Get("filenameVisible").Bool())
+}
+// TestJsFindCheckedRadioLabel_DecoratedLabel is a regression for the decorated-label
+// hold: decorated text like "resume.pdf  •  Uploaded Oct 29, 2026" must be reduced
+// to just the filename portion by jsFindCheckedRadioLabel.
+func TestJsFindCheckedRadioLabel_DecoratedLabel(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <fieldset id="resume-section">
+      <legend>Resume</legend>
+      <div>
+        <input type="radio" name="resume-select" id="r-dec" checked>
+        <label for="r-dec">resume.pdf  •  Uploaded Oct 29, 2026</label>
+      </div>
+    </fieldset>
+  </div>
+</dialog>
+</body></html>`
+	page := rodTestPage(t, html)
+	res, err := page.Eval(jsFindCheckedRadioLabel, "resume-select")
+	require.NoError(t, err)
+	got := res.Value.String()
+	require.Equal(t, "resume.pdf", got, "decorated label must yield bare filename; got %q", got)
+}
+
+// TestJsFindCheckedRadioLabel_PlainLabel verifies that a plain filename label is returned lowercased.
+func TestJsFindCheckedRadioLabel_PlainLabel(t *testing.T) {
+	page := rodTestPage(t, nativeDialogWithResume("my_resume_abc12345.pdf", false))
+
+	res, err := page.Eval(jsFindCheckedRadioLabel, "resume-select")
+	require.NoError(t, err)
+	got := res.Value.String()
+	require.Equal(t, "my_resume_abc12345.pdf", got, "plain label must be returned lowercased; got %q", got)
+}
+
+// TestFormUploadViaButton_PreExistingVersionScopedAndSelected_Reuses verifies the
+// repeat-prepare path: a version-scoped filename already in the LinkedIn library AND
+// currently selected must cause formUploadViaButton to return nil.
+func TestFormUploadViaButton_PreExistingVersionScopedAndSelected_Reuses(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <fieldset id="resume-section">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
+      <div>
+        <input type="radio" name="resume-select" id="r-vers" checked>
+        <label for="r-vers">resume_abc12345.pdf</label>
+      </div>
+      <button type="button" id="upload-btn">
+        <span><span>Upload resume</span></span>
+      </button>
+    </fieldset>
+    <footer><button type="button"><span>Next</span></button></footer>
+  </div>
+</dialog>
+<script>
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.style.display = 'none';
+  f.addEventListener('change', function() { f.remove(); });
+  document.body.appendChild(f);
+  f.click();
+});
+</script>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "resume_abc12345.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	err := b.formUploadViaButton(context.Background(), page, tmpFile)
+	require.NoError(t, err, "version-scoped filename already selected must be reused; got: %v", err)
 }

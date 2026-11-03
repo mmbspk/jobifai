@@ -112,7 +112,9 @@ func (b *recordingBot) Status(_ string) domain.BotStatus {
 
 func (b *recordingBot) SubmitNow(_ string, _ bot.SubmitRequest) {}
 
-func (b *recordingBot) PrepareReviewDocuments(_ context.Context, _, _ string) error { return nil }
+func (b *recordingBot) PrepareReviewDocuments(_ context.Context, _, _, _ string) error { return nil }
+func (b *recordingBot) TryBeginPrepare(_, _, _ string) bool                             { return true }
+func (b *recordingBot) EndPrepare(_, _, _ string)                                       {}
 
 func (b *recordingBot) SubmitSync(_ context.Context, _ string, _ bot.SubmitRequest) error {
 	return nil

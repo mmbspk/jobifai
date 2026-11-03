@@ -538,7 +538,10 @@ func init() {
 	const lbl = container.querySelector('label[for="' + checked.id + '"]')
 	          || checked.closest('label')
 	          || checked.parentElement;
-	return lbl ? lbl.textContent.trim() : (checked.value || '');
+	const text = lbl ? lbl.textContent.trim() : (checked.value || '');
+	// Extract just the filename portion from decorated labels like "resume.pdf \u2022 Uploaded Oct 29".
+	const m = text.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
+	return m ? m[1].toLowerCase() : text.toLowerCase();
 }`
 
 	jsLinkedInClickUploadResume = `() => {
@@ -1294,7 +1297,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			if uploadErr != nil {
 				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kindLabel, uploadErr)
 			}
-			log.Info().Str("path", path).Str("kind", kindLabel).Msg("form: file uploaded")
+			log.Info().Str("path", path).Str("kind", kindLabel).Str("filename", filepath.Base(path)).Msg("form: file uploaded")
 			filled = true
 			if f.UploadViaButton {
 				if f.ResumeGroupName != "" {
@@ -1323,6 +1326,8 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 						log.Info().Str("question", f.Question).Str("answer", checkedLabel).Msg("form: resume radio confirmed post-upload selection")
 						filled = true
 						continue
+					} else {
+						log.Warn().Str("expected", uploadedFilename).Str("got", checkedLabel).Msg("form: resume radio post-upload label mismatch — identity hold")
 					}
 				}
 				// No checked radio or label does not match the uploaded filename — hold.
@@ -1637,6 +1642,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 		}
 		if !r.Value.Get("sectionFound").Bool() {
 			// Section unresolved — walk reached container. Hold immediately.
+			log.Warn().Str("filename", base).Str("stage", "pre_upload_section_not_found").Msg("linkedin: upload identity unverifiable")
 			return errUploadIdentityUnverifiable
 		}
 		// Section found but no radios — possibly still loading. Retry.
@@ -1651,6 +1657,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	if !preUploadOK {
 		// Section found consistently with no radios — cannot distinguish loaded-empty
 		// from still-loading. Hold for manual review.
+		log.Warn().Str("filename", base).Str("stage", "pre_upload_no_radios").Msg("linkedin: upload identity unverifiable")
 		return errUploadIdentityUnverifiable
 	}
 
@@ -1705,9 +1712,21 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	if err := linkedInWaitForResumeAccepted(ctx, page, filePath); err != nil {
 		return err
 	}
-	// Duplicate-filename guard: if the filename already existed in ANY library entry
-	// (checked or not), we cannot confirm a fresh upload occurred.
+	// Duplicate-filename guard: if the filename existed BEFORE the upload we cannot
+	// confirm a fresh upload occurred.
+	// Exception: version-scoped filenames (stem_<8hex>.ext) encode the document version;
+	// a pre-existing+selected entry means the same version was prepared before â safe to reuse.
 	if preFilenameExisted {
+		if isVersionScopedFilename(base) {
+			res2, evalErr2 := page.Timeout(3 * time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
+			if evalErr2 == nil && res2.Value.Get("accepted").Bool() && res2.Value.Get("filenameVisible").Bool() {
+				log.Info().Str("filename", base).Msg("linkedin: version already in library and selected â reusing without re-upload")
+				return nil
+			}
+			log.Warn().Str("filename", base).Str("stage", "pre_existing_version_scoped_not_selected").Msg("linkedin: upload identity unverifiable")
+		} else {
+			log.Warn().Str("filename", base).Str("stage", "pre_existing_filename_not_version_scoped").Msg("linkedin: upload identity unverifiable")
+		}
 		return errUploadIdentityUnverifiable
 	}
 	return nil
@@ -1755,8 +1774,10 @@ func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page, filePath
 			}
 			if res.Value.Get("accepted").Bool() {
 				if !res.Value.Get("filenameVisible").Bool() {
+					log.Warn().Str("filename", base).Str("stage", "accepted_filename_not_visible").Msg("linkedin: upload identity unverifiable")
 					return errUploadIdentityUnverifiable
 				}
+				log.Info().Str("filename", base).Msg("linkedin: resume upload accepted and identity verified")
 				return nil
 			}
 		}
@@ -2230,4 +2251,25 @@ func pickFormOption(options []string, needle string) string {
 		return options[0]
 	}
 	return needle
+}
+
+// isVersionScopedFilename reports whether name matches the version-scoped upload format:
+// stem_<8 lowercase hex chars>.ext  (e.g. "resume_abc12345.pdf").
+func isVersionScopedFilename(name string) bool {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(strings.ToLower(filepath.Base(name)), ext)
+	idx := strings.LastIndex(stem, "_")
+	if idx < 0 {
+		return false
+	}
+	suffix := stem[idx+1:]
+	if len(suffix) != 8 {
+		return false
+	}
+	for _, c := range suffix {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }

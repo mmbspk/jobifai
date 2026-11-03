@@ -6,6 +6,7 @@ import { ReviewCard } from '../components/review/ReviewCard'
 import { PageHeader } from '../components/shell/PageHeader'
 import { Button } from '../components/Button'
 import { botApi } from '../api/bot'
+import type { PendingReview } from '../types'
 import { settingsApi } from '../api/settings'
 
 export function Review() {
@@ -15,7 +16,11 @@ export function Review() {
   const { data: pending = [], isLoading } = useQuery({
     queryKey: ['review-pending'],
     queryFn: botApi.reviewPending,
-    refetchInterval: 10000,
+    refetchInterval: (query) => {
+      const data = query.state.data as PendingReview[] | undefined
+      const anyRunning = Array.isArray(data) && data.some((j) => j.prepare_status === 'running')
+      return anyRunning ? 2000 : 10000
+    },
   })
   const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
   const halalEnabled = generalSettings?.halal_job_filter === true

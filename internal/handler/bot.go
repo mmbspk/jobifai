@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -146,7 +148,8 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 	rows, err := h.svc.DB.QueryContext(r.Context(),
 		`SELECT job_id,company,role,COALESCE(location,''),platform,link,resume_path,cover_letter_path,
 		        COALESCE(resume_content_version_id,''),COALESCE(cover_letter_content_version_id,''),COALESCE(document_refs_json,''),
-		        suitability_score,easy_apply,COALESCE(halal_verdict,''),created_at
+		        suitability_score,easy_apply,COALESCE(halal_verdict,''),created_at,
+        COALESCE(prepare_status,''),COALESCE(prepare_started_at,''),COALESCE(prepare_finished_at,'')
 		 FROM jobs_pending_review WHERE user_id = ? AND easy_apply = 1 AND NOT EXISTS (SELECT 1 FROM jobs_skipped s WHERE s.user_id=jobs_pending_review.user_id AND s.id=jobs_pending_review.job_id) ORDER BY created_at DESC`, userID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
@@ -157,10 +160,11 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 	var out []domain.PendingReview
 	for rows.Next() {
 		var p domain.PendingReview
-		var createdStr, halalJSON string
+		var createdStr, halalJSON, prepStatus, prepStartedStr, prepFinishedStr string
 		if err := rows.Scan(&p.JobID, &p.Company, &p.Role, &p.Location, &p.Platform,
 			&p.Link, &p.ResumePath, &p.CoverLetterPath, &p.ResumeContentVersionID, &p.CoverLetterContentVersionID, &p.DocumentRefsJSON,
-			&p.SuitabilityScore, &p.EasyApply, &halalJSON, &createdStr); err != nil {
+			&p.SuitabilityScore, &p.EasyApply, &halalJSON, &createdStr,
+			&prepStatus, &prepStartedStr, &prepFinishedStr); err != nil {
 			log.Error().Err(err).Msg("review pending: scan row")
 			continue
 		}
@@ -170,6 +174,13 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 			if json.Unmarshal([]byte(halalJSON), &hv) == nil {
 				p.HalalVerdict = &hv
 			}
+		}
+		p.PrepareStatus = parsePrepareStatusCategory(prepStatus)
+		if t, err2 := parseTime(prepStartedStr); err2 == nil && !t.IsZero() {
+			p.PrepareStartedAt = &t
+		}
+		if t, err2 := parseTime(prepFinishedStr); err2 == nil && !t.IsZero() {
+			p.PrepareFinishedAt = &t
 		}
 		out = append(out, p)
 	}
@@ -188,11 +199,101 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 func (h *BotHandlers) ReviewPrepareDocuments(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	jobID := chi.URLParam(r, "job_id")
-	if err := h.svc.Bot.PrepareReviewDocuments(r.Context(), userID, jobID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+
+	var rawID [4]byte
+	_, _ = rand.Read(rawID[:])
+	prepID := hex.EncodeToString(rawID[:])
+
+	// In-process exclusivity: reject a second prepare for this user+job while one is still
+	// running in THIS process. This closes the window the DB stale-reclaim alone leaves open —
+	// a hung-but-alive run would otherwise be run concurrently once 10 minutes elapse.
+	if !h.svc.Bot.TryBeginPrepare(userID, jobID, prepID) {
+		writeJSON(w, http.StatusConflict, map[string]string{"message": "preparation already in progress"})
 		return
 	}
-	okMsg(w, "documents prepared")
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			h.svc.Bot.EndPrepare(userID, jobID, prepID)
+		}
+	}
+
+	res, claimErr := h.svc.DB.ExecContext(r.Context(),
+		`UPDATE jobs_pending_review
+		 SET prepare_status = 'running:' || ?, prepare_started_at = datetime('now'), prepare_finished_at = NULL
+		 WHERE job_id = ? AND user_id = ?
+		   AND (prepare_status = '' OR prepare_status = 'succeeded' OR prepare_status LIKE 'failed:%'
+		        OR (prepare_status LIKE 'running:%' AND datetime(prepare_started_at, '+10 minutes') < datetime('now')))`,
+		prepID, jobID, userID)
+	if claimErr != nil {
+		release()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": claimErr.Error()})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		release()
+		var exists int
+		_ = h.svc.DB.QueryRowContext(r.Context(),
+			`SELECT 1 FROM jobs_pending_review WHERE job_id=? AND user_id=? LIMIT 1`, jobID, userID,
+		).Scan(&exists)
+		if exists == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "job not found in pending review"})
+		} else {
+			writeJSON(w, http.StatusConflict, map[string]string{"message": "preparation already in progress"})
+		}
+		return
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		defer release()
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer bgCancel()
+
+		prepErr := h.svc.Bot.PrepareReviewDocuments(bgCtx, userID, jobID, prepID)
+
+		// A superseded run must not touch terminal state — the newer run owns the job now.
+		if errors.Is(prepErr, bot.ErrPrepareSuperseded) {
+			done <- prepErr
+			return
+		}
+
+		finCtx, finCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer finCancel()
+		if prepErr != nil {
+			failMsg := prepErr.Error()
+			if len(failMsg) > 500 {
+				failMsg = failMsg[:500]
+			}
+			_, _ = h.svc.DB.ExecContext(finCtx,
+				`UPDATE jobs_pending_review SET prepare_status = 'failed:' || ?, prepare_finished_at = datetime('now')
+				 WHERE job_id = ? AND user_id = ? AND prepare_status = 'running:' || ?`,
+				failMsg, jobID, userID, prepID)
+		} else {
+			_, _ = h.svc.DB.ExecContext(finCtx,
+				`UPDATE jobs_pending_review SET prepare_status = 'succeeded', prepare_finished_at = datetime('now')
+				 WHERE job_id = ? AND user_id = ? AND prepare_status = 'running:' || ?`,
+				jobID, userID, prepID)
+		}
+		done <- prepErr
+	}()
+
+	select {
+	case err := <-done:
+		if errors.Is(err, bot.ErrPrepareSuperseded) {
+			writeJSON(w, http.StatusConflict, map[string]string{"message": "preparation superseded by a newer run"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+			return
+		}
+		okMsg(w, "documents prepared")
+	case <-r.Context().Done():
+		writeJSON(w, http.StatusAccepted, map[string]string{"message": "preparation running in background"})
+	}
 }
 
 // POST /api/bot/review/{job_id}/approve
@@ -355,4 +456,17 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 		"company": res.Company,
 		"role":    res.Role,
 	})
+}
+// parsePrepareStatusCategory maps raw DB prepare_status to a UI-facing category.
+func parsePrepareStatusCategory(raw string) string {
+	switch {
+	case raw == "succeeded":
+		return "succeeded"
+	case len(raw) > 8 && raw[:8] == "running:":
+		return "running"
+	case len(raw) > 7 && raw[:7] == "failed:":
+		return "failed"
+	default:
+		return ""
+	}
 }
