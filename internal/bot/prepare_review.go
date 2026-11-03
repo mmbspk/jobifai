@@ -55,6 +55,8 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 				if resumePath, _ := lazy.peek(); resumePath != "" {
 					if verifyErr := b.linkedInVerifyFinalReviewResume(page, resumePath); verifyErr != nil {
 						lazy.holdReason = verifyErr.Error()
+						lazy.holdStage = uploadStageFinalReviewMismatch
+						lazy.holdFile = filepath.Base(resumePath)
 					}
 				}
 			}
@@ -108,7 +110,7 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 
 func (b *Bot) linkedInVerifyFinalReviewResume(page *rod.Page, resumePath string) error {
 	base := filepath.Base(resumePath)
-	res, err := page.Timeout(5 * time.Second).Eval(jsLinkedInFinalReviewResumeCheck, base)
+	res, err := page.Timeout(5*time.Second).Eval(jsLinkedInFinalReviewResumeCheck, base)
 	if err != nil {
 		return fmt.Errorf("linkedin: final-review resume verification failed: %w", err)
 	}
@@ -132,7 +134,7 @@ func (b *Bot) linkedInApplyStepHash(page *rod.Page) string {
 // PrepareReviewDocuments opens the apply form, scans capabilities, and materializes documents.
 // prepID identifies this preparation run; it gates every terminal DB write so a superseded
 // run (e.g. one reclaimed as stale) can never overwrite a newer run's persisted pack.
-func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, prepID string) error {
+func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, prepID string) (retErr error) {
 	if m.submitWorkGuard != nil {
 		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
 			return err
@@ -151,6 +153,20 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 		return fmt.Errorf("document policies are not enabled for this user")
 	}
 
+	// Register this preparation as a run so its structured diagnostics reach the persistent
+	// log sink (bot_run_logs), not just stdout. Inherits an active search run if one exists.
+	runID, cleanupRun, acqErr := m.acquireRun(ctx, userID, "prepare-"+prepID)
+	if acqErr != nil {
+		return fmt.Errorf("prepare: register run log sink: %w", acqErr)
+	}
+	defer cleanupRun()
+	b.cfg.AutomationRunID = runID
+	b.log = log.Logger.With().
+		Str("user_id", userID).Str("automation_run_id", runID).
+		Str("job_id", jobID).Str("prep_id", prepID).Logger().
+		Hook(logIDHook{})
+	b.log.Info().Msg("prepare: run started")
+
 	jobPage, ownsBr, err := m.openReviewJobPage(ctx, b, gs, userID, req)
 	if err != nil {
 		return err
@@ -168,6 +184,20 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 	lazy.reviewPrepareOnly = true
 	defer func() { lazy.reviewPrepareOnly = false }()
 
+	// Terminal event: always close the prepare run with a durable, structured outcome line.
+	defer func() {
+		ev := b.log.Info()
+		if retErr != nil || lazy.holdReason != "" {
+			ev = b.log.Warn()
+		}
+		if retErr != nil {
+			ev = ev.Err(retErr)
+		}
+		ev.Str("stage", lazy.holdStage).Str("hold_file", lazy.holdFile).
+			Str("hold_reason", lazy.holdReason).Bool("scan_complete", lazy.prepareScanComplete).
+			Msg("prepare: run finished")
+	}()
+
 	var prepErr error
 	if req.Platform == "seek" {
 		prepErr = m.prepareSeekReviewDocuments(ctx, b, jobPage, lazy, req.Link)
@@ -178,6 +208,24 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 		if !errors.Is(prepErr, context.Canceled) && !errors.Is(prepErr, context.DeadlineExceeded) {
 			pack := documents.ParseApplicationPackJSON(lazy.packJSONForPersist())
 			pack.HoldReason = prepErr.Error()
+			// Preserve runtime capabilities + selection established before the hold so the UI
+			// shows real form requirements rather than "unknown", and record the stable stage.
+			if lazy.formCaps.Detected {
+				pack.FormCaps = lazy.formCaps
+			}
+			sel := documents.ApplicationDocumentSelection{
+				ResumeVersionID: lazy.resumeVersionOverride,
+				CoverVersionID:  lazy.coverVersionOverride,
+				ResumeUseSite:   lazy.resumeUseSiteOverride,
+				CoverSkip:       lazy.coverSkipOverride,
+			}
+			if sel != (documents.ApplicationDocumentSelection{}) {
+				pack.Selection = sel
+			}
+			if lazy.holdStage != "" {
+				pack.HoldStage = lazy.holdStage
+				pack.HoldFile = lazy.holdFile
+			}
 			if packJSON := documents.WriteApplicationPackJSON(pack); packJSON != "" {
 				dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer dbCancel()
@@ -198,6 +246,10 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 	pack := documents.ParseApplicationPackJSON(lazy.packJSONForPersist())
 	if lazy.policyBlocked() {
 		pack.HoldReason = lazy.holdReason
+		if lazy.holdStage != "" {
+			pack.HoldStage = lazy.holdStage
+			pack.HoldFile = lazy.holdFile
+		}
 	} else {
 		pack.MarkPrepared()
 	}

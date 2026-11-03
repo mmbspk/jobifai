@@ -32,6 +32,32 @@ import (
 var errUploadIdentityUnverifiable = errors.New(
 	"linkedin: resume upload identity could not be verified — please confirm selection manually")
 
+// Stable stage codes for upload-verification holds. Persisted as structured diagnostic
+// metadata (pack.HoldStage) so the exact failure point survives in durable storage; the
+// human-readable text stays in errUploadIdentityUnverifiable.Error() / pack.HoldReason.
+const (
+	uploadStageSectionNotFound     = "pre_upload_section_not_found"
+	uploadStageNoRadios            = "pre_upload_no_radios"
+	uploadStageAcceptedNotVisible  = "accepted_filename_not_visible"
+	uploadStageVersionScopedNotSel = "pre_existing_version_scoped_not_selected"
+	uploadStageNotVersionScoped    = "pre_existing_filename_not_version_scoped"
+	uploadStageNoResumeGroup       = "upload_no_resume_group"
+	uploadStagePostUploadMismatch  = "post_upload_label_mismatch"
+	uploadStageFinalReviewMismatch = "final_review_filename_mismatch"
+)
+
+// uploadIdentityHold wraps errUploadIdentityUnverifiable with the stable stage code and the
+// intended filename that produced the hold. Unwrap keeps errors.Is(err,
+// errUploadIdentityUnverifiable) true, while callers extract the structured fields via
+// errors.As to persist them as diagnostics.
+type uploadIdentityHold struct {
+	stage    string
+	filename string
+}
+
+func (e *uploadIdentityHold) Error() string { return errUploadIdentityUnverifiable.Error() }
+func (e *uploadIdentityHold) Unwrap() error { return errUploadIdentityUnverifiable }
+
 type formFieldOption struct {
 	ID    string `json:"id"`
 	Value string `json:"value"`
@@ -39,19 +65,19 @@ type formFieldOption struct {
 }
 
 type formField struct {
-	Type      string            `json:"type"`        // file | radio | select | text
-	Index     int               `json:"index"`       // ordinal among same type
-	Name      string            `json:"name"`        // radio group name
-	ID        string            `json:"id"`          // select / text element id
-	Question  string            `json:"question"`    // visible label text
-	Options   []formFieldOption `json:"options"`     // radio / select choices
-	HasFile        bool              `json:"hasFile"`         // file already attached
-	DocumentKind   string            `json:"documentKind"`    // resume | cover_letter | unknown
-	Required       bool              `json:"required"`        // file field marked required on form
-	InputType      string            `json:"inputType"`       // text | number | textarea
-	Typeahead      bool              `json:"isTypeahead"`     // combobox requiring dropdown selection
-	UploadViaButton  bool   `json:"uploadViaButton"`  // slot has no visible input; upload via button click + HandleFileDialog
-	ResumeGroupName  string `json:"resumeGroupName"`  // radio group name inside the same section (empty if ambiguous or absent)
+	Type            string            `json:"type"`            // file | radio | select | text
+	Index           int               `json:"index"`           // ordinal among same type
+	Name            string            `json:"name"`            // radio group name
+	ID              string            `json:"id"`              // select / text element id
+	Question        string            `json:"question"`        // visible label text
+	Options         []formFieldOption `json:"options"`         // radio / select choices
+	HasFile         bool              `json:"hasFile"`         // file already attached
+	DocumentKind    string            `json:"documentKind"`    // resume | cover_letter | unknown
+	Required        bool              `json:"required"`        // file field marked required on form
+	InputType       string            `json:"inputType"`       // text | number | textarea
+	Typeahead       bool              `json:"isTypeahead"`     // combobox requiring dropdown selection
+	UploadViaButton bool              `json:"uploadViaButton"` // slot has no visible input; upload via button click + HandleFileDialog
+	ResumeGroupName string            `json:"resumeGroupName"` // radio group name inside the same section (empty if ambiguous or absent)
 }
 
 func (f formField) optionLabels() []string {
@@ -1291,6 +1317,11 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 			if errors.Is(uploadErr, errUploadIdentityUnverifiable) {
 				lazy.holdReason = uploadErr.Error()
+				var h *uploadIdentityHold
+				if errors.As(uploadErr, &h) {
+					lazy.holdStage = h.stage
+					lazy.holdFile = h.filename
+				}
 				filled = true
 				continue
 			}
@@ -1310,6 +1341,8 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					// Section has no uniquely-identifiable radio group — cannot confirm
 					// which entry was selected. Hold for manual review.
 					lazy.holdReason = errUploadIdentityUnverifiable.Error()
+					lazy.holdStage = uploadStageNoResumeGroup
+					lazy.holdFile = strings.ToLower(filepath.Base(path))
 				}
 			}
 
@@ -1321,7 +1354,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			// Unrelated radio groups (f.Name != uploadedResumeGroup) always go through normal answering.
 			if f.Name == uploadedResumeGroup {
 				uploadedResumeGroup = "" // consume — applies to this group only
-				if r2, evalErr2 := page.Timeout(3 * time.Second).Eval(jsFindCheckedRadioLabel, f.Name); evalErr2 == nil {
+				if r2, evalErr2 := page.Timeout(3*time.Second).Eval(jsFindCheckedRadioLabel, f.Name); evalErr2 == nil {
 					if checkedLabel := r2.Value.String(); strings.EqualFold(checkedLabel, uploadedFilename) {
 						log.Info().Str("question", f.Question).Str("answer", checkedLabel).Msg("form: resume radio confirmed post-upload selection")
 						filled = true
@@ -1332,6 +1365,8 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 				// No checked radio or label does not match the uploaded filename — hold.
 				lazy.holdReason = errUploadIdentityUnverifiable.Error()
+				lazy.holdStage = uploadStagePostUploadMismatch
+				lazy.holdFile = uploadedFilename
 				filled = true
 				continue
 			}
@@ -1608,6 +1643,13 @@ func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int) error {
 	return nil
 }
 
+// holdUpload logs the upload-identity hold through the bot run logger (so it reaches the
+// registered log sink) and returns a typed error carrying the stage + filename.
+func (b *Bot) holdUpload(stage, filename string) error {
+	b.log.Warn().Str("filename", filename).Str("stage", stage).Msg("linkedin: upload identity unverifiable")
+	return &uploadIdentityHold{stage: stage, filename: filename}
+}
+
 // formUploadViaButton handles LinkedIn's native-dialog "Upload resume" button layout.
 // chooserCtx is derived from the operation ctx so cancellation propagates to the
 // file-chooser goroutine. The goroutine is always joined before returning.
@@ -1631,7 +1673,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	var preFilenameExisted bool
 	preUploadOK := false
 	for attempt := 0; attempt < 3; attempt++ {
-		r, evalErr := ctxPage.Timeout(3 * time.Second).Eval(jsLinkedInResumePreUploadState, base)
+		r, evalErr := ctxPage.Timeout(3*time.Second).Eval(jsLinkedInResumePreUploadState, base)
 		if evalErr != nil {
 			return fmt.Errorf("upload: cannot read pre-upload resume state: %w", evalErr)
 		}
@@ -1642,8 +1684,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 		}
 		if !r.Value.Get("sectionFound").Bool() {
 			// Section unresolved — walk reached container. Hold immediately.
-			log.Warn().Str("filename", base).Str("stage", "pre_upload_section_not_found").Msg("linkedin: upload identity unverifiable")
-			return errUploadIdentityUnverifiable
+			return b.holdUpload(uploadStageSectionNotFound, base)
 		}
 		// Section found but no radios — possibly still loading. Retry.
 		if attempt < 2 {
@@ -1657,8 +1698,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	if !preUploadOK {
 		// Section found consistently with no radios — cannot distinguish loaded-empty
 		// from still-loading. Hold for manual review.
-		log.Warn().Str("filename", base).Str("stage", "pre_upload_no_radios").Msg("linkedin: upload identity unverifiable")
-		return errUploadIdentityUnverifiable
+		return b.holdUpload(uploadStageNoRadios, base)
 	}
 
 	// Find the upload button element for a trusted Rod click.
@@ -1710,6 +1750,10 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	}
 
 	if err := linkedInWaitForResumeAccepted(ctx, page, filePath); err != nil {
+		var h *uploadIdentityHold
+		if errors.As(err, &h) {
+			return b.holdUpload(h.stage, h.filename)
+		}
 		return err
 	}
 	// Duplicate-filename guard: if the filename existed BEFORE the upload we cannot
@@ -1718,16 +1762,14 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	// a pre-existing+selected entry means the same version was prepared before â safe to reuse.
 	if preFilenameExisted {
 		if isVersionScopedFilename(base) {
-			res2, evalErr2 := page.Timeout(3 * time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
+			res2, evalErr2 := page.Timeout(3*time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
 			if evalErr2 == nil && res2.Value.Get("accepted").Bool() && res2.Value.Get("filenameVisible").Bool() {
 				log.Info().Str("filename", base).Msg("linkedin: version already in library and selected â reusing without re-upload")
 				return nil
 			}
-			log.Warn().Str("filename", base).Str("stage", "pre_existing_version_scoped_not_selected").Msg("linkedin: upload identity unverifiable")
-		} else {
-			log.Warn().Str("filename", base).Str("stage", "pre_existing_filename_not_version_scoped").Msg("linkedin: upload identity unverifiable")
+			return b.holdUpload(uploadStageVersionScopedNotSel, base)
 		}
-		return errUploadIdentityUnverifiable
+		return b.holdUpload(uploadStageNotVersionScoped, base)
 	}
 	return nil
 }
@@ -1765,7 +1807,7 @@ func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page, filePath
 			return ctx.Err()
 		default:
 		}
-		res, evalErr := page.Timeout(3 * time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
+		res, evalErr := page.Timeout(3*time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
 		if evalErr != nil {
 			log.Warn().Err(evalErr).Msg("linkedin: waitForResumeAccepted eval error")
 		} else {
@@ -1774,8 +1816,7 @@ func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page, filePath
 			}
 			if res.Value.Get("accepted").Bool() {
 				if !res.Value.Get("filenameVisible").Bool() {
-					log.Warn().Str("filename", base).Str("stage", "accepted_filename_not_visible").Msg("linkedin: upload identity unverifiable")
-					return errUploadIdentityUnverifiable
+					return &uploadIdentityHold{stage: uploadStageAcceptedNotVisible, filename: base}
 				}
 				log.Info().Str("filename", base).Msg("linkedin: resume upload accepted and identity verified")
 				return nil

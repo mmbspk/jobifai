@@ -53,6 +53,8 @@ type lazyDocGen struct {
 	frozen                bool
 	formCaps              documents.FormDocumentCapabilities
 	holdReason            string
+	holdStage             string // stable stage code for an upload-verification hold (diagnostic)
+	holdFile              string // filename involved in an upload-verification hold (diagnostic)
 	resumeVersionID       string
 	coverVersionID        string
 	refsJSON              string

@@ -44,7 +44,7 @@ func customerMessage(msg string) bool {
 	lower := strings.ToLower(msg)
 	// Automation progress (platform runners + approve flow).
 	for _, prefix := range []string{
-		"seek:", "linkedin:", "approve:", "automation", "bot:",
+		"seek:", "linkedin:", "approve:", "prepare:", "automation", "bot:",
 		"test_automation:", "ai apply:",
 	} {
 		if strings.Contains(lower, prefix) {

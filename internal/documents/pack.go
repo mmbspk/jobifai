@@ -9,13 +9,18 @@ import (
 
 // ApplicationDocumentPack is the frozen application document state (paths, outcomes, provenance).
 type ApplicationDocumentPack struct {
-	Prepared   bool                          `json:"prepared,omitempty"`
-	HoldReason string                        `json:"hold_reason,omitempty"`
-	Selection  ApplicationDocumentSelection  `json:"selection,omitempty"`
-	FormCaps   FormDocumentCapabilities      `json:"form_caps,omitempty"`
-	Resume     domain.ApplicationDocumentRef `json:"resume,omitempty"`
-	Cover      domain.ApplicationDocumentRef `json:"cover,omitempty"`
-	Refs       []domain.ApplicationDocumentRef `json:"refs,omitempty"`
+	Prepared   bool   `json:"prepared,omitempty"`
+	HoldReason string `json:"hold_reason,omitempty"`
+	// HoldStage is a stable machine-readable code for a hold (e.g. an upload-verification
+	// failure stage). It is diagnostic metadata; HoldReason remains the human-readable text.
+	HoldStage string `json:"hold_stage,omitempty"`
+	// HoldFile is the filename involved in a hold, when relevant (e.g. the intended upload).
+	HoldFile  string                          `json:"hold_file,omitempty"`
+	Selection ApplicationDocumentSelection    `json:"selection,omitempty"`
+	FormCaps  FormDocumentCapabilities        `json:"form_caps,omitempty"`
+	Resume    domain.ApplicationDocumentRef   `json:"resume,omitempty"`
+	Cover     domain.ApplicationDocumentRef   `json:"cover,omitempty"`
+	Refs      []domain.ApplicationDocumentRef `json:"refs,omitempty"`
 }
 
 func (p ApplicationDocumentPack) ResumePath() string { return p.Resume.LocalPath }
@@ -23,7 +28,7 @@ func (p ApplicationDocumentPack) CoverPath() string  { return p.Cover.LocalPath 
 
 // WriteApplicationPackJSON serializes a pack for jobs_pending_review / jobs_applied.
 func WriteApplicationPackJSON(p ApplicationDocumentPack) string {
-	if p.HoldReason == "" && !p.Prepared && p.Resume.Outcome == "" && p.Cover.Outcome == "" &&
+	if p.HoldReason == "" && p.HoldStage == "" && !p.Prepared && p.Resume.Outcome == "" && p.Cover.Outcome == "" &&
 		len(p.Refs) == 0 && p.Selection == (ApplicationDocumentSelection{}) && !p.FormCaps.Detected {
 		return ""
 	}
@@ -70,7 +75,7 @@ func packHasStoredMetadata(p ApplicationDocumentPack) bool {
 	if p.Prepared || p.FormCaps.Detected {
 		return true
 	}
-	if p.HoldReason != "" {
+	if p.HoldReason != "" || p.HoldStage != "" {
 		return true
 	}
 	if p.Selection != (ApplicationDocumentSelection{}) {
@@ -82,6 +87,12 @@ func packHasStoredMetadata(p ApplicationDocumentPack) bool {
 func mergePackMetadata(dst *ApplicationDocumentPack, src ApplicationDocumentPack) {
 	if src.HoldReason != "" {
 		dst.HoldReason = src.HoldReason
+	}
+	if src.HoldStage != "" {
+		dst.HoldStage = src.HoldStage
+	}
+	if src.HoldFile != "" {
+		dst.HoldFile = src.HoldFile
 	}
 	if src.Prepared {
 		dst.Prepared = true
