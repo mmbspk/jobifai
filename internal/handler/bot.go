@@ -457,6 +457,7 @@ func (h *BotHandlers) ApplyURL(w http.ResponseWriter, r *http.Request) {
 		"role":    res.Role,
 	})
 }
+
 // parsePrepareStatusCategory maps raw DB prepare_status to a UI-facing category.
 func parsePrepareStatusCategory(raw string) string {
 	switch {
