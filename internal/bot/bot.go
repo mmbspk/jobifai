@@ -53,6 +53,8 @@ type lazyDocGen struct {
 	frozen                bool
 	formCaps              documents.FormDocumentCapabilities
 	holdReason            string
+	holdStage             string // stable stage code for an upload-verification hold (diagnostic)
+	holdFile              string // filename involved in an upload-verification hold (diagnostic)
 	resumeVersionID       string
 	coverVersionID        string
 	refsJSON              string
@@ -2376,6 +2378,16 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			return fmt.Errorf("read application action: %w", peekErr)
 		}
 		if kind == "submit" && found && enabled {
+			if lazy.policyBlocked() {
+				return fmt.Errorf("easy apply: %s", lazy.holdReason)
+			}
+			// Re-verify the final-review attachment immediately before submit — catches any
+			// substitution that happened after preparation completed.
+			if resumePath, _ := lazy.peek(); resumePath != "" {
+				if verifyErr := b.linkedInVerifyFinalReviewResume(page, resumePath); verifyErr != nil {
+					return fmt.Errorf("easy apply: pre-submit attachment check: %w", verifyErr)
+				}
+			}
 			if err := markAttemptSubmitDispatch(b.cfg.DB, lazy.attemptID, b.cfg.UserID); err != nil {
 				return err
 			}

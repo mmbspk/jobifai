@@ -209,8 +209,14 @@ export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, on
             Reject
           </Button>
           {!documentsPrepared && onPrepare ? (
-            <Button variant="secondary" className="flex-1 sm:flex-none" loading={prepareLoading} onClick={onPrepare}>
-              Prepare documents
+            <Button
+              variant="secondary"
+              className="flex-1 sm:flex-none"
+              loading={prepareLoading || review.prepare_status === 'running'}
+              disabled={review.prepare_status === 'running'}
+              onClick={onPrepare}
+            >
+              {review.prepare_status === 'running' ? 'Preparing…' : 'Prepare documents'}
             </Button>
           ) : null}
           <Button

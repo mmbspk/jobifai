@@ -73,6 +73,9 @@ export interface PendingReview {
   easy_apply: boolean
   halal_verdict?: HalalVerdict
   created_at: string
+  prepare_status?: 'running' | 'succeeded' | 'failed' | ''
+  prepare_started_at?: string
+  prepare_finished_at?: string
 }
 
 export interface JobStats {

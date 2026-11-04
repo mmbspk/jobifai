@@ -79,6 +79,7 @@ type Manager struct {
 	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
 	browserMeterSvc  MeterService                                 // optional browser automation billing service
 	runLogSink       *RunLogSink                                  // optional; persists dashboard-visible log lines
+	activePrepares   sync.Map                                     // userID+jobID -> prepID; in-process prepare exclusivity
 }
 
 type retentionAfterSubmit interface {
@@ -109,6 +110,28 @@ func (m *Manager) SetLLMReuse(store *llmreuse.Store) {
 // SetSubmitWorkGuard serializes retention eviction with apply/export publication (#60).
 func (m *Manager) SetSubmitWorkGuard(g documents.UserWorkGuard) {
 	m.submitWorkGuard = g
+}
+
+// TryBeginPrepare registers an in-process document-preparation for user+job and reports
+// whether the caller acquired exclusive ownership. It returns false when another prepare
+// is already running in THIS process, which prevents overlapping browser sessions even
+// after the DB stale-reclaim window elapses — wall-clock staleness alone is insufficient
+// because a hung-but-alive run must not be run concurrently. A crashed run leaves no
+// in-process entry (the map is empty after restart), so the DB stale-reclaim still recovers it.
+// The caller MUST call EndPrepare with the same prepID when the prepare finishes.
+func (m *Manager) TryBeginPrepare(userID, jobID, prepID string) bool {
+	_, loaded := m.activePrepares.LoadOrStore(userID+"\x00"+jobID, prepID)
+	return !loaded
+}
+
+// EndPrepare releases the in-process prepare ownership claimed by TryBeginPrepare. It deletes
+// the entry only when prepID still matches, so a late call from a superseded run cannot
+// release a newer run's ownership.
+func (m *Manager) EndPrepare(userID, jobID, prepID string) {
+	key := userID + "\x00" + jobID
+	if cur, ok := m.activePrepares.Load(key); ok && cur == prepID {
+		m.activePrepares.Delete(key)
+	}
 }
 
 // SetDocuments wires the versioned document service into bot apply sessions (#59).
