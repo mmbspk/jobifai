@@ -118,7 +118,8 @@ func (b *Bot) linkedInVerifyFinalReviewResume(page *rod.Page, resumePath string)
 		return fmt.Errorf("linkedin: final-review resume verification failed: %w", err)
 	}
 	if !res.Value.Get("verified").Bool() {
-		if observed := res.Value.Get("observedFilename").String(); observed != "" {
+		if value := res.Value.Get("observedFilename"); !value.Nil() && value.String() != "" {
+			observed := value.String()
 			return fmt.Errorf("linkedin: resume %q not confirmed in final-review summary — found %q", base, observed)
 		}
 		return fmt.Errorf("linkedin: resume %q not confirmed in final-review summary", base)

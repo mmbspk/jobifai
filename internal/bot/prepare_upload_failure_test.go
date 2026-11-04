@@ -29,7 +29,11 @@ func TestLinkedInFinalReviewResume_CapturedAttachmentCard(t *testing.T) {
 			r, err := page.Eval(jsLinkedInFinalReviewResumeCheck, "resume_8c080411.pdf")
 			require.NoError(t, err)
 			require.Equal(t, tc.verified, r.Value.Get("verified").Bool())
-			require.Equal(t, tc.observed, r.Value.Get("observedFilename").String())
+			if tc.observed == "" {
+				require.True(t, r.Value.Get("observedFilename").Nil())
+			} else {
+				require.Equal(t, tc.observed, r.Value.Get("observedFilename").String())
+			}
 			if tc.name == "wrong_attachment" {
 				err = (&Bot{}).linkedInVerifyFinalReviewResume(page, "resume_8c080411.pdf")
 				require.ErrorContains(t, err, "cover.pdf")
@@ -58,6 +62,7 @@ func TestScanApplyStepsForPrepare_UploadErrorDoesNotAdvance(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	b.cfg.Settings.GenerateNewResumeDocs = true
 	lazy := &lazyDocGen{b: b, job: linkedInJob{ID: jobID, URL: srv.URL + "/jobs/view/" + jobID}, ctx: ctx, reviewPrepareOnly: true, resumeOverride: path}
 	result := make(chan error, 1)
 	go func() { result <- b.scanApplyStepsForPrepare(ctx, page, lazy) }()
