@@ -613,7 +613,7 @@ document.getElementById('next-2').addEventListener('click', function() {
 				reviewPrepareOnly: true,
 				ctx:               context.Background(),
 			}
-			lazy.once.Do(func() { lazy.resume = tmpFile })
+			lazy.resumeOverride = tmpFile
 
 			err := b.scanApplyStepsForPrepare(context.Background(), page, lazy)
 
@@ -627,11 +627,18 @@ document.getElementById('next-2').addEventListener('click', function() {
 				require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true on success")
 				require.Empty(t, lazy.holdReason, "holdReason must be empty on success")
 
-				// Verify file was delivered and the correct filename is selected.
+				// The upload step is now hidden. Its acceptance probe must not treat
+				// hidden controls as an active upload page. Check the retained selection
+				// and the visible final-review summary independently instead.
 				acceptRes, aErr := page.Eval(jsLinkedInCheckResumeAccepted, "my_tailored_resume.pdf")
 				require.NoError(t, aErr)
-				require.True(t, acceptRes.Value.Get("accepted").Bool(), "uploaded radio must be checked")
-				require.True(t, acceptRes.Value.Get("filenameVisible").Bool(), "uploaded filename must match")
+				require.False(t, acceptRes.Value.Get("accepted").Bool(), "hidden upload controls must not be accepted")
+				checked, cErr := page.Eval(jsFindCheckedRadioLabel, "resume-select")
+				require.NoError(t, cErr)
+				require.Equal(t, "my_tailored_resume.pdf", checked.Value.String())
+				summary, sErr := page.Eval(jsLinkedInFinalReviewResumeCheck, "my_tailored_resume.pdf")
+				require.NoError(t, sErr)
+				require.True(t, summary.Value.Get("verified").Bool(), "visible review must confirm the intended attachment")
 
 				// Verify the pre-existing library entry was NOT removed — the fixture intentionally
 				// keeps library_resume.pdf in the DOM after upload to exercise the post-upload
@@ -642,8 +649,8 @@ document.getElementById('next-2').addEventListener('click', function() {
 
 				// Verify we reached and passed the final-review step.
 				frRes, frErr := page.Eval(jsLinkedInAtFinalReview)
-			require.NoError(t, frErr)
-			require.True(t, frRes.Value.Bool(), "page must be at final review after preparation scan")
+				require.NoError(t, frErr)
+				require.True(t, frRes.Value.Bool(), "page must be at final review after preparation scan")
 			} else {
 				require.False(t, lazy.prepareScanComplete, "prepareScanComplete must be false when upload identity unverifiable")
 				require.NotEmpty(t, lazy.holdReason, "holdReason must be set when upload identity unverifiable")
@@ -1308,12 +1315,17 @@ document.getElementById('next-2').addEventListener('click', function() {
 			}
 			resumeBase := filepath.Base(resumePath)
 
+			// Final review has hidden the upload step; validate its retained
+			// selection and the visible summary rather than accepting a hidden CTA.
 			acceptRes, aErr := page.Eval(jsLinkedInCheckResumeAccepted, resumeBase)
 			require.NoError(t, aErr)
-			require.True(t, acceptRes.Value.Get("accepted").Bool(),
-				"uploaded radio must be checked for %s (%s)", tc.name, resumeBase)
-			require.True(t, acceptRes.Value.Get("filenameVisible").Bool(),
-				"uploaded filename must be visible for %s (%s)", tc.name, resumeBase)
+			require.False(t, acceptRes.Value.Get("accepted").Bool(), "hidden upload controls must not be accepted")
+			checked, cErr := page.Eval(jsFindCheckedRadioLabel, "resume-select")
+			require.NoError(t, cErr)
+			require.Equal(t, resumeBase, checked.Value.String(), "retained selection must match intended file for %s", tc.name)
+			summary, sErr := page.Eval(jsLinkedInFinalReviewResumeCheck, resumeBase)
+			require.NoError(t, sErr)
+			require.True(t, summary.Value.Get("verified").Bool(), "visible review must confirm intended attachment for %s", tc.name)
 
 			// Pre-existing library radio must not be removed by the upload flow.
 			libRes, libErr := page.Eval(`() => !!document.getElementById('r-lib1')`)
