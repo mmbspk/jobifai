@@ -654,6 +654,10 @@ document.getElementById('next-2').addEventListener('click', function() {
 			} else {
 				require.False(t, lazy.prepareScanComplete, "prepareScanComplete must be false when upload identity unverifiable")
 				require.NotEmpty(t, lazy.holdReason, "holdReason must be set when upload identity unverifiable")
+				visible, vErr := page.Eval(`() => document.getElementById('step-1').style.display !== 'none'`)
+				require.NoError(t, vErr)
+				require.True(t, visible.Value.Bool(), "upload identity hold must stop before Next")
+
 			}
 		})
 	}

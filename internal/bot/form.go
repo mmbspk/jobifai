@@ -702,18 +702,38 @@ func init() {
 		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
 		return m ? m[1].toLowerCase() : null;
 	}
-	const headings = [...container.querySelectorAll('h1,h2,h3,h4,legend,[role="heading"],[class*="heading"]')]
-		.filter(isVisible);
-	const resumeHeading = headings.find(h => /\bresume\b/i.test(h.textContent || ''));
-	if (!resumeHeading) return { verified: false };
-	const section = resumeHeading.closest('[data-component-type],[class*="section"],fieldset,section') || resumeHeading.parentElement;
-	if (!section) return { verified: false };
-	const bodyText = [...section.children]
-		.filter(el => el !== resumeHeading && !/^(H[1-6]|LEGEND)$/.test(el.tagName))
-		.map(el => el.textContent)
-		.join('\n');
-	const extracted = extractFilename(bodyText);
-	return { verified: extracted !== null && extracted === base };
+	const headingSelector = 'h1,h2,h3,h4,h5,h6,legend,[role="heading"],[class*="heading"]';
+	const headings = [...container.querySelectorAll(headingSelector)].filter(isVisible);
+	const resumeHeadings = headings.filter(h => /^(resume|résumé|cv)\s*[:*]?$/i.test((h.textContent || '').trim()));
+	if (resumeHeadings.length !== 1) return { verified: false };
+	const resumeHeading = resumeHeadings[0];
+	// SDUI uses ordinary divs for the heading row and attachment card. Walk only
+	// within this heading's block; never absorb another section or the LazyColumn.
+	for (let section = resumeHeading.parentElement; section && section !== container; section = section.parentElement) {
+		if (section.getAttribute('data-component-type') === 'LazyColumn') break;
+		if (headings.some(h => h !== resumeHeading && section.contains(h))) break;
+		const candidates = new Set();
+		// Read individual filename leaves, not concatenated instructions/date text.
+		for (const el of section.querySelectorAll('*')) {
+			if (!isVisible(el) || resumeHeading.contains(el) || el.closest('button')) continue;
+			if (el.children.length === 0) {
+				const text = (el.textContent || '').trim();
+				const filename = extractFilename(text);
+				if (filename && filename === text.toLowerCase()) candidates.add(filename);
+			}
+			const download = (el.getAttribute('aria-label') || '').match(/^download\s+(.+)$/i);
+			if (download) {
+				const filename = extractFilename(download[1]);
+				if (filename && filename === download[1].trim().toLowerCase()) candidates.add(filename);
+			}
+		}
+		if (candidates.size > 0) {
+			const names = [...candidates];
+			return { verified: names.length === 1 && names[0] === base,
+				observedFilename: names.length === 1 ? names[0] : '', reason: names.length === 1 ? 'attachment_read' : 'ambiguous_attachments' };
+		}
+	}
+	return { verified: false, reason: 'resume_attachment_not_found' };
 }`
 
 	jsLinkedInFindUploadButton = `() => {
@@ -1303,6 +1323,10 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					Msg("form: no PDF path for optional file field")
 				continue
 			}
+			if lazy.reviewPrepareOnly {
+				b.log.Info().Str("filename", filepath.Base(path)).Bool("via_button", f.UploadViaButton).
+					Msg("prepare: file upload started")
+			}
 			var uploadErr error
 			if b.cfg.Platform == domain.PlatformSeek {
 				switch docKind {
@@ -1328,6 +1352,10 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 			if uploadErr != nil {
 				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kindLabel, uploadErr)
+			}
+			if lazy.reviewPrepareOnly {
+				b.log.Info().Str("filename", filepath.Base(path)).Bool("via_button", f.UploadViaButton).
+					Msg("prepare: file upload completed")
 			}
 			log.Info().Str("path", path).Str("kind", kindLabel).Str("filename", filepath.Base(path)).Msg("form: file uploaded")
 			filled = true

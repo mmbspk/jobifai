@@ -19,7 +19,7 @@ import (
 // The handler treats this as a no-op rather than a success or failure.
 var ErrPrepareSuperseded = errors.New("prepare: run superseded by a newer preparation")
 
-// scanApplyStepsForPrepare walks apply steps without uploading files or submitting.
+// scanApplyStepsForPrepare fills fields and prepares attachments, but never submits.
 func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy *lazyDocGen) error {
 	if lazy == nil {
 		return fmt.Errorf("%w: missing declared job", errLinkedInIdentity)
@@ -37,11 +37,14 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 			return err
 		}
 		_, _, fillErr := b.fillFormStep(ctx, page, lazy)
-		if fillErr != nil && isFormFillFatalLLM(fillErr) {
-			return fillErr
-		}
+		// A failed upload must not be hidden by navigation to the review page,
+		// which would retain whatever attachment LinkedIn previously selected.
 		if fillErr != nil {
-			log.Warn().Err(fillErr).Int("step", step).Msg("prepare: form scan step warning")
+			b.log.Warn().Err(fillErr).Int("step", step).Msg("prepare: form step failed")
+			return fmt.Errorf("prepare: form step %d failed: %w", step+1, fillErr)
+		}
+		if lazy.holdStage != "" {
+			return fmt.Errorf("prepare: %s", lazy.holdReason)
 		}
 		lazy.ensureMaterialized()
 
@@ -115,6 +118,9 @@ func (b *Bot) linkedInVerifyFinalReviewResume(page *rod.Page, resumePath string)
 		return fmt.Errorf("linkedin: final-review resume verification failed: %w", err)
 	}
 	if !res.Value.Get("verified").Bool() {
+		if observed := res.Value.Get("observedFilename").String(); observed != "" {
+			return fmt.Errorf("linkedin: resume %q not confirmed in final-review summary — found %q", base, observed)
+		}
 		return fmt.Errorf("linkedin: resume %q not confirmed in final-review summary", base)
 	}
 	return nil
