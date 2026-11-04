@@ -218,8 +218,9 @@ const jsScanFieldsInner = `
 			if (!/\bupload\b/i.test(lbl) || !/\b(resume|cv|r\xe9sum\xe9)\b/i.test(lbl)) return;
 
 			// Find the enclosing form section for this button.
-			const sectionEl = btn.closest('[data-test-form-element],.artdeco-form-element,.fb-form-element,fieldset,[role="group"]')
-			                  || btn.parentElement;
+			const resumeSection = resolveLinkedInResumeSection(container, btn);
+			const sectionEl = resumeSection ? resumeSection.section
+				: btn.closest('[data-test-form-element],.artdeco-form-element,.fb-form-element,fieldset,[role="group"]') || btn.parentElement;
 
 			// Skip if the section already has a visible file input (old layout coexisting
 			// with the button — e.g. LinkedIn A/B experiment). The file-input scan above
@@ -319,8 +320,7 @@ const jsScanFieldsInner = `
 		}
 
 		const options = all.map(x => {
-			const lbl = labelFor(x.id) || x.closest('label') || x.parentElement;
-			return { id: x.id, value: x.value, label: (lbl ? lbl.textContent : x.value).trim() };
+			return { id: x.id, value: x.value, label: linkedInRadioText(container, x) };
 		});
 		fields.push({ type: 'radio', name: r.name || groupKey, question, options });
 	});
@@ -539,6 +539,68 @@ function resolveApplyContainer() {
 	}
 	return null;
 }
+
+// Resume controls are scoped by their relationship to the upload button, not
+// LinkedIn's generated class names or the presence of a fieldset.
+function linkedInRadioText(scope, radio) {
+ const ids = (radio.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+ const labelled = ids.map(id => [...scope.querySelectorAll('[id]')].find(e => e.id === id))
+  .filter(Boolean).map(e => e.textContent || '').join(' ').trim();
+ if (labelled) return labelled;
+ const aria = (radio.getAttribute('aria-label') || '').trim();
+ if (aria) return aria;
+ const label = [...scope.querySelectorAll('label[for]')].find(e => e.htmlFor === radio.id)
+  || radio.closest('label') || radio.parentElement;
+ return label ? (label.textContent || '').trim() : (radio.value || '');
+}
+function linkedInResumeFilename(text) {
+ const m = (text || '').trim().match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
+ return m ? m[1].toLowerCase() : null;
+}
+function linkedInResumeButtonVisible(el) {
+ for (let n = el; n; n = n.parentElement) {
+  const style = getComputedStyle(n);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+ }
+ const rect = el.getBoundingClientRect();
+ return rect.width > 0 && rect.height > 0;
+}
+function linkedInResumeUploadButtons(scope) {
+ return [...scope.querySelectorAll('button,[role="button"]')].filter(b => {
+  const t = (b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '');
+  return /\bupload\b/i.test(t) && /\b(resume|cv|résumé)\b/i.test(t)
+   && linkedInResumeButtonVisible(b);
+ });
+}
+function resolveLinkedInResumeSection(container, button) {
+ const buttons = linkedInResumeUploadButtons(container);
+ if (!button) {
+  if (buttons.length !== 1) return null;
+  button = buttons[0];
+ }
+ if (!buttons.includes(button)) return null;
+ for (let node = button.parentElement; node && node !== container; node = node.parentElement) {
+  // Never promote the whole SDUI screen to a resume section.
+  if (node.hasAttribute('data-sdui-screen')) return null;
+  const radios = [...node.querySelectorAll('input[type="radio"]')];
+  const named = node.matches('fieldset,section,[role="group"]');
+  if (!radios.length) {
+   if (named) return {section: node, radios: [], groupName: ''};
+   continue;
+  }
+  const names = new Set(radios.map(r => r.name));
+  // A generic wrapper must own one complete, filename-labelled group, with
+  // exactly one upload button. Unrelated/mixed groups remain unresolved.
+  if (names.size !== 1 || !radios[0].name || linkedInResumeUploadButtons(node).length !== 1)
+   return null;
+  if (!radios.every(r => linkedInResumeFilename(linkedInRadioText(node, r)))) return null;
+  const groupName = radios[0].name;
+  if ([...container.querySelectorAll('input[type="radio"]')]
+   .some(r => r.name === groupName && !node.contains(r))) return null;
+  return {section: node, radios, groupName};
+ }
+ return null;
+}
 `
 
 func init() {
@@ -561,13 +623,8 @@ func init() {
 	const radios = [...container.querySelectorAll('input[type="radio"]')].filter(r => r.name === name);
 	const checked = radios.find(r => r.checked);
 	if (!checked) return '';
-	const lbl = container.querySelector('label[for="' + checked.id + '"]')
-	          || checked.closest('label')
-	          || checked.parentElement;
-	const text = lbl ? lbl.textContent.trim() : (checked.value || '');
-	// Extract just the filename portion from decorated labels like "resume.pdf \u2022 Uploaded Oct 29".
-	const m = text.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
-	return m ? m[1].toLowerCase() : text.toLowerCase();
+	const text = linkedInRadioText(container, checked);
+	return linkedInResumeFilename(text) || text.toLowerCase();
 }`
 
 	jsLinkedInClickUploadResume = `() => {
@@ -610,37 +667,13 @@ func init() {
 	if (hasError) return { accepted: false, error: true, filenameVisible: false };
 
 	const base = (expectedFilename || '').toLowerCase();
-	function extractFilename(text) {
-		const t = (text || '').trim();
-		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
-		return m ? m[1].toLowerCase() : null;
-	}
 
-	// Locate the resume section strictly via the "Upload resume" button.
-	// Only the upload button anchors the section — no Change/Replace fallback.
-	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
-		const t = (b.textContent || '').toLowerCase();
-		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
-	});
-	if (!uploadBtn) return { accepted: false, error: false, filenameVisible: false };
 
-	// Walk up to smallest ancestor that also contains radio inputs.
-	let section = uploadBtn.parentElement;
-	while (section && section !== container) {
-		if (section.querySelector('input[type="radio"]')) break;
-		section = section.parentElement;
-	}
-	if (!section || section === container) {
-		return { accepted: false, error: false, filenameVisible: false };
-	}
-
-	const radios = [...section.querySelectorAll('input[type="radio"]')];
-	const checked = radios.find(r => r.checked);
-	if (!checked) return { accepted: false, error: false, filenameVisible: false };
-
-	const labelEl = section.querySelector('label[for="' + checked.id + '"]') ||
-		checked.closest('label') || checked.parentElement;
-	const extracted = extractFilename(labelEl && labelEl.textContent);
+	const resolved = resolveLinkedInResumeSection(container);
+	if (!resolved) return { accepted: false, error: false, filenameVisible: false };
+	const checkedRadios = resolved.radios.filter(r => r.checked);
+	if (checkedRadios.length !== 1) return { accepted: false, error: false, filenameVisible: false };
+	const extracted = linkedInResumeFilename(linkedInRadioText(resolved.section, checkedRadios[0]));
 	const filenameVisible = extracted !== null && extracted === base;
 	return { accepted: true, error: false, filenameVisible };
 }`
@@ -687,55 +720,23 @@ func init() {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer();
 	if (!container) return null;
-	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
-		const t = (b.textContent || '').toLowerCase();
-		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
-	});
-	return uploadBtn || null;
+	const buttons = linkedInResumeUploadButtons(container);
+	return buttons.length === 1 ? buttons[0] : null;
 }`
 
 	jsLinkedInResumePreUploadState = `(expectedFilename) => {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer();
 	if (!container) return { filenameExisted: false, stateVerified: false, sectionFound: false };
-	function extractFilename(text) {
-		const t = (text || '').trim();
-		const m = t.match(/([^\s\/\\<>"'\n\r][^\/\\<>"'\n\r]*?\.(pdf|docx|doc|rtf|txt))(?=\s|$|["'<>)\]])/i);
-		return m ? m[1].toLowerCase() : null;
-	}
+
 	const base = (expectedFilename || '').toLowerCase();
-	const uploadBtn = [...container.querySelectorAll('button,[role="button"]')].find(b => {
-		const t = (b.textContent || '').toLowerCase();
-		return t.includes('upload') && (t.includes('resume') || t.includes('cv'));
-	});
-	if (!uploadBtn) return { filenameExisted: false, stateVerified: false, sectionFound: false };
-	// Walk up from upload button to find the resume section.
-	// Only fieldset, section, or [role=group] elements identify the section boundary.
-	// Generic div/span ancestors are never accepted, even if they contain radios elsewhere,
-	// because the SDUI form screen div wraps radios from all steps — not just resume.
-	let section = uploadBtn.parentElement;
-	while (section && section !== container) {
-		if (section.tagName === 'FIELDSET' ||
-			section.tagName === 'SECTION' ||
-			section.getAttribute('role') === 'group') {
-			break;
-		}
-		section = section.parentElement;
-	}
-	if (!section || section === container) {
-		// No named section and no radio-containing ancestor below container — unresolved.
-		return { filenameExisted: false, stateVerified: false, sectionFound: false };
-	}
-	const radios = [...section.querySelectorAll('input[type="radio"]')];
-	if (radios.length === 0) {
-		// Section identified but no radios yet — possibly still loading.
-		return { filenameExisted: false, stateVerified: false, sectionFound: true };
-	}
-	const filenameExisted = radios.some(r => {
-		const labelEl = section.querySelector('label[for="' + r.id + '"]') ||
-			r.closest('label') || r.parentElement;
-		return extractFilename(labelEl && labelEl.textContent) === base;
-	});
+	const resolved = resolveLinkedInResumeSection(container);
+	if (!resolved) return { filenameExisted: false, stateVerified: false, sectionFound: false };
+	const radios = resolved.radios;
+	if (!radios.length) return { filenameExisted: false, stateVerified: false, sectionFound: true };
+	const filenameExisted = radios.some(r =>
+		linkedInResumeFilename(linkedInRadioText(resolved.section, r)) === base);
+
 	return { filenameExisted, stateVerified: true, sectionFound: true };
 }`
 }
