@@ -1297,6 +1297,14 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			if docKind == documents.KindCoverLetter {
 				kindLabel = "cover letter"
 			}
+			if lazy.reviewPrepareOnly && path != "" && docKind == documents.KindResume && b.cfg.Platform == domain.PlatformLinkedIn {
+				baseName := strings.ToLower(filepath.Base(path))
+				if res, evalErr := page.Timeout(3*time.Second).Eval(jsLinkedInCheckResumeAccepted, baseName); evalErr == nil && res.Value.Get("accepted").Bool() {
+					log.Debug().Str("filename", baseName).Msg("prepare: resume already selected, skipping re-upload")
+					filled = true
+					continue
+				}
+			}
 			if path == "" {
 				if lazy.useSiteResume && docKind == documents.KindResume {
 					if !f.HasFile {
