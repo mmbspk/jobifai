@@ -1351,6 +1351,13 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				continue
 			}
 			if uploadErr != nil {
+				// Record a non-empty hold stage for a click-sequence failure so the persisted pack
+				// shows the real failure point (e.g. upload_click_interactable), not an empty stage.
+				var ce *uploadClickError
+				if errors.As(uploadErr, &ce) {
+					lazy.holdStage = "upload_click_" + ce.stage
+					lazy.holdFile = strings.ToLower(filepath.Base(path))
+				}
 				return filled, true, fmt.Errorf("documents: %s upload failed: %w", kindLabel, uploadErr)
 			}
 			if lazy.reviewPrepareOnly {
@@ -1679,6 +1686,198 @@ func (b *Bot) holdUpload(stage, filename string) error {
 	return &uploadIdentityHold{stage: stage, filename: filename}
 }
 
+// jsUploadButtonDiag returns SAFE diagnostics for the resolved upload button: geometry,
+// computed visibility/pointer-events, disabled state, scroll-ancestor chain, and the element
+// hit-tested at the button center (tag/role/class/bounds only). No text content, no values,
+// no URLs — safe to persist in logs.
+const jsUploadButtonDiag = `() => {
+` + jsLinkedInApplyContainerFn + `
+	const container = resolveApplyContainer();
+	const btns = container ? linkedInResumeUploadButtons(container) : [];
+	const btn = btns.length === 1 ? btns[0] : null;
+	if (!btn) return JSON.stringify({ found: false, buttonCount: btns.length });
+	function desc(el){ if(!el) return null; const r=el.getBoundingClientRect(); return {
+		tag: el.tagName, role: el.getAttribute && el.getAttribute("role") || "",
+		cls: (typeof el.className==="string"?el.className:"").slice(0,120),
+		x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; }
+	const r = btn.getBoundingClientRect();
+	const cs = getComputedStyle(btn);
+	const cx = Math.round(r.x + r.width/2), cy = Math.round(r.y + r.height/2);
+	const hit = document.elementFromPoint(cx, cy);
+	const hitIsButtonOrDesc = !!(hit && (hit === btn || btn.contains(hit) || (hit.contains && hit.contains(btn))));
+	const scrollAncestors = [];
+	let n = btn.parentElement;
+	while (n && scrollAncestors.length < 6) {
+		const s = getComputedStyle(n);
+		if (/(auto|scroll)/.test(s.overflowY + s.overflow)) scrollAncestors.push({ tag:n.tagName, cls:(typeof n.className==="string"?n.className:"").slice(0,80), scrollTop:n.scrollTop, clientHeight:n.clientHeight, scrollHeight:n.scrollHeight });
+		n = n.parentElement;
+	}
+	const vh = window.innerHeight, vw = window.innerWidth;
+	return JSON.stringify({ found: true,
+		rect: { x:Math.round(r.x), y:Math.round(r.y), w:Math.round(r.width), h:Math.round(r.height) },
+		inViewport: r.top >= 0 && r.left >= 0 && r.bottom <= vh && r.right <= vw,
+		visibility: cs.visibility, display: cs.display, opacity: cs.opacity, pointerEvents: cs.pointerEvents,
+		disabled: !!btn.disabled, ariaDisabled: btn.getAttribute && btn.getAttribute("aria-disabled") || "",
+		hitPoint: { x:cx, y:cy }, hitElement: desc(hit), hitIsButtonOrDescendant: hitIsButtonOrDesc,
+		hitIsButton: !!(hit && (hit === btn || btn.contains(hit))),
+		scrollAncestors });
+}`
+
+// instrumentedUploadClick performs Rod's click sub-stages (scroll+stability, interactability+
+// move, enabled, mouse-click) individually, logging each stage's outcome and elapsed time so
+// the failing stage is visible in bot_run_logs. Behaviour matches Element.Click; each stage gets
+// a fresh child of the live preparation ctx. On failure the returned error names the stage.
+func (b *Bot) instrumentedUploadClick(ctx context.Context, page *rod.Page, btn *rod.Element, filename string) error {
+	// Safe diagnostics: geometry, clipping ancestors, computed visibility/pointer-events, and the
+	// element hit-tested at the button center (tag/role/bounds only — no content). Logged per phase.
+	diag := func(phase string) {
+		dctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if res, derr := page.Context(dctx).Eval(jsUploadButtonDiag); derr == nil {
+			b.log.Info().Str("filename", filename).Str("click_stage", phase).
+				Str("button_diag", res.Value.String()).Msg("prepare: upload button diagnostics")
+		}
+	}
+	diag("pre_scroll")
+
+	// Scroll stage: center the button in its scroll container (LinkedIn renders the Upload button at
+	// the bottom of a clipped scroll area). ScrollIntoView adds the stability wait.
+	scrollCtx, scrollCancel := context.WithTimeout(ctx, 5*time.Second)
+	t0 := time.Now()
+	_, scrollErr := btn.Context(scrollCtx).Eval(`() => { this.scrollIntoView({block:'center', inline:'center'}); return true; }`)
+	if scrollErr == nil {
+		scrollErr = btn.Context(scrollCtx).ScrollIntoView()
+	}
+	scrollCancel()
+	b.log.Info().Str("filename", filename).Str("click_stage", "scroll").Dur("elapsed_ms", time.Since(t0)).Err(scrollErr).Msg("prepare: upload click stage")
+	diag("post_center")
+
+	// Bounded interactability retry that PRESERVES the centered position: re-center, then use Rod's
+	// Interactable() hit-test (which returns the clickable point only when the button is the topmost
+	// element there). On a confirmed hit-test + enabled button, click via a trusted CDP mouse
+	// move+click at that exact point. Never click without a confirmed hit-test; never blind-click.
+	deadline := time.Now().Add(6 * time.Second)
+	attempt := 0
+	var lastErr error
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		attempt++
+		rcCtx, rcCancel := context.WithTimeout(ctx, 2*time.Second)
+		_, _ = btn.Context(rcCtx).Eval(`() => { this.scrollIntoView({block:'center', inline:'center'}); return true; }`)
+		rcCancel()
+		diag(fmt.Sprintf("retry_%d", attempt))
+
+		enCtx, enCancel := context.WithTimeout(ctx, 1*time.Second)
+		enErr := btn.Context(enCtx).WaitEnabled()
+		enCancel()
+		if enErr != nil {
+			lastErr = fmt.Errorf("not enabled: %w", enErr)
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		iCtx, iCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		pt, iErr := btn.Context(iCtx).Interactable()
+		iCancel()
+		if iErr != nil || pt == nil {
+			lastErr = fmt.Errorf("hit-test not interactable: %w", iErr)
+			if iErr != nil && strings.Contains(iErr.Error(), "CSSPseudoElement") {
+				if gErr := b.tryGeometryUploadClick(ctx, page, btn, filename, "pseudo_retry"); gErr == nil {
+					return nil
+				}
+			}
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		cctx, ccancel := context.WithTimeout(ctx, 3*time.Second)
+		mErr := page.Context(cctx).Mouse.MoveTo(*pt)
+		var clkErr error
+		if mErr == nil {
+			clkErr = page.Context(cctx).Mouse.Click(proto.InputMouseButtonLeft, 1)
+		}
+		ccancel()
+		if mErr == nil && clkErr == nil {
+			b.log.Info().Str("filename", filename).Str("click_stage", "mouseclick").Int("attempt", attempt).Msg("prepare: upload click stage")
+			diag("post_click")
+			return nil
+		}
+		if clkErr != nil {
+			lastErr = clkErr
+		} else {
+			lastErr = mErr
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	diag("on_timeout")
+	if lastErr != nil && (strings.Contains(lastErr.Error(), "CSSPseudoElement") || strings.Contains(lastErr.Error(), "not interactable")) {
+		if gErr := b.tryGeometryUploadClick(ctx, page, btn, filename, "geometry_fallback"); gErr == nil {
+			return nil
+		}
+	}
+	b.log.Warn().Str("filename", filename).Str("click_stage", "interactable").Int("attempts", attempt).Err(lastErr).Msg("prepare: upload click stage")
+	return &uploadClickError{stage: "interactable", err: lastErr}
+}
+
+// tryGeometryUploadClick uses CDP mouse events at a DOM-verified point inside the upload
+// button when Rod's Interactable() rejects CSS pseudo-element overlays (common on SDUI).
+func (b *Bot) tryGeometryUploadClick(ctx context.Context, page *rod.Page, btn *rod.Element, filename, stage string) error {
+	res, err := btn.Context(ctx).Eval(`() => {
+		const btn = this;
+		const r = btn.getBoundingClientRect();
+		if (r.width < 2 || r.height < 2) return { ok: false, reason: 'zero_size' };
+		const fracs = [[0.5, 0.5], [0.5, 0.35], [0.5, 0.65], [0.35, 0.5], [0.65, 0.5]];
+		for (const [fx, fy] of fracs) {
+			const x = r.left + r.width * fx;
+			const y = r.top + r.height * fy;
+			const hit = document.elementFromPoint(x, y);
+			if (hit && (hit === btn || btn.contains(hit))) {
+				return { ok: true, x, y };
+			}
+		}
+		return { ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2, blind: true };
+	}`)
+	if err != nil {
+		return err
+	}
+	if !res.Value.Get("ok").Bool() {
+		return fmt.Errorf("geometry click: %s", res.Value.Get("reason").String())
+	}
+	x := res.Value.Get("x").Num()
+	y := res.Value.Get("y").Num()
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := page.Context(cctx).Mouse.MoveTo(proto.Point{X: x, Y: y}); err != nil {
+		return err
+	}
+	if err := page.Context(cctx).Mouse.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return err
+	}
+	b.log.Info().Str("filename", filename).Str("click_stage", stage).
+		Float64("click_x", x).Float64("click_y", y).
+		Bool("blind_center", res.Value.Get("blind").Bool()).
+		Msg("prepare: upload geometry click")
+	return nil
+}
+
+// uploadClickError marks a failure during the trusted upload-button click sequence, carrying the
+// stable sub-stage (e.g. "interactable") so the hold can be persisted with a non-empty stage.
+type uploadClickError struct {
+	stage string
+	err   error
+}
+
+func (e *uploadClickError) Error() string {
+	if e.err != nil {
+		return fmt.Sprintf("upload: click failed at %s: %v", e.stage, e.err)
+	}
+	return "upload: click failed at " + e.stage
+}
+
+func (e *uploadClickError) Unwrap() error { return e.err }
+
 // formUploadViaButton handles LinkedIn's native-dialog "Upload resume" button layout.
 // chooserCtx is derived from the operation ctx so cancellation propagates to the
 // file-chooser goroutine. The goroutine is always joined before returning.
@@ -1737,8 +1936,13 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 	if btnErr != nil {
 		return fmt.Errorf("upload: button not found: %w", btnErr)
 	}
-	if clickErr := btn.Click(proto.InputMouseButtonLeft, 1); clickErr != nil {
-		return fmt.Errorf("upload: click failed: %w", clickErr)
+	// Instrumented click: observe each Rod sub-stage separately so the failing one is
+	// identifiable from the logs. Preserves Rod's behaviour — ScrollIntoView already includes a
+	// stability wait, and Hover performs the retrying interactability check + mouse move exactly
+	// as Element.Click does. Each stage is bounded by a fresh child of the live preparation ctx
+	// (not the element's inherited 5s), so an internal stage timeout surfaces while ctx is live.
+	if clickErr := b.instrumentedUploadClick(ctx, page, btn, base); clickErr != nil {
+		return clickErr
 	}
 
 	waitCh := make(chan error, 1)

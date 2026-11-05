@@ -881,3 +881,102 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 	err := b.formUploadViaButton(context.Background(), page, tmpFile)
 	require.NoError(t, err, "version-scoped filename already selected must be reused; got: %v", err)
 }
+
+
+// TestFormUploadViaButton_ClippedBelowFold_CenterScrollsAndDelivers reproduces the demonstrated
+// click failure: the "Upload resume" button sits at the bottom of a scroll container, below the
+// visible clip, so its center hit-tests to a non-button element and Rod's default
+// scrollIntoViewIfNeeded leaves it clipped (the interactable wait would time out). The fix
+// center-scrolls the button before the hit-test; this test asserts a trusted click then opens the
+// chooser, delivers the existing PDF, selects that resume, keeps the pre-existing library entry,
+// and clicks Submit zero times.
+func TestFormUploadViaButton_ClippedBelowFold_CenterScrollsAndDelivers(t *testing.T) {
+	const html = `<!DOCTYPE html><html><body>
+<dialog data-testid="dialog" open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <fieldset id="resume-section" style="height:200px;overflow-y:auto;display:block;">
+      <legend>Resume <span aria-hidden="true">*</span></legend>
+      <div>
+        <input type="radio" name="resume-select" id="r-lib1">
+        <label for="r-lib1">library_resume.pdf</label>
+      </div>
+      <div style="height:420px;">tall spacer pushing the upload button below the clip</div>
+      <button type="button" id="upload-btn" style="height:48px;width:126px;">
+        <span><span>Upload resume</span></span>
+      </button>
+    </fieldset>
+    <footer><button type="button" id="submit-btn" onclick="window._submitClicks=(window._submitClicks||0)+1"><span>Submit application</span></button></footer>
+  </div>
+</dialog>
+<script>
+window._submitClicks = 0;
+document.getElementById('resume-section').scrollTop = 0; // button starts clipped below the fold
+document.getElementById('upload-btn').addEventListener('click', function() {
+  var f = document.createElement('input');
+  f.type = 'file';
+  f.id = 'file-chooser';
+  f.style.display = 'none';
+  f.addEventListener('change', function() {
+    var name = f.files[0] ? f.files[0].name : 'unknown.pdf';
+    var wrap = document.createElement('div');
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'resume-select';
+    radio.id = 'r-uploaded';
+    radio.checked = true;
+    var label = document.createElement('label');
+    label.htmlFor = 'r-uploaded';
+    label.textContent = name;
+    wrap.appendChild(radio);
+    wrap.appendChild(label);
+    document.getElementById('resume-section').insertBefore(wrap, document.getElementById('upload-btn'));
+    f.remove();
+  });
+  document.body.appendChild(f);
+  f.click();
+});
+</script>
+</body></html>`
+
+	br := launchTestBrowser(t)
+	page := br.MustPage("")
+	t.Cleanup(func() { _ = page.Close() })
+	require.NoError(t, page.SetDocumentContent(html))
+
+	// Precondition: the button is clipped below the fold — its center does NOT hit-test to the
+	// button (reproducing the demonstrated interactable failure). This proves the fixture recreates
+	// the real cause before the fix runs.
+	pre, err := page.Eval(`() => {
+		const b = document.getElementById('upload-btn');
+		const r = b.getBoundingClientRect();
+		const hit = document.elementFromPoint(Math.round(r.x + r.width/2), Math.round(r.y + r.height/2));
+		return { hitIsButton: hit === b };
+	}`)
+	require.NoError(t, err)
+	require.False(t, pre.Value.Get("hitIsButton").Bool(),
+		"precondition: the clipped button center must NOT hit-test to the button before the fix")
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "resume_8c080411.pdf")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
+
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	err = b.formUploadViaButton(context.Background(), page, tmpFile)
+	require.NoError(t, err, "center-scroll fix must let the trusted click deliver the file past the clip")
+
+	// The uploaded resume is selected and its filename is visible.
+	acc, err := page.Eval(jsLinkedInCheckResumeAccepted, "resume_8c080411.pdf")
+	require.NoError(t, err)
+	require.True(t, acc.Value.Get("accepted").Bool(), "uploaded resume radio must be checked")
+	require.True(t, acc.Value.Get("filenameVisible").Bool(), "uploaded filename must be visible")
+
+	// The pre-existing library entry is still present (not disturbed).
+	lib, err := page.Eval(`() => !!document.getElementById('r-lib1')`)
+	require.NoError(t, err)
+	require.True(t, lib.Value.Bool(), "pre-existing library radio must remain present")
+
+	// No submission occurred.
+	sc, err := page.Eval(`() => window._submitClicks || 0`)
+	require.NoError(t, err)
+	require.Equal(t, 0, sc.Value.Int(), "preparation must never click Submit")
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -81,7 +82,28 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 		stepHash := b.linkedInApplyStepHash(page)
 		if stepHash != "" && stepHash == prevStepHash {
 			stuckSteps++
+			if stuckSteps == 1 {
+				if errs := pageValidationErrors(page); len(errs) > 0 {
+					b.log.Warn().Int("step", step+1).Strs("errors", errs).Msg("prepare: validation errors, re-filling step")
+					refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)
+					if refillErr != nil {
+						return fmt.Errorf("prepare: form step %d failed: %w", step+1, refillErr)
+					}
+					if refilled {
+						stuckSteps = 0
+					}
+				}
+			}
 			if stuckSteps >= 2 {
+				slug := fmt.Sprintf("prepare_stuck_%s_step%d", lazy.job.ID, step+1)
+				saveApplyDebug(page, slug)
+				errs := pageValidationErrors(page)
+				b.log.Warn().Int("step", step+1).Str("nav_label", label).Str("nav_kind", kind).
+					Strs("validation_errors", errs).Str("step_hash", stepHash).
+					Msg("prepare: form did not advance")
+				if len(errs) > 0 {
+					return fmt.Errorf("prepare: scan incomplete — form did not advance at step %d (validation: %s)", step+1, strings.Join(errs, "; "))
+				}
 				return fmt.Errorf("prepare: scan incomplete — form did not advance at step %d", step+1)
 			}
 		} else {
@@ -129,8 +151,18 @@ func (b *Bot) linkedInVerifyFinalReviewResume(page *rod.Page, resumePath string)
 
 func (b *Bot) linkedInApplyStepHash(page *rod.Page) string {
 	res, err := page.Eval(`() => {
-		const t = (document.body && document.body.innerText || '').substring(0, 400);
-		return t.replace(/\s+/g, ' ').trim();
+` + jsLinkedInApplyContainerFn + `
+		const container = resolveApplyContainer();
+		const root = container || document.body;
+		const t = (root.innerText || '').substring(0, 600);
+		const legends = [];
+		if (container) {
+			for (const el of container.querySelectorAll('legend, h1, h2, h3, [data-test-modal-title]')) {
+				const s = (el.textContent || '').replace(/\s+/g, ' ').trim();
+				if (s && s.length < 120) legends.push(s);
+			}
+		}
+		return (legends.slice(0, 4).join(' | ') + ' :: ' + t.replace(/\s+/g, ' ').trim()).substring(0, 700);
 	}`)
 	if err != nil {
 		return ""
@@ -212,7 +244,12 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 		prepErr = b.easyApply(ctx, jobPage, lazy)
 	}
 	if prepErr != nil {
-		if !errors.Is(prepErr, context.Canceled) && !errors.Is(prepErr, context.DeadlineExceeded) {
+		// Persist the real failure whenever the server-owned preparation context is still live.
+		// An internal per-operation timeout (e.g. Rod's element budget) surfaces as a wrapped
+		// context.DeadlineExceeded while ctx itself is still active — that is a genuine failure and
+		// must replace any stale preview error. Only skip when the preparation ctx itself was
+		// cancelled/expired (a client disconnect does NOT cancel it — prep is server-owned).
+		if ctx.Err() == nil {
 			pack := documents.ParseApplicationPackJSON(lazy.packJSONForPersist())
 			pack.HoldReason = prepErr.Error()
 			// Preserve runtime capabilities + selection established before the hold so the UI
