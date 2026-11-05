@@ -66,11 +66,110 @@ func rodTestPage(t *testing.T, html string) *rod.Page {
 
 func evalScanFields(t *testing.T, page *rod.Page) []formField {
 	t.Helper()
-	res, err := page.Eval(jsScanFields)
+	return evalScanFieldsOpts(t, page, nil)
+}
+
+func evalScanFieldsOpts(t *testing.T, page *rod.Page, opts map[string]interface{}) []formField {
+	t.Helper()
+	res, err := page.Eval(jsScanFields, opts)
 	require.NoError(t, err)
 	var fields []formField
 	require.NoError(t, json.Unmarshal([]byte(res.Value.String()), &fields))
 	return fields
+}
+
+const htmlSDUIImplicitTextInput = `<!DOCTYPE html><html><body>
+<dialog open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <p>What are your working rights in Australia?*</p>
+    <input required="" id="rights-in" aria-label="What are your working rights in Australia?" />
+    <footer><button type="button"><span>Review</span></button></footer>
+  </div>
+</dialog>
+</body></html>`
+
+func TestJsScanFields_SDUI_ImplicitTextInputWithoutTypeAttribute(t *testing.T) {
+	page := rodTestPage(t, htmlSDUIImplicitTextInput)
+	fields := evalScanFields(t, page)
+	require.Len(t, fields, 1)
+	require.Equal(t, "text", fields[0].Type)
+	require.Contains(t, fields[0].Question, "working rights")
+}
+
+const htmlSDUICharLimitCounter = `<!DOCTYPE html><html><body>
+<dialog open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <p>Expected salary (AUD)*</p>
+    <input id="salary-in" maxlength="20" aria-label="Expected salary (AUD)" value="" />
+    <span>0 of 20 characters</span>
+  </div>
+</dialog>
+</body></html>`
+
+func TestJsScanFields_SDUI_ReadsMaxCharsFromCounterOrMaxlength(t *testing.T) {
+	page := rodTestPage(t, htmlSDUICharLimitCounter)
+	fields := evalScanFields(t, page)
+	require.Len(t, fields, 1)
+	require.Equal(t, 20, fields[0].MaxChars)
+}
+
+const htmlSDUICheckedRadioNoError = `<!DOCTYPE html><html><body>
+<dialog open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <p>Are you eligible to work in Australia?*</p>
+    <fieldset role="radiogroup">
+      <div>
+        <input type="radio" checked name="radio-group-q1" id="r-yes" aria-label="Are you eligible to work in Australia?" />
+        <label for="r-yes"></label>
+        <p>Yes</p>
+      </div>
+      <div>
+        <input type="radio" name="radio-group-q1" id="r-no" aria-label="Are you eligible to work in Australia?" />
+        <label for="r-no"></label>
+        <p>No</p>
+      </div>
+    </fieldset>
+  </div>
+</dialog>
+</body></html>`
+
+func TestJsScanFields_SDUI_SkipsCheckedRadioUnlessRecheckRequested(t *testing.T) {
+	page := rodTestPage(t, htmlSDUICheckedRadioNoError)
+	require.Empty(t, evalScanFields(t, page))
+	fields := evalScanFieldsOpts(t, page, map[string]interface{}{"includeAnsweredRadios": true})
+	require.Len(t, fields, 1)
+	require.Equal(t, "radio", fields[0].Type)
+	require.Contains(t, fields[0].Question, "eligible")
+	require.Equal(t, "Yes", fields[0].Options[0].Label)
+	require.Equal(t, "No", fields[0].Options[1].Label)
+}
+
+const htmlSDUICheckedRadioValidationFlag = `<!DOCTYPE html><html><body>
+<dialog open="">
+  <div data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.easyapply.EasyApply">
+    <p>Are you eligible to work in Australia?*</p>
+    <fieldset aria-describedby="error-message-q1" role="radiogroup">
+      <div>
+        <input type="radio" checked name="radio-group-q1" id="r-yes" aria-label="Are you eligible to work in Australia?" />
+        <label for="r-yes"></label>
+        <p>Yes</p>
+      </div>
+      <div>
+        <input type="radio" name="radio-group-q1" id="r-no" aria-label="Are you eligible to work in Australia?" />
+        <label for="r-no"></label>
+        <p>No</p>
+      </div>
+    </fieldset>
+    <div id="error-message-q1"></div>
+  </div>
+</dialog>
+</body></html>`
+
+func TestJsScanFields_SDUI_IncludesCheckedRadioWhenValidationFlagged(t *testing.T) {
+	page := rodTestPage(t, htmlSDUICheckedRadioValidationFlag)
+	fields := evalScanFields(t, page)
+	require.Len(t, fields, 1)
+	require.Equal(t, "radio", fields[0].Type)
 }
 
 func TestJsScanFields_ReviewCTAWithRequiredCoverStillScans(t *testing.T) {

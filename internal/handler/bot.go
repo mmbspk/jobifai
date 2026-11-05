@@ -168,6 +168,8 @@ func (h *BotHandlers) ReviewListPending(w http.ResponseWriter, r *http.Request) 
 			log.Error().Err(err).Msg("review pending: scan row")
 			continue
 		}
+		p.ResumePath = documents.JobApplicationRelRef(p.ResumePath)
+		p.CoverLetterPath = documents.JobApplicationRelRef(p.CoverLetterPath)
 		p.CreatedAt, _ = parseTime(createdStr)
 		if halalJSON != "" {
 			var hv domain.HalalVerdict

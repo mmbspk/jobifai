@@ -28,7 +28,7 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 	expectedPath := linkedInJobPath(lazy.job.URL)
 	prevStepHash := ""
 	stuckSteps := 0
-	for step := 0; step < 12; step++ {
+	for step := 0; step < maxPrepareApplySteps; step++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -83,15 +83,14 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 		if stepHash != "" && stepHash == prevStepHash {
 			stuckSteps++
 			if stuckSteps == 1 {
+				stuckFill := FillFormStepOpts{IncludeAnsweredRadios: true, VisionFallback: true}
+				b.log.Warn().Int("step", step+1).Msg("prepare: step did not advance, re-filling with recheck")
+				_, _, refillErr := b.fillFormStep(ctx, page, lazy, stuckFill)
+				if refillErr != nil {
+					return fmt.Errorf("prepare: form step %d failed: %w", step+1, refillErr)
+				}
 				if errs := pageValidationErrors(page); len(errs) > 0 {
-					b.log.Warn().Int("step", step+1).Strs("errors", errs).Msg("prepare: validation errors, re-filling step")
-					refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)
-					if refillErr != nil {
-						return fmt.Errorf("prepare: form step %d failed: %w", step+1, refillErr)
-					}
-					if refilled {
-						stuckSteps = 0
-					}
+					b.log.Warn().Int("step", step+1).Strs("errors", errs).Msg("prepare: validation errors after recheck")
 				}
 			}
 			if stuckSteps >= 2 {
@@ -305,6 +304,8 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 		CoverSkip:       lazy.coverSkipOverride,
 	}
 	resumePath, coverPath := lazy.peek()
+	resumePath = documents.JobApplicationRelRef(resumePath)
+	coverPath = documents.JobApplicationRelRef(coverPath)
 	pack.Resume.LocalPath = resumePath
 	pack.Cover.LocalPath = coverPath
 	packJSON := documents.WriteApplicationPackJSON(pack)

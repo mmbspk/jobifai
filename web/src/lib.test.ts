@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { cn, scoreColor, scoreBg, scoreBand, scoreBandLabel, relativeTime, formatDate, formatPostedDisplay } from './lib'
+import { applicationFilePreviewHref, cn, scoreColor, scoreBg, scoreBand, scoreBandLabel, relativeTime, formatDate, formatPostedDisplay } from './lib'
 
 describe('cn', () => {
   test('merges class names', () => {
@@ -120,5 +120,16 @@ describe('formatDate', () => {
   test('includes the year', () => {
     const result = formatDate('2026-05-07T10:30:00Z')
     expect(result).toContain('2026')
+  })
+})
+
+describe('applicationFilePreviewHref', () => {
+  test('strips absolute path to api/files suffix', () => {
+    expect(
+      applicationFilePreviewHref(
+        '/Users/me/jobifai/job_applications/__default__/448/resume.pdf',
+        'tok',
+      ),
+    ).toBe('/api/files/__default__/448/resume.pdf?token=tok')
   })
 })

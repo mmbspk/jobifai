@@ -53,8 +53,21 @@ func pageValidationErrors(page *rod.Page) []string {
 			out.push(t);
 		};
 		for (const el of document.querySelectorAll(
-			'.artdeco-inline-feedback--error, .fb-dash-form-element__error-text, [data-test-form-element-error-message]')) {
+			'.artdeco-inline-feedback--error, .fb-dash-form-element__error-text, [data-test-form-element-error-message], [id^="error-message-"], [class*="error-message"]')) {
 			push(el);
+		}
+		const container = document.querySelector('dialog[open], .jobs-easy-apply-content, .jobs-easy-apply-modal');
+		if (container) {
+			const walk = (root) => {
+				try {
+					for (const el of root.querySelectorAll('*')) {
+						const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+						if (/Invalid input/i.test(t) && t.length < 120) out.push(t);
+						if (el.shadowRoot) walk(el.shadowRoot);
+					}
+				} catch (e) {}
+			};
+			walk(container);
 		}
 		for (const el of document.querySelectorAll('[role="alert"]')) {
 			const cls = (typeof el.className === 'string' ? el.className : '');

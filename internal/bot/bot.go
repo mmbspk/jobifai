@@ -2325,7 +2325,11 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 
 		// Fill any unanswered fields on the current step before clicking the action button.
-		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy)
+		fillOpts := FillFormStepOpts{}
+		if noAdvanceCount > 0 {
+			fillOpts = FillFormStepOpts{IncludeAnsweredRadios: true, VisionFallback: true}
+		}
+		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy, fillOpts)
 		if fillErr != nil {
 			if isFormFillFatalLLM(fillErr) {
 				b.abortOnLLMFailure(fillErr)
@@ -2424,7 +2428,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if noAdvanceCount >= stuckThreshold {
 			if errs := pageValidationErrors(page); len(errs) > 0 {
 				b.log.Warn().Strs("errors", errs).Msg("easy apply: validation errors on page, re-filling step")
-				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)
+				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy, FillFormStepOpts{IncludeAnsweredRadios: true, VisionFallback: true})
 				if refillErr != nil {
 					if isFormFillFatalLLM(refillErr) {
 						b.abortOnLLMFailure(refillErr)

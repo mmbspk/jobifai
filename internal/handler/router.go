@@ -355,16 +355,24 @@ func NewRouter(svc *Services) *chi.Mux {
 		// Verify the requesting user owns this file — prevents IDOR.
 		if svc.DB != nil && userID != "" {
 			relPath := filepath.Join("job_applications", filepath.ToSlash(p))
+			suffixPattern := "%" + filepath.ToSlash(p)
 			var exists int
 			if err := svc.DB.QueryRowContext(r.Context(), `
 				SELECT 1 FROM (
 					SELECT 1 FROM jobs_applied
-					WHERE user_id = ? AND (resume_path = ? OR cover_letter_path = ?)
+					WHERE user_id = ? AND (
+						resume_path = ? OR cover_letter_path = ?
+						OR resume_path LIKE ? OR cover_letter_path LIKE ?
+					)
 					UNION ALL
 					SELECT 1 FROM jobs_pending_review
-					WHERE user_id = ? AND (resume_path = ? OR cover_letter_path = ?)
+					WHERE user_id = ? AND (
+						resume_path = ? OR cover_letter_path = ?
+						OR resume_path LIKE ? OR cover_letter_path LIKE ?
+					)
 				) LIMIT 1`,
-				userID, relPath, relPath, userID, relPath, relPath,
+				userID, relPath, relPath, suffixPattern, suffixPattern,
+				userID, relPath, relPath, suffixPattern, suffixPattern,
 			).Scan(&exists); err != nil && !errors.Is(err, sql.ErrNoRows) {
 				log.Warn().Err(err).Str("path", relPath).Str("user_id", userID).Msg("file ownership check: db error")
 			}
@@ -372,6 +380,10 @@ func NewRouter(svc *Services) *chi.Mux {
 				http.Error(w, "not found", http.StatusNotFound)
 				return
 			}
+		}
+		if strings.EqualFold(filepath.Ext(target), ".pdf") {
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Disposition", "inline")
 		}
 		http.ServeFile(w, r, target)
 	})
