@@ -352,16 +352,26 @@ const jsLinkedInSearchJobs = `() => {
    const m = key.match(/^job-card-component-ref-(\d+)$/);
    return m ? m[1] : '';
  };
+ const linesFromJobCard = root => {
+   if (!root) return [];
+   const spanLines = [];
+   root.querySelectorAll('span').forEach(s => {
+     const t = norm(s.textContent);
+     if (t) spanLines.push(t);
+   });
+   if (spanLines.length > 0) return spanLines;
+   return (root.innerText || '').split('\n').map(norm).filter(Boolean);
+ };
+ const peelSelected = l => norm(l).replace(/^selected,\s*/i, '').trim();
  const parseJobButtonLines = lines => {
    const skip = l =>
      !l ||
-     /^selected,/i.test(l) ||
      /^viewed$/i.test(l) ||
      /^be an early applicant$/i.test(l) ||
      /school alumni$/i.test(l) ||
      /^posted /i.test(l) ||
      /^\d+ (hour|day|week|month)s? ago$/i.test(l);
-   const clean = lines.map(norm).filter(l => !skip(l));
+   const clean = lines.map(peelSelected).filter(l => l && !skip(l));
    let title = '';
    let company = '';
    let location = '';
@@ -412,8 +422,7 @@ const jsLinkedInSearchJobs = `() => {
      el.getAttribute('role') === 'button'
        ? el
        : el.querySelector('[role="button"][componentkey^="job-card-component-ref-"]') || el.querySelector('[role="button"]');
-   const lines = (btn && btn.innerText ? btn.innerText : el.innerText || '').split('\n');
-   const meta = parseJobButtonLines(lines);
+   const meta = parseJobButtonLines(linesFromJobCard(btn || el));
    const row = aiRowMeta(btn || el);
    const link = document.querySelector('a[href*="/jobs/view/' + id + '"]');
    add(id, meta.title, meta.company, meta.location, link && link.href, row.easy, row.applied);
