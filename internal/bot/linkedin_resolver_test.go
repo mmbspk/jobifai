@@ -285,6 +285,21 @@ func TestLinkedInConfirmation_RequiresVerifiedJobAndEmployer(t *testing.T) {
 	require.False(t, linkedInSubmissionConfirmed(page, "4478417422", "Company"))
 }
 
+func TestLinkedInSubmissionConfirmed_RejectsUnscopedToastWrongEmployer(t *testing.T) {
+	t.Parallel()
+	br := launchTestBrowser(t)
+	// Non-unique panes keep identity_verified false while the URL still targets job 111.
+	html := `<div data-job-id="111"><h1><a href="/jobs/view/111">Role A</a></h1><button>Easy Apply</button></div>
+<div data-job-id="111"><h1><a href="/jobs/view/111">Role B</a></h1></div>
+<div class="artdeco-toast-item" role="status">Application submitted to Other Employer.</div>`
+	srv := fixtureServer(t, "111", "", html, "")
+	page := navigateAndWait(t, br, srv.URL+"/jobs/view/111")
+	evidence, err := page.Eval(jsLinkedInResolve, "111", false)
+	require.NoError(t, err)
+	require.False(t, evidence.Value.Get("identity_verified").Bool())
+	require.False(t, linkedInSubmissionConfirmed(page, "111", "Intended Employer"))
+}
+
 // TestReadLinkedInDescription_SDUIDescriptionRemovedAndReinsertedOnExpand is a
 // regression for the React re-render race described in PR #105.
 //

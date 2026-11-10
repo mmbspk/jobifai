@@ -177,8 +177,8 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
 
 // A completion dialog is evidence only after our Submit click and while the
 // original job is still verified. Employer text must match the declared job
-// when the confirmation names a recipient; Applied CTA and generic success copy
-// are accepted when the job path still matches.
+// when the confirmation names a recipient. Generic success copy is accepted only
+// with verified job identity and job-scoped UI (path or data-job-id owner).
 // Callers must not use this to infer a prior application before submission.
 const jsLinkedInSubmissionConfirmed = `(expectedID, company) => {
  const evidence=JSON.parse((` + jsLinkedInResolve + `)(expectedID,false));
@@ -188,20 +188,40 @@ const jsLinkedInSubmissionConfirmed = `(expectedID, company) => {
  if(evidence.identity_verified && evidence.kind==='already_applied') return true;
  const norm=s=>(s||'').toLowerCase().replace(/\s+/g,' ').trim();
  const employer=norm(company);
+ const stripCorp=s=>(s||'').replace(/\b(pty|ltd|limited|inc|llc)\b\.?/g,'').replace(/\s+/g,' ').trim();
  const successRe=/application (was sent|submitted)|applied successfully|application submitted/i;
+ const recipientRe=/(?:application\s+)?(?:was\s+)?(?:sent|submitted)\s+to\s+([^.,!\n]+)/i;
+ const ownerJobID=el=>{
+   if(!el) return '';
+   const o=el.closest('[data-job-id], [data-job-detail-id]');
+   if(!o) return '';
+   return (o.getAttribute('data-job-id')||o.getAttribute('data-job-detail-id')||'').replace(/^urn:li:(?:fsd_)?jobPosting:/,'');
+ };
  const dialogs=[...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-artdeco-toast-item], .artdeco-toast-item')];
  for(const el of dialogs){
    if(el.closest('[class*="msg-overlay"], aside, [class*="similar-job"]')) continue;
-   const owner=el.closest('[data-job-id], [data-job-detail-id]');
-   if(owner && (owner.getAttribute('data-job-id') || owner.getAttribute('data-job-detail-id'))!==expectedID) continue;
-   if(pathID!==expectedID && (!owner || (owner.getAttribute('data-job-id') || owner.getAttribute('data-job-detail-id'))!==expectedID)) continue;
+   const ownerID=ownerJobID(el);
+   if(ownerID && ownerID!==expectedID) continue;
+   if(!evidence.identity_verified) {
+     if(ownerID!==expectedID) continue;
+   } else if(pathID!==expectedID && ownerID!==expectedID) continue;
    const rect=el.getBoundingClientRect(), style=getComputedStyle(el);
    if(rect.width<2 || rect.height<2 || style.display==='none' || style.visibility==='hidden') continue;
    const text=norm(el.innerText || el.textContent);
    if(text.includes('review your application')) continue;
    if(!successRe.test(text)) continue;
-   if(!employer || text.includes(employer)) return true;
-   if(text.includes('application submitted') || text.includes('applied successfully')) return true;
+   const named=recipientRe.exec(text);
+   if(named && employer) {
+    const got=stripCorp(norm(named[1])), want=stripCorp(employer);
+    if(got && want && got!==want && !got.includes(want) && !want.includes(got)) continue;
+   }
+   if(employer) {
+     if(text.includes(employer)) return true;
+     continue;
+   }
+   if(!evidence.identity_verified) continue;
+   const jobScoped=ownerID===expectedID || pathID===expectedID || !!el.closest('.jobs-easy-apply-modal, .jobs-easy-apply-content');
+   if(jobScoped && successRe.test(text)) return true;
  }
  return false;
 }`
