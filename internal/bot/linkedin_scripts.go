@@ -202,9 +202,10 @@ const jsLinkedInSubmissionConfirmed = `(expectedID, company) => {
    if(el.closest('[class*="msg-overlay"], aside, [class*="similar-job"]')) continue;
    const ownerID=ownerJobID(el);
    if(ownerID && ownerID!==expectedID) continue;
+   const pathMatches=pathID===expectedID;
    if(!evidence.identity_verified) {
-     if(ownerID!==expectedID) continue;
-   } else if(pathID!==expectedID && ownerID!==expectedID) continue;
+     if(ownerID!==expectedID && !pathMatches) continue;
+   } else if(!pathMatches && ownerID!==expectedID) continue;
    const rect=el.getBoundingClientRect(), style=getComputedStyle(el);
    if(rect.width<2 || rect.height<2 || style.display==='none' || style.visibility==='hidden') continue;
    const text=norm(el.innerText || el.textContent);
@@ -220,7 +221,7 @@ const jsLinkedInSubmissionConfirmed = `(expectedID, company) => {
      continue;
    }
    if(!evidence.identity_verified) continue;
-   const jobScoped=ownerID===expectedID || pathID===expectedID || !!el.closest('.jobs-easy-apply-modal, .jobs-easy-apply-content');
+   const jobScoped=ownerID===expectedID || pathMatches || !!el.closest('.jobs-easy-apply-modal, .jobs-easy-apply-content');
    if(jobScoped && successRe.test(text)) return true;
  }
  return false;
