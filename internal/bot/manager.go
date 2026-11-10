@@ -621,7 +621,14 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
 	}
 	if applyErr != nil {
-		if linkedInNeedsReview(applyErr) {
+		if errors.Is(applyErr, errLinkedInSubmissionUnknown) && domain.Platform(req.Platform) == domain.PlatformLinkedIn {
+			if linkedInSubmitReconciled(jobPage, req.Link, req.Company) {
+				log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).
+					Msg("approve: submission confirmed on job page after reconcile")
+				applyErr = nil
+			}
+		}
+		if applyErr != nil && linkedInNeedsReview(applyErr) {
 			b.preserveLinkedInReview(ctx, managerLazy.job, score, req.SuitabilityReasoning, applyErr)
 			_, _ = m.db.Exec(`DELETE FROM jobs_approved_queue WHERE job_id=? AND user_id=?`, req.JobID, userID)
 			outcome, stage, code := linkedInReviewOutcome(applyErr)

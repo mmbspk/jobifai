@@ -138,6 +138,46 @@ func TestLinkedInCheckResumeAccepted_ContainerNotFound(t *testing.T) {
 	require.False(t, res.Value.Get("error").Bool())
 }
 
+// TestLinkedInResumeRadioGroupName_AfterLazyInject matches Remotefolio SDUI: empty fieldset
+// before upload, then easyApplyUploadedResumeRef gains a checked radio named radio-group-*.
+func TestLinkedInResumeRadioGroupName_AfterLazyInject(t *testing.T) {
+	html := nativeDialogShell(`
+    <div data-testid="lazy-column">
+      <p>Resume*</p>
+      <fieldset role="radiogroup">
+        <div id="easyApplyUploadedResumeRef">
+          <p><span>resume_3ee2a7da.pdf</span></p>
+          <input type="radio" name="radio-group-_r_1l_" id="_r_1o_" checked aria-label="resume_3ee2a7da.pdf">
+        </div>
+      </fieldset>
+      <button type="button"><span><span>Upload resume</span></span></button>
+    </div>`)
+	page := rodTestPage(t, html)
+
+	res, err := page.Eval(jsLinkedInResumeRadioGroupName, "resume_3ee2a7da.pdf")
+	require.NoError(t, err)
+	require.Equal(t, "radio-group-_r_1l_", res.Value.String())
+}
+
+// TestLinkedInCheckResumeAccepted_FallbackSDUIAttachment verifies acceptance when the
+// SDUI resume step shows the filename in a span before radios are indexed the usual way.
+func TestLinkedInCheckResumeAccepted_FallbackSDUIAttachment(t *testing.T) {
+	html := nativeDialogShell(`
+    <div class="resume-block">
+      <p>Resume <span aria-hidden="true">*</span></p>
+      <div class="card">
+        <p><span>resume_3ee2a7da.pdf</span></p>
+        <input type="radio" name="radio-group-test" aria-label="resume_3ee2a7da.pdf" checked>
+      </div>
+      <button type="button"><span><span>Upload resume</span></span></button>
+    </div>`)
+	page := rodTestPage(t, html)
+
+	res, err := page.Eval(jsLinkedInCheckResumeAccepted, "resume_3ee2a7da.pdf")
+	require.NoError(t, err)
+	require.True(t, res.Value.Get("filenameVisible").Bool(), "fallback must confirm tailored filename")
+}
+
 // TestLinkedInWaitForResumeAccepted_IdentityUnverifiable verifies that when the
 // checked radio label does not match the expected filename, errUploadIdentityUnverifiable
 // is returned — triggering a HOLD rather than a hard failure.
@@ -572,8 +612,23 @@ func TestLinkedInResumePreUploadState_EmptyFieldset(t *testing.T) {
 
 	res, err := page.Eval(jsLinkedInResumePreUploadState, "any_resume.pdf")
 	require.NoError(t, err)
-	require.False(t, res.Value.Get("stateVerified").Bool(), "empty fieldset must not return stateVerified:true immediately")
+	require.True(t, res.Value.Get("stateVerified").Bool(), "empty fieldset with no dialog radios is an upload-only library")
 	require.True(t, res.Value.Get("sectionFound").Bool(), "sectionFound must be true when fieldset is identified")
+	require.False(t, res.Value.Get("filenameExisted").Bool())
+}
+
+func TestLinkedInResumePreUploadState_EmptyUploadOnly(t *testing.T) {
+	html := nativeDialogShell(`
+    <div class="resume-block">
+      <p>Resume <span aria-hidden="true">*</span></p>
+      <button><span><span>Upload resume</span></span></button>
+    </div>`)
+	page := rodTestPage(t, html)
+
+	res, err := page.Eval(jsLinkedInResumePreUploadState, "resume_abc12345.pdf")
+	require.NoError(t, err)
+	require.True(t, res.Value.Get("sectionFound").Bool())
+	require.True(t, res.Value.Get("stateVerified").Bool())
 	require.False(t, res.Value.Get("filenameExisted").Bool())
 }
 

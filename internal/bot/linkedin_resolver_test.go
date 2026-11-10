@@ -264,6 +264,15 @@ func TestSubmitEasyApply_VerifiedNativeConfirmation(t *testing.T) {
 	require.Equal(t, string(OutcomeSubmittedConfirmed), outcome)
 }
 
+func TestLinkedInConfirmation_AppliedCTAWithoutDialog(t *testing.T) {
+	br := launchTestBrowser(t)
+	html := `<main data-job-id="4479748087"><h1>Role</h1>
+ <button data-test-job-apply-button-applied="" aria-label="Applied">Applied</button></main>`
+	srv := fixtureServer(t, "4479748087", "", html, "")
+	page := navigateAndWait(t, br, srv.URL+"/jobs/view/4479748087")
+	require.True(t, linkedInSubmissionConfirmed(page, "4479748087", "Company"))
+}
+
 func TestLinkedInConfirmation_RequiresVerifiedJobAndEmployer(t *testing.T) {
 	br := launchTestBrowser(t)
 	html := `<main data-job-id="4479748087"><h1>Role</h1><button>Easy Apply</button></main><div role="dialog">Your application was sent to OtherCo</div>`

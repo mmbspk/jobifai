@@ -104,6 +104,15 @@ func (c *jobSeenCache) reason(jobID string) string {
 	return kind.reason()
 }
 
+func (c *jobSeenCache) forget(jobID string) {
+	if jobID == "" {
+		return
+	}
+	c.mu.Lock()
+	delete(c.byID, jobID)
+	c.mu.Unlock()
+}
+
 func (c *jobSeenCache) mark(jobID string, kind jobSeenKind) {
 	if jobID == "" {
 		return

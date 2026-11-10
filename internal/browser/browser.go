@@ -430,10 +430,13 @@ func loginStateScript(platform string) string {
 	case "linkedin":
 		return `() => {
 			const u = (location.href || '').toLowerCase();
-			if (u.includes('/login') || u.includes('/checkpoint') || u.includes('/authwall') || u.includes('/uas/login')) return 'no';
+			if (u.includes('authwall') || u.includes('/login') || u.includes('/checkpoint') || u.includes('/uas/login')) return 'no';
 			if (document.querySelector('input[name="session_key"], form.login__form, .login__form')) return 'no';
 			if (document.querySelector('#global-nav, .global-nav, [data-test-global-nav], .feed-identity-module')) return 'yes';
 			if (document.querySelector('.global-nav__me, img.global-nav__me-photo')) return 'yes';
+			if (document.querySelector('[componentkey="primaryNavLinksComponentRef"], [componentkey="navBarJobTypeaheadComponentRef"]')) return 'yes';
+			if (document.querySelector('[componentkey^="job-card-component-ref-"]')) return 'yes';
+			if (/\/jobs\/search(-results)?\//i.test(location.pathname) && /\d+\s+results?/i.test((document.body.innerText || ''))) return 'yes';
 			return 'unknown';
 		}`
 	default:

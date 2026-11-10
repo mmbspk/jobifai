@@ -176,7 +176,9 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
 }`
 
 // A completion dialog is evidence only after our Submit click and while the
-// original job is still verified. Employer text must match the declared job.
+// original job is still verified. Employer text must match the declared job
+// when the confirmation names a recipient; Applied CTA and generic success copy
+// are accepted when the job path still matches.
 // Callers must not use this to infer a prior application before submission.
 const jsLinkedInSubmissionConfirmed = `(expectedID, company) => {
  const evidence=JSON.parse((` + jsLinkedInResolve + `)(expectedID,false));
@@ -186,16 +188,249 @@ const jsLinkedInSubmissionConfirmed = `(expectedID, company) => {
  if(evidence.identity_verified && evidence.kind==='already_applied') return true;
  const norm=s=>(s||'').toLowerCase().replace(/\s+/g,' ').trim();
  const employer=norm(company);
- if(!employer) return false;
- return [...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content')].some(el=>{
-   if(el.closest('[class*="msg-overlay"], aside, [class*="similar-job"]')) return false;
+ const successRe=/application (was sent|submitted)|applied successfully|application submitted/i;
+ const dialogs=[...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-artdeco-toast-item], .artdeco-toast-item')];
+ for(const el of dialogs){
+   if(el.closest('[class*="msg-overlay"], aside, [class*="similar-job"]')) continue;
    const owner=el.closest('[data-job-id], [data-job-detail-id]');
-   if(owner && (owner.getAttribute('data-job-id') || owner.getAttribute('data-job-detail-id'))!==expectedID) return false;
-   if(pathID!==expectedID && (!owner || (owner.getAttribute('data-job-id') || owner.getAttribute('data-job-detail-id'))!==expectedID)) return false;
+   if(owner && (owner.getAttribute('data-job-id') || owner.getAttribute('data-job-detail-id'))!==expectedID) continue;
+   if(pathID!==expectedID && (!owner || (owner.getAttribute('data-job-id') || owner.getAttribute('data-job-detail-id'))!==expectedID)) continue;
    const rect=el.getBoundingClientRect(), style=getComputedStyle(el);
-   if(rect.width<2 || rect.height<2 || style.display==='none' || style.visibility==='hidden') return false;
+   if(rect.width<2 || rect.height<2 || style.display==='none' || style.visibility==='hidden') continue;
    const text=norm(el.innerText || el.textContent);
-   if(text.includes('review your application')) return false;
-   return text.includes(employer) && /application (was sent|submitted)|applied successfully/.test(text);
+   if(text.includes('review your application')) continue;
+   if(!successRe.test(text)) continue;
+   if(!employer || text.includes(employer)) return true;
+   if(text.includes('application submitted') || text.includes('applied successfully')) return true;
+ }
+ return false;
+}`
+
+const jsLinkedInUncheckFollowCompany = `() => {
+ const norm=s=>(s||'').toLowerCase().replace(/\s+/g,' ').trim();
+ const modal=document.querySelector('.jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-modal], [role="dialog"]');
+ const root=modal || document;
+ const followLabel=label=>{
+   const l=norm(label);
+   return /follow/.test(l) && (/compan|hiring|recruiter|poster|posting|job\s+alert/i.test(l) || l.includes('follow '));
+ };
+ const uncheckNative=cb=>{
+   if(!cb || !cb.checked) return;
+   cb.checked=false;
+   cb.dispatchEvent(new Event('input',{bubbles:true}));
+   cb.dispatchEvent(new Event('change',{bubbles:true}));
+ };
+ const labelFor=el=>{
+   if(el.labels && el.labels[0]) return el.labels[0].textContent || '';
+   const id=el.id, lbl=id?root.querySelector('label[for="'+id+'"]'):null;
+   if(lbl) return lbl.textContent || '';
+   const wrap=el.closest('label');
+   if(wrap) return wrap.textContent || '';
+   const aria=el.getAttribute('aria-label') || '';
+   if(aria) return aria;
+   const near=el.closest('[data-test-form-element], fieldset, [role="group"], li');
+   return near ? (near.textContent || '') : '';
+ };
+ for(const cb of root.querySelectorAll('input[type="checkbox"]')) {
+   if(cb.id==='follow-company-checkbox' || (cb.name||'').includes('follow-company') || followLabel(labelFor(cb))) uncheckNative(cb);
+ }
+ for(const w of root.querySelectorAll('[role="checkbox"]')) {
+   if(followLabel(w.getAttribute('aria-label') || w.textContent || '') && w.getAttribute('aria-checked')==='true') w.click();
+ }
+ return true;
+}`
+
+// When the strict resolver cannot pick a unique SDUI pane, the listing URL and a
+// visible Applied control are enough to treat the submission as confirmed.
+const jsLinkedInAppliedLoose = `(expectedID) => {
+ const u=new URL(location.href);
+ const pathID=(u.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'';
+ if(pathID && pathID!==expectedID) return false;
+ const visible=el=>{
+   const r=el.getBoundingClientRect();
+   if(r.width<2||r.height<2) return false;
+   for(let n=el;n;n=n.parentElement){
+     const s=getComputedStyle(n);
+     if(s.display==='none'||s.visibility==='hidden') return false;
+     if(n.matches && n.matches('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="people-also-viewed"]')) return false;
+   }
+   return true;
+ };
+ const selectors='button[aria-label="Applied"], button[aria-label^="Applied to"], [data-test-job-apply-button-applied], a[aria-label="Applied"]';
+ if([...document.querySelectorAll(selectors)].some(visible)) return true;
+ const root=document.querySelector('.jobs-unified-top-card, .job-details-jobs-unified-top-card__container, main') || document.body;
+ const text=(root.innerText||'').toLowerCase().replace(/\s+/g,' ');
+ return /you applied|application submitted|applied \d|successfully applied/.test(text);
+}`
+
+// Collect job rows from the public jobs search SERP (classic list + SDUI occludable cards).
+const jsLinkedInSearchJobs = `() => {
+ const jobs = [];
+ const seen = new Set();
+ const norm = s => (s || '').trim().replace(/\s+/g, ' ');
+ const inRail = el => {
+   for (let n = el; n; n = n.parentElement) {
+     if (n.matches && n.matches('aside, footer, [class*="similar-job"], [class*="jobs-similar"], [class*="people-also-viewed"]')) return true;
+   }
+   return false;
+ };
+ const visible = el => {
+   if (!el || inRail(el)) return false;
+   for (let n = el; n; n = n.parentElement) {
+     const s = getComputedStyle(n);
+     if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return false;
+   }
+   const r = el.getBoundingClientRect();
+   if (r.width >= 2 && r.height >= 2) return true;
+   // Headless or not-yet-laid-out SERP rows can report 0×0 while still being the live list.
+   return el.isConnected && getComputedStyle(el).display !== 'none';
+ };
+ const jobIDFromHref = href => {
+   if (!href) return '';
+   try {
+     const u = new URL(href, location.href);
+     const m = u.pathname.match(/^\/jobs\/view\/([^/?#]+)/);
+     return m ? m[1] : '';
+   } catch { return ''; }
+ };
+ const add = (id, title, company, location, url, easyApply, alreadyApplied) => {
+   id = String(id || '').replace(/\D/g, '');
+   if (!id || seen.has(id)) return;
+   seen.add(id);
+   if (!url) url = 'https://www.linkedin.com/jobs/view/' + id + '/';
+   jobs.push({
+     id,
+     title: norm(title),
+     company: norm(company),
+     location: norm(location),
+     url,
+     easyApply: !!easyApply,
+     alreadyApplied: !!alreadyApplied
+   });
+ };
+ const cardMeta = root => {
+   let title = '';
+   const titleEl = root.querySelector('.job-card-list__title, .job-card-container__link, a[href*="/jobs/view/"]');
+   if (titleEl) title = titleEl.textContent || '';
+   let company = '';
+   const coEl = root.querySelector('.job-card-container__company-name, .artdeco-entity-lockup__subtitle, [data-testid="company-name"]');
+   if (coEl) company = coEl.textContent || '';
+   let location = '';
+   const locEl = root.querySelector('.job-card-container__metadata-wrapper li span, .job-card-container__metadata-wrapper li');
+   if (locEl) location = locEl.textContent || '';
+   let easy = !!root.querySelector("[aria-label*='Easy Apply'], .jobs-apply-button--top-card");
+   const txt = (root.innerText || '').toLowerCase();
+   let applied = !!root.querySelector('.job-card-container__footer-job-state, .artdeco-inline-feedback--success')
+     || txt.includes('you applied') || txt.includes('applied on');
+   return { title, company, location, easy, applied };
+ };
+ document.querySelectorAll('.job-card-container, .jobs-search-results__list-item, li.jobs-search-results__list-item').forEach(card => {
+   if (!visible(card)) return;
+   let id = card.getAttribute('data-job-id') || '';
+   const link = card.querySelector('a[href*="/jobs/view/"]');
+   if (!id && link) id = jobIDFromHref(link.getAttribute('href'));
+   const meta = cardMeta(card);
+   add(id, meta.title, meta.company, meta.location, link && link.href, meta.easy, meta.applied);
  });
+ document.querySelectorAll('[data-occludable-job-id]').forEach(card => {
+   if (!visible(card)) return;
+   const id = card.getAttribute('data-occludable-job-id') || '';
+   const link = card.querySelector('a[href*="/jobs/view/"]');
+   const meta = cardMeta(card);
+   add(id || (link && jobIDFromHref(link.getAttribute('href'))), meta.title, meta.company, meta.location, link && link.href, meta.easy, meta.applied);
+ });
+ document.querySelectorAll('div[data-job-id], li[data-job-id]').forEach(card => {
+   if (!visible(card) || card.matches('.job-card-container')) return;
+   const id = card.getAttribute('data-job-id') || '';
+   const link = card.querySelector('a[href*="/jobs/view/"]');
+   const meta = cardMeta(card);
+   add(id, meta.title, meta.company, meta.location, link && link.href, meta.easy, meta.applied);
+ });
+ // LinkedIn AI job search (/jobs/search-results): opaque classes, IDs on componentkey.
+ const jobCardRefID = el => {
+   const key = el.getAttribute('componentkey') || '';
+   const m = key.match(/^job-card-component-ref-(\d+)$/);
+   return m ? m[1] : '';
+ };
+ const parseJobButtonLines = lines => {
+   const skip = l =>
+     !l ||
+     /^selected,/i.test(l) ||
+     /^viewed$/i.test(l) ||
+     /^be an early applicant$/i.test(l) ||
+     /school alumni$/i.test(l) ||
+     /^posted /i.test(l) ||
+     /^\d+ (hour|day|week|month)s? ago$/i.test(l);
+   const clean = lines.map(norm).filter(l => !skip(l));
+   let title = '';
+   let company = '';
+   let location = '';
+   for (const raw of clean) {
+     const line = raw.replace(/\s*\(verified job\)\s*$/i, '').trim();
+     if (!line) continue;
+     if (!title) {
+       title = line;
+       continue;
+     }
+     if (line.toLowerCase() === title.toLowerCase()) continue;
+     if (!company) {
+       company = line;
+       continue;
+     }
+     if (
+       !location &&
+       (/,|\(hybrid\)|\(on-site\)|\(remote\)|\(work from home\)/i.test(line) ||
+         /\b(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT)\b/.test(line))
+     ) {
+       location = line
+         .replace(/\s+·\s+.*$/i, '')
+         .replace(/\s+\d+\s+school alumni.*$/i, '')
+         .replace(/\s+Posted .*$/i, '')
+         .trim();
+       break;
+     }
+   }
+   return { title, company, location };
+ };
+ const aiRowMeta = root => {
+   let easy = false;
+   let applied = false;
+   for (let n = root; n && n !== document.body; n = n.parentElement) {
+     const t = (n.innerText || '').toLowerCase();
+     if (t.length > 2500) break;
+     if (/\beasy apply\b/.test(t)) easy = true;
+     if (/\byou applied\b|\bapplied on\b|\bapplication submitted\b/.test(t)) applied = true;
+     if (n.querySelector && n.querySelector('button[aria-label^="Dismiss "]')) break;
+   }
+   return { easy, applied };
+ };
+ document.querySelectorAll('[componentkey^="job-card-component-ref-"]').forEach(el => {
+   if (!visible(el) && !el.isConnected) return;
+   const id = jobCardRefID(el);
+   if (!id) return;
+   const btn =
+     el.getAttribute('role') === 'button'
+       ? el
+       : el.querySelector('[role="button"][componentkey^="job-card-component-ref-"]') || el.querySelector('[role="button"]');
+   const lines = (btn && btn.innerText ? btn.innerText : el.innerText || '').split('\n');
+   const meta = parseJobButtonLines(lines);
+   const row = aiRowMeta(btn || el);
+   const link = document.querySelector('a[href*="/jobs/view/' + id + '"]');
+   add(id, meta.title, meta.company, meta.location, link && link.href, row.easy, row.applied);
+ });
+ return JSON.stringify(jobs);
+}`
+
+// Gate scraping when the SERP is a login/authwall instead of results.
+const jsLinkedInSearchAuthenticated = `() => {
+ const u = (location.href || '').toLowerCase();
+ if (u.includes('authwall') || u.includes('/login') || u.includes('/checkpoint') || u.includes('/uas/login')) return false;
+ if (document.querySelector('input[name="session_key"], form.login__form, .login__form')) return false;
+ if (document.querySelector('#global-nav, .global-nav, [data-test-global-nav], .feed-identity-module')) return true;
+ if (document.querySelector('[componentkey="primaryNavLinksComponentRef"], [componentkey="navBarJobTypeaheadComponentRef"]')) return true;
+ if (document.querySelector('[componentkey^="job-card-component-ref-"]')) return true;
+ if (/\/jobs\/search(-results)?\//i.test(location.pathname) && /\d+\s+results?/i.test(document.body.innerText || '')) return true;
+ const n = JSON.parse((` + jsLinkedInSearchJobs + `)()).length;
+ if (n > 0) return true;
+ return false;
 }`
