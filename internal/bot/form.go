@@ -80,6 +80,7 @@ type formField struct {
 	UploadViaButton bool              `json:"uploadViaButton"` // slot has no visible input; upload via button click + HandleFileDialog
 	ResumeGroupName string            `json:"resumeGroupName"` // radio group name inside the same section (empty if ambiguous or absent)
 	MaxChars        int               `json:"maxChars"`        // LinkedIn SDUI character cap (maxlength or "N of M characters")
+	SeekListbox     bool              `json:"seekListbox"`     // Seek custom listbox dropdown (not native <select>)
 }
 
 func (f formField) optionLabels() []string {
@@ -152,9 +153,15 @@ const jsScanFieldsInner = `
 		? anchor
 		: (anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor);
 
-	const isSeekApply = !!(container.closest && container.closest(
-		"[data-testid='quick-apply-form'], [data-automation='apply-form'], form[data-testid*='applicationForm']"
-	));
+	let scanRoot = container;
+	const isSeekApply = /\/job\/\d+\/apply(\/|$)/.test(location.pathname)
+		|| !!(container.closest && container.closest(
+			"[data-testid='quick-apply-form'], [data-automation='apply-form'], form[data-testid*='applicationForm']"
+		));
+	if (isSeekApply && /\/apply\/role-requirements/.test(location.pathname)) {
+		const main = document.querySelector('main');
+		if (main) scanRoot = main;
+	}
 
 	// Use htmlFor property to handle IDs with special characters like ":" (LinkedIn React IDs)
 	function labelFor(id) {
@@ -233,7 +240,7 @@ const jsScanFieldsInner = `
 			if (q.includes('resume') || q.includes('r\xe9sum\xe9') || q.includes('cv')) return 'resume';
 			return 'resume'; // default for upload buttons without qualifier
 		}
-		allInDOM(container, 'button,[role="button"]').filter(isVisible).forEach(btn => {
+		allInDOM(scanRoot, 'button,[role="button"]').filter(isVisible).forEach(btn => {
 			const lbl = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.textContent || '')).trim();
 			if (!/\bupload\b/i.test(lbl) || !/\b(resume|cv|r\xe9sum\xe9)\b/i.test(lbl)) return;
 
@@ -337,7 +344,7 @@ const jsScanFieldsInner = `
 	}
 
 	const seenRadio = new Set();
-	allInDOM(container, 'input[type="radio"]').filter(isContainerVisible).forEach(r => {
+	allInDOM(scanRoot, 'input[type="radio"]').filter(isContainerVisible).forEach(r => {
 		const groupKey = r.name || r.id;
 		if (!groupKey || seenRadio.has(groupKey)) return;
 		seenRadio.add(groupKey);
@@ -346,7 +353,7 @@ const jsScanFieldsInner = `
 		if (r.name) {
 			// Use JS property comparison, CSS selectors break on URN-style names
 			// containing colons and parentheses (LinkedIn's form element names).
-			all = allInDOM(container, 'input[type="radio"]').filter(x => x.name === r.name);
+			all = allInDOM(scanRoot, 'input[type="radio"]').filter(x => x.name === r.name);
 		} else {
 			const parent = r.closest('[data-test-form-element], .artdeco-form-element, fieldset, [role="group"]') || r.parentElement?.parentElement;
 			all = parent ? allInDOM(parent, 'input[type="radio"]') : [r];
@@ -392,7 +399,7 @@ const jsScanFieldsInner = `
 	// ── Checkbox groups (Lever ATS / LinkedIn consent questions) ─────────────
 	// Group by shared fieldset. Skip LinkedIn's "follow company" checkbox.
 	const seenCb = new Set();
-	allInDOM(container, 'input[type="checkbox"]').filter(isContainerVisible).forEach(cb => {
+	allInDOM(scanRoot, 'input[type="checkbox"]').filter(isContainerVisible).forEach(cb => {
 		const cbLabel = (labelFor(cb.id) || (cb.closest('label') && cb.closest('label').textContent) || cb.getAttribute('aria-label') || '').toLowerCase().replace(/\s+/g, ' ').trim();
 		if (cb.id === 'follow-company-checkbox' || (cb.name || '').includes('follow-company')) return;
 		if (/follow/.test(cbLabel) && (/compan|hiring|recruiter|poster|posting/.test(cbLabel) || cbLabel.includes('follow '))) return;
@@ -404,7 +411,7 @@ const jsScanFieldsInner = `
 
 		let all;
 		if (cb.name) {
-			all = allInDOM(container, 'input[type="checkbox"]').filter(x => x.name === cb.name && isContainerVisible(x));
+			all = allInDOM(scanRoot, 'input[type="checkbox"]').filter(x => x.name === cb.name && isContainerVisible(x));
 		} else if (groupEl) {
 			all = allInDOM(groupEl, 'input[type="checkbox"]').filter(isContainerVisible);
 		} else {
@@ -433,6 +440,110 @@ const jsScanFieldsInner = `
 		fields.push({ type: 'checkbox', name: cb.name || groupKey, question, options });
 	});
 
+	// Seek employer screening: ARIA radiogroups (no native input[type=radio] in DOM).
+	if (isSeekApply) {
+		const seenAriaRadio = new Set();
+		allInDOM(scanRoot, '[role="radiogroup"]').forEach((rg, gi) => {
+			if (!isContainerVisible(rg)) return;
+			const groupKey = rg.id || rg.getAttribute('data-testid') || rg.getAttribute('data-automation') || ('seek-rg-' + gi);
+			if (seenAriaRadio.has(groupKey)) return;
+			const widgets = allInDOM(rg, '[role="radio"]').filter(isContainerVisible);
+			if (widgets.length < 2) return;
+			const anyChecked = widgets.some(w => w.getAttribute('aria-checked') === 'true');
+			if (anyChecked && !includeAnsweredRadios && !groupHasValidationError(rg)) return;
+			seenAriaRadio.add(groupKey);
+			let question = '';
+			const leg = rg.querySelector('legend');
+			if (leg) question = leg.textContent.trim();
+			if (!question) {
+				let prev = rg.previousElementSibling;
+				for (let i = 0; i < 4 && prev; i++, prev = prev.previousElementSibling) {
+					const t = (prev.textContent || '').replace(/\s+/g, ' ').trim();
+					if (t.length > 4 && t.length < 600) { question = t; break; }
+				}
+			}
+			if (!question) {
+				const ids = (rg.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+				question = ids.map(id => document.getElementById(id)).filter(Boolean)
+					.map(e => (e.textContent || '').trim()).join(' ').replace(/\s+/g, ' ');
+			}
+			const options = widgets.map((w, wi) => {
+				if (!w.id) w.setAttribute('data-seek-aria-radio-id', groupKey + '-opt-' + wi);
+				const oid = w.id || w.getAttribute('data-seek-aria-radio-id');
+				const label = (w.getAttribute('aria-label') || w.textContent || '').replace(/\s+/g, ' ').trim();
+				return { id: oid, value: (w.getAttribute('data-value') || label || String(wi)), label: label || ('Option ' + (wi + 1)) };
+			});
+			fields.push({ type: 'radio', name: groupKey, question: question || ('Screening question ' + (gi + 1)), options });
+		});
+		// Seek employer Yes/No toggle buttons (no native radios).
+		const seenBtnQ = new Set();
+		const skipBtnLabel = (t) => /^(continue|upload|submit|next|back|cancel|edit|save)$/i.test(t);
+		allInDOM(scanRoot, 'fieldset, section, [data-testid], [data-automation]').forEach((grp, gi) => {
+			if (!isContainerVisible(grp)) return;
+			const btns = [...grp.querySelectorAll('button')].filter(b => {
+				if (!isContainerVisible(b)) return false;
+				const t = (b.textContent || '').replace(/\s+/g, ' ').trim();
+				if (!t || t.length > 24 || skipBtnLabel(t)) return false;
+				const low = t.toLowerCase();
+				return low === 'yes' || low === 'no' || low === 'true' || low === 'false';
+			});
+			if (btns.length < 2) return;
+			const key = grp.getAttribute('data-testid') || grp.getAttribute('data-automation') || ('seek-btn-q-' + gi);
+			if (seenBtnQ.has(key)) return;
+			const anySelected = btns.some(b => b.getAttribute('aria-pressed') === 'true' || b.getAttribute('data-selected') === 'true' || b.getAttribute('aria-checked') === 'true');
+			if (anySelected && !includeAnsweredRadios) return;
+			seenBtnQ.add(key);
+			let question = '';
+			const leg = grp.querySelector('legend, h2, h3, h4, label, p');
+			if (leg) question = leg.textContent.trim().replace(/\s+/g, ' ');
+			if (!question) {
+				let prev = grp.previousElementSibling;
+				for (let i = 0; i < 3 && prev; i++, prev = prev.previousElementSibling) {
+					const t = (prev.textContent || '').replace(/\s+/g, ' ').trim();
+					if (t.length > 8 && t.length < 600) { question = t; break; }
+				}
+			}
+			const options = btns.map((b, bi) => {
+				const oid = b.id || (key + '-btn-' + bi);
+				if (!b.id) b.setAttribute('data-seek-btn-id', oid);
+				const label = (b.textContent || '').replace(/\s+/g, ' ').trim();
+				return { id: b.id || b.getAttribute('data-seek-btn-id'), value: label, label };
+			});
+			fields.push({ type: 'radio', name: key, question: question || 'Employer question', options });
+		});
+		// Seek employer dropdowns ("Please make a selection" listbox buttons).
+		const seenSeekSel = new Set();
+		allInDOM(scanRoot, 'button, [role="button"], [aria-haspopup="listbox"], [role="combobox"], div, span').forEach((btn, i) => {
+			if (!isVisible(btn) && !isContainerVisible(btn)) return;
+			const txt = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+			const isListbox = btn.getAttribute('aria-haspopup') === 'listbox' || btn.getAttribute('role') === 'combobox';
+			const isPlaceholder = /please\s+(make\s+a\s+)?select/i.test(txt) || /^select(\s+an?\s+option)?$/i.test(txt);
+			if (!isListbox && txt.includes('?')) return;
+			if (!isListbox && txt.length > 48 && !isPlaceholder) return;
+			if (!isPlaceholder && !isListbox) return;
+			if (!isPlaceholder && isListbox && txt && !/please\s+(make\s+a\s+)?select/i.test(txt)) return;
+			const tid = btn.id || ('seek-listbox-' + i);
+			if (!btn.id) btn.setAttribute('data-seek-select-id', tid);
+			const key = btn.id || btn.getAttribute('data-seek-select-id');
+			if (seenSeekSel.has(key)) return;
+			seenSeekSel.add(key);
+			let question = '';
+			let node = btn.parentElement;
+			for (let d = 0; d < 8 && node && node !== container; d++, node = node.parentElement) {
+				const candidates = [...node.querySelectorAll('p, label, legend, h2, h3, h4, span')];
+				for (const c of candidates) {
+					const t = (c.textContent || '').replace(/\s+/g, ' ').trim();
+					if (t.includes('?') && t.length > 12 && t.length < 500) {
+						question = t;
+						break;
+					}
+				}
+				if (question) break;
+			}
+			fields.push({ type: 'select', id: key, question: question || txt, options: [], seekListbox: true });
+		});
+	}
+
 	// Seek review step: custom checkbox widgets (role=checkbox) without native inputs.
 	if (isSeekApply) {
 		const applyRoot = container.closest("[data-testid='quick-apply-form'], [data-automation='apply-form']") || container;
@@ -453,11 +564,14 @@ const jsScanFieldsInner = `
 	// ── Native <select>, unset / at placeholder ──────────────────────────────
 	// Skip selects that share a form-element with a textarea — those labels belong
 	// to open-ended questions; the select is often a leftover/hidden control.
-	allInDOM(container, 'select').filter(isVisible).forEach((sel, i) => {
+	allInDOM(scanRoot, 'select').filter(el => isSeekApply ? isContainerVisible(el) : isVisible(el)).forEach((sel, i) => {
 		const formEl = sel.closest('[data-test-form-element], .fb-form-element, .artdeco-form-element, fieldset');
 		if (formEl && allInDOM(formEl, 'textarea').length > 0) return;
-		const blank = !sel.value || sel.selectedIndex <= 0
-		              || (sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].disabled)
+		const selected = sel.options[sel.selectedIndex];
+		const selectedText = (selected && selected.text || '').toLowerCase();
+		const placeholderSel = /please\s+(make\s+a\s+)?select|^select(\s+an?\s+option)?$/.test(selectedText.trim());
+		const blank = !sel.value || sel.selectedIndex <= 0 || placeholderSel
+		              || (selected && selected.disabled)
 		              || sel.getAttribute('aria-invalid') === 'true';
 		if (!blank && sel.getAttribute('aria-invalid') !== 'true') return;
 		const lbl = labelFor(sel.id)
@@ -474,7 +588,7 @@ const jsScanFieldsInner = `
 	// Track a per-page index so duplicate element IDs (LinkedIn reuses the same ID
 	// for every text input) can be disambiguated when filling.
 	let textIdx = 0;
-	allInDOM(container, 'input, textarea').filter(el => {
+	allInDOM(scanRoot, 'input, textarea').filter(el => {
 		if (el.tagName !== 'TEXTAREA') {
 			const ty = (el.getAttribute('type') || 'text').toLowerCase();
 			if (['hidden', 'file', 'radio', 'checkbox', 'submit', 'button', 'reset', 'image'].includes(ty)) return false;
@@ -482,8 +596,8 @@ const jsScanFieldsInner = `
 		// Exclude reCAPTCHA injected textareas (hidden by LinkedIn/Google on form pages).
 		if (el.name === 'g-recaptcha-response' || el.id === 'g-recaptcha-response') return false;
 		if (el.closest('[id*="recaptcha" i],[class*="recaptcha" i],[id*="captcha" i],[class*="captcha" i]')) return false;
-		// Textareas are often opacity/size-hidden until focused — use container visibility.
-		if (el.tagName === 'TEXTAREA') return isContainerVisible(el);
+		// Textareas and Seek screening inputs are often opacity/size-hidden until focused.
+		if (el.tagName === 'TEXTAREA' || isSeekApply) return isContainerVisible(el);
 		return isVisible(el);
 	}).forEach(el => {
 		// Detect typeahead FIRST, combobox fields may already have a typed value
@@ -493,8 +607,8 @@ const jsScanFieldsInner = `
 		                 || el.getAttribute('aria-autocomplete') === 'both'
 		                 || (el.closest('.search-basic-typeahead, [data-test-single-typeahead-entity-form-component]') != null);
 		if (el.value.trim() && !isTypeahead && el.getAttribute('aria-invalid') !== 'true') { textIdx++; return; }
-		const isRequired = el.required || el.getAttribute('aria-required') === 'true'
-		                || el.getAttribute('aria-invalid') === 'true';
+		let isRequired = el.required || el.getAttribute('aria-required') === 'true'
+		              || el.getAttribute('aria-invalid') === 'true';
 		const formEl = el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset');
 		const lbl = labelFor(el.id)
 		    || (function() {
@@ -511,12 +625,13 @@ const jsScanFieldsInner = `
 		    || (formEl && formEl.querySelector('label, legend, .fb-form-element-label, span[data-test-form-element-label]'))
 		    || el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element')?.querySelector('label');
 		// Seek Quick Apply often omits required/labels on screening inputs — include
-		// any empty field inside the apply form container.
-		if (!isRequired && !lbl && el.tagName !== 'TEXTAREA' && !isSeekApply) { textIdx++; return; }
+		// any empty visible field inside the apply form container.
+		if (!isRequired && !lbl && !isSeekApply) { textIdx++; return; }
+		if (isSeekApply && !el.value.trim()) { isRequired = true; }
 		const question = lbl
 			? lbl.textContent.trim().replace(/\s+/g, ' ')
 			: (el.placeholder || el.getAttribute('aria-label') || el.getAttribute('name') || '');
-		if (!question && el.tagName !== 'TEXTAREA') { textIdx++; return; }
+		if (!question && !isSeekApply) { textIdx++; return; }
 		const maxChars = charLimitForField(el);
 		fields.push({ type: 'text', id: el.id, index: textIdx,
 		              question: question || el.placeholder || 'Additional details',
@@ -609,7 +724,7 @@ function resolveApplyContainer() {
 		const roleDialogs = [...document.querySelectorAll('[role="dialog"]')].filter(rectVisible);
 		if (roleDialogs.length === 1) return roleDialogs[0];
 	}
-	// Seek form selectors.
+	// Seek form selectors (modal / legacy embedded form).
 	for (const sel of [
 		"[data-testid='quick-apply-form']",
 		"[data-automation='apply-form']",
@@ -617,6 +732,17 @@ function resolveApplyContainer() {
 	]) {
 		const el = document.querySelector(sel);
 		if (el && rectVisible(el)) return el;
+	}
+	// Seek full-page Quick Apply (multi-step /job/{id}/apply/* routes).
+	if (/\/job\/\d+\/apply(\/|$)/.test(location.pathname)) {
+		const main = document.querySelector('main');
+		if (main && rectVisible(main)) return main;
+		const cta = document.querySelector(
+			'button[data-testid="continue-button"], button[data-testid="review-submit-application"], input[name="resume-method"]'
+		);
+		if (cta && rectVisible(cta)) {
+			return cta.closest('main') || cta.closest('form') || document.body;
+		}
 	}
 	return null;
 }
@@ -1146,8 +1272,14 @@ const jsFillRadioByID = `(id, force) => {
 		return r;
 	}
 	let el = document.getElementById(id);
-	if (!el || (el.type || '').toLowerCase() !== 'radio') {
+	if (!el || ((el.type || '').toLowerCase() !== 'radio' && el.getAttribute('role') !== 'radio')) {
 		el = allInDOM(document, 'input[type="radio"]').find(r => r.id === id);
+	}
+	if (!el) {
+		el = allInDOM(document, '[role="radio"]').find(r => r.id === id || r.getAttribute('data-seek-aria-radio-id') === id);
+	}
+	if (!el) {
+		el = allInDOM(document, 'button[data-seek-btn-id]').find(b => b.id === id || b.getAttribute('data-seek-btn-id') === id);
 	}
 	if (!el) return false;
 	if (!force && (el.checked || el.getAttribute('aria-checked') === 'true')) return true;
@@ -1155,8 +1287,10 @@ const jsFillRadioByID = `(id, force) => {
 	// visual from label-adjacent elements and respond more reliably to label clicks.
 	const lbl = [...document.querySelectorAll('label[for]')].find(l => l.htmlFor === id);
 	if (lbl) { lbl.click(); } else { el.click(); }
-	el.dispatchEvent(new Event('change', { bubbles: true }));
-	el.dispatchEvent(new Event('input',  { bubbles: true }));
+	if ((el.type || '').toLowerCase() === 'radio') {
+		el.dispatchEvent(new Event('change', { bubbles: true }));
+		el.dispatchEvent(new Event('input',  { bubbles: true }));
+	}
 	return true;
 }`
 
@@ -1953,6 +2087,16 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 
 		case "select":
+			if f.SeekListbox {
+				ok, lbErr := b.fillSeekListbox(ctx, page, lazy, f)
+				if lbErr != nil {
+					return filled, true, lbErr
+				}
+				if ok {
+					filled = true
+				}
+				continue
+			}
 			labels := f.optionLabels()
 			// Open-ended prompts misclassified as <select>: ask LLM for free text,
 			// then fill the sibling textarea — never force an essay into a dropdown.
