@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BriefcaseBusiness, CalendarDays, Check, Clock3, ExternalLink, FileText, X } from 'lucide-react'
+import { fetchApplicationPreviewFile, openApplicationPreviewBlob } from '../../api/applicationFiles'
+import { ApiError } from '../../api/client'
 import { cn } from '../../lib'
-import { getToken } from '../../api/client'
 import type { PendingReview } from '../../types'
 import { PlatformBadge } from '../PlatformBadge'
 import { ScorePill } from '../ScorePill'
@@ -9,6 +10,16 @@ import { Button } from '../ui/button'
 import { EthicsVerdict } from './EthicsVerdict'
 import { JobMatchReasoning } from './JobMatchReasoning'
 import { ReviewDocumentsPanel } from './ReviewDocumentsPanel'
+
+async function openApplicationFilePreview(storedPath: string) {
+  try {
+    const blob = await fetchApplicationPreviewFile(storedPath)
+    openApplicationPreviewBlob(blob)
+  } catch (e) {
+    const msg = e instanceof ApiError ? e.message : 'Could not open preview'
+    window.alert(msg)
+  }
+}
 
 function reviewDocumentsReady(review: PendingReview): boolean {
   if (!review.document_refs_json) return false
@@ -149,28 +160,26 @@ export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, on
       {(review.resume_path || review.cover_letter_path) ? (
         <div className="grid gap-2">
           {review.resume_path && (
-            <a
-              href={`/api/files/${review.resume_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3 text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
+            <button
+              type="button"
+              onClick={() => void openApplicationFilePreview(review.resume_path!)}
+              className="group flex w-full items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3 text-left text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
             >
               <span className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"><FileText size={15} /></span>
               <span className="min-w-0 flex-1"><span className="block font-medium">Tailored resume</span><span className="block text-xs text-[var(--color-text-dim)]">Preview document</span></span>
               <ExternalLink size={14} className="text-[var(--color-text-dim)] group-hover:text-[var(--color-accent)]" />
-            </a>
+            </button>
           )}
           {review.cover_letter_path && (
-            <a
-              href={`/api/files/${review.cover_letter_path.replace(/^job_applications\//, '')}?token=${getToken() ?? ''}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3 text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
+            <button
+              type="button"
+              onClick={() => void openApplicationFilePreview(review.cover_letter_path!)}
+              className="group flex w-full items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3 text-left text-sm text-[var(--color-text)] transition-colors hover:border-[var(--color-accent)]/40"
             >
               <span className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]"><FileText size={15} /></span>
               <span className="min-w-0 flex-1"><span className="block font-medium">Cover letter</span><span className="block text-xs text-[var(--color-text-dim)]">Preview document</span></span>
               <ExternalLink size={14} className="text-[var(--color-text-dim)] group-hover:text-[var(--color-accent)]" />
-            </a>
+            </button>
           )}
         </div>
       ) : (
@@ -209,8 +218,14 @@ export function ReviewCard({ review, halalEnabled, onPrepare, prepareLoading, on
             Reject
           </Button>
           {!documentsPrepared && onPrepare ? (
-            <Button variant="secondary" className="flex-1 sm:flex-none" loading={prepareLoading} onClick={onPrepare}>
-              Prepare documents
+            <Button
+              variant="secondary"
+              className="flex-1 sm:flex-none"
+              loading={prepareLoading || review.prepare_status === 'running'}
+              disabled={review.prepare_status === 'running'}
+              onClick={onPrepare}
+            >
+              {review.prepare_status === 'running' ? 'Preparing…' : 'Prepare documents'}
             </Button>
           ) : null}
           <Button

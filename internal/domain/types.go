@@ -111,6 +111,9 @@ type PendingReview struct {
 	EasyApply                   bool          `json:"easy_apply"`
 	HalalVerdict                *HalalVerdict `json:"halal_verdict,omitempty"`
 	CreatedAt                   time.Time     `json:"created_at"`
+	PrepareStatus               string        `json:"prepare_status,omitempty"`
+	PrepareStartedAt            *time.Time    `json:"prepare_started_at,omitempty"`
+	PrepareFinishedAt           *time.Time    `json:"prepare_finished_at,omitempty"`
 }
 
 type JobStats struct {

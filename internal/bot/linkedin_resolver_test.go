@@ -264,6 +264,15 @@ func TestSubmitEasyApply_VerifiedNativeConfirmation(t *testing.T) {
 	require.Equal(t, string(OutcomeSubmittedConfirmed), outcome)
 }
 
+func TestLinkedInConfirmation_AppliedCTAWithoutDialog(t *testing.T) {
+	br := launchTestBrowser(t)
+	html := `<main data-job-id="4479748087"><h1>Role</h1>
+ <button data-test-job-apply-button-applied="" aria-label="Applied">Applied</button></main>`
+	srv := fixtureServer(t, "4479748087", "", html, "")
+	page := navigateAndWait(t, br, srv.URL+"/jobs/view/4479748087")
+	require.True(t, linkedInSubmissionConfirmed(page, "4479748087", "Company"))
+}
+
 func TestLinkedInConfirmation_RequiresVerifiedJobAndEmployer(t *testing.T) {
 	br := launchTestBrowser(t)
 	html := `<main data-job-id="4479748087"><h1>Role</h1><button>Easy Apply</button></main><div role="dialog">Your application was sent to OtherCo</div>`
@@ -274,6 +283,21 @@ func TestLinkedInConfirmation_RequiresVerifiedJobAndEmployer(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, linkedInSubmissionConfirmed(page, "4479748087", "Company"))
 	require.False(t, linkedInSubmissionConfirmed(page, "4478417422", "Company"))
+}
+
+func TestLinkedInSubmissionConfirmed_RejectsUnscopedToastWrongEmployer(t *testing.T) {
+	t.Parallel()
+	br := launchTestBrowser(t)
+	// Non-unique panes keep identity_verified false while the URL still targets job 111.
+	html := `<div data-job-id="111"><h1><a href="/jobs/view/111">Role A</a></h1><button>Easy Apply</button></div>
+<div data-job-id="111"><h1><a href="/jobs/view/111">Role B</a></h1></div>
+<div class="artdeco-toast-item" role="status">Application submitted to Other Employer.</div>`
+	srv := fixtureServer(t, "111", "", html, "")
+	page := navigateAndWait(t, br, srv.URL+"/jobs/view/111")
+	evidence, err := page.Eval(jsLinkedInResolve, "111", false)
+	require.NoError(t, err)
+	require.False(t, evidence.Value.Get("identity_verified").Bool())
+	require.False(t, linkedInSubmissionConfirmed(page, "111", "Intended Employer"))
 }
 
 // TestReadLinkedInDescription_SDUIDescriptionRemovedAndReinsertedOnExpand is a

@@ -125,7 +125,11 @@ type BotController interface {
 	Status(userID string) domain.BotStatus
 	SubmitNow(userID string, req bot.SubmitRequest)
 	SubmitSync(ctx context.Context, userID string, req bot.SubmitRequest) error
-	PrepareReviewDocuments(ctx context.Context, userID, jobID string) error
+	PrepareReviewDocuments(ctx context.Context, userID, jobID, prepID string) error
+	// TryBeginPrepare claims in-process exclusivity for a user+job prepare; false means one is already running.
+	TryBeginPrepare(userID, jobID, prepID string) bool
+	// EndPrepare releases the in-process prepare claim made by TryBeginPrepare.
+	EndPrepare(userID, jobID, prepID string)
 	ApplyFromURL(ctx context.Context, userID, jobURL, market string, force bool) (bot.ApplyFromURLResult, error)
 	// InvalidateSeekBrowser closes the cached persistent Seek browser for a user
 	// so the next SubmitNow creates a fresh browser with the latest saved cookies.

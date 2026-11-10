@@ -5,6 +5,20 @@ export function cn(...inputs: Parameters<typeof clsx>) {
   return twMerge(clsx(...inputs))
 }
 
+/** Path segment for GET /api/files/{suffix} (no job_applications/ prefix). */
+export function applicationFileApiPath(storedPath: string): string {
+  const normalized = storedPath.replace(/\\/g, '/')
+  const marker = 'job_applications/'
+  const i = normalized.indexOf(marker)
+  return i >= 0 ? normalized.slice(i + marker.length) : normalized.replace(/^job_applications\//, '')
+}
+
+/** Build GET /api/files/... for a stored resume or cover path (absolute or job_applications/...). */
+export function applicationFilePreviewHref(storedPath: string, token: string | null): string {
+  const q = token ? `?token=${encodeURIComponent(token)}` : ''
+  return `/api/files/${applicationFileApiPath(storedPath)}${q}`
+}
+
 export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

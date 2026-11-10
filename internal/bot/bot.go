@@ -53,6 +53,8 @@ type lazyDocGen struct {
 	frozen                bool
 	formCaps              documents.FormDocumentCapabilities
 	holdReason            string
+	holdStage             string // stable stage code for an upload-verification hold (diagnostic)
+	holdFile              string // filename involved in an upload-verification hold (diagnostic)
 	resumeVersionID       string
 	coverVersionID        string
 	refsJSON              string
@@ -698,6 +700,14 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 
 	b.warmSeenCache()
 
+	if err := b.ensureLinkedInSearchSession(page); err != nil {
+		b.log.Error().Err(err).Msg("linkedin: search aborted before keywords — session not confirmed")
+		b.mu.Lock()
+		b.state = domain.BotStateError
+		b.mu.Unlock()
+		return
+	}
+
 	// Verify session is still valid after browser launch; try stored credentials once.
 	if info, e := page.Info(); e == nil {
 		u := info.URL
@@ -753,7 +763,15 @@ func runLinkedIn(ctx context.Context, b *Bot) {
 			}
 			b.SetKeyword(keyword)
 			n := b.processKeyword(ctx, br, page, keyword, limit-appliedToday, target)
+			if n < 0 {
+				b.log.Error().Msg("linkedin: stopping search — jobs SERP is not authenticated")
+				b.mu.Lock()
+				b.state = domain.BotStateError
+				b.mu.Unlock()
+				return
+			}
 			appliedToday += n
+			b.searchKeywordPause()
 
 			// If no jobs were found, check whether the browser connection was lost
 			// (e.g. VPN reset) and attempt a reconnect before continuing.
@@ -966,6 +984,10 @@ func (b *Bot) filterLinkedInJobs(jobs []linkedInJob) []linkedInJob {
 func (b *Bot) processKeyword(ctx context.Context, br *rod.Browser, page *rod.Page, keyword string, remaining int, target domain.SearchTarget) int {
 	jobs, err := b.scrapeLinkedInJobs(ctx, page, keyword, target)
 	if err != nil {
+		if errors.Is(err, errLinkedInSearchUnauthenticated) {
+			b.log.Error().Err(err).Str("keyword", keyword).Msg("linkedin: scrape blocked — not logged in on search page")
+			return -1
+		}
 		b.log.Error().Err(err).Str("keyword", keyword).Msg("linkedin: scrape jobs failed")
 		return 0
 	}
@@ -1069,6 +1091,9 @@ func (b *Bot) scrapeLinkedInJobs(ctx context.Context, page *rod.Page, keyword st
 		cap = 25
 	}
 	fallbackLocation := domain.FormatSearchLocation(target.Location, domain.PlatformLinkedIn)
+	if !linkedInSearchPageAuthenticated(page) {
+		return nil, errLinkedInSearchUnauthenticated
+	}
 	jobs := b.collectLinkedInCards(page, cap, fallbackLocation)
 	b.log.Info().Msgf("linkedin: search returned %d jobs for %q", len(jobs), keyword)
 	return jobs, nil
@@ -1089,6 +1114,12 @@ func (b *Bot) navigateLinkedInSearch(page *rod.Page, keyword string, target doma
 	b.log.Info().Msg("linkedin: navigate done, waiting for load")
 	if err := page.Timeout(30 * time.Second).WaitLoad(); err != nil {
 		b.log.Warn().Err(err).Msg("linkedin: WaitLoad timed out, proceeding anyway")
+	}
+	_ = page.Timeout(10 * time.Second).WaitStable(2 * time.Second)
+	b.interactionPause()
+	b.interactionPause()
+	if !linkedInSearchPageAuthenticated(page) {
+		b.log.Warn().Msg("linkedin: search page does not look authenticated (authwall or login)")
 	}
 	b.log.Info().Msg("linkedin: page ready, scraping cards")
 }
@@ -1126,11 +1157,16 @@ func scrollPageCards(page *rod.Page, seen map[string]bool, jobs []linkedInJob, c
 	const maxScrolls = 8
 	stalled := 0
 	for scroll := 0; len(jobs) < cap && scroll < maxScrolls; scroll++ {
-		cards := fetchLinkedInCards(page)
-		log.Info().Msgf("linkedin: scroll %d, found %d cards", scroll, len(cards))
+		batch := fetchLinkedInSearchJobs(page, fallbackLocation)
+		log.Info().Msgf("linkedin: scroll %d, found %d cards", scroll, len(batch))
 		prev := len(jobs)
-		jobs = deduplicateCards(cards, seen, jobs, fallbackLocation)
-		if len(jobs) >= cap || len(cards) == 0 {
+		for _, job := range batch {
+			if job.ID != "" && !seen[job.ID] {
+				seen[job.ID] = true
+				jobs = append(jobs, job)
+			}
+		}
+		if len(jobs) >= cap || len(batch) == 0 {
 			break
 		}
 		if scroll > 0 && len(jobs) == prev {
@@ -1141,7 +1177,7 @@ func scrollPageCards(page *rod.Page, seen map[string]bool, jobs []linkedInJob, c
 		} else {
 			stalled = 0
 		}
-		scrollForMore(page, cards)
+		scrollForMore(page, nil)
 		time.Sleep(3 * time.Second)
 	}
 	return jobs
@@ -1153,28 +1189,6 @@ func clickNextPage(page *rod.Page) bool {
 		return false
 	}
 	return btn.Click(proto.InputMouseButtonLeft, 1) == nil
-}
-
-func fetchLinkedInCards(page *rod.Page) rod.Elements {
-	cards, err := page.Elements(".job-card-container")
-	if err != nil || len(cards) == 0 {
-		cards, _ = page.Elements("[data-job-id]")
-	}
-	return cards
-}
-
-func deduplicateCards(cards rod.Elements, seen map[string]bool, jobs []linkedInJob, fallbackLocation string) []linkedInJob {
-	for _, card := range cards {
-		job := extractLinkedInJob(card)
-		if job.Location == "" {
-			job.Location = fallbackLocation
-		}
-		if job.ID != "" && !seen[job.ID] {
-			seen[job.ID] = true
-			jobs = append(jobs, job)
-		}
-	}
-	return jobs
 }
 
 func scrollForMore(page *rod.Page, cards rod.Elements) {
@@ -1807,7 +1821,8 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	// Entry identity check — before any CTA interaction or preparation scan.
 	// This also protects the reviewPrepareOnly branch below.
 	expectedJobPath := linkedInJobPath(lazy.job.URL)
-	resolution, err := waitLinkedInJob(ctx, page, linkedInExpectedID(lazy.job.URL), lazy.job)
+	expectedID := linkedInExpectedID(lazy.job.URL)
+	resolution, err := waitLinkedInJob(ctx, page, expectedID, lazy.job)
 	logLinkedInResolution(resolution, lazy.job, lazy.attemptID, "before_initial_click")
 	if err != nil {
 		return err
@@ -2040,6 +2055,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	// open shadow roots + same-origin iframes; the Go caller also re-runs this
 	// inside each CDP frame when the top document cannot see the modal.
 	const jsClickPrimary = `(expectedID, allowedKind) => {
+` + jsLinkedInApplyContainerFn + `
         try {
             const u=new URL(window.top.location.href);
             const id=(u.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1] || u.searchParams.get('currentJobId');
@@ -2135,24 +2151,29 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			const label=btnLabel(btn);
             try { btn.scrollIntoView({block:'center'}); btn.focus(); btn.click(); return {ok:true,label}; } catch(e) { return {ok:false,label}; }
 		}
-		const priority = allowedKind ? [allowedKind] : [];
-		const candidates = allInDOM(document, 'button, [role="button"], a[role="button"]')
-			.filter(b => b.closest('[role="dialog"], .jobs-easy-apply-content, .jobs-easy-apply-modal, [data-test-easy-apply-modal]') && !isMessagingChrome(b) && !isExcludedRail(b) && actionKind(b));
+		const container = resolveApplyContainer();
+		if (!container) {
+			const iframeCount = allInDOM(document, 'iframe').length;
+			return { ok: false, label: 'no apply CTA (apply container missing, iframes=' + iframeCount + ')' };
+		}
+		const priority = allowedKind ? [allowedKind] : ['submit', 'review', 'continue', 'next'];
+		const candidates = allInDOM(container, 'button, [role="button"], a[role="button"]')
+			.filter(b => !isMessagingChrome(b) && !isExcludedRail(b) && actionKind(b));
 
 		for (const kind of priority) {
 			const btn = candidates.find(b => actionKind(b) === kind && isVisible(b) && isEnabled(b));
 			if (btn) return trustClick(btn);
 		}
 
-		const primary = allInDOM(document, 'button.artdeco-button--primary, button[class*="primary"]')
+		const primary = allInDOM(container, 'button.artdeco-button--primary, button[class*="primary"]')
 			.find(b => {
-				if (!b.closest('[role="dialog"], .jobs-easy-apply-content, .jobs-easy-apply-modal, [data-test-easy-apply-modal]') || !isVisible(b) || !isEnabled(b) || isMessagingChrome(b) || isExcludedRail(b)) return false;
+				if (!isVisible(b) || !isEnabled(b) || isMessagingChrome(b) || isExcludedRail(b)) return false;
 				const t = btnLabel(b).toLowerCase();
 				if (t.includes('dismiss') || t.includes('cancel') || t.includes('close') || t.includes('back') || t.includes('save')) return false;
 				if (t.includes('easy apply') || t === 'apply' || t.startsWith('apply ')) return false;
 				return actionKind(b) !== '';
 			});
-		if (primary && allowedKind && actionKind(primary)===allowedKind) return trustClick(primary);
+		if (primary && (!allowedKind || actionKind(primary) === allowedKind)) return trustClick(primary);
 
 		const disabledNext = candidates.find(b => actionKind(b) && isVisible(b) && !isEnabled(b));
 		if (disabledNext) {
@@ -2161,10 +2182,9 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 
 		const seen = candidates.slice(0, 12).map(b => btnLabel(b).slice(0, 40)).filter(Boolean);
 		const iframeCount = allInDOM(document, 'iframe').length;
-		const dialogCount = allInDOM(document, '[role="dialog"], .artdeco-modal').length;
 		return {
 			ok: false,
-			label: 'no apply CTA (iframes=' + iframeCount + ', dialogs=' + dialogCount + ', seen=[' + seen.join(' | ') + '])'
+			label: 'no apply CTA (iframes=' + iframeCount + ', container=1, seen=[' + seen.join(' | ') + '])'
 		};
 	}`
 
@@ -2323,7 +2343,11 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 
 		// Fill any unanswered fields on the current step before clicking the action button.
-		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy)
+		fillOpts := FillFormStepOpts{}
+		if noAdvanceCount > 0 {
+			fillOpts = FillFormStepOpts{IncludeAnsweredRadios: true, VisionFallback: true}
+		}
+		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy, fillOpts)
 		if fillErr != nil {
 			if isFormFillFatalLLM(fillErr) {
 				b.abortOnLLMFailure(fillErr)
@@ -2347,14 +2371,8 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			b.shortPause() // let React settle after fills
 		}
 
-		// Always uncheck the "Follow company" checkbox on the review page before submitting.
-		if _, err := page.Timeout(10 * time.Second).Eval(`() => {
-			const cb = document.getElementById('follow-company-checkbox');
-			if (cb && cb.checked) {
-				cb.checked = false;
-				cb.dispatchEvent(new Event('change', { bubbles: true }));
-			}
-		}`); isCDPFatal(err) {
+		// Always uncheck follow-company / follow-poster checkboxes before advancing or submitting.
+		if _, err := page.Timeout(10 * time.Second).Eval(jsLinkedInUncheckFollowCompany); isCDPFatal(err) {
 			return fmt.Errorf("easy apply: browser closed or context canceled: %w", err)
 		}
 
@@ -2376,6 +2394,16 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			return fmt.Errorf("read application action: %w", peekErr)
 		}
 		if kind == "submit" && found && enabled {
+			if lazy.policyBlocked() {
+				return fmt.Errorf("easy apply: %s", lazy.holdReason)
+			}
+			// Re-verify the final-review attachment immediately before submit — catches any
+			// substitution that happened after preparation completed.
+			if resumePath, _ := lazy.peek(); resumePath != "" {
+				if verifyErr := b.linkedInVerifyFinalReviewResume(page, resumePath); verifyErr != nil {
+					return fmt.Errorf("easy apply: pre-submit attachment check: %w", verifyErr)
+				}
+			}
 			if err := markAttemptSubmitDispatch(b.cfg.DB, lazy.attemptID, b.cfg.UserID); err != nil {
 				return err
 			}
@@ -2397,7 +2425,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			if !ok {
 				return errLinkedInSubmissionUnknown
 			}
-			return waitLinkedInConfirmation(ctx, page, linkedInExpectedID(lazy.job.URL), lazy.job.Company)
+			return waitLinkedInConfirmation(ctx, page, linkedInExpectedID(lazy.job.URL), lazy.job.Company, lazy.job.URL)
 		}
 
 		// Bail when the modal is stuck: button click may succeed (ok=true) while
@@ -2412,7 +2440,7 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if noAdvanceCount >= stuckThreshold {
 			if errs := pageValidationErrors(page); len(errs) > 0 {
 				b.log.Warn().Strs("errors", errs).Msg("easy apply: validation errors on page, re-filling step")
-				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy)
+				refilled, _, refillErr := b.fillFormStep(ctx, page, lazy, FillFormStepOpts{IncludeAnsweredRadios: true, VisionFallback: true})
 				if refillErr != nil {
 					if isFormFillFatalLLM(refillErr) {
 						b.abortOnLLMFailure(refillErr)
@@ -2665,6 +2693,12 @@ func (b *Bot) alreadyAppliedReason(jobID string) string {
 	}
 	if b.seenCache != nil {
 		if r := b.seenCache.reason(jobID); r != "" {
+			if r == "in skipped list" {
+				if b.reopenScoreSkippedIfEligible(jobID) {
+					return ""
+				}
+				return "in skipped list"
+			}
 			return r
 		}
 	}
@@ -2676,6 +2710,9 @@ func (b *Bot) alreadyAppliedReason(jobID string) string {
 		return "already applied"
 	}
 	if b.cfg.DB.QueryRow("SELECT id FROM jobs_skipped WHERE id = ? AND user_id = ?", jobID, b.cfg.UserID).Scan(&id) == nil {
+		if b.reopenScoreSkippedIfEligible(jobID) {
+			return ""
+		}
 		return "in skipped list"
 	}
 	if b.cfg.DB.QueryRow("SELECT job_id FROM jobs_pending_review WHERE job_id = ? AND user_id = ?", jobID, b.cfg.UserID).Scan(&id) == nil {

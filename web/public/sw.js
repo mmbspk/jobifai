@@ -1,4 +1,4 @@
-const CACHE = 'jobifai-v1'
+const CACHE = 'jobifai-v2'
 const PRECACHE = ['/']
 
 self.addEventListener('install', (e) => {
@@ -18,8 +18,10 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url)
 
-  // Never cache API or WebSocket requests
-  if (url.pathname.startsWith('/api') || url.pathname.startsWith('/ws')) return
+  // Never cache API, auth, or WebSocket requests (auth must always hit the network).
+  if (url.pathname.startsWith('/api') ||
+      url.pathname.startsWith('/auth') ||
+      url.pathname.startsWith('/ws')) return
 
   // Network-first for navigation (SPA), cache-first for assets
   if (e.request.mode === 'navigate') {

@@ -19,7 +19,7 @@ func (g refusingWorkGuard) EndWork(string)                          {}
 func TestManager_PrepareAndApplyAcquireRetentionGuardBeforeWork(t *testing.T) {
 	blocked := errors.New("retention guard canceled")
 	m := &Manager{submitWorkGuard: refusingWorkGuard{blocked}}
-	require.ErrorIs(t, m.PrepareReviewDocuments(context.Background(), "u", "j"), blocked)
+	require.ErrorIs(t, m.PrepareReviewDocuments(context.Background(), "u", "j", "prep1"), blocked)
 	_, err := m.ApplyFromURL(context.Background(), "u", "https://www.linkedin.com/jobs/view/123456789", "", false)
 	require.ErrorIs(t, err, blocked)
 	require.ErrorIs(t, m.runSubmit(context.Background(), "u", SubmitRequest{}), blocked)

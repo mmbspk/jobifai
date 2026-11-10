@@ -36,9 +36,17 @@ func linkedInExpectedID(raw string) string {
 	return strings.TrimPrefix(linkedInJobPath(raw), "/jobs/view/")
 }
 
+func linkedInAppliedLoose(page *rod.Page, expectedID string) bool {
+	value, err := page.Timeout(5 * time.Second).Eval(jsLinkedInAppliedLoose, expectedID)
+	return err == nil && value.Value.Bool()
+}
+
 func linkedInSubmissionConfirmed(page *rod.Page, expectedID, company string) bool {
 	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInSubmissionConfirmed, expectedID, company)
-	return err == nil && value.Value.Bool()
+	if err == nil && value.Value.Bool() {
+		return true
+	}
+	return linkedInAppliedLoose(page, expectedID)
 }
 
 func verifyLinkedInCompletion(page *rod.Page, jobURL, company string) error {
@@ -48,8 +56,32 @@ func verifyLinkedInCompletion(page *rod.Page, jobURL, company string) error {
 	return verifyJobIdentity(page, linkedInJobPath(jobURL))
 }
 
-func waitLinkedInConfirmation(ctx context.Context, page *rod.Page, expectedID, company string) error {
-	deadline := time.NewTimer(10 * time.Second)
+func linkedInSubmitReconciled(page *rod.Page, jobURL, company string) bool {
+	expectedID := linkedInExpectedID(jobURL)
+	if linkedInSubmissionConfirmed(page, expectedID, company) {
+		return true
+	}
+	if r, err := resolveLinkedInJob(page, expectedID, false); err == nil && r.IdentityVerified && r.Kind == "already_applied" {
+		return true
+	}
+	if linkedInAppliedLoose(page, expectedID) {
+		return true
+	}
+	_ = page.Navigate(jobURL)
+	_ = page.Timeout(30 * time.Second).WaitLoad()
+	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+	if linkedInSubmissionConfirmed(page, expectedID, company) {
+		return true
+	}
+	r, err := resolveLinkedInJob(page, expectedID, false)
+	if err == nil && r.IdentityVerified && r.Kind == "already_applied" {
+		return true
+	}
+	return linkedInAppliedLoose(page, expectedID)
+}
+
+func waitLinkedInConfirmation(ctx context.Context, page *rod.Page, expectedID, company, jobURL string) error {
+	deadline := time.NewTimer(30 * time.Second)
 	defer deadline.Stop()
 	for {
 		if err := ctx.Err(); err != nil {
@@ -58,13 +90,19 @@ func waitLinkedInConfirmation(ctx context.Context, page *rod.Page, expectedID, c
 		if linkedInSubmissionConfirmed(page, expectedID, company) {
 			return nil
 		}
-		if err := verifyJobIdentity(page, "/jobs/view/"+expectedID); err != nil {
-			return err
+		if r, err := resolveLinkedInJob(page, expectedID, false); err == nil && r.IdentityVerified && r.Kind == "already_applied" {
+			return nil
+		}
+		if linkedInAppliedLoose(page, expectedID) {
+			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
+			if jobURL != "" && linkedInSubmitReconciled(page, jobURL, company) {
+				return nil
+			}
 			return errLinkedInSubmissionUnknown
 		case <-time.After(300 * time.Millisecond):
 		}

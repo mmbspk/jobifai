@@ -203,12 +203,39 @@ func (t *Tailor) IdentifyFormFields(ctx context.Context, imageBytes []byte) ([]d
 	if err != nil {
 		return nil, fmt.Errorf("identify fields: %w", err)
 	}
-	raw = stripJSON(raw)
+	raw = stripJSONArrayOrObject(raw)
 	var fields []domain.IdentifiedField
-	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+	if err := json.Unmarshal([]byte(raw), &fields); err == nil {
+		return fields, nil
+	}
+	var one domain.IdentifiedField
+	if err := json.Unmarshal([]byte(raw), &one); err != nil {
 		return nil, fmt.Errorf("identify fields: parse response: %w\nraw: %s", err, raw)
 	}
-	return fields, nil
+	if one.Question == "" && one.Type == "" {
+		return nil, fmt.Errorf("identify fields: empty object in response\nraw: %s", raw)
+	}
+	return []domain.IdentifiedField{one}, nil
+}
+
+// stripJSONArrayOrObject extracts a JSON array or object from model output (vision field id).
+func stripJSONArrayOrObject(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	s = strings.TrimFunc(s, unicode.IsSpace)
+	if start := strings.Index(s, "["); start >= 0 {
+		if end := strings.LastIndex(s, "]"); end > start {
+			return s[start : end+1]
+		}
+	}
+	if start := strings.Index(s, "{"); start >= 0 {
+		if end := strings.LastIndex(s, "}"); end > start {
+			return s[start : end+1]
+		}
+	}
+	return s
 }
 
 // splitMarketPrefix extracts the market instructions block (everything before

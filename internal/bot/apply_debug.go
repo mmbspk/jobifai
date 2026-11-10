@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -43,17 +44,35 @@ func pageValidationErrors(page *rod.Page) []string {
 		return nil
 	}
 	res, err := page.Eval(`() => {
-		const sel = [
-			'.artdeco-inline-feedback--error',
-			'.fb-dash-form-element__error-text',
-			'[data-test-form-element-error-message]',
-			'[role="alert"]',
-		];
 		const out = [];
-		for (const s of sel) {
-			for (const el of document.querySelectorAll(s)) {
-				const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-				if (t && t.length < 200) out.push(t);
+		const push = (el) => {
+			const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+			if (!t || t.length >= 200) return;
+			const cls = (typeof el.className === 'string' ? el.className : '');
+			if (cls.includes('inline-feedback--success') || cls.includes('artdeco-inline-feedback--success')) return;
+			out.push(t);
+		};
+		for (const el of document.querySelectorAll(
+			'.artdeco-inline-feedback--error, .fb-dash-form-element__error-text, [data-test-form-element-error-message], [id^="error-message-"], [class*="error-message"]')) {
+			push(el);
+		}
+		const container = document.querySelector('dialog[open], .jobs-easy-apply-content, .jobs-easy-apply-modal');
+		if (container) {
+			const walk = (root) => {
+				try {
+					for (const el of root.querySelectorAll('*')) {
+						const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+						if (/Invalid input/i.test(t) && t.length < 120) out.push(t);
+						if (el.shadowRoot) walk(el.shadowRoot);
+					}
+				} catch (e) {}
+			};
+			walk(container);
+		}
+		for (const el of document.querySelectorAll('[role="alert"]')) {
+			const cls = (typeof el.className === 'string' ? el.className : '');
+			if (cls.includes('error') || cls.includes('inline-feedback--error')) {
+				push(el);
 			}
 		}
 		return [...new Set(out)];
@@ -67,5 +86,26 @@ func pageValidationErrors(page *rod.Page) []string {
 			msgs = append(msgs, s)
 		}
 	}
-	return msgs
+	return filterPageValidationMessages(msgs)
+}
+
+// filterPageValidationMessages drops LinkedIn success/confirmation toasts that use alert roles.
+func filterPageValidationMessages(msgs []string) []string {
+	if len(msgs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		lower := strings.ToLower(m)
+		if strings.Contains(lower, "successfully") ||
+			strings.Contains(lower, "uploaded successfully") ||
+			strings.HasPrefix(lower, "success") {
+			continue
+		}
+		out = append(out, m)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
