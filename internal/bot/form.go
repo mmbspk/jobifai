@@ -725,8 +725,8 @@ function resolveLinkedInResumeSection(container, button) {
  }
  if (!buttons.includes(button)) return null;
  for (let node = button.parentElement; node && node !== container; node = node.parentElement) {
-  // Never promote the whole SDUI screen to a resume section.
-  if (node.hasAttribute('data-sdui-screen')) return null;
+  // Never treat the whole SDUI screen as a resume section; keep walking for upload-only blocks inside it.
+  if (node.hasAttribute('data-sdui-screen')) continue;
   const radios = allInDOM(node, 'input[type="radio"]');
   const named = node.matches('fieldset,section,[role="group"]');
   if (!radios.length) {
@@ -806,14 +806,24 @@ function linkedInVisibleResumeRadios(container) {
   return !!linkedInResumeFilename(linkedInRadioText(container, r));
  });
 }
-function linkedInResumeAcceptanceState(scope, radios, base) {
- const labels = radios.map(r => linkedInResumeFilename(linkedInRadioText(scope, r)));
+function linkedInResumeAcceptanceState(container, radios, base) {
+ const labels = radios.map(r => linkedInResumeFilename(linkedInRadioText(container, r)));
  const inList = labels.some(f => f === base);
- const checkedRadios = radios.filter(r => r.checked || r.getAttribute('aria-checked') === 'true');
+ const resolved = resolveLinkedInResumeSection(container);
+ if (!resolved) {
+  return { accepted: false, error: false, filenameVisible: false, inList: labels.some(f => f === base) };
+ }
+ const uploadVisible = linkedInResumeUploadButtons(resolved.section)
+  .some(b => linkedInResumeButtonVisible(b));
+ if (!uploadVisible) {
+  return { accepted: false, error: false, filenameVisible: false, inList };
+ }
+ const checkedRadios = radios.filter(r =>
+  resolved.section.contains(r) && (r.checked || r.getAttribute('aria-checked') === 'true'));
  if (checkedRadios.length !== 1) {
   return { accepted: false, error: false, filenameVisible: false, inList };
  }
- const extracted = linkedInResumeFilename(linkedInRadioText(scope, checkedRadios[0]));
+ const extracted = linkedInResumeFilename(linkedInRadioText(container, checkedRadios[0]));
  const filenameVisible = extracted !== null && extracted === base;
  return { accepted: true, error: false, filenameVisible, inList };
 }
@@ -885,7 +895,15 @@ func init() {
 
 	const base = (expectedFilename || '').toLowerCase();
 
-	const resumeRadios = linkedInVisibleResumeRadios(container);
+	const resolved = resolveLinkedInResumeSection(container);
+	if (!resolved) {
+		return { accepted: false, error: false, filenameVisible: false, inList: false };
+	}
+	let resumeRadios = resolved.radios;
+	if (!resumeRadios.length) {
+		resumeRadios = allInDOM(resolved.section, 'input[type="radio"]').filter(r =>
+			linkedInResumeFilename(linkedInRadioText(resolved.section, r)));
+	}
 	if (resumeRadios.length) {
 		return linkedInResumeAcceptanceState(container, resumeRadios, base);
 	}
@@ -914,6 +932,9 @@ func init() {
 	for (const r of container.querySelectorAll('input[type="radio"]')) {
 		if (!(r.checked || r.getAttribute('aria-checked') === 'true')) continue;
 		const fn = linkedInResumeFilename(linkedInRadioText(container, r));
+		if (fn && fn !== base) {
+			return { accepted: false, error: false, filenameVisible: false, inList: true, identityMismatch: true };
+		}
 		if (fn === base) return { accepted: true, error: false, filenameVisible: true, inList: true };
 	}
 	for (const sp of container.querySelectorAll('span')) {
@@ -1038,6 +1059,11 @@ func init() {
 	if (!resolved) return { filenameExisted: false, stateVerified: false, sectionFound: false };
 	const radios = resolved.radios;
 	if (!radios.length) {
+		const section = resolved.section;
+		const named = section.matches('fieldset,section,[role="group"]');
+		if (named) {
+			return { filenameExisted: false, stateVerified: false, sectionFound: true };
+		}
 		const inNativeDialog = container.matches('dialog') || !!(container.closest && container.closest('dialog'));
 		let resumeRadioCount = 0;
 		if (inNativeDialog) {
@@ -2568,6 +2594,14 @@ func linkedInWaitForResumeAcceptedPoll(ctx context.Context, page *rod.Page, file
 			if res.Value.Get("filenameVisible").Bool() {
 				log.Info().Str("filename", base).Msg("linkedin: resume upload accepted and identity verified")
 				return nil
+			}
+			if res.Value.Get("identityMismatch").Bool() {
+				return &uploadIdentityHold{stage: uploadStagePostUploadMismatch, filename: base}
+			}
+			if full, fullErr := linkedInPageEval(page, 2*time.Second, jsLinkedInCheckResumeAccepted, base); fullErr == nil && full != nil {
+				if full.Value.Get("accepted").Bool() && !full.Value.Get("filenameVisible").Bool() {
+					return &uploadIdentityHold{stage: uploadStagePostUploadMismatch, filename: base}
+				}
 			}
 			if res.Value.Get("inList").Bool() {
 				if _, selErr := linkedInPageEval(page, 2*time.Second, jsLinkedInSelectResumeRadioByFilename, base); selErr == nil {

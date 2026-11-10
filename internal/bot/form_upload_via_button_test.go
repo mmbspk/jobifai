@@ -612,7 +612,7 @@ func TestLinkedInResumePreUploadState_EmptyFieldset(t *testing.T) {
 
 	res, err := page.Eval(jsLinkedInResumePreUploadState, "any_resume.pdf")
 	require.NoError(t, err)
-	require.True(t, res.Value.Get("stateVerified").Bool(), "empty fieldset with no dialog radios is an upload-only library")
+	require.False(t, res.Value.Get("stateVerified").Bool(), "empty fieldset may still be loading; caller should retry")
 	require.True(t, res.Value.Get("sectionFound").Bool(), "sectionFound must be true when fieldset is identified")
 	require.False(t, res.Value.Get("filenameExisted").Bool())
 }
