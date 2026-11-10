@@ -628,7 +628,9 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 				applyErr = nil
 			}
 		}
-		if applyErr != nil && linkedInNeedsReview(applyErr) {
+	}
+	if applyErr != nil {
+		if linkedInNeedsReview(applyErr) {
 			b.preserveLinkedInReview(ctx, managerLazy.job, score, req.SuitabilityReasoning, applyErr)
 			_, _ = m.db.Exec(`DELETE FROM jobs_approved_queue WHERE job_id=? AND user_id=?`, req.JobID, userID)
 			outcome, stage, code := linkedInReviewOutcome(applyErr)

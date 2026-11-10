@@ -240,27 +240,15 @@ const jsLinkedInUncheckFollowCompany = `() => {
  return true;
 }`
 
-// When the strict resolver cannot pick a unique SDUI pane, the listing URL and a
-// visible Applied control are enough to treat the submission as confirmed.
+// Post-submit reconciliation only: verified intended job identity plus resolver-reported
+// already-applied status. Never treat whole-page copy or unscoped controls as evidence.
 const jsLinkedInAppliedLoose = `(expectedID) => {
+ if(!expectedID) return false;
  const u=new URL(location.href);
- const pathID=(u.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||'';
- if(pathID && pathID!==expectedID) return false;
- const visible=el=>{
-   const r=el.getBoundingClientRect();
-   if(r.width<2||r.height<2) return false;
-   for(let n=el;n;n=n.parentElement){
-     const s=getComputedStyle(n);
-     if(s.display==='none'||s.visibility==='hidden') return false;
-     if(n.matches && n.matches('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="people-also-viewed"]')) return false;
-   }
-   return true;
- };
- const selectors='button[aria-label="Applied"], button[aria-label^="Applied to"], [data-test-job-apply-button-applied], a[aria-label="Applied"]';
- if([...document.querySelectorAll(selectors)].some(visible)) return true;
- const root=document.querySelector('.jobs-unified-top-card, .job-details-jobs-unified-top-card__container, main') || document.body;
- const text=(root.innerText||'').toLowerCase().replace(/\s+/g,' ');
- return /you applied|application submitted|applied \d|successfully applied/.test(text);
+ const pathID=(u.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||u.searchParams.get('currentJobId')||'';
+ if(!pathID || pathID!==expectedID) return false;
+ const evidence=JSON.parse((` + jsLinkedInResolve + `)(expectedID,false));
+ return !!(evidence.identity_verified && evidence.kind==='already_applied');
 }`
 
 // Collect job rows from the public jobs search SERP (classic list + SDUI occludable cards).

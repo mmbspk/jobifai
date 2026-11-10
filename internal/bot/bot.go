@@ -1822,10 +1822,6 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	// This also protects the reviewPrepareOnly branch below.
 	expectedJobPath := linkedInJobPath(lazy.job.URL)
 	expectedID := linkedInExpectedID(lazy.job.URL)
-	if linkedInAppliedLoose(page, expectedID) {
-		b.log.Info().Str("job_id", lazy.job.ID).Msg("easy apply: listing already shows Applied")
-		return errAlreadyApplied
-	}
 	resolution, err := waitLinkedInJob(ctx, page, expectedID, lazy.job)
 	logLinkedInResolution(resolution, lazy.job, lazy.attemptID, "before_initial_click")
 	if err != nil {

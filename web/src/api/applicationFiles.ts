@@ -32,10 +32,12 @@ export async function fetchApplicationPreviewFile(storedPath: string): Promise<B
 
 export function openApplicationPreviewBlob(blob: Blob): void {
   const url = URL.createObjectURL(blob)
-  const opened = window.open(url, '_blank', 'noopener,noreferrer')
-  if (!opened) {
-    URL.revokeObjectURL(url)
-    throw new ApiError(0, 'popup blocked — allow popups for this site to preview PDFs')
-  }
+  const link = document.createElement('a')
+  link.href = url
+  link.target = '_blank'
+  link.rel = 'noopener noreferrer'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
   window.setTimeout(() => URL.revokeObjectURL(url), 120_000)
 }

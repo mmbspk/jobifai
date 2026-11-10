@@ -939,7 +939,7 @@ func init() {
 	}
 	for (const sp of container.querySelectorAll('span')) {
 		if ((sp.textContent || '').trim().toLowerCase() === base) {
-			return { accepted: false, error: false, filenameVisible: true, inList: true };
+			return { accepted: false, error: false, filenameVisible: false, inList: true };
 		}
 	}
 	return { accepted: false, error: false, filenameVisible: false, inList: false };
@@ -2326,7 +2326,7 @@ func (b *Bot) tryGeometryUploadClick(ctx context.Context, page *rod.Page, btn *r
 				return { ok: true, x, y };
 			}
 		}
-		return { ok: true, x: r.left + r.width / 2, y: r.top + r.height / 2, blind: true };
+		return { ok: false, reason: 'covered' };
 	}`)
 	if err != nil {
 		return err
@@ -2591,7 +2591,7 @@ func linkedInWaitForResumeAcceptedPoll(ctx context.Context, page *rod.Page, file
 				saveApplyDebug(page, "resume_upload_rejected")
 				return fmt.Errorf("linkedin: %s", msg)
 			}
-			if res.Value.Get("filenameVisible").Bool() {
+			if res.Value.Get("accepted").Bool() && res.Value.Get("filenameVisible").Bool() {
 				log.Info().Str("filename", base).Msg("linkedin: resume upload accepted and identity verified")
 				return nil
 			}
@@ -2607,7 +2607,7 @@ func linkedInWaitForResumeAcceptedPoll(ctx context.Context, page *rod.Page, file
 				if _, selErr := linkedInPageEval(page, 2*time.Second, jsLinkedInSelectResumeRadioByFilename, base); selErr == nil {
 					time.Sleep(300 * time.Millisecond)
 					res2, err2 := linkedInPageEval(page, 2*time.Second, jsLinkedInCheckResumeAcceptedLite, base)
-					if err2 == nil && res2 != nil && res2.Value.Get("filenameVisible").Bool() {
+					if err2 == nil && res2 != nil && res2.Value.Get("accepted").Bool() && res2.Value.Get("filenameVisible").Bool() {
 						log.Info().Str("filename", base).Msg("linkedin: resume selected after upload appeared in library")
 						return nil
 					}
