@@ -24,6 +24,10 @@ import (
 
 var errSeekSearchUnrecognized = errors.New("seek: search page has neither job cards nor a confirmed zero-results indicator")
 
+// seekApplyMaxSteps bounds the Continue loop. Full-page apply usually needs 4–6;
+// paginated employer questions can need more. Stagnation detection stops infinite Continue.
+const seekApplyMaxSteps = 18
+
 func init() {
 	registerRunner(domain.PlatformSeek, platformRunnerFunc(runSeek))
 }
@@ -1478,7 +1482,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 	b.humanPause()
 
 	// Multi-step form: click Continue/Next until we reach and complete the review page.
-	for step := 0; step < 10; step++ {
+	for step := 0; step < seekApplyMaxSteps; step++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -1515,13 +1519,18 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			}
 		}
 		if hasFields && !filled {
-			if msgs := b.seekValidationMessages(page); len(msgs) > 0 {
-				b.log.Warn().Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Strs("errors", msgs).Int("step", step+1).Msg("seek: validation errors with unfilled fields")
+			if b.seekDocumentsStepReady(page) {
+				b.log.Debug().Msg("seek: document step already satisfied, continuing")
+				hasFields = false
+			} else {
+				if msgs := b.seekValidationMessages(page); len(msgs) > 0 {
+					b.log.Warn().Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Strs("errors", msgs).Int("step", step+1).Msg("seek: validation errors with unfilled fields")
+				}
+				if shot, err := page.Screenshot(false, nil); err == nil {
+					_ = os.WriteFile(fmt.Sprintf("debug_seek_step_%d_unfilled.png", step+1), shot, 0o644)
+				}
+				return fmt.Errorf("required screening questions could not be filled at step %d", step+1)
 			}
-			if shot, err := page.Screenshot(false, nil); err == nil {
-				_ = os.WriteFile(fmt.Sprintf("debug_seek_step_%d_unfilled.png", step+1), shot, 0o644)
-			}
-			return fmt.Errorf("required screening questions could not be filled at step %d", step+1)
 		}
 		b.humanPause()
 
@@ -1562,6 +1571,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			}
 		}
 
+		pathBefore := seekApplyPath(page)
 		if err := actionBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
 			return fmt.Errorf("click %q step %d: %w", btnText, step+1, err)
 		}
@@ -1576,9 +1586,34 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			return nil
 		}
 
-		b.log.Info().Msgf("seek: form step %d, clicked %q", step+1, btnText)
 		b.humanPause()
 		_ = page.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
+		pathAfter := seekApplyPath(page)
+		if pathBefore != "" && pathBefore == pathAfter {
+			if msgs := b.seekValidationMessages(page); len(msgs) > 0 {
+				return fmt.Errorf("seek apply: continue did not advance at %s (validation: %s)", pathAfter, strings.Join(msgs, "; "))
+			}
+			if hasFields && !filled {
+				return fmt.Errorf("required screening questions could not be filled at step %d", step+1)
+			}
+			// Employer widgets (ARIA radios, etc.) may mount after the first scan.
+			refilled, hasFields2, fillErr := b.fillFormStep(ctx, page, lazy, FillFormStepOpts{IncludeAnsweredRadios: true, VisionFallback: true})
+			if fillErr != nil {
+				if isFormFillFatalLLM(fillErr) {
+					b.abortOnLLMFailure(fillErr)
+				}
+				return fmt.Errorf("seek apply: form fill aborted: %w", fillErr)
+			}
+			if refilled {
+				b.log.Info().Str("apply_path", pathAfter).Bool("had_fields", hasFields2).Msg("seek: filled employer questions after stagnation, retrying step")
+				continue
+			}
+			if shot, err := page.Screenshot(false, nil); err == nil {
+				_ = os.WriteFile("debug_seek_stagnation.png", shot, 0o644)
+			}
+			return fmt.Errorf("seek apply: continue did not advance past %s — check required employer questions", pathAfter)
+		}
+		b.log.Info().Str("apply_path", pathAfter).Msgf("seek: form step %d, clicked %q", step+1, btnText)
 	}
 
 	return fmt.Errorf("could not complete Quick Apply: exceeded maximum form steps")
@@ -2242,6 +2277,160 @@ func (b *Bot) seekAutoLogin(page *rod.Page) error {
 	return nil
 }
 
+const jsSeekFindListboxTrigger = `
+function seekFindListboxTrigger(triggerId) {
+	function allInDOM(root, selector) {
+		const r = [];
+		const walk = (node) => {
+			if (!node) return;
+			try { if (node.querySelectorAll) r.push(...node.querySelectorAll(selector)); } catch (e) {}
+			for (const el of node.querySelectorAll ? [...node.querySelectorAll('*')] : []) {
+				if (el.shadowRoot) walk(el.shadowRoot);
+			}
+		};
+		walk(document);
+		return r;
+	}
+	return document.getElementById(triggerId)
+		|| document.querySelector('[data-seek-select-id="' + triggerId + '"]')
+		|| allInDOM(document, 'button, [role="button"], div, span').find(b => b.id === triggerId || b.getAttribute('data-seek-select-id') === triggerId);
+}
+`
+
+const jsSeekListboxHarvest = jsSeekFindListboxTrigger + `(triggerId) => {
+	function allOpts() {
+		const r = [];
+		const walk = (node) => {
+			if (!node) return;
+			try {
+				r.push(...node.querySelectorAll('[role="option"], [role="listbox"] [role="option"], ul[role="listbox"] li'));
+			} catch (e) {}
+			for (const el of node.querySelectorAll ? [...node.querySelectorAll('*')] : []) {
+				if (el.shadowRoot) walk(el.shadowRoot);
+			}
+		};
+		walk(document);
+		return r.filter(el => {
+			const t = (el.textContent || '').trim();
+			return t.length > 0 && t.length < 120;
+		});
+	}
+	const btn = seekFindListboxTrigger(triggerId);
+	if (!btn) return JSON.stringify({ ok: false, labels: [] });
+	if (btn.getAttribute('aria-expanded') !== 'true') btn.click();
+	const deadline = Date.now() + 2500;
+	let opts = [];
+	while (Date.now() < deadline) {
+		opts = allOpts();
+		if (opts.length > 0) break;
+	}
+	const labels = [...new Set(opts.map(o => (o.textContent || '').replace(/\\s+/g, ' ').trim()))];
+	return JSON.stringify({ ok: labels.length > 0, labels });
+}`
+
+const jsSeekListboxPick = jsSeekFindListboxTrigger + `(triggerId, answer) => {
+	function allOpts() {
+		const r = [];
+		const walk = (node) => {
+			if (!node) return;
+			try {
+				r.push(...node.querySelectorAll('[role="option"], [role="listbox"] [role="option"], ul[role="listbox"] li'));
+			} catch (e) {}
+			for (const el of node.querySelectorAll ? [...node.querySelectorAll('*')] : []) {
+				if (el.shadowRoot) walk(el.shadowRoot);
+			}
+		};
+		walk(document);
+		return r.filter(el => {
+			const t = (el.textContent || '').trim();
+			return t.length > 0 && t.length < 120;
+		});
+	}
+	const btn = seekFindListboxTrigger(triggerId);
+	if (!btn) return JSON.stringify({ ok: false });
+	if (btn.getAttribute('aria-expanded') !== 'true') btn.click();
+	let opts = allOpts();
+	if (opts.length === 0) {
+		const deadline = Date.now() + 2000;
+		while (Date.now() < deadline && opts.length === 0) opts = allOpts();
+	}
+	if (opts.length === 0) return JSON.stringify({ ok: false });
+	const lower = (answer || '').toLowerCase().trim();
+	let pick = opts.find(o => (o.textContent || '').replace(/\\s+/g, ' ').trim().toLowerCase() === lower);
+	if (!pick) pick = opts.find(o => (o.textContent || '').toLowerCase().includes(lower) && lower.length > 2);
+	if (!pick && /\\d/.test(lower)) {
+		const n = lower.match(/\\d+/);
+		if (n) pick = opts.find(o => (o.textContent || '').includes(n[0]));
+	}
+	if (!pick) pick = opts[0];
+	pick.click();
+	return JSON.stringify({ ok: true, picked: (pick.textContent || '').trim() });
+}`
+
+// fillSeekListbox opens a Seek listbox dropdown, asks the LLM to choose, and selects an option.
+func (b *Bot) fillSeekListbox(ctx context.Context, page *rod.Page, lazy *lazyDocGen, f formField) (bool, error) {
+	harvest, err := page.Timeout(8 * time.Second).Eval(jsSeekListboxHarvest, f.ID)
+	if err != nil {
+		return false, nil
+	}
+	var harvestRes struct {
+		OK     bool     `json:"ok"`
+		Labels []string `json:"labels"`
+	}
+	if json.Unmarshal([]byte(harvest.Value.String()), &harvestRes) != nil || !harvestRes.OK || len(harvestRes.Labels) == 0 {
+		return false, nil
+	}
+	raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, harvestRes.Labels)
+	answer, qErr := resolveFormFieldAnswer(raw, qErr, harvestRes.Labels[0])
+	if qErr != nil {
+		return false, qErr
+	}
+	// Close listbox before re-open pick (Escape).
+	_ = page.Keyboard.Press('\u001b')
+	time.Sleep(200 * time.Millisecond)
+	res, err := page.Timeout(8 * time.Second).Eval(jsSeekListboxPick, f.ID, answer)
+	if err != nil {
+		return false, nil
+	}
+	var pickRes struct {
+		OK     bool   `json:"ok"`
+		Picked string `json:"picked"`
+	}
+	if json.Unmarshal([]byte(res.Value.String()), &pickRes) != nil || !pickRes.OK {
+		return false, nil
+	}
+	log.Info().Str("question", f.Question).Str("answer", pickRes.Picked).Msg("form: seek listbox filled")
+	return true, nil
+}
+
+// seekDocumentsStepReady reports whether the Choose documents step already has a resume selected.
+func (b *Bot) seekDocumentsStepReady(page *rod.Page) bool {
+	res, err := page.Eval(`() => {
+		if (!/\/job\/\d+\/apply\/?$/.test(location.pathname)) return false;
+		if (document.querySelector('input[name="resume-method"]:checked, input[type="radio"][name*="resume"]:checked')) return true;
+		const widgets = document.querySelectorAll('[role="radiogroup"] [role="radio"][aria-checked="true"]');
+		if (widgets.length > 0) return true;
+		const body = (document.body && document.body.innerText || '').toLowerCase();
+		return body.includes('default') && (body.includes('resume') || body.includes('resumé') || body.includes('cv'));
+	}`)
+	if err != nil {
+		return false
+	}
+	return res.Value.Bool()
+}
+
+func seekApplyPath(page *rod.Page) string {
+	info, err := page.Info()
+	if err != nil || info == nil {
+		return ""
+	}
+	u, parseErr := url.Parse(info.URL)
+	if parseErr != nil {
+		return info.URL
+	}
+	return u.Path
+}
+
 // seekFindActionButton scans the current Quick Apply page for the next action button.
 // Returns (button, isSubmit): isSubmit=true when it's the final "Submit application"
 // button, false when it's a Continue/Next button.
@@ -2250,6 +2439,40 @@ func (b *Bot) seekAutoLogin(page *rod.Page) error {
 // Continue is preferred over Submit when both are visible — Submit often exists in
 // the DOM on intermediate steps but must not be clicked until the review page.
 func (b *Bot) seekFindActionButton(page *rod.Page) (*rod.Element, bool) {
+	onReview, _ := page.Eval(`() => /\/job\/\d+\/apply\/review(\/|$)/.test(location.pathname)
+		|| !!document.querySelector('button[data-testid="review-submit-application"]')`)
+	if onReview != nil && onReview.Value.Bool() {
+		for _, sel := range []string{
+			"button[data-testid='review-submit-application']",
+			"[data-automation='review-submit-button']",
+			"button[data-testid='review-submit-button']",
+			"button[data-testid='submit-application']",
+		} {
+			if elems, err := page.Elements(sel); err == nil {
+				for _, el := range elems {
+					if b.seekButtonActionable(el) {
+						return el, true
+					}
+				}
+			}
+		}
+		if btns, err := page.Elements("button"); err == nil {
+			for _, btn := range btns {
+				if !b.seekButtonActionable(btn) {
+					continue
+				}
+				txt, err := btn.Text()
+				if err != nil {
+					continue
+				}
+				if strings.Contains(strings.ToLower(strings.TrimSpace(txt)), "submit") {
+					return btn, true
+				}
+			}
+		}
+		return nil, false
+	}
+
 	pickVisible := func(elems rod.Elements) *rod.Element {
 		for _, el := range elems {
 			if b.seekButtonActionable(el) {

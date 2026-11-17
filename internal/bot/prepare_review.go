@@ -346,7 +346,7 @@ func (m *Manager) prepareSeekReviewDocuments(ctx context.Context, b *Bot, page *
 	if err := b.ensureSeekApplyFormVisible(page, jobURL); err != nil {
 		return err
 	}
-	for step := 0; step < 10; step++ {
+	for step := 0; step < seekApplyMaxSteps; step++ {
 		_, _, fillErr := b.fillFormStep(ctx, page, lazy)
 		if fillErr != nil && isFormFillFatalLLM(fillErr) {
 			return fillErr
@@ -360,8 +360,13 @@ func (m *Manager) prepareSeekReviewDocuments(ctx context.Context, b *Bot, page *
 			lazy.prepareScanComplete = true
 			break
 		}
+		pathBefore := seekApplyPath(page)
 		if err := actionBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
 			return fmt.Errorf("prepare: scan incomplete — could not advance at step %d: %w", step+1, err)
+		}
+		_ = page.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
+		if pathBefore != "" && pathBefore == seekApplyPath(page) {
+			return fmt.Errorf("prepare: scan stuck at %s — apply form did not advance", pathBefore)
 		}
 	}
 	lazy.ensureMaterialized()
