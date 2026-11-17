@@ -125,3 +125,47 @@ test('confirmation on a separate success route needs an explicit matching job ID
  const p=page('<div role="dialog">Your application was sent to MYOB</div>','/jobs/application/success');
  try {assert.equal(p.confirm('MYOB'),false);p.dom.window.document.querySelector('[role="dialog"]').setAttribute('data-job-id',target);assert.equal(p.confirm('MYOB'),true);}finally{p.dom.window.close()}
 });
+
+const sduiHeader = id => '<div id="'+id+'"><a href="/jobs/view/'+target+'">Software Engineer</a><span aria-label="Company, Example.">Example</span><button>Easy Apply</button></div>';
+const sduiDescription = '<div id="JobDetails_AboutTheJob_'+target+'">Intended description with enough content for extraction.</div>';
+test('sticky SDUI sibling does not compete with the unique header-description block',()=>{
+ const p=page('<div>'+sduiHeader('primary')+sduiDescription+'</div>'+sduiHeader('sticky'));
+ try {
+  let primaryClicks=0,stickyClicks=0;
+  p.dom.window.document.querySelector('#primary button').onclick=()=>primaryClicks++;
+  p.dom.window.document.querySelector('#sticky button').onclick=()=>stickyClicks++;
+  const r=p.resolve(true);
+  assert.equal(r.identity_verified,true);assert.equal(r.kind,'native');
+  assert.ok(r.description.includes('Intended description'));
+  assert.equal(primaryClicks,1);assert.equal(stickyClicks,0);
+ }finally{p.dom.window.close()}
+});
+for(const [name,html] of [
+ ['page-level shared description',sduiHeader('primary')+sduiDescription+sduiHeader('sticky')],
+ ['two headers within one description block','<div>'+sduiHeader('primary')+sduiHeader('sticky')+sduiDescription+'</div>'],
+ ['two independent description panes','<div>'+sduiHeader('primary')+sduiDescription+'</div><div>'+sduiHeader('sticky')+sduiDescription+'</div>'],
+]) test('sticky disambiguation rejects '+name,()=>{
+ const p=page(html);
+ try{let clicks=0;p.dom.window.document.addEventListener('click',()=>clicks++);
+  const r=p.resolve(true);assert.equal(r.identity_verified,false);assert.equal(clicks,0);
+ }finally{p.dom.window.close()}
+});
+test('legacy description pane wins over condensed sibling',()=>{
+ const p=page('<div data-job-id="'+target+'"><h1>Software Engineer</h1><button>Easy Apply</button><div data-job-description>Intended legacy description</div></div><div data-job-id="'+target+'"><button>Easy Apply</button></div>');
+ try{const r=p.resolve(false);assert.equal(r.kind,'native');assert.ok(r.description.includes('Intended legacy description'));}
+ finally{p.dom.window.close()}
+});
+
+// Execute the production SERP parser rather than a copied skip expression.
+const searchScript=source.match(/const jsLinkedInSearchJobs = `([\s\S]*?)`\n/)[1];
+for(const salary of ['$80K–$120K','137.8K AUD/yr – 147.4K AUD/yr','A$137,800 – A$147,400','AUD 137,800 - AUD 147,400','USD 80,000 — USD 120,000']){
+ test('SERP excludes salary company-slot line: '+salary,()=>{
+  const p=page('<div role="button" componentkey="job-card-component-ref-'+target+'"><p>Software Engineer</p><p>'+salary+'</p><p>11 company alumni work here</p><p>Example</p><p>Adelaide, SA</p></div>');
+  try{
+   // JSDOM has no layout-backed innerText.
+   Object.defineProperty(p.dom.window.HTMLElement.prototype,'innerText',{get(){return this.tagName==='DIV'?[...this.children].map(x=>x.textContent).join('\n'):this.textContent;}});
+   const jobs=JSON.parse(p.dom.window.eval('('+searchScript+')')());
+   assert.equal(jobs.length,1);assert.equal(jobs[0].title,'Software Engineer');assert.equal(jobs[0].company,'Example');
+  }finally{p.dom.window.close()}
+ });
+}
