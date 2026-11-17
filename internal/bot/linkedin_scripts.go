@@ -90,8 +90,15 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  // Prefer the smallest verified top-card/pane, never a broad parent containing
  // multiple independent job panes.
  const scopes = verified.filter(root=>!verified.some(other=>other!==root && root.contains(other)));
- if(scopes.length !== 1) {out.reason='job_pane_not_unique'; return finish();}
- const root = scopes[0];
+ let scope = scopes.length === 1 ? scopes[0] : null;
+ if(!scope && scopes.length > 1) {
+   // LinkedIn may render a sticky condensed header alongside the main pane.
+   // Disambiguate by preferring the unique scope that owns the description element.
+   const descPanes = scopes.filter(s => s.querySelector('.jobs-description, .jobs-description-content__text, [data-job-description]') || (sduiPanes.has(s) && sduiPanes.get(s).description));
+   if(descPanes.length === 1) scope = descPanes[0];
+ }
+ if(!scope) {out.reason='job_pane_not_unique'; return finish();}
+ const root = scope;
  const headerCopy=root.cloneNode(true);
  headerCopy.querySelectorAll('aside, [class*="similar-job"], [class*="jobs-similar"], [id^="JobDetailsSimilarJobsSlot_"], .jobs-description, .jobs-description-content__text, [data-job-description], [id^="JobDetails_AboutTheJob_"]').forEach(el=>el.remove());
  headerCopy.querySelectorAll('[data-job-id], [data-job-detail-id]').forEach(el=>{const id=(el.getAttribute('data-job-id') || el.getAttribute('data-job-detail-id') || '').replace(/^urn:li:(?:fsd_)?jobPosting:/,'');if(id && id!==expectedID) el.remove();});
@@ -378,8 +385,11 @@ const jsLinkedInSearchJobs = `() => {
      /^viewed$/i.test(l) ||
      /^be an early applicant$/i.test(l) ||
      /school alumni$/i.test(l) ||
+     /company alumni/i.test(l) ||
      /^posted /i.test(l) ||
-     /^\d+ (hour|day|week|month)s? ago$/i.test(l);
+     /^\d+ (hour|day|week|month)s? ago$/i.test(l) ||
+     /\b(AUD|USD|GBP|EUR|CAD|NZD)\s*\/\s*yr\b/i.test(l) ||
+     /^[\$£€]?\d[\d,.]*[KkMm]?\s*[-–]\s*[\$£€]?\d[\d,.]*[KkMm]/i.test(l);
    const clean = lines.map(peelSelected).filter(l => l && !skip(l));
    let title = '';
    let company = '';
