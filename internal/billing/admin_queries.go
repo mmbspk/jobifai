@@ -82,7 +82,7 @@ func ListUserBilling(ctx context.Context, db *sql.DB) ([]AdminUserBillingRow, er
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var out []AdminUserBillingRow
+	out := make([]AdminUserBillingRow, 0)
 	for rows.Next() {
 		var r AdminUserBillingRow
 		var cancel int
@@ -161,7 +161,7 @@ func ListWebhookEvents(ctx context.Context, db *sql.DB, f WebhookEventFilter) ([
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var out []WebhookEventListItem
+	out := make([]WebhookEventListItem, 0)
 	for rows.Next() {
 		var it WebhookEventListItem
 		var received time.Time

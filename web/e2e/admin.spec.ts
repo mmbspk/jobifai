@@ -43,8 +43,15 @@ test.describe('Admin', () => {
 
     await page.goto('/admin/ai-provider')
     await expect(page.getByText('Default task models')).toBeVisible()
+    const webhookResponse = page.waitForResponse(response =>
+      response.url().includes('/api/admin/billing/webhook-events') && response.request().method() === 'GET',
+    )
     await page.goto('/admin/quota')
-    await expect(page.getByText('Resource metering')).toBeVisible()
+    const webhookEvents = await webhookResponse
+    expect(webhookEvents.ok()).toBeTruthy()
+    expect(Array.isArray(await webhookEvents.json())).toBe(true)
+    await expect(page.getByRole('heading', { name: 'Credits, Stripe & metering', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Resource metering', exact: true })).toBeVisible()
     await page.goto('/admin/models')
     await expect(page.getByText('Model policy audit')).toBeVisible()
   })
