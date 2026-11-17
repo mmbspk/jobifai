@@ -401,8 +401,9 @@ const jsLinkedInSearchJobs = `() => {
      !l ||
      /^viewed$/i.test(l) ||
      /^be an early applicant$/i.test(l) ||
-     /school alumni$/i.test(l) ||
+     /school alumni/i.test(l) ||
      /company alumni/i.test(l) ||
+     /^actively\s+(reviewing|hiring)\b/i.test(l) ||
      /^posted /i.test(l) ||
      /^\d+ (hour|day|week|month)s? ago$/i.test(l) ||
      /\b(AUD|USD|GBP|EUR|CAD|NZD)\s*\/\s*yr\b/i.test(l) ||

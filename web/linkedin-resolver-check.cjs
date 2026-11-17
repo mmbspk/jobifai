@@ -169,3 +169,13 @@ for(const salary of ['$80K–$120K','137.8K AUD/yr – 147.4K AUD/yr','A$137,800
   }finally{p.dom.window.close()}
  });
 }
+for(const badge of ['Actively reviewing applicants','Actively hiring','1 school alumni works here','3 school alumni work here']){
+ test('SERP excludes badge company-slot line: '+badge,()=>{
+  const p=page('<div role="button" componentkey="job-card-component-ref-'+target+'"><p>Senior Engineer</p><p>'+badge+'</p><p>Acme Corp</p><p>Sydney, NSW</p></div>');
+  try{
+   Object.defineProperty(p.dom.window.HTMLElement.prototype,'innerText',{get(){return this.tagName==='DIV'?[...this.children].map(x=>x.textContent).join('\n'):this.textContent;}});
+   const jobs=JSON.parse(p.dom.window.eval('('+searchScript+')')());
+   assert.equal(jobs.length,1);assert.equal(jobs[0].title,'Senior Engineer');assert.equal(jobs[0].company,'Acme Corp');
+  }finally{p.dom.window.close()}
+ });
+}
