@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -12,6 +13,35 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
 )
+
+// linkedInBadgeCompany returns true when the stored company string is SERP
+// scraping garbage (a LinkedIn badge line, not an actual company name).  This
+// happens when a job was scraped before the skip-list was updated. Passing ""
+// to jsLinkedInResolve causes it to skip the company metadata check, which is
+// correct because the ID match alone is authoritative.
+var (
+	reBadgeAlumni    = regexp.MustCompile(`(?i)alumni`)
+	reBadgeActively  = regexp.MustCompile(`(?i)^actively\s+(reviewing|hiring)\b`)
+	reBadgeEarlyApp  = regexp.MustCompile(`(?i)^be an early applicant$`)
+	reBadgeViewed    = regexp.MustCompile(`(?i)^viewed$`)
+	reBadgePosted    = regexp.MustCompile(`(?i)^posted `)
+	reBadgeTimeAgo   = regexp.MustCompile(`(?i)^\d+ (hour|day|week|month)s? ago$`)
+	reBadgeSalaryYr  = regexp.MustCompile(`(?i)\b(AUD|USD|GBP|EUR|CAD|NZD)\s*/\s*yr\b`)
+	reBadgeSalaryRng = regexp.MustCompile(`(?i)^\$?\d[\d,.]*[KkMm]?\s*[-–—]\s*\$?\d[\d,.]*[KkMm]?\b`)
+	reBadgeSalaryCur = regexp.MustCompile(`(?i)^(AUD|USD|GBP|EUR|CAD|NZD|AU\$|A\$|US\$|CA\$|NZ\$|£|€|\$)\s*\d[\d,.]*`)
+)
+
+func linkedInBadgeCompany(s string) bool {
+	return reBadgeAlumni.MatchString(s) ||
+		reBadgeActively.MatchString(s) ||
+		reBadgeEarlyApp.MatchString(s) ||
+		reBadgeViewed.MatchString(s) ||
+		reBadgePosted.MatchString(s) ||
+		reBadgeTimeAgo.MatchString(s) ||
+		reBadgeSalaryYr.MatchString(s) ||
+		reBadgeSalaryRng.MatchString(s) ||
+		reBadgeSalaryCur.MatchString(s)
+}
 
 // These are recoverable listing decisions, not permanent application failures.
 var errLinkedInIdentity = errors.New("job identity: LinkedIn listing could not be verified")
@@ -125,7 +155,15 @@ func evalLinkedInJob(page *rod.Page, expectedID string, click, expand bool, job 
 	if expectedID == "" {
 		return result, fmt.Errorf("%w: missing intended job ID", errLinkedInIdentity)
 	}
-	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInResolve, expectedID, click, expand, job.Title, job.Company)
+	company := job.Company
+	if linkedInBadgeCompany(company) {
+		// Stored company is SERP badge garbage from a pre-fix scrape; skip the
+		// metadata check so the detail-page ID match alone decides identity.
+		log.Warn().Str("job_id", expectedID).Str("stored_company", company).
+			Msg("linkedin: stored company looks like a badge; skipping company metadata check")
+		company = ""
+	}
+	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInResolve, expectedID, click, expand, job.Title, company)
 	if err != nil {
 		return result, fmt.Errorf("%w: browser read: %w", errLinkedInIdentity, err)
 	}
