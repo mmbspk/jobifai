@@ -1692,6 +1692,25 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		}
 	}
 	if !isEasyApply {
+		// Adaptive engine + ExternalATS enabled: attempt to follow the external link.
+		externalDest := linkedInResolved.Destination
+		if ac.Engine == domain.ApplyEngineAdaptive && b.cfg.EnableExternalATS && classifyExternalATS(externalDest) != ATSKindUnknown {
+			// STEP 4 (external path): build lazy, navigate, run ATS runner.
+			lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: jobID, Company: company, Title: role, URL: jobURL}, jobDesc: jobDesc}
+			lazy.attemptID = ac.AttemptID
+			defer func() { _ = jobPage.Close() }()
+			if ownsBr {
+				defer func() { _ = br.Close() }()
+			}
+			atsErr := b.externalATSApply(ctx, jobPage, lazy, ac, externalDest)
+			if atsErr != nil {
+				log.Error().Err(atsErr).Str("job_id", jobID).Str("dest", externalDest).Msg("ai apply: external ATS failed")
+				finishAttempt(m.db, ac, classifyApplyOutcome(atsErr), "apply", "external_ats_error", atsErr.Error())
+				return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, atsErr
+			}
+			finishAttempt(m.db, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
+			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, nil
+		}
 		b.queueForReview(ctx, &domain.PendingReview{JobID: jobID, Company: company, Role: role, Location: location, Platform: platform, Link: jobURL, SuitabilityScore: score, SuitabilityReasoning: scoreReason, EasyApply: false, HalalVerdict: unmarshalHalalVerdict(halalJSON), CreatedAt: time.Now()})
 		finishAttempt(m.db, ac, OutcomeSkipped, "not_easy_apply", "external_ats", "External application requires manual submission")
 		_ = jobPage.Close()

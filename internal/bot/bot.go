@@ -205,6 +205,10 @@ type Config struct {
 	// AdaptiveMapping is the read/write mapping store used by the adaptive engine to
 	// reuse verified form field resolutions across runs. Nil disables caching.
 	AdaptiveMapping MappingReadWriter
+	// EnableExternalATS enables the adaptive engine to follow external ATS links
+	// (currently Greenhouse) instead of queuing them for manual review.
+	// When false (the default), external listings use the existing manual-routing path.
+	EnableExternalATS bool
 }
 
 // SubmitRequest bundles the fields needed to submit a single approved job.
