@@ -1675,6 +1675,18 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 	}
 	log.Info().Int("count", len(fields)).Msg("form: fields to fill")
 
+	// Shadow observation: snapshot the step and run the interpreter in read-only
+	// mode so the adaptive engine can record proposals for comparison analysis.
+	// Must come before any filling so the snapshot reflects the unmodified page state.
+	if b.cfg.ShadowStepFn != nil {
+		platform := string(b.cfg.Platform)
+		if platform == "" {
+			platform = "unknown"
+		}
+		snap := captureStepSnapshot(fields, nil, platform, 0, "shadow-step")
+		b.cfg.ShadowStepFn(ctx, snap)
+	}
+
 	lazy.applyCaps(capsFromFormFields(fields))
 	siteMode := b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted
 	for _, f := range fields {

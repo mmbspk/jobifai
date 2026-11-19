@@ -209,6 +209,11 @@ type Config struct {
 	// (currently Greenhouse) instead of queuing them for manual review.
 	// When false (the default), external listings use the existing manual-routing path.
 	EnableExternalATS bool
+	// ShadowStepFn is called by fillFormStep when the engine is in shadow mode.
+	// It receives a privacy-minimized snapshot of the current form step and must
+	// not issue browser actions or write to the active mapping cache.
+	// Nil means shadow observation is disabled (all non-shadow modes).
+	ShadowStepFn func(ctx context.Context, snap StepSnapshot)
 }
 
 // SubmitRequest bundles the fields needed to submit a single approved job.

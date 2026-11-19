@@ -623,10 +623,28 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		finishAttempt(m.db, ac, OutcomeCancelled, "engine_switch", "kill_switch_reverted", ksErr.Error())
 		return ksErr
 	}
-	if req.Platform == "seek" {
-		applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
-	} else {
-		applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
+	switch ac.Engine {
+	case domain.ApplyEngineAdaptive:
+		if req.Platform == "seek" {
+			applyErr = b.adaptiveSeekApply(m.ctx, jobPage, managerLazy, ac)
+		} else {
+			applyErr = b.adaptiveEasyApply(m.ctx, jobPage, managerLazy, ac)
+		}
+	case domain.ApplyEngineShadow:
+		// Shadow: run legacy path unchanged, with the adaptive interpreter observing
+		// each step for comparison. Observer must not issue browser actions.
+		installShadowObserverIfNeeded(b, ac, nil)
+		if req.Platform == "seek" {
+			applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
+		} else {
+			applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
+		}
+	default:
+		if req.Platform == "seek" {
+			applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
+		} else {
+			applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
+		}
 	}
 	if applyErr != nil {
 		if errors.Is(applyErr, errLinkedInSubmissionUnknown) && domain.Platform(req.Platform) == domain.PlatformLinkedIn {
