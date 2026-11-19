@@ -199,14 +199,18 @@ const jsScanFieldsInner = `
 			}
 			const parent = node.parentElement;
 			if (!parent) break;
-			// Look for heading siblings that appear BEFORE this node.
+			// Collect the LAST heading sibling before this node — the closest section.
+			// Two fields under different headings that are flat siblings under one parent
+			// each inherit their own closest (last) heading, not the first one.
+			let lastH = '';
 			for (const c of parent.children) {
 				if (c === node) break;
 				if (/^H[1-6]$/.test(c.tagName)) {
 					const t = c.textContent.trim().replace(/\s+/g, ' ');
-					if (t) return t;
+					if (t) lastH = t;
 				}
 			}
+			if (lastH) return lastH;
 		}
 		return '';
 	}
@@ -1600,7 +1604,9 @@ func resolveFormFieldAnswer(answer string, err error, fallback string) (string, 
 // Optional 4th argument sectionHint (string): when non-empty, restricts the search to form
 // elements whose nearest enclosing section heading contains the hint. Enables filling two
 // fields with identical labels that belong to different form sections.
-const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType, sectionHint) => {
+// Optional 5th argument controlID (string): when non-empty and fieldType is not radio/select,
+// targets the element by DOM id directly — bypassing label search and section filtering.
+const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType, sectionHint, controlID) => {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer() || document.body;
 	const needle = (questionNeedle || '').toLowerCase().trim();
@@ -1626,21 +1632,53 @@ const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType, sectionHint)
 		if (!hint) return true;
 		let node = el;
 		for (let d = 0; d < 12 && node && node !== document.body; d++, node = node.parentElement) {
-			const parent = node.parentElement;
-			if (!parent) break;
-			for (const c of parent.children) {
-				if (c === node) break;
-				if (/^H[1-6]$/.test(c.tagName) && (c.textContent || '').toLowerCase().includes(hint)) return true;
-			}
 			if (node.getAttribute && node.getAttribute('role') === 'group') {
 				const lid = node.getAttribute('aria-labelledby');
 				if (lid) {
 					const lbl = document.getElementById(lid);
-					if (lbl && (lbl.textContent || '').toLowerCase().includes(hint)) return true;
+					// A role=group boundary is authoritative: match or exclude.
+					if (lbl) return (lbl.textContent || '').toLowerCase().includes(hint);
 				}
+			}
+			const parent = node.parentElement;
+			if (!parent) break;
+			// Find the LAST heading sibling before this node — that is the section it belongs to.
+			// Using first-found would cause fields in later sections to inherit an earlier heading.
+			let lastH = null;
+			for (const c of parent.children) {
+				if (c === node) break;
+				if (/^H[1-6]$/.test(c.tagName)) lastH = c;
+			}
+			if (lastH !== null) {
+				// A heading boundary was found — this element belongs to that section only.
+				return (lastH.textContent || '').toLowerCase().includes(hint);
 			}
 		}
 		return false;
+	}
+
+	// Direct targeting by DOM id: skip label search for text inputs when controlID is known.
+	// This handles the case where two fields share an identical label (e.g. "Years of experience"
+	// in two separate sections) — the scanned element id routes the fill to the exact control.
+	if (fieldType !== 'radio' && fieldType !== 'select') {
+		const cid = (controlID || '').trim();
+		if (cid) {
+			const target = document.getElementById(cid);
+			if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+				const ty = target.tagName === 'INPUT' ? (target.getAttribute('type') || 'text').toLowerCase() : 'textarea';
+				if (!['hidden', 'file', 'radio', 'checkbox', 'submit', 'button'].includes(ty)) {
+					try {
+						const proto = target.tagName === 'TEXTAREA' ?
+							window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+						const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+						setter.call(target, ans);
+					} catch (e) { target.value = ans; }
+					target.dispatchEvent(new Event('input', { bubbles: true }));
+					target.dispatchEvent(new Event('change', { bubbles: true }));
+					return true;
+				}
+			}
+		}
 	}
 
 	if (fieldType === 'radio' || fieldType === 'select') {

@@ -36,6 +36,19 @@ import (
 // fill path; this is the safety net.
 var errShadowBrowserAction = errors.New("adaptive_runner: shadow mode must not issue browser actions (bug: wrong routing)")
 
+// filledResolutions returns only the non-pending ActionFill/ActionUpload entries.
+// Skip proposals and unresolved fields are excluded so the mapping store never
+// receives a trusted entry for a field the engine decided not to fill.
+func filledResolutions(fields []FieldResolution) []FieldResolution {
+	out := make([]FieldResolution, 0, len(fields))
+	for _, r := range fields {
+		if !r.Pending && (r.Action == ActionFill || r.Action == ActionUpload) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // shadowEasyApply asserts the shadow constraint: if this function is ever called
 // it means the routing incorrectly sent shadow to the adaptive path.
 func shadowEasyApply() error {
@@ -175,11 +188,15 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 			return fmt.Errorf("adaptive: execute step %d: %w", stepIdx, err)
 		}
 
-		// Persist verified resolutions only when the form confirmed the step advanced or
-		// submitted. Paused steps, errors, and unknown outcomes must not create trusted
-		// mappings — a click alone is not sufficient evidence.
-		if b.cfg.AdaptiveMapping != nil && (result.Outcome == StepOutcomeAdvanced || result.Outcome == StepOutcomeSubmitted) {
-			_ = b.cfg.AdaptiveMapping.Write(ctx, snap, interp.Fields)
+		// Persist verified resolutions only on confirmed transitions.
+		// StepOutcomeSubmitted with result.Err != nil means the click errored and
+		// the outcome is unknown — do not create mappings from an unconfirmed submission.
+		if b.cfg.AdaptiveMapping != nil {
+			confirmed := result.Outcome == StepOutcomeAdvanced ||
+				(result.Outcome == StepOutcomeSubmitted && result.Err == nil)
+			if confirmed {
+				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, filledResolutions(interp.Fields))
+			}
 		}
 
 		switch result.Outcome {
@@ -259,7 +276,7 @@ func (f *linkedInRodFiller) Fill(_ context.Context, field SnapField, res FieldRe
 	default:
 		fieldTypeParm = "text"
 	}
-	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm, field.Group)
+	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm, field.Group, field.ControlID)
 	if err != nil {
 		return FieldFillResult{Err: fmt.Errorf("adaptive: fill field %s (%q): %w", field.Ref, field.Label, err)}
 	}
@@ -438,8 +455,13 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 
 		// Same provenance gate as LinkedIn: only persist on confirmed step outcomes.
-		if b.cfg.AdaptiveMapping != nil && (result.Outcome == StepOutcomeAdvanced || result.Outcome == StepOutcomeSubmitted) {
-			_ = b.cfg.AdaptiveMapping.Write(ctx, snap, interp.Fields)
+		// A SubmitWithError result (click errored, outcome unknown) must not create mappings.
+		if b.cfg.AdaptiveMapping != nil {
+			confirmed := result.Outcome == StepOutcomeAdvanced ||
+				(result.Outcome == StepOutcomeSubmitted && result.Err == nil)
+			if confirmed {
+				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, filledResolutions(interp.Fields))
+			}
 		}
 
 		switch result.Outcome {
@@ -492,7 +514,7 @@ func (f *seekRodFiller) Fill(_ context.Context, field SnapField, res FieldResolu
 	default:
 		fieldTypeParm = "text"
 	}
-	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm, field.Group)
+	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm, field.Group, field.ControlID)
 	if err != nil {
 		return FieldFillResult{Err: fmt.Errorf("seek adaptive: fill field %s (%q): %w", field.Ref, field.Label, err)}
 	}

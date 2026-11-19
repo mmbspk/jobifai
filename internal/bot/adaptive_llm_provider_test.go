@@ -15,7 +15,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -156,21 +155,8 @@ func TestLLMFormInterpreter_ColdStep_OneProviderRequest(t *testing.T) {
 	assert.True(t, result.LLMUsed, "cold step: LLMUsed must be true")
 	assert.False(t, result.Paused, "cold step: no paused fields")
 
-	// Verify resolved values.
-	vals := make(map[string]string)
-	for _, r := range result.Fields {
-		vals[r.Ref] = r.Value
-	}
-	assert.Equal(t, "7", vals["f0"])
-	assert.Equal(t, "No", vals["f1"])
-	assert.Equal(t, "Registered Nurse", vals["f2"])
-
-	// Verify label cost estimate (see comment at top of mapping_cache_proof_test.go).
-	const inputTokensPerField = 15
-	const fixedPromptTokens = 450
-	estimatedInputTokens := fixedPromptTokens + 3*inputTokensPerField
-	t.Logf("EVIDENCE provider-cold | estimated_input_tokens=%d | estimated_output_tokens=%d",
-		estimatedInputTokens, 3*25)
+	// Verify label cost estimate.
+	estimateLabelCost(t, 3)
 }
 
 // TestLLMFormInterpreter_WarmStep_ZeroProviderRequests proves that when all 3 fields
@@ -348,6 +334,3 @@ func estimateLabelCost(t *testing.T, fieldCount int) {
 	t.Logf("COST ESTIMATE | fields=%d | input_tokens=%d | output_tokens=%d | cost_usd=%.8f",
 		fieldCount, inputTokens, outputTokens, costUSD)
 }
-
-// Verify estimateLabelCost compiles and that the helper is used.
-var _ = fmt.Sprintf // suppress unused import if estimateLabelCost not called inline

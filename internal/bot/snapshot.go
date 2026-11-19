@@ -57,6 +57,7 @@ type SnapField struct {
 	Label         string        `json:"label"`                   // normalized visible label
 	Group         string        `json:"group,omitempty"`         // fieldset/legend/section heading
 	HelpText      string        `json:"help_text,omitempty"`     // hint / description text below the label
+	ControlID     string        `json:"control_id,omitempty"`    // DOM element id for direct fill targeting
 	Type          SnapFieldType `json:"type"`
 	Options       []string      `json:"options,omitempty"`       // option labels; radio/select only
 	Required      bool          `json:"required,omitempty"`
@@ -173,13 +174,14 @@ func captureStepSnapshot(fields []formField, navActions []SnapNav, platform stri
 	for i := range n {
 		f := fields[i]
 		sf := SnapField{
-			Ref:      fmt.Sprintf("f%d", i),
-			Label:    normalizeLabel(f.Question),
-			Group:    normalizeLabel(f.Group),
-			HelpText: normalizeLabel(f.HelpText),
-			Required: f.Required,
-			MaxChars: f.MaxChars,
-			Filled:   false, // privacy: never store the actual value
+			Ref:       fmt.Sprintf("f%d", i),
+			Label:     normalizeLabel(f.Question),
+			Group:     normalizeLabel(f.Group),
+			HelpText:  normalizeLabel(f.HelpText),
+			ControlID: f.ID,
+			Required:  f.Required,
+			MaxChars:  f.MaxChars,
+			Filled:    false, // privacy: never store the actual value
 		}
 
 		// Detect whether the field currently has a value (without storing it).

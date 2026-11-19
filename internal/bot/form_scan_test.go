@@ -1448,30 +1448,26 @@ document.getElementById('next-2').addEventListener('click', function() {
 // htmlDuplicateLabelSections is a minimal LinkedIn-shaped dialog with two
 // visually-separate sections ("Software Skills" and "Medical Skills"), each
 // containing a text input whose visible question label is identical:
-// "Years of experience". Without group-scoped identity the two fields would
-// be indistinguishable; with it they produce different FieldSignatures and
-// jsFillByQuestionAnswer targets only the correct section.
+// "Years of experience". The sections are FLAT siblings under the dialog —
+// no wrapper divs — so both inputs are siblings of the section headings.
 //
-// Each section wraps its h3 and input in a container div, so sectionGroupFor
-// finds the h3 as the first sibling heading before the form-element div.
+// This exercises the last-heading semantics of sectionGroupFor: with first-heading
+// logic both inputs would inherit the outer h2 "Screening Questions"; with
+// last-heading each input inherits its own closest h3.
 const htmlDuplicateLabelSections = `<!DOCTYPE html><html><body>
 <div role="dialog" class="jobs-easy-apply-modal" style="padding:16px">
   <h2>Screening Questions</h2>
 
-  <div class="section-block">
-    <h3>Software Skills</h3>
-    <div data-test-form-element="">
-      <label for="exp-software">Years of experience</label>
-      <input id="exp-software" type="text" aria-label="Years of experience" data-section="software" />
-    </div>
+  <h3>Software Skills</h3>
+  <div data-test-form-element="">
+    <label for="exp-software">Years of experience</label>
+    <input id="exp-software" type="text" aria-label="Years of experience" />
   </div>
 
-  <div class="section-block">
-    <h3>Medical Skills</h3>
-    <div data-test-form-element="">
-      <label for="exp-medical">Years of experience</label>
-      <input id="exp-medical" type="text" aria-label="Years of experience" data-section="medical" />
-    </div>
+  <h3>Medical Skills</h3>
+  <div data-test-form-element="">
+    <label for="exp-medical">Years of experience</label>
+    <input id="exp-medical" type="text" aria-label="Years of experience" />
   </div>
 </div>
 </body></html>`
@@ -1538,15 +1534,22 @@ func TestScan_DuplicateLabel_DifferentSection_CaptureAndFill(t *testing.T) {
 	require.NotEqual(t, resSoftware.Value, resMedical.Value, "each section must resolve independently")
 	t.Logf("EVIDENCE dom-cache | software_value=%q | medical_value=%q", resSoftware.Value, resMedical.Value)
 
-	// 4. Fill: jsFillByQuestionAnswer with section hint must target only the correct input.
-	res, err := page.Eval(jsFillByQuestionAnswer, "Years of experience", "10", "text", "Software Skills")
+	// 4. Fill: use scanned ControlID to route each fill to the correct input.
+	// Both fills use the same question label; the ControlID makes them unambiguous.
+	fillSW, err := page.Eval(jsFillByQuestionAnswer,
+		softwareField.Question, resSoftware.Value, "text", softwareField.Group, softwareField.ID)
 	require.NoError(t, err)
-	require.True(t, res.Value.Bool(), "fill must succeed for Software Skills section")
+	require.True(t, fillSW.Value.Bool(), "fill must succeed for Software Skills section")
+
+	fillMed, err := page.Eval(jsFillByQuestionAnswer,
+		medicalField.Question, resMedical.Value, "text", medicalField.Group, medicalField.ID)
+	require.NoError(t, err)
+	require.True(t, fillMed.Value.Bool(), "fill must succeed for Medical Skills section")
 
 	softwareVal, _ := page.Eval(`() => document.getElementById('exp-software').value`)
 	medicalVal, _ := page.Eval(`() => document.getElementById('exp-medical').value`)
 	t.Logf("EVIDENCE dom-fill | software_input=%q | medical_input=%q",
 		softwareVal.Value.String(), medicalVal.Value.String())
-	require.Equal(t, "10", softwareVal.Value.String(), "Software Skills input must be filled with '10'")
-	require.Empty(t, medicalVal.Value.String(), "Medical Skills input must remain empty")
+	require.Equal(t, resSoftware.Value, softwareVal.Value.String(), "Software Skills input must receive its cached value")
+	require.Equal(t, resMedical.Value, medicalVal.Value.String(), "Medical Skills input must receive its cached value")
 }

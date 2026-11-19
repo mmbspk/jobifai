@@ -527,100 +527,74 @@ func TestMappingCache_ClearedProfileBinding_SurfacesAsUnresolved(t *testing.T) {
 	assert.Equal(t, "immediately", r.Value)
 }
 
-// ── 10. Incompatible radio option → field re-sent to LLM (Finding 2) ─────────
+// ── 10. Profile-bound warm hit with incompatible option → field re-sent to LLM (Finding 2) ──
 
-// TestMappingCache_IncompatibleOption_SurfacesAsUnresolved proves that a warm hit
-// is discarded when the stored value is no longer a valid option on the current
-// radio/select field. The field is re-routed to the LLM.
-func TestMappingCache_IncompatibleOption_SurfacesAsUnresolved(t *testing.T) {
+// TestMappingCache_ProfileBoundWarmHit_IncompatibleOption_ReroutesLLM proves the option
+// guard on the warm-hit path:
+//
+//  1. A profile-bound mapping entry is stored for a radio field. The field signature
+//     is fixed by the options (the same snap is reused for both interpretations).
+//  2. Warm hit with a compatible profile value ("Within a week") → 0 LLM calls,
+//     result served from mapping.
+//  3. Same sig (options unchanged), but profile binding value updated to "immediately"
+//     (not in options) → option guard fires, field re-routed to LLM → 1 LLM call.
+//
+// The question label "When can you start?" intentionally avoids deterministicResolve's
+// keyword patterns so Pass 2 (mapping) handles it rather than Pass 1 (profile lookup).
+func TestMappingCache_ProfileBoundWarmHit_IncompatibleOption_ReroutesLLM(t *testing.T) {
 	db := openMappingDB(t)
-	store := &DBMappingStore{DB: db, UserID: "user-incompat"}
+	store := &DBMappingStore{DB: db, UserID: "user-warmhit-opt"}
 
-	// Store a mapping for a radio field with options {Yes, No}.
-	snapV1 := captureStepSnapshot([]formField{
-		{Type: "radio", Question: "Willing to relocate?",
-			Options: []formFieldOption{{Label: "Yes"}, {Label: "No"}}},
-	}, nil, "linkedin", 0, "")
-	require.NoError(t, store.Write(context.Background(), snapV1, []FieldResolution{{
-		Ref: "f0", Source: SourceLLM, Action: ActionFill, Value: "Yes",
-	}}))
-
-	// The sig differs because options changed, so this is always a cold miss.
-	// To exercise the option-mismatch path we write a text field (no options in sig),
-	// then look up through the interpreter with a radio snap whose options exclude the value.
-	snapNoOpts := captureStepSnapshot([]formField{
-		{Type: "text", Question: "Preferred start month"},
-	}, nil, "linkedin", 0, "")
-	require.NoError(t, store.Write(context.Background(), snapNoOpts, []FieldResolution{{
-		Ref: "f0", Source: SourceLLM, Action: ActionFill, Value: "March",
-	}}))
-
-	// Now interpret a radio field (same sig won't match text — different type).
-	// The correct way to exercise this: write a mapping for a radio field, then
-	// interpret with an updated snap where options no longer include "March".
-	radioSnap := captureStepSnapshot([]formField{
-		{Type: "radio", Question: "Preferred start month",
-			Options: []formFieldOption{{Label: "January"}, {Label: "February"}}},
-	}, nil, "linkedin", 0, "")
-
-	// Warm lookup: the mapping entry for text "Preferred start month" has different
-	// sig from the radio snap. So this is a cold miss → LLM is called.
-	llm := &stubLLM{proposals: []LLMFieldProposal{{
-		Ref: "f0", Action: "fill", Value: "January",
-	}}}
-	si := &StepInterpreter{LLM: llm, Mapping: store}
-	interp, err := si.InterpretStep(context.Background(), radioSnap, basicProfile())
-	require.NoError(t, err)
-	require.Len(t, interp.Fields, 1)
-	r := interp.Fields[0]
-
-	t.Logf("EVIDENCE incompatible-option | source=%s | value=%q | llm_calls=%d", r.Source, r.Value, llm.calls)
-	assert.Equal(t, SourceLLM, r.Source, "must route to LLM when stored sig does not match")
-}
-
-// TestMappingCache_IncompatibleOption_DirectWrite proves the interpreter rejects a
-// profile-bound warm hit when the resolved value is not in the current options list,
-// and re-routes the field to the LLM.
-func TestMappingCache_IncompatibleOption_DirectWrite_ReroutesToLLM(t *testing.T) {
-	db := openMappingDB(t)
-	store := &DBMappingStore{DB: db, UserID: "user-incompat2"}
-
-	// Write a profile-bound mapping for a sponsorship radio field.
+	// A radio field with a fixed option set. Options become part of FieldSignature.
+	// Label avoids all deterministicResolve patterns so Pass 2 (mapping) is reached.
 	snap := captureStepSnapshot([]formField{
-		{Type: "radio", Question: "Require visa sponsorship?",
-			Options: []formFieldOption{{Label: "Yes"}, {Label: "No"}}},
-	}, nil, "linkedin", 0, "")
+		{Type: "radio", Question: "When can you start?",
+			Options: []formFieldOption{
+				{Label: "Within a week"}, {Label: "2 to 4 weeks"}, {Label: "1 month"},
+			}},
+	}, nil, "linkedin", 0, "Availability")
+
+	// Write a profile-bound mapping entry.
 	require.NoError(t, store.Write(context.Background(), snap, []FieldResolution{{
 		Ref:        "f0",
 		Source:     SourceLLM,
 		Action:     ActionFill,
 		IntentType: FieldIntentProfile,
-		BindingKey: "application_defaults.requires_sponsorship",
-		Value:      "No",
+		BindingKey: "application_defaults.notice_period",
+		Value:      "Within a week",
 	}}))
 
-	// Profile hasn't changed — sponsorship is still false → "No".
-	profile := basicProfile() // RequiresSponsorship = false → "No"
-
-	// Snap with options that do NOT include "No" — simulating a form A/B change.
-	snapChanged := captureStepSnapshot([]formField{
-		{Type: "radio", Question: "Require visa sponsorship?",
-			Options: []formFieldOption{{Label: "Nein"}, {Label: "Ja"}}},
-	}, nil, "linkedin", 0, "")
-
-	llm := &stubLLM{proposals: []LLMFieldProposal{{
-		Ref: "f0", Action: "fill", Value: "Nein",
-	}}}
-	si := &StepInterpreter{LLM: llm, Mapping: store}
-	interp, err := si.InterpretStep(context.Background(), snapChanged, profile)
+	// ── Part 1: compatible warm hit — profile value is in the option list ─────────
+	profileCompat := basicProfile()
+	profileCompat.ApplicationDefaults.NoticePeriod = "Within a week"
+	llm1 := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", Value: "Within a week"}}}
+	si1 := &StepInterpreter{LLM: llm1, Mapping: store}
+	result1, err := si1.InterpretStep(context.Background(), snap, profileCompat)
 	require.NoError(t, err)
-	require.Len(t, interp.Fields, 1)
-	r := interp.Fields[0]
+	require.Len(t, result1.Fields, 1)
+	r1 := result1.Fields[0]
 
-	t.Logf("EVIDENCE incompatible-option-direct | source=%s | value=%q | llm_calls=%d", r.Source, r.Value, llm.calls)
-	// The sig differs (options changed) so it's a cold miss and LLM is called.
-	assert.Equal(t, SourceLLM, r.Source)
-	assert.Equal(t, "Nein", r.Value)
+	t.Logf("EVIDENCE warmhit-compat | source=%s | value=%q | llm_calls=%d", r1.Source, r1.Value, llm1.calls)
+	assert.Equal(t, 0, llm1.calls, "compatible warm hit must NOT invoke LLM")
+	assert.Equal(t, SourceMapping, r1.Source, "compatible warm hit must come from mapping cache")
+	assert.Equal(t, "Within a week", r1.Value, "compatible warm hit must return profile value")
+
+	// ── Part 2: incompatible warm hit — same sig, same options, profile value changed ──
+	// Profile now says "immediately" which is NOT in {Within a week, 2 to 4 weeks, 1 month}.
+	// The option guard must fire and route the field to the LLM.
+	profileIncompat := basicProfile()
+	profileIncompat.ApplicationDefaults.NoticePeriod = "immediately"
+	llm2 := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", Value: "Within a week"}}}
+	si2 := &StepInterpreter{LLM: llm2, Mapping: store}
+	result2, err := si2.InterpretStep(context.Background(), snap, profileIncompat)
+	require.NoError(t, err)
+	require.Len(t, result2.Fields, 1)
+	r2 := result2.Fields[0]
+
+	t.Logf("EVIDENCE warmhit-incompat | source=%s | value=%q | llm_calls=%d", r2.Source, r2.Value, llm2.calls)
+	assert.Equal(t, 1, llm2.calls, "incompatible warm hit must invoke LLM once")
+	assert.Equal(t, SourceLLM, r2.Source, "must come from LLM after option guard fires")
+	assert.Equal(t, "Within a week", r2.Value, "LLM-chosen value within options must be returned")
 }
 
 // ── 11. Provenance gating: only persist on confirmed outcomes (Finding 3) ────
