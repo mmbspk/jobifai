@@ -57,14 +57,41 @@ const (
 	PendingUnsupported     PendingReason = "unsupported"    // field type not supported by any handler
 )
 
+// FieldIntentType classifies how a mapping cache entry should be resolved at warm-hit time.
+type FieldIntentType string
+
+const (
+	// FieldIntentProfile: answer is derived from a named candidate profile field.
+	// BindingKey identifies which profile field to read at runtime, so the warm hit
+	// always reflects the candidate's current data even after a profile update.
+	FieldIntentProfile FieldIntentType = "profile"
+	// FieldIntentLLM: answer is an opaque string from the LLM, stored verbatim.
+	FieldIntentLLM FieldIntentType = "llm"
+)
+
+// VerificationProvenance records how a mapping became trusted enough to be reused.
+type VerificationProvenance string
+
+const (
+	// ProvenancePending: proposed but not yet verified — never written to the DB.
+	ProvenancePending VerificationProvenance = "pending"
+	// ProvenanceAcceptedByForm: form accepted the value during ExecuteStep.
+	ProvenanceAcceptedByForm VerificationProvenance = "accepted_by_form"
+	// ProvenanceConfirmedByReviewer: human reviewer explicitly promoted the mapping.
+	ProvenanceConfirmedByReviewer VerificationProvenance = "confirmed_by_reviewer"
+)
+
 // FieldResolution is the resolution outcome for one form field.
 type FieldResolution struct {
-	Ref     string           `json:"ref"`
-	Source  ResolutionSource `json:"source"`
-	Action  AllowedAction    `json:"action"`
-	Value   string           `json:"value,omitempty"`  // text answer or selected option label
-	Pending bool             `json:"pending,omitempty"`
-	Reason  PendingReason    `json:"reason,omitempty"`
+	Ref        string                `json:"ref"`
+	Source     ResolutionSource      `json:"source"`
+	Action     AllowedAction         `json:"action"`
+	Value      string                `json:"value,omitempty"`
+	Pending    bool                  `json:"pending,omitempty"`
+	Reason     PendingReason         `json:"reason,omitempty"`
+	IntentType FieldIntentType       `json:"intent_type,omitempty"`
+	BindingKey string                `json:"binding_key,omitempty"`
+	Provenance VerificationProvenance `json:"provenance,omitempty"`
 }
 
 // StepInterpretation is the result of interpreting all fields in a snapshot step.
@@ -78,9 +105,11 @@ type StepInterpretation struct {
 
 // LLMFieldProposal is one field's proposal from the LLM batch response.
 type LLMFieldProposal struct {
-	Ref    string `json:"ref"`
-	Action string `json:"action"` // "fill" | "upload" | "skip"
-	Value  string `json:"value"`
+	Ref        string          `json:"ref"`
+	Action     string          `json:"action"`      // "fill" | "upload" | "skip"
+	Value      string          `json:"value"`
+	IntentType FieldIntentType `json:"intent_type"` // "profile" | "llm"
+	BindingKey string          `json:"binding_key"` // non-empty when intent_type="profile"
 }
 
 // StepInterpreterLLM is the LLM call contract for the interpreter.
@@ -90,10 +119,18 @@ type StepInterpreterLLM interface {
 	InterpretFields(ctx context.Context, profile *domain.ResumeProfile, snap StepSnapshot, fieldRefs []string) ([]LLMFieldProposal, error)
 }
 
+// MappingLookup is the hook for field-level verified mapping reuse.
+// LookupField looks up a single field by its platform-scoped identity hash and
+// the employer key. Returns false on a cold miss or when no trusted mapping exists.
+// employerKey is the company name from the job posting; pass "" for a global lookup.
+type MappingLookup interface {
+	LookupField(fieldSig, employerKey string) (FieldResolution, bool)
+}
+
 // nopMappingLookup is a no-op MappingLookup used when no mapping store is wired.
 type nopMappingLookup struct{}
 
-func (nopMappingLookup) LookupField(_ string) (FieldResolution, bool) { return FieldResolution{}, false }
+func (nopMappingLookup) LookupField(_, _ string) (FieldResolution, bool) { return FieldResolution{}, false }
 
 // StepInterpreter drives the three-pass resolution pipeline.
 type StepInterpreter struct {
@@ -127,10 +164,17 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 		}
 
 		// Pass 2: field-level mapping lookup.
-		// fieldSig encodes platform + label + type + options — unique per field identity.
-		if res, ok := mapping.LookupField(f.FieldSignature(snap.Platform)); ok {
+		// fieldSig encodes platform + group + label + type + options — unique per field identity.
+		if res, ok := mapping.LookupField(f.FieldSignature(snap.Platform), snap.EmployerKey); ok {
 			res.Ref = f.Ref
 			res.Source = SourceMapping
+			// Profile-bound entries: resolve the current value from the live profile so
+			// the warm hit always reflects the candidate's latest data.
+			if res.IntentType == FieldIntentProfile && res.BindingKey != "" && profile != nil {
+				if v, resolved := resolveProfileBinding(res.BindingKey, profile); resolved {
+					res.Value = v
+				}
+			}
 			result.Fields = append(result.Fields, res)
 			continue
 		}
@@ -166,7 +210,7 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 					})
 				}
 			} else {
-				llmResolutions := validateLLMProposals(proposals, toLLM, snap)
+				llmResolutions := validateLLMProposals(proposals, toLLM, snap, profile)
 				result.Fields = append(result.Fields, llmResolutions...)
 				result.LLMUsed = true
 			}
@@ -311,7 +355,8 @@ func makeText(ref, value string) FieldResolution {
 
 // validateLLMProposals validates LLM proposals against the snapshot and builds FieldResolutions.
 // Fields in toLLM that have no valid proposal become review/pending.
-func validateLLMProposals(proposals []LLMFieldProposal, toLLM []string, snap StepSnapshot) []FieldResolution {
+// Profile-intent proposals are resolved from the live profile at validate time.
+func validateLLMProposals(proposals []LLMFieldProposal, toLLM []string, snap StepSnapshot, profile *domain.ResumeProfile) []FieldResolution {
 	// Index proposals by ref.
 	byRef := make(map[string]LLMFieldProposal, len(proposals))
 	for _, p := range proposals {
@@ -346,9 +391,28 @@ func validateLLMProposals(proposals []LLMFieldProposal, toLLM []string, snap Ste
 			continue
 		}
 
+		// Resolve profile-bound proposals at interpretation time so the value is
+		// available for ExecuteStep. Store both intent and binding key so the mapping
+		// cache can re-resolve from the live profile on subsequent warm hits.
+		intentType := p.IntentType
+		bindingKey := p.BindingKey
+		value := p.Value
+		if intentType == FieldIntentProfile && bindingKey != "" {
+			if v, ok := resolveProfileBinding(bindingKey, profile); ok {
+				value = v
+			} else {
+				// Unknown binding key — degrade to opaque LLM intent.
+				intentType = FieldIntentLLM
+				bindingKey = ""
+			}
+		}
+		if intentType == "" {
+			intentType = FieldIntentLLM
+		}
+
 		// For radio/select: value must match one of the declared options.
 		if action == ActionFill && (f.Type == SnapTypeRadio || f.Type == SnapTypeSelect) {
-			if !containsOptionIgnoreCase(f.Options, p.Value) {
+			if !containsOptionIgnoreCase(f.Options, value) {
 				out = append(out, FieldResolution{
 					Ref:     ref,
 					Source:  SourceReview,
@@ -361,10 +425,12 @@ func validateLLMProposals(proposals []LLMFieldProposal, toLLM []string, snap Ste
 		}
 
 		out = append(out, FieldResolution{
-			Ref:    ref,
-			Source: SourceLLM,
-			Action: action,
-			Value:  p.Value,
+			Ref:        ref,
+			Source:     SourceLLM,
+			Action:     action,
+			Value:      value,
+			IntentType: intentType,
+			BindingKey: bindingKey,
 		})
 	}
 	return out

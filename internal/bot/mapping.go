@@ -6,18 +6,19 @@ package bot
 // enabling field-level reuse: adding or removing other fields on a page does not
 // invalidate unrelated cached entries (story #138 blocker 3).
 //
-// The store records HOW to handle a field (source, action) AND the resolved value
-// (resolved_value column, story #138 blocker 2). Warm hits fill the correct answer
-// without calling the model.
+// The store records HOW to handle a field (source, action, intent, binding) AND the
+// resolved value (resolved_value column). Warm hits fill the correct answer without
+// calling the model; profile-bound hits resolve from the candidate's current data.
 //
-// LLM-proposed resolutions are written as 'verified' once the form step is successfully
-// executed — the form accepting the value is the trusted reference evidence.
-// Profile/deterministic resolutions are verified immediately at write time.
+// LLM-proposed resolutions are written as provenance='accepted_by_form' once the
+// form step is successfully executed — the form accepting the value is the trusted
+// reference evidence.
 //
 // Shadow-mode observations are NEVER written here; only adaptive-mode runs may
 // promote a resolution (ReadOnly=true blocks all writes).
 //
-// Schema key: (field_sig, user_id) where user_id='' means globally shared.
+// Schema key: (field_sig, user_id, employer_key).
+// user_id='' means globally shared; employer_key='' means employer-agnostic.
 
 import (
 	"context"
@@ -35,76 +36,73 @@ type MappingReadWriter interface {
 	Write(ctx context.Context, snap StepSnapshot, resolutions []FieldResolution) error
 }
 
-// MappingLookup is the hook for field-level verified mapping reuse.
-// LookupField looks up a single field by its platform-scoped identity hash.
-// Returns false on a cold miss or when the mapping is not yet verified.
-type MappingLookup interface {
-	LookupField(fieldSig string) (FieldResolution, bool)
-}
+const mappingSchemaVersion = 3
 
-// MappingVerificationState is the lifecycle state of a stored mapping entry.
-type MappingVerificationState string
-
-const (
-	MappingVerified    MappingVerificationState = "verified"
-	MappingInvalidated MappingVerificationState = "invalidated"
-)
-
-const mappingSchemaVersion = 2
-
-// DBMappingStore is a SQLite-backed MappingLookup + writer.
+// DBMappingStore is a SQLite-backed MappingLookup + writer (schema version 3).
 // ReadOnly=true disables writes (use in shadow mode to block accidental promotion).
+// EmployerKey scopes mappings to a specific company / ATS tenant; "" = any employer.
 type DBMappingStore struct {
-	DB       *sql.DB
-	UserID   string // "" = global/anonymous scope
-	ReadOnly bool   // when true, Write is a no-op (shadow mode safety)
+	DB          *sql.DB
+	UserID      string // "" = global/anonymous scope
+	EmployerKey string // "" = employer-agnostic
+	ReadOnly    bool   // when true, Write is a no-op (shadow mode safety)
 }
 
-// LookupField implements MappingLookup. Returns a FieldResolution if a verified
-// mapping exists for fieldSig under this store's user scope.
-// Falls back to the global scope (user_id='') if no user-scoped entry found.
-// The returned Value is the stored resolved_value (the warm-hit answer).
-func (s *DBMappingStore) LookupField(fieldSig string) (FieldResolution, bool) {
+// LookupField implements MappingLookup. Returns a trusted FieldResolution if one
+// exists for (fieldSig, employerKey) under this store's user scope.
+// Falls back to the global scope (user_id='') and to employer-agnostic rows
+// (employer_key='') when no exact match is found.
+// Only provenance='accepted_by_form' or 'confirmed_by_reviewer' rows are returned.
+// The IntentType and BindingKey fields are populated so the caller can resolve
+// profile-bound entries from the current candidate data at runtime.
+func (s *DBMappingStore) LookupField(fieldSig, employerKey string) (FieldResolution, bool) {
 	if s == nil || s.DB == nil {
 		return FieldResolution{}, false
 	}
 
-	var source, action, value string
+	var source, action, intentType, bindingKey, value string
 	err := s.DB.QueryRow(`
-		SELECT source, action, resolved_value FROM form_field_mappings
-		WHERE field_sig = ? AND verification_state = 'verified'
+		SELECT source, action, intent_type, binding_key, resolved_value
+		FROM form_field_mappings
+		WHERE field_sig = ?
+		  AND provenance IN ('accepted_by_form', 'confirmed_by_reviewer')
 		  AND (user_id = ? OR user_id = '')
-		ORDER BY CASE WHEN user_id = '' THEN 1 ELSE 0 END
+		  AND (employer_key = ? OR employer_key = '')
+		ORDER BY
+		  CASE WHEN user_id      = '' THEN 1 ELSE 0 END,
+		  CASE WHEN employer_key = '' THEN 1 ELSE 0 END
 		LIMIT 1`,
-		fieldSig, s.UserID,
-	).Scan(&source, &action, &value)
+		fieldSig, s.UserID, employerKey,
+	).Scan(&source, &action, &intentType, &bindingKey, &value)
 	if err != nil {
 		return FieldResolution{}, false
 	}
 
 	return FieldResolution{
-		Source: SourceMapping,
-		Action: AllowedAction(action),
-		Value:  value,
+		Source:     SourceMapping,
+		Action:     AllowedAction(action),
+		Value:      value,
+		IntentType: FieldIntentType(intentType),
+		BindingKey: bindingKey,
+		Provenance: ProvenanceAcceptedByForm,
 	}, true
 }
 
-// Write persists verified, non-pending resolutions from an adaptive apply step.
+// Write persists trusted, non-pending resolutions from an adaptive apply step.
 // Resolutions with Pending=true or Source=SourceReview are silently skipped.
 // ReadOnly stores ignore all writes (shadow mode).
 //
-// snap provides the platform (for field_sig computation) and field metadata
-// (label, type) for each resolution.
+// snap provides the platform, employer key, and field metadata for each resolution.
 //
-// LLM-sourced resolutions are written as 'verified' — the form accepting the
-// value during ExecuteStep is the trusted reference evidence.
-// Profile and deterministic resolutions are also written as 'verified'.
+// All written entries receive provenance='accepted_by_form' — the form accepting
+// the value during ExecuteStep is the trusted reference evidence.
 func (s *DBMappingStore) Write(ctx context.Context, snap StepSnapshot, resolutions []FieldResolution) error {
 	if s == nil || s.DB == nil || s.ReadOnly {
 		return nil
 	}
 
 	now := time.Now().UTC()
+	employerKey := snap.EmployerKey
 	for _, r := range resolutions {
 		if r.Pending {
 			continue // never write unresolved fields
@@ -121,24 +119,34 @@ func (s *DBMappingStore) Write(ctx context.Context, snap StepSnapshot, resolutio
 			continue
 		}
 
+		intentType := string(r.IntentType)
+		if intentType == "" {
+			intentType = string(FieldIntentLLM)
+		}
+
 		fieldSig := f.FieldSignature(snap.Platform)
 		id := uuid.NewString()
 		_, err := s.DB.ExecContext(ctx, `
 			INSERT INTO form_field_mappings
-				(id, field_sig, field_label, field_type, source, action, resolved_value,
-				 user_id, platform, schema_version, verification_state, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'verified', ?, ?)
-			ON CONFLICT(field_sig, user_id) DO UPDATE SET
-				source             = excluded.source,
-				action             = excluded.action,
-				resolved_value     = excluded.resolved_value,
-				field_label        = excluded.field_label,
-				field_type         = excluded.field_type,
-				verification_state = 'verified',
-				updated_at         = excluded.updated_at`,
-			id, fieldSig, f.Label, string(f.Type),
-			string(r.Source), string(r.Action), r.Value,
-			s.UserID, snap.Platform, mappingSchemaVersion, now, now,
+				(id, field_sig, field_label, field_type, field_group, source, action,
+				 intent_type, binding_key, provenance, resolved_value,
+				 user_id, employer_key, platform, schema_version, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted_by_form', ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(field_sig, user_id, employer_key) DO UPDATE SET
+				source         = excluded.source,
+				action         = excluded.action,
+				intent_type    = excluded.intent_type,
+				binding_key    = excluded.binding_key,
+				provenance     = excluded.provenance,
+				resolved_value = excluded.resolved_value,
+				field_label    = excluded.field_label,
+				field_type     = excluded.field_type,
+				field_group    = excluded.field_group,
+				updated_at     = excluded.updated_at`,
+			id, fieldSig, f.Label, string(f.Type), f.Group,
+			string(r.Source), string(r.Action),
+			intentType, r.BindingKey, r.Value,
+			s.UserID, employerKey, snap.Platform, mappingSchemaVersion, now, now,
 		)
 		if err != nil {
 			return err
@@ -147,16 +155,17 @@ func (s *DBMappingStore) Write(ctx context.Context, snap StepSnapshot, resolutio
 	return nil
 }
 
-// Invalidate marks one mapping entry as invalidated so it is excluded from future lookups.
-// fieldSig is the SnapField.FieldSignature(platform) value for the target field.
-// A missing entry is a no-op (idempotent).
+// Invalidate marks all matching mapping entries as provenance='invalidated' so
+// they are excluded from future lookups. fieldSig is the SnapField.FieldSignature
+// value. A missing entry is a no-op (idempotent).
 func (s *DBMappingStore) Invalidate(ctx context.Context, fieldSig string) error {
 	if s == nil || s.DB == nil {
 		return nil
 	}
 	_, err := s.DB.ExecContext(ctx, `
-		UPDATE form_field_mappings SET verification_state = 'invalidated', updated_at = CURRENT_TIMESTAMP
-		WHERE field_sig = ? AND user_id = ?`,
+		UPDATE form_field_mappings
+		   SET provenance = 'invalidated', updated_at = CURRENT_TIMESTAMP
+		 WHERE field_sig = ? AND user_id = ?`,
 		fieldSig, s.UserID,
 	)
 	return err

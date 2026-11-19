@@ -56,6 +56,7 @@ type SnapField struct {
 	Ref           string        `json:"ref"`                     // snapshot-scoped opaque token "f0".."fN"
 	Label         string        `json:"label"`                   // normalized visible label
 	Group         string        `json:"group,omitempty"`         // fieldset/legend/section heading
+	HelpText      string        `json:"help_text,omitempty"`     // hint / description text below the label
 	Type          SnapFieldType `json:"type"`
 	Options       []string      `json:"options,omitempty"`       // option labels; radio/select only
 	Required      bool          `json:"required,omitempty"`
@@ -75,13 +76,14 @@ type SnapNav struct {
 // StepSnapshot is a versioned, privacy-minimized point-in-time capture of one form step.
 // Refs are only valid for the step that produced this snapshot; re-capture after any mutation.
 type StepSnapshot struct {
-	V          int         `json:"v"`                    // schema version = SnapshotSchemaV1
-	Platform   string      `json:"platform"`
-	StepIndex  int         `json:"step_index"`
-	CapturedAt time.Time   `json:"captured_at"`
-	StepTitle  string      `json:"step_title,omitempty"`
-	Fields     []SnapField `json:"fields"`
-	NavActions []SnapNav   `json:"nav_actions,omitempty"`
+	V           int         `json:"v"`                     // schema version = SnapshotSchemaV1
+	Platform    string      `json:"platform"`
+	StepIndex   int         `json:"step_index"`
+	CapturedAt  time.Time   `json:"captured_at"`
+	StepTitle   string      `json:"step_title,omitempty"`
+	EmployerKey string      `json:"employer_key,omitempty"` // company / ATS tenant from the job posting
+	Fields      []SnapField `json:"fields"`
+	NavActions  []SnapNav   `json:"nav_actions,omitempty"`
 }
 
 // FieldByRef returns the SnapField for the given ref, and false if the ref is stale
@@ -106,22 +108,26 @@ func (s StepSnapshot) NavByRef(ref string) (SnapNav, bool) {
 }
 
 // FieldSignature returns a stable hash that identifies ONE form field by its observable
-// meaning: platform, normalized label, type, and sorted option labels.
+// meaning: platform, normalized label, group/section heading, type, help text, and
+// sorted option labels.
 //
-// Two fields with the same label and options on the same platform produce the same
-// signature regardless of which step they appear in, enabling field-level cache reuse
-// when a new field is added to an otherwise-familiar page.
+// Two fields with the same label in DIFFERENT sections (groups) produce different
+// signatures, preventing cross-section cache collisions (e.g. "Years of experience"
+// under "Software Skills" vs. "Medical Skills").
 //
-// Changing any qualifier in the label (e.g. "minimum 2 years" → "minimum 5 years")
-// or changing the available options invalidates the signature for that field only.
+// Changing any qualifier in the label (e.g. "minimum 2 years" → "minimum 5 years"),
+// the section heading, or the available options invalidates the signature for that
+// field only, leaving unaffected fields in the cache intact.
 func (f SnapField) FieldSignature(platform string) string {
 	opts := make([]string, len(f.Options))
 	copy(opts, f.Options)
 	sort.Strings(opts)
 	raw := strings.Join([]string{
 		strings.ToLower(strings.TrimSpace(platform)),
+		strings.ToLower(strings.TrimSpace(f.Group)),
 		strings.ToLower(strings.TrimSpace(f.Label)),
 		string(f.Type),
+		strings.ToLower(strings.TrimSpace(f.HelpText)),
 		strings.Join(opts, ";"),
 	}, "\x00")
 	h := sha256.Sum256([]byte(raw))

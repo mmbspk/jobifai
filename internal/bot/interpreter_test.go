@@ -91,7 +91,7 @@ type stubMapping struct {
 	res      FieldResolution
 }
 
-func (s *stubMapping) LookupField(fieldSig string) (FieldResolution, bool) {
+func (s *stubMapping) LookupField(fieldSig, _ string) (FieldResolution, bool) {
 	if s.fieldSig != "" && s.fieldSig == fieldSig {
 		return s.res, true
 	}

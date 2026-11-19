@@ -115,8 +115,8 @@ type readOnlyMappingAdapter struct {
 	inner MappingLookup
 }
 
-func (r readOnlyMappingAdapter) LookupField(fieldSig string) (FieldResolution, bool) {
-	return r.inner.LookupField(fieldSig)
+func (r readOnlyMappingAdapter) LookupField(fieldSig, employerKey string) (FieldResolution, bool) {
+	return r.inner.LookupField(fieldSig, employerKey)
 }
 
 // safeAttemptID returns the attempt ID from ac, or "" if ac is nil.

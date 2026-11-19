@@ -259,7 +259,7 @@ func TestMappingCache_PendingResolutions_NotReusable(t *testing.T) {
 
 	// Verify pending resolution was NOT written.
 	f0PortfolioField := SnapField{Ref: "f0", Label: "Portfolio URL", Type: SnapTypeText}
-	_, ok := store.LookupField(f0PortfolioField.FieldSignature("linkedin"))
+	_, ok := store.LookupField(f0PortfolioField.FieldSignature("linkedin"), "")
 	require.False(t, ok, "pending resolution must not be stored in the mapping cache")
 
 	// Second run with model back online: LLM must be called (cache is empty).
@@ -366,3 +366,119 @@ func TestMappingCache_CostSummary(t *testing.T) {
 	_ = interp2
 	_ = fmt.Sprintf // keep fmt import used
 }
+
+// ── 7. Candidate updates profile → warm hit uses new value ──────────────────
+
+// TestMappingCache_CandidateUpdatesProfile_WarmHitUsesNewValue proves that a
+// profile-bound warm hit resolves from the CURRENT candidate data, not the stale
+// stored resolved_value. This is the key correctness property of the typed intent
+// system: changing "notice period" in the profile is reflected on the next run
+// without any LLM call.
+func TestMappingCache_CandidateUpdatesProfile_WarmHitUsesNewValue(t *testing.T) {
+	db := openMappingDB(t)
+	store := &DBMappingStore{DB: db, UserID: "user-intent"}
+
+	profile1 := basicProfile() // NoticePeriod = "2 weeks"
+
+	// LLM identifies this as a profile-bound field.
+	profileBoundProposal := []LLMFieldProposal{{
+		Ref:        "f0",
+		Action:     "fill",
+		IntentType: FieldIntentProfile,
+		BindingKey: "application_defaults.notice_period",
+		Value:      "", // resolved at runtime
+	}}
+
+	llm := &stubLLM{proposals: profileBoundProposal}
+	si := &StepInterpreter{LLM: llm, Mapping: store}
+	// Use a label the deterministic pass won't intercept so the LLM stub fires.
+	snap := captureStepSnapshot([]formField{
+		{Type: "text", Question: "How soon can you start?", InputType: "text"},
+	}, nil, "linkedin", 0, "Application Defaults")
+
+	// Cold run: LLM proposes a profile binding; value is resolved from profile1.
+	interp, err := si.InterpretStep(context.Background(), snap, profile1)
+	require.NoError(t, err)
+	require.Len(t, interp.Fields, 1)
+	r0 := interp.Fields[0]
+	assert.Equal(t, "2 weeks", r0.Value, "cold run: profile1 notice period")
+	assert.Equal(t, FieldIntentProfile, r0.IntentType, "cold run: intent must be profile")
+	assert.Equal(t, "application_defaults.notice_period", r0.BindingKey)
+
+	// Write: stores intent_type='profile', binding_key, resolved_value='2 weeks'.
+	require.NoError(t, store.Write(context.Background(), snap, interp.Fields))
+
+	// Update the candidate's profile: notice period changes to "1 month".
+	profile2 := basicProfile()
+	profile2.ApplicationDefaults.NoticePeriod = "1 month"
+
+	// Disable the LLM to prove the warm hit never reaches it.
+	llm.err = errors.New("test: model offline — warm path must not reach here")
+	llm.calls = 0
+
+	si2 := &StepInterpreter{LLM: llm, Mapping: store}
+
+	// Warm run with updated profile: must return "1 month", not stale "2 weeks".
+	interp2, err := si2.InterpretStep(context.Background(), snap, profile2)
+	require.NoError(t, err, "warm run must succeed without model")
+	require.Len(t, interp2.Fields, 1)
+	r2 := interp2.Fields[0]
+
+	t.Logf("EVIDENCE profile-update | cold_value=%q | updated_profile_value=%q | warm_hit_value=%q | llm_calls=%d",
+		r0.Value, profile2.ApplicationDefaults.NoticePeriod, r2.Value, llm.calls)
+
+	assert.Equal(t, 0, llm.calls, "warm run with updated profile must not call LLM")
+	assert.Equal(t, SourceMapping, r2.Source, "must come from mapping cache")
+	assert.Equal(t, "1 month", r2.Value, "warm hit must reflect updated profile, not stale stored value")
+}
+
+// ── 8. Same label, different group → independent cache entries ───────────────
+
+// TestMappingCache_SameLabel_DifferentGroup_ResolvesIndependently proves that two
+// fields with identical labels but different section headings (Group) produce
+// different FieldSignatures and therefore independent mapping cache entries.
+// Without Group in the signature, a "Years of experience" under "Software Skills"
+// would collide with one under "Medical Skills".
+func TestMappingCache_SameLabel_DifferentGroup_ResolvesIndependently(t *testing.T) {
+	db := openMappingDB(t)
+
+	softwareField := SnapField{
+		Ref:   "f0",
+		Label: "Years of experience",
+		Group: "Software Skills",
+		Type:  SnapTypeText,
+	}
+	medicalField := SnapField{
+		Ref:   "f1",
+		Label: "Years of experience",
+		Group: "Medical Skills",
+		Type:  SnapTypeText,
+	}
+
+	// Signatures must differ because Group is different.
+	sigSoftware := softwareField.FieldSignature("linkedin")
+	sigMedical := medicalField.FieldSignature("linkedin")
+	require.NotEqual(t, sigSoftware, sigMedical,
+		"FieldSignature must differ when Group differs — group is included in hash since story #138")
+
+	// Write distinct answers for each group.
+	snap := snapWithFields(softwareField, medicalField)
+	store := &DBMappingStore{DB: db, UserID: "user-group"}
+	require.NoError(t, store.Write(context.Background(), snap, []FieldResolution{
+		{Ref: "f0", Source: SourceLLM, Action: ActionFill, Value: "12"},
+		{Ref: "f1", Source: SourceLLM, Action: ActionFill, Value: "3"},
+	}))
+
+	// Each lookup must return the right answer independently.
+	gotSoftware, ok := store.LookupField(sigSoftware, "")
+	require.True(t, ok, "software skills field must be found")
+	assert.Equal(t, "12", gotSoftware.Value, "software years of experience")
+
+	gotMedical, ok := store.LookupField(sigMedical, "")
+	require.True(t, ok, "medical skills field must be found")
+	assert.Equal(t, "3", gotMedical.Value, "medical years of experience")
+
+	t.Logf("EVIDENCE same-label-diff-group | sig_software=%s | sig_medical=%s | software_value=%q | medical_value=%q",
+		sigSoftware, sigMedical, gotSoftware.Value, gotMedical.Value)
+}
+

@@ -41,7 +41,7 @@ func TestDBMappingStore_ColdMiss_WarmHit(t *testing.T) {
 	store := &DBMappingStore{DB: db, UserID: "user-1"}
 
 	// Cold: no mapping yet.
-	_, ok := store.LookupField(f0.FieldSignature("linkedin"))
+	_, ok := store.LookupField(f0.FieldSignature("linkedin"), "")
 	require.False(t, ok, "cold lookup must miss")
 
 	// Write a verified LLM resolution.
@@ -51,7 +51,7 @@ func TestDBMappingStore_ColdMiss_WarmHit(t *testing.T) {
 	require.NoError(t, store.Write(context.Background(), snap, resolutions))
 
 	// Warm: mapping now exists and returns the stored value.
-	got, ok := store.LookupField(f0.FieldSignature("linkedin"))
+	got, ok := store.LookupField(f0.FieldSignature("linkedin"), "")
 	require.True(t, ok, "warm lookup must hit")
 	assert.Equal(t, SourceMapping, got.Source)
 	assert.Equal(t, ActionFill, got.Action)
@@ -71,7 +71,7 @@ func TestDBMappingStore_PendingNotWritten(t *testing.T) {
 	}
 	require.NoError(t, store.Write(context.Background(), snap, pending))
 
-	_, ok := store.LookupField(f0.FieldSignature("linkedin"))
+	_, ok := store.LookupField(f0.FieldSignature("linkedin"), "")
 	assert.False(t, ok, "pending resolution must not be written")
 }
 
@@ -89,7 +89,7 @@ func TestDBMappingStore_ShadowReadOnly_NoWrite(t *testing.T) {
 	require.NoError(t, shadowStore.Write(context.Background(), snap, resolutions))
 
 	// ReadOnly store must not write.
-	_, ok := shadowStore.LookupField(f0.FieldSignature("linkedin"))
+	_, ok := shadowStore.LookupField(f0.FieldSignature("linkedin"), "")
 	assert.False(t, ok, "shadow/ReadOnly store must not write mappings")
 }
 
@@ -108,7 +108,7 @@ func TestDBMappingStore_UserScopedFallbackToGlobal(t *testing.T) {
 
 	// A different user's store should still find it via global fallback.
 	userStore := &DBMappingStore{DB: db, UserID: "user-99"}
-	got, ok := userStore.LookupField(fieldSig)
+	got, ok := userStore.LookupField(fieldSig, "")
 	require.True(t, ok, "user-scoped lookup must fall back to global mapping")
 	assert.Equal(t, SourceMapping, got.Source)
 }
@@ -131,7 +131,7 @@ func TestDBMappingStore_UserScopedTakesPrecedence(t *testing.T) {
 	}))
 
 	// User-scoped lookup should return ActionFill (user scope), not ActionSkip (global).
-	got, ok := userStore.LookupField(fieldSig)
+	got, ok := userStore.LookupField(fieldSig, "")
 	require.True(t, ok)
 	assert.Equal(t, ActionFill, got.Action, "user-scoped entry must take precedence over global")
 }
@@ -148,11 +148,11 @@ func TestDBMappingStore_Invalidate_ExcludesFromLookup(t *testing.T) {
 	require.NoError(t, store.Write(context.Background(), snap, []FieldResolution{
 		{Ref: "f0", Source: SourceLLM, Action: ActionFill},
 	}))
-	_, ok := store.LookupField(fieldSig)
+	_, ok := store.LookupField(fieldSig, "")
 	require.True(t, ok, "must be found before invalidation")
 
 	require.NoError(t, store.Invalidate(context.Background(), fieldSig))
-	_, ok = store.LookupField(fieldSig)
+	_, ok = store.LookupField(fieldSig, "")
 	assert.False(t, ok, "must not be found after invalidation")
 }
 
@@ -174,7 +174,7 @@ func TestDBMappingStore_ReviewSourceNotWritten(t *testing.T) {
 	require.NoError(t, store.Write(context.Background(), snap, []FieldResolution{
 		{Ref: "f0", Source: SourceReview, Action: ActionSkip, Pending: false},
 	}))
-	_, ok := store.LookupField(f0.FieldSignature("linkedin"))
+	_, ok := store.LookupField(f0.FieldSignature("linkedin"), "")
 	assert.False(t, ok, "SourceReview resolutions must not be stored")
 }
 
@@ -182,13 +182,13 @@ func TestDBMappingStore_ReviewSourceNotWritten(t *testing.T) {
 
 func TestDBMappingStore_NilDB_LookupReturnsMiss(t *testing.T) {
 	store := &DBMappingStore{DB: nil}
-	_, ok := store.LookupField("any-sig")
+	_, ok := store.LookupField("any-sig", "")
 	assert.False(t, ok)
 }
 
 func TestDBMappingStore_NilStore_LookupReturnsMiss(t *testing.T) {
 	var store *DBMappingStore
-	_, ok := store.LookupField("any-sig")
+	_, ok := store.LookupField("any-sig", "")
 	assert.False(t, ok)
 }
 

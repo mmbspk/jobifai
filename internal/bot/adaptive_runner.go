@@ -156,6 +156,7 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 
 		snap := captureStepSnapshot(fields, nil, "linkedin", stepIdx, stepTitle)
+		snap.EmployerKey = lazy.job.Company
 
 		// Interpret: deterministic → mapping → LLM.
 		interp, err := si.InterpretStep(ctx, snap, profile)
@@ -419,6 +420,7 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 
 		snap := captureStepSnapshot(fields, nil, "seek", stepIdx, stepTitle)
+		snap.EmployerKey = lazy.job.Company
 
 		interp, err := si.InterpretStep(ctx, snap, profile)
 		if err != nil {
