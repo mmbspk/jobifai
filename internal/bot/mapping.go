@@ -22,6 +22,14 @@ import (
 	"github.com/google/uuid"
 )
 
+// MappingReadWriter combines lookup and write for the adaptive apply pipeline.
+// DBMappingStore satisfies this interface; shadow-mode stores set ReadOnly=true
+// so Write is a no-op.
+type MappingReadWriter interface {
+	MappingLookup
+	Write(ctx context.Context, snap StepSnapshot, resolutions []FieldResolution) error
+}
+
 // MappingVerificationState is the lifecycle state of a stored mapping entry.
 type MappingVerificationState string
 

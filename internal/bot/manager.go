@@ -1716,10 +1716,18 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		finishAttempt(m.db, ac, OutcomeCancelled, "engine_switch", "kill_switch_reverted", ksErr.Error())
 		return ApplyFromURLResult{}, ksErr
 	}
-	if platform == domain.PlatformSeek {
-		applyErr = b.seekApply(ctx, jobPage, lazy)
+	if ac.Engine == domain.ApplyEngineAdaptive {
+		if platform == domain.PlatformSeek {
+			applyErr = b.adaptiveSeekApply(ctx, jobPage, lazy, ac)
+		} else {
+			applyErr = b.adaptiveEasyApply(ctx, jobPage, lazy, ac)
+		}
 	} else {
-		applyErr = b.easyApply(ctx, jobPage, lazy)
+		if platform == domain.PlatformSeek {
+			applyErr = b.seekApply(ctx, jobPage, lazy)
+		} else {
+			applyErr = b.easyApply(ctx, jobPage, lazy)
+		}
 	}
 
 	if applyErr != nil && !errors.Is(applyErr, errAlreadyApplied) {

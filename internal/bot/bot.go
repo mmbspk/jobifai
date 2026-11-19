@@ -198,6 +198,13 @@ type Config struct {
 	// EngineStore is used for kill-switch re-reads before irreversible actions.
 	// Nil means no kill-switch enforcement (safe for Legacy-only runs and tests).
 	EngineStore engineConfigReader
+	// AdaptiveLLM is the LLM client used by the adaptive apply engine to interpret
+	// form fields that cannot be resolved deterministically or from the mapping store.
+	// Nil disables adaptive apply (steps requiring LLM will pause).
+	AdaptiveLLM StepInterpreterLLM
+	// AdaptiveMapping is the read/write mapping store used by the adaptive engine to
+	// reuse verified form field resolutions across runs. Nil disables caching.
+	AdaptiveMapping MappingReadWriter
 }
 
 // SubmitRequest bundles the fields needed to submit a single approved job.
