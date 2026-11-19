@@ -192,6 +192,12 @@ type Config struct {
 	LinkedInPassword string
 	Sessions         *browser.SessionStore // if set, updated with fresh cookies after each auth
 	BrowserMeter     BrowserUsageMeter     // optional; meters active automation against credit balance
+	// EngineMode is the apply engine mode pinned at run-start time (epic #127).
+	// Legacy is the production default and the zero value behaves as Legacy.
+	EngineMode domain.ApplyEngineMode
+	// EngineStore is used for kill-switch re-reads before irreversible actions.
+	// Nil means no kill-switch enforcement (safe for Legacy-only runs and tests).
+	EngineStore engineConfigReader
 }
 
 // SubmitRequest bundles the fields needed to submit a single approved job.
@@ -2564,6 +2570,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		b.humanPause()
 
 		ac := newAttemptContext(b.cfg.UserID, platform, j.JobID, j.Link, j.Role, j.Company, "automated_queue", b.cfg.AutomationRunID)
+		ac.Engine = pinnedEngine(b.cfg.EngineStore, b.cfg.UserID, domain.Platform(platform))
 		beginAttempt(b.cfg.DB, ac)
 
 		jobPage, err := br.Page(proto.TargetCreateTarget{URL: j.Link})

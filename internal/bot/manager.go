@@ -460,6 +460,7 @@ func (m *Manager) SubmitSync(ctx context.Context, userID string, req SubmitReque
 // Called directly by SubmitSync and inside a goroutine by SubmitNow.
 func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitRequest) error {
 	ac := newAttemptContext(userID, req.Platform, req.JobID, req.Link, req.Role, req.Company, "runSubmit", "")
+	ac.Engine = pinnedEngine(m.cfgStore, userID, domain.Platform(req.Platform))
 	beginAttempt(m.db, ac)
 	if m.submitWorkGuard != nil {
 		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
@@ -615,6 +616,13 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	}
 
 	var applyErr error
+	// Kill-switch guard: re-read engine mode before entering the apply path.
+	// In Legacy mode this is a no-op; it aborts non-legacy paths if the admin
+	// reverted the mode while this attempt was in-flight.
+	if ksErr := killSwitchCheck(m.cfgStore, ac); ksErr != nil {
+		finishAttempt(m.db, ac, OutcomeCancelled, "engine_switch", "kill_switch_reverted", ksErr.Error())
+		return ksErr
+	}
 	if req.Platform == "seek" {
 		applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
 	} else {
@@ -1121,6 +1129,8 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		LLMTracker:   tracker,
 		Sessions:     m.sessions,
 		BrowserMeter: browserMeter,
+		EngineMode:   pinnedEngine(m.cfgStore, userID, platform),
+		EngineStore:  m.cfgStore,
 	}
 
 	if platform == domain.PlatformSeek {
@@ -1327,6 +1337,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	// Begin attempt before any guard so every subsequent failure is captured.
 	// jobID and meta are unknown until the page loads — they are filled in below.
 	ac := newAttemptContext(userID, string(platform), "", jobURL, "", "", "applyFromURL", "")
+	ac.Engine = pinnedEngine(m.cfgStore, userID, platform)
 	beginAttempt(m.db, ac)
 
 	if m.submitWorkGuard != nil {
@@ -1700,6 +1711,11 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	}
 
 	var applyErr error
+	// Kill-switch guard: re-read engine mode before entering the apply path.
+	if ksErr := killSwitchCheck(m.cfgStore, ac); ksErr != nil {
+		finishAttempt(m.db, ac, OutcomeCancelled, "engine_switch", "kill_switch_reverted", ksErr.Error())
+		return ApplyFromURLResult{}, ksErr
+	}
 	if platform == domain.PlatformSeek {
 		applyErr = b.seekApply(ctx, jobPage, lazy)
 	} else {

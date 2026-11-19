@@ -314,6 +314,11 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/api/admin/email/test", adminH.EmailTest)
 			// AI provider connection test
 			r.Post("/api/admin/ai-provider/test", adminAIH.Test)
+			// Apply engine mode switch (epic #127 / story #129)
+			applyEngineH := NewAdminApplyEngineHandlers(svc)
+			r.Get("/api/admin/apply-engine", applyEngineH.Get)
+			r.Put("/api/admin/apply-engine", applyEngineH.Set)
+			r.Get("/api/admin/apply-engine/audit", applyEngineH.Audit)
 		})
 	})
 
