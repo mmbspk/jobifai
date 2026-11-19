@@ -1442,3 +1442,111 @@ document.getElementById('next-2').addEventListener('click', function() {
 		})
 	}
 }
+
+// ── Finding 1 DOM regression: duplicate labels in different sections ──────────
+
+// htmlDuplicateLabelSections is a minimal LinkedIn-shaped dialog with two
+// visually-separate sections ("Software Skills" and "Medical Skills"), each
+// containing a text input whose visible question label is identical:
+// "Years of experience". Without group-scoped identity the two fields would
+// be indistinguishable; with it they produce different FieldSignatures and
+// jsFillByQuestionAnswer targets only the correct section.
+//
+// Each section wraps its h3 and input in a container div, so sectionGroupFor
+// finds the h3 as the first sibling heading before the form-element div.
+const htmlDuplicateLabelSections = `<!DOCTYPE html><html><body>
+<div role="dialog" class="jobs-easy-apply-modal" style="padding:16px">
+  <h2>Screening Questions</h2>
+
+  <div class="section-block">
+    <h3>Software Skills</h3>
+    <div data-test-form-element="">
+      <label for="exp-software">Years of experience</label>
+      <input id="exp-software" type="text" aria-label="Years of experience" data-section="software" />
+    </div>
+  </div>
+
+  <div class="section-block">
+    <h3>Medical Skills</h3>
+    <div data-test-form-element="">
+      <label for="exp-medical">Years of experience</label>
+      <input id="exp-medical" type="text" aria-label="Years of experience" data-section="medical" />
+    </div>
+  </div>
+</div>
+</body></html>`
+
+// TestScan_DuplicateLabel_DifferentSection_CaptureAndFill proves the full
+// Finding 1 pipeline end-to-end using a live browser:
+//
+//  1. jsScanFields returns two separate fields with matching labels but
+//     different Group values ("Software Skills" and "Medical Skills").
+//  2. captureStepSnapshot produces SnapFields with different FieldSignatures.
+//  3. DBMappingStore resolves the two fields independently.
+//  4. jsFillByQuestionAnswer, given the section hint, fills the correct
+//     <input> without touching the other section.
+//
+// The test is skipped when Chrome is not available (CI without headless Chrome).
+func TestScan_DuplicateLabel_DifferentSection_CaptureAndFill(t *testing.T) {
+	page := rodTestPage(t, htmlDuplicateLabelSections)
+
+	// 1. Scan: verify two fields with the same label but different groups.
+	fields := evalScanFields(t, page)
+	var softwareField, medicalField formField
+	for _, f := range fields {
+		switch f.Group {
+		case "Software Skills":
+			softwareField = f
+		case "Medical Skills":
+			medicalField = f
+		}
+	}
+	require.NotEmpty(t, softwareField.Question, "Software Skills section must yield a field")
+	require.NotEmpty(t, medicalField.Question, "Medical Skills section must yield a field")
+	require.Equal(t, "Years of experience", softwareField.Question)
+	require.Equal(t, "Years of experience", medicalField.Question)
+	require.NotEqual(t, softwareField.Group, medicalField.Group, "groups must differ")
+	t.Logf("EVIDENCE dom-scan | software_group=%q | medical_group=%q", softwareField.Group, medicalField.Group)
+
+	// 2. Snapshot: verify different FieldSignatures.
+	snap := captureStepSnapshot(fields, nil, "linkedin", 0, "Screening Questions")
+	var sigSoftware, sigMedical string
+	for _, sf := range snap.Fields {
+		switch sf.Group {
+		case "Software Skills":
+			sigSoftware = sf.FieldSignature("linkedin")
+		case "Medical Skills":
+			sigMedical = sf.FieldSignature("linkedin")
+		}
+	}
+	require.NotEmpty(t, sigSoftware, "snapshot must have Software Skills field")
+	require.NotEmpty(t, sigMedical, "snapshot must have Medical Skills field")
+	require.NotEqual(t, sigSoftware, sigMedical, "different groups must yield different FieldSignatures")
+	t.Logf("EVIDENCE dom-sig | sig_software=%s | sig_medical=%s", sigSoftware, sigMedical)
+
+	// 3. Cache: write and look up independently via DBMappingStore.
+	db := openMappingDB(t)
+	store := &DBMappingStore{DB: db, UserID: "user-dom-test"}
+	require.NoError(t, store.Write(context.Background(), snap, []FieldResolution{
+		{Ref: snap.Fields[0].Ref, Source: SourceLLM, Action: ActionFill, Value: "5"},
+		{Ref: snap.Fields[1].Ref, Source: SourceLLM, Action: ActionFill, Value: "3"},
+	}))
+	resSoftware, okSoftware := store.LookupField(sigSoftware, "")
+	resMedical, okMedical := store.LookupField(sigMedical, "")
+	require.True(t, okSoftware, "Software Skills field must have a mapping entry")
+	require.True(t, okMedical, "Medical Skills field must have a mapping entry")
+	require.NotEqual(t, resSoftware.Value, resMedical.Value, "each section must resolve independently")
+	t.Logf("EVIDENCE dom-cache | software_value=%q | medical_value=%q", resSoftware.Value, resMedical.Value)
+
+	// 4. Fill: jsFillByQuestionAnswer with section hint must target only the correct input.
+	res, err := page.Eval(jsFillByQuestionAnswer, "Years of experience", "10", "text", "Software Skills")
+	require.NoError(t, err)
+	require.True(t, res.Value.Bool(), "fill must succeed for Software Skills section")
+
+	softwareVal, _ := page.Eval(`() => document.getElementById('exp-software').value`)
+	medicalVal, _ := page.Eval(`() => document.getElementById('exp-medical').value`)
+	t.Logf("EVIDENCE dom-fill | software_input=%q | medical_input=%q",
+		softwareVal.Value.String(), medicalVal.Value.String())
+	require.Equal(t, "10", softwareVal.Value.String(), "Software Skills input must be filled with '10'")
+	require.Empty(t, medicalVal.Value.String(), "Medical Skills input must remain empty")
+}

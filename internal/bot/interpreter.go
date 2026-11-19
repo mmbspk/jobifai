@@ -170,9 +170,21 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 			res.Source = SourceMapping
 			// Profile-bound entries: resolve the current value from the live profile so
 			// the warm hit always reflects the candidate's latest data.
-			if res.IntentType == FieldIntentProfile && res.BindingKey != "" && profile != nil {
-				if v, resolved := resolveProfileBinding(res.BindingKey, profile); resolved {
-					res.Value = v
+			if res.IntentType == FieldIntentProfile && res.BindingKey != "" {
+				v, resolved := resolveProfileBinding(res.BindingKey, profile)
+				if !resolved || v == "" {
+					// Candidate cleared this profile field — do not reuse the stale answer.
+					toLLM = append(toLLM, f.Ref)
+					continue
+				}
+				res.Value = v
+			}
+			// For radio/select: reject warm-hit values that no longer appear in the
+			// current option list (form may have changed its option set).
+			if res.Action == ActionFill && (f.Type == SnapTypeRadio || f.Type == SnapTypeSelect) && len(f.Options) > 0 {
+				if !containsOptionIgnoreCase(f.Options, res.Value) {
+					toLLM = append(toLLM, f.Ref)
+					continue
 				}
 			}
 			result.Fields = append(result.Fields, res)

@@ -175,6 +175,8 @@ func captureStepSnapshot(fields []formField, navActions []SnapNav, platform stri
 		sf := SnapField{
 			Ref:      fmt.Sprintf("f%d", i),
 			Label:    normalizeLabel(f.Question),
+			Group:    normalizeLabel(f.Group),
+			HelpText: normalizeLabel(f.HelpText),
 			Required: f.Required,
 			MaxChars: f.MaxChars,
 			Filled:   false, // privacy: never store the actual value

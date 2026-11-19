@@ -71,6 +71,8 @@ type formField struct {
 	Name            string            `json:"name"`            // radio group name
 	ID              string            `json:"id"`              // select / text element id
 	Question        string            `json:"question"`        // visible label text
+	Group           string            `json:"group"`           // section heading (fieldset legend, h2/h3)
+	HelpText        string            `json:"helpText"`        // hint / description text visible below label
 	Options         []formFieldOption `json:"options"`         // radio / select choices
 	HasFile         bool              `json:"hasFile"`         // file already attached
 	DocumentKind    string            `json:"documentKind"`    // resume | cover_letter | unknown
@@ -179,6 +181,52 @@ const jsScanFieldsInner = `
 		}
 		return 0;
 	}
+
+	// sectionGroupFor returns the section heading (legend, h2-h4, or aria-label on
+	// a role=group ancestor) that contextualises this form element. Used to populate
+	// the SnapField.Group field so the FieldSignature can disambiguate identical
+	// question labels that appear under different headings.
+	function sectionGroupFor(el) {
+		let node = el;
+		for (let depth = 0; depth < 12 && node && node !== document.body; depth++, node = node.parentElement) {
+			// role=group with aria-labelledby is authoritative.
+			if (node !== el && node.getAttribute('role') === 'group') {
+				const lid = node.getAttribute('aria-labelledby');
+				if (lid) {
+					const lbl = document.getElementById(lid);
+					if (lbl) return lbl.textContent.trim().replace(/\s+/g, ' ');
+				}
+			}
+			const parent = node.parentElement;
+			if (!parent) break;
+			// Look for heading siblings that appear BEFORE this node.
+			for (const c of parent.children) {
+				if (c === node) break;
+				if (/^H[1-6]$/.test(c.tagName)) {
+					const t = c.textContent.trim().replace(/\s+/g, ' ');
+					if (t) return t;
+				}
+			}
+		}
+		return '';
+	}
+
+	// helpTextFor returns descriptive hint text visible below a form field label.
+	function helpTextFor(el) {
+		const formEl = el.closest(
+			'[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset'
+		);
+		if (formEl) {
+			const hint = formEl.querySelector(
+				'.fb-form-element__help-text, [data-test-form-element-description], ' +
+				'.artdeco-form-element__helper-text, [class*="helper-text"], ' +
+				'[class*="hint-text"], [class*="help-text"], small'
+			);
+			if (hint) return hint.textContent.trim().replace(/\s+/g, ' ');
+		}
+		return '';
+	}
+
 
 	// ── Review-only steps (Work Experience / Education cards), no inputs, skip immediately ──
 	// These steps show read-only cards with Edit/Remove buttons. There are no form fields
@@ -386,7 +434,8 @@ const jsScanFieldsInner = `
 		const options = all.map(x => {
 			return { id: x.id, value: x.value, label: linkedInRadioOptionLabel(container, x) };
 		});
-		fields.push({ type: 'radio', name: r.name || groupKey, question, options });
+		fields.push({ type: 'radio', name: r.name || groupKey, question, options,
+		              group: sectionGroupFor(r), helpText: helpTextFor(r) });
 	});
 
 	// ── Checkbox groups (Lever ATS / LinkedIn consent questions) ─────────────
@@ -467,7 +516,8 @@ const jsScanFieldsInner = `
 			.map(o => ({ value: o.value, label: o.text.trim() }));
 		if (opts.length === 0) return;
 		fields.push({ type: 'select', id: sel.id,
-		              question: lbl ? lbl.textContent.trim().replace(/\s+/g, ' ') : '', options: opts });
+		              question: lbl ? lbl.textContent.trim().replace(/\s+/g, ' ') : '', options: opts,
+		              group: sectionGroupFor(sel), helpText: helpTextFor(sel) });
 	});
 
 	// ── Text / number / tel / email / textarea that are empty ─────────────────
@@ -522,6 +572,7 @@ const jsScanFieldsInner = `
 		              question: question || el.placeholder || 'Additional details',
 		              isTypeahead,
 		              maxChars,
+		              group: sectionGroupFor(el), helpText: helpTextFor(el),
 		              inputType: (el.id.endsWith('-numeric') || el.type === 'number' || el.getAttribute('inputmode') === 'numeric')
 		                         ? 'numeric'
 		                         : (el.tagName === 'TEXTAREA' ? 'textarea' : (el.type || 'text')) });
@@ -1546,12 +1597,17 @@ func resolveFormFieldAnswer(answer string, err error, fallback string) (string, 
 //   - hasFields=true when the scan found at least one field (even if none could be filled)
 //   - err non-nil on fatal LLM failures (Jobifai quota or provider usage limits) — callers must not click Continue/Submit
 // jsFillByQuestionAnswer finds a visible field by question substring and sets/selects the answer.
-const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType) => {
+// Optional 4th argument sectionHint (string): when non-empty, restricts the search to form
+// elements whose nearest enclosing section heading contains the hint. Enables filling two
+// fields with identical labels that belong to different form sections.
+const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType, sectionHint) => {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer() || document.body;
 	const needle = (questionNeedle || '').toLowerCase().trim();
 	const ans = (answer || '').trim();
 	if (!needle || !ans) return false;
+	const hint = (sectionHint || '').toLowerCase().trim();
+
 	function allInDOM(root, sel) {
 		const r = [];
 		try {
@@ -1562,9 +1618,35 @@ const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType) => {
 		} catch (e) {}
 		return r;
 	}
+
+	// When sectionHint is set, only consider elements whose ancestor heading
+	// text contains the hint (case-insensitive). Skips elements not in a matching
+	// section so identical labels in different sections are filled independently.
+	function inSection(el) {
+		if (!hint) return true;
+		let node = el;
+		for (let d = 0; d < 12 && node && node !== document.body; d++, node = node.parentElement) {
+			const parent = node.parentElement;
+			if (!parent) break;
+			for (const c of parent.children) {
+				if (c === node) break;
+				if (/^H[1-6]$/.test(c.tagName) && (c.textContent || '').toLowerCase().includes(hint)) return true;
+			}
+			if (node.getAttribute && node.getAttribute('role') === 'group') {
+				const lid = node.getAttribute('aria-labelledby');
+				if (lid) {
+					const lbl = document.getElementById(lid);
+					if (lbl && (lbl.textContent || '').toLowerCase().includes(hint)) return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	if (fieldType === 'radio' || fieldType === 'select') {
 		const lower = ans.toLowerCase();
 		for (const r of allInDOM(container, 'input[type="radio"]')) {
+			if (!inSection(r)) continue;
 			const aria = (r.getAttribute('aria-label') || '').toLowerCase();
 			if (!aria.includes(needle) && needle.length > 10 && !aria.includes(needle.slice(0, 40))) continue;
 			const lbl = [...document.querySelectorAll('label[for]')].find(l => l.htmlFor === r.id);
@@ -1585,6 +1667,7 @@ const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType) => {
 			const ty = (el.getAttribute('type') || 'text').toLowerCase();
 			if (['hidden', 'file', 'radio', 'checkbox', 'submit', 'button'].includes(ty)) continue;
 		}
+		if (!inSection(el)) continue;
 		const aria = (el.getAttribute('aria-label') || '').toLowerCase();
 		const labelled = aria.includes(needle) || (needle.length > 10 && aria.includes(needle.slice(0, 40)));
 		if (!labelled) continue;

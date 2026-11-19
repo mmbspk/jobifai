@@ -175,8 +175,10 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 			return fmt.Errorf("adaptive: execute step %d: %w", stepIdx, err)
 		}
 
-		// Persist verified resolutions to the mapping store (best-effort).
-		if b.cfg.AdaptiveMapping != nil {
+		// Persist verified resolutions only when the form confirmed the step advanced or
+		// submitted. Paused steps, errors, and unknown outcomes must not create trusted
+		// mappings — a click alone is not sufficient evidence.
+		if b.cfg.AdaptiveMapping != nil && (result.Outcome == StepOutcomeAdvanced || result.Outcome == StepOutcomeSubmitted) {
 			_ = b.cfg.AdaptiveMapping.Write(ctx, snap, interp.Fields)
 		}
 
@@ -257,7 +259,7 @@ func (f *linkedInRodFiller) Fill(_ context.Context, field SnapField, res FieldRe
 	default:
 		fieldTypeParm = "text"
 	}
-	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm)
+	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm, field.Group)
 	if err != nil {
 		return FieldFillResult{Err: fmt.Errorf("adaptive: fill field %s (%q): %w", field.Ref, field.Label, err)}
 	}
@@ -435,7 +437,8 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 			return fmt.Errorf("seek adaptive: execute step %d: %w", stepIdx, err)
 		}
 
-		if b.cfg.AdaptiveMapping != nil {
+		// Same provenance gate as LinkedIn: only persist on confirmed step outcomes.
+		if b.cfg.AdaptiveMapping != nil && (result.Outcome == StepOutcomeAdvanced || result.Outcome == StepOutcomeSubmitted) {
 			_ = b.cfg.AdaptiveMapping.Write(ctx, snap, interp.Fields)
 		}
 
@@ -489,7 +492,7 @@ func (f *seekRodFiller) Fill(_ context.Context, field SnapField, res FieldResolu
 	default:
 		fieldTypeParm = "text"
 	}
-	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm)
+	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm, field.Group)
 	if err != nil {
 		return FieldFillResult{Err: fmt.Errorf("seek adaptive: fill field %s (%q): %w", field.Ref, field.Label, err)}
 	}
