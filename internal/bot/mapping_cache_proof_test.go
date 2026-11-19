@@ -258,8 +258,8 @@ func TestMappingCache_PendingResolutions_NotReusable(t *testing.T) {
 	require.NoError(t, store.Write(context.Background(), snap, interp.Fields))
 
 	// Verify pending resolution was NOT written.
-	sig := snap.SemanticSignature()
-	_, ok := store.Lookup(sig, "f0")
+	f0PortfolioField := SnapField{Ref: "f0", Label: "Portfolio URL", Type: SnapTypeText}
+	_, ok := store.LookupField(f0PortfolioField.FieldSignature("linkedin"))
 	require.False(t, ok, "pending resolution must not be stored in the mapping cache")
 
 	// Second run with model back online: LLM must be called (cache is empty).

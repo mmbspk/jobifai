@@ -90,17 +90,10 @@ type StepInterpreterLLM interface {
 	InterpretFields(ctx context.Context, profile *domain.ResumeProfile, snap StepSnapshot, fieldRefs []string) ([]LLMFieldProposal, error)
 }
 
-// MappingLookup is the hook for story #137 verified mapping reuse.
-// Returns resolved FieldResolutions for fields it can serve; nil entry means miss.
-// The interpreter calls this before sending to the LLM.
-type MappingLookup interface {
-	Lookup(sig string, fieldRef string) (FieldResolution, bool)
-}
-
-// nopMappingLookup is a no-op implementation used when story #137 is not yet wired.
+// nopMappingLookup is a no-op MappingLookup used when no mapping store is wired.
 type nopMappingLookup struct{}
 
-func (nopMappingLookup) Lookup(_ string, _ string) (FieldResolution, bool) { return FieldResolution{}, false }
+func (nopMappingLookup) LookupField(_ string) (FieldResolution, bool) { return FieldResolution{}, false }
 
 // StepInterpreter drives the three-pass resolution pipeline.
 type StepInterpreter struct {
@@ -133,8 +126,9 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 			continue
 		}
 
-		// Pass 2: mapping lookup
-		if res, ok := mapping.Lookup(sig, f.Ref); ok {
+		// Pass 2: field-level mapping lookup.
+		// fieldSig encodes platform + label + type + options — unique per field identity.
+		if res, ok := mapping.LookupField(f.FieldSignature(snap.Platform)); ok {
 			res.Ref = f.Ref
 			res.Source = SourceMapping
 			result.Fields = append(result.Fields, res)

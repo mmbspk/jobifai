@@ -105,6 +105,29 @@ func (s StepSnapshot) NavByRef(ref string) (SnapNav, bool) {
 	return SnapNav{}, false
 }
 
+// FieldSignature returns a stable hash that identifies ONE form field by its observable
+// meaning: platform, normalized label, type, and sorted option labels.
+//
+// Two fields with the same label and options on the same platform produce the same
+// signature regardless of which step they appear in, enabling field-level cache reuse
+// when a new field is added to an otherwise-familiar page.
+//
+// Changing any qualifier in the label (e.g. "minimum 2 years" → "minimum 5 years")
+// or changing the available options invalidates the signature for that field only.
+func (f SnapField) FieldSignature(platform string) string {
+	opts := make([]string, len(f.Options))
+	copy(opts, f.Options)
+	sort.Strings(opts)
+	raw := strings.Join([]string{
+		strings.ToLower(strings.TrimSpace(platform)),
+		strings.ToLower(strings.TrimSpace(f.Label)),
+		string(f.Type),
+		strings.Join(opts, ";"),
+	}, "\x00")
+	h := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("fs1:%x", h[:8])
+}
+
 // SemanticSignature returns a stable hash that identifies the form step by its structure
 // rather than its DOM identity. Used by story #137 to look up verified mappings.
 //

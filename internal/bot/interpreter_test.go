@@ -83,14 +83,16 @@ func (s *stubLLM) InterpretFields(_ context.Context, _ *domain.ResumeProfile, _ 
 	return s.proposals, s.err
 }
 
-// stubMapping returns a fixed resolution for one ref.
+// stubMapping returns a fixed resolution for fields whose sig matches.
+// Use SnapField.FieldSignature(platform) to compute the sig to match against.
+// Pass an empty sig to match nothing (always miss).
 type stubMapping struct {
-	ref string
-	res FieldResolution
+	fieldSig string
+	res      FieldResolution
 }
 
-func (s *stubMapping) Lookup(_ string, fieldRef string) (FieldResolution, bool) {
-	if s.ref == fieldRef {
+func (s *stubMapping) LookupField(fieldSig string) (FieldResolution, bool) {
+	if s.fieldSig != "" && s.fieldSig == fieldSig {
 		return s.res, true
 	}
 	return FieldResolution{}, false
@@ -245,14 +247,15 @@ func TestInterpreter_NilProfileNameField_Pending(t *testing.T) {
 // ── mapping pass ──────────────────────────────────────────────────────────────
 
 func TestInterpreter_MappingHit_NoLLMCall(t *testing.T) {
+	field := selectField("f0", "Job Title", "Engineer", "Manager")
 	fixedRes := FieldResolution{Ref: "f0", Source: SourceMapping, Action: ActionFill, Value: "Engineer"}
 	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", Value: "wrong"}}}
 	si := &StepInterpreter{
 		LLM:     llm,
-		Mapping: &stubMapping{ref: "f0", res: fixedRes},
+		Mapping: &stubMapping{fieldSig: field.FieldSignature("linkedin"), res: fixedRes},
 	}
 	// Use a non-profile field so deterministic pass misses.
-	snap := makeSnap(selectField("f0", "Job Title", "Engineer", "Manager"))
+	snap := makeSnap(field)
 	interp, err := si.InterpretStep(context.Background(), snap, basicProfile())
 	require.NoError(t, err)
 	assert.Equal(t, 0, llm.calls, "LLM must not be called when mapping hits")
@@ -265,7 +268,7 @@ func TestInterpreter_MappingMiss_FallsToLLM(t *testing.T) {
 	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", Value: "Manager"}}}
 	si := &StepInterpreter{
 		LLM:     llm,
-		Mapping: &stubMapping{ref: "other-ref"},
+		Mapping: &stubMapping{}, // empty fieldSig → always miss
 	}
 	snap := makeSnap(selectField("f0", "Job Title", "Engineer", "Manager"))
 	interp, err := si.InterpretStep(context.Background(), snap, basicProfile())

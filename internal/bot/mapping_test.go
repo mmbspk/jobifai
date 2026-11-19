@@ -1,6 +1,6 @@
 package bot
 
-// mapping_test.go — unit tests for Story #137: DBMappingStore
+// mapping_test.go — unit tests for Story #137: DBMappingStore (field-level, story #138)
 
 import (
 	"context"
@@ -36,14 +36,12 @@ func snapWithFields(fields ...SnapField) StepSnapshot {
 
 func TestDBMappingStore_ColdMiss_WarmHit(t *testing.T) {
 	db := openMappingDB(t)
-	snap := snapWithFields(
-		SnapField{Ref: "f0", Label: "Years of Experience", Type: SnapTypeText},
-	)
-	sig := snap.SemanticSignature()
+	f0 := SnapField{Ref: "f0", Label: "Years of Experience", Type: SnapTypeText}
+	snap := snapWithFields(f0)
 	store := &DBMappingStore{DB: db, UserID: "user-1"}
 
 	// Cold: no mapping yet.
-	_, ok := store.Lookup(sig, "f0")
+	_, ok := store.LookupField(f0.FieldSignature("linkedin"))
 	require.False(t, ok, "cold lookup must miss")
 
 	// Write a verified LLM resolution.
@@ -52,19 +50,20 @@ func TestDBMappingStore_ColdMiss_WarmHit(t *testing.T) {
 	}
 	require.NoError(t, store.Write(context.Background(), snap, resolutions))
 
-	// Warm: mapping now exists.
-	got, ok := store.Lookup(sig, "f0")
+	// Warm: mapping now exists and returns the stored value.
+	got, ok := store.LookupField(f0.FieldSignature("linkedin"))
 	require.True(t, ok, "warm lookup must hit")
 	assert.Equal(t, SourceMapping, got.Source)
 	assert.Equal(t, ActionFill, got.Action)
+	assert.Equal(t, "5 years", got.Value, "warm hit must return stored value")
 }
 
 // ── pending resolutions are never written ─────────────────────────────────────
 
 func TestDBMappingStore_PendingNotWritten(t *testing.T) {
 	db := openMappingDB(t)
-	snap := snapWithFields(SnapField{Ref: "f0", Label: "Cover Letter", Type: SnapTypeTextarea})
-	sig := snap.SemanticSignature()
+	f0 := SnapField{Ref: "f0", Label: "Cover Letter", Type: SnapTypeTextarea}
+	snap := snapWithFields(f0)
 	store := &DBMappingStore{DB: db, UserID: "user-1"}
 
 	pending := []FieldResolution{
@@ -72,7 +71,7 @@ func TestDBMappingStore_PendingNotWritten(t *testing.T) {
 	}
 	require.NoError(t, store.Write(context.Background(), snap, pending))
 
-	_, ok := store.Lookup(sig, "f0")
+	_, ok := store.LookupField(f0.FieldSignature("linkedin"))
 	assert.False(t, ok, "pending resolution must not be written")
 }
 
@@ -80,8 +79,8 @@ func TestDBMappingStore_PendingNotWritten(t *testing.T) {
 
 func TestDBMappingStore_ShadowReadOnly_NoWrite(t *testing.T) {
 	db := openMappingDB(t)
-	snap := snapWithFields(SnapField{Ref: "f0", Label: "Job Title", Type: SnapTypeText})
-	sig := snap.SemanticSignature()
+	f0 := SnapField{Ref: "f0", Label: "Job Title", Type: SnapTypeText}
+	snap := snapWithFields(f0)
 
 	shadowStore := &DBMappingStore{DB: db, UserID: "user-1", ReadOnly: true}
 	resolutions := []FieldResolution{
@@ -90,7 +89,7 @@ func TestDBMappingStore_ShadowReadOnly_NoWrite(t *testing.T) {
 	require.NoError(t, shadowStore.Write(context.Background(), snap, resolutions))
 
 	// ReadOnly store must not write.
-	_, ok := shadowStore.Lookup(sig, "f0")
+	_, ok := shadowStore.LookupField(f0.FieldSignature("linkedin"))
 	assert.False(t, ok, "shadow/ReadOnly store must not write mappings")
 }
 
@@ -98,25 +97,27 @@ func TestDBMappingStore_ShadowReadOnly_NoWrite(t *testing.T) {
 
 func TestDBMappingStore_UserScopedFallbackToGlobal(t *testing.T) {
 	db := openMappingDB(t)
-	snap := snapWithFields(SnapField{Ref: "f0", Label: "Department", Type: SnapTypeSelect, Options: []string{"Engineering", "Sales"}})
-	sig := snap.SemanticSignature()
+	f0 := SnapField{Ref: "f0", Label: "Department", Type: SnapTypeSelect, Options: []string{"Engineering", "Sales"}}
+	snap := snapWithFields(f0)
+	fieldSig := f0.FieldSignature("linkedin")
 
 	// Write with global scope (user_id='').
 	globalStore := &DBMappingStore{DB: db, UserID: ""}
-	resolutions := []FieldResolution{{Ref: "f0", Source: SourceLLM, Action: ActionFill}}
+	resolutions := []FieldResolution{{Ref: "f0", Source: SourceLLM, Action: ActionFill, Value: "Engineering"}}
 	require.NoError(t, globalStore.Write(context.Background(), snap, resolutions))
 
 	// A different user's store should still find it via global fallback.
 	userStore := &DBMappingStore{DB: db, UserID: "user-99"}
-	got, ok := userStore.Lookup(sig, "f0")
+	got, ok := userStore.LookupField(fieldSig)
 	require.True(t, ok, "user-scoped lookup must fall back to global mapping")
 	assert.Equal(t, SourceMapping, got.Source)
 }
 
 func TestDBMappingStore_UserScopedTakesPrecedence(t *testing.T) {
 	db := openMappingDB(t)
-	snap := snapWithFields(SnapField{Ref: "f0", Label: "Job Level", Type: SnapTypeSelect})
-	sig := snap.SemanticSignature()
+	f0 := SnapField{Ref: "f0", Label: "Job Level", Type: SnapTypeSelect}
+	snap := snapWithFields(f0)
+	fieldSig := f0.FieldSignature("linkedin")
 
 	globalStore := &DBMappingStore{DB: db, UserID: ""}
 	userStore := &DBMappingStore{DB: db, UserID: "user-1"}
@@ -130,7 +131,7 @@ func TestDBMappingStore_UserScopedTakesPrecedence(t *testing.T) {
 	}))
 
 	// User-scoped lookup should return ActionFill (user scope), not ActionSkip (global).
-	got, ok := userStore.Lookup(sig, "f0")
+	got, ok := userStore.LookupField(fieldSig)
 	require.True(t, ok)
 	assert.Equal(t, ActionFill, got.Action, "user-scoped entry must take precedence over global")
 }
@@ -139,25 +140,26 @@ func TestDBMappingStore_UserScopedTakesPrecedence(t *testing.T) {
 
 func TestDBMappingStore_Invalidate_ExcludesFromLookup(t *testing.T) {
 	db := openMappingDB(t)
-	snap := snapWithFields(SnapField{Ref: "f0", Label: "Years of Experience", Type: SnapTypeText})
-	sig := snap.SemanticSignature()
+	f0 := SnapField{Ref: "f0", Label: "Years of Experience", Type: SnapTypeText}
+	snap := snapWithFields(f0)
+	fieldSig := f0.FieldSignature("linkedin")
 	store := &DBMappingStore{DB: db, UserID: "user-1"}
 
 	require.NoError(t, store.Write(context.Background(), snap, []FieldResolution{
 		{Ref: "f0", Source: SourceLLM, Action: ActionFill},
 	}))
-	_, ok := store.Lookup(sig, "f0")
+	_, ok := store.LookupField(fieldSig)
 	require.True(t, ok, "must be found before invalidation")
 
-	require.NoError(t, store.Invalidate(context.Background(), sig, "f0"))
-	_, ok = store.Lookup(sig, "f0")
+	require.NoError(t, store.Invalidate(context.Background(), fieldSig))
+	_, ok = store.LookupField(fieldSig)
 	assert.False(t, ok, "must not be found after invalidation")
 }
 
 func TestDBMappingStore_Invalidate_MissingEntry_IsNoOp(t *testing.T) {
 	db := openMappingDB(t)
 	store := &DBMappingStore{DB: db, UserID: "user-1"}
-	err := store.Invalidate(context.Background(), "nonexistent-sig", "f0")
+	err := store.Invalidate(context.Background(), "nonexistent-sig")
 	assert.NoError(t, err)
 }
 
@@ -165,14 +167,14 @@ func TestDBMappingStore_Invalidate_MissingEntry_IsNoOp(t *testing.T) {
 
 func TestDBMappingStore_ReviewSourceNotWritten(t *testing.T) {
 	db := openMappingDB(t)
-	snap := snapWithFields(SnapField{Ref: "f0", Label: "Portfolio URL", Type: SnapTypeText})
-	sig := snap.SemanticSignature()
+	f0 := SnapField{Ref: "f0", Label: "Portfolio URL", Type: SnapTypeText}
+	snap := snapWithFields(f0)
 	store := &DBMappingStore{DB: db, UserID: "user-1"}
 
 	require.NoError(t, store.Write(context.Background(), snap, []FieldResolution{
 		{Ref: "f0", Source: SourceReview, Action: ActionSkip, Pending: false},
 	}))
-	_, ok := store.Lookup(sig, "f0")
+	_, ok := store.LookupField(f0.FieldSignature("linkedin"))
 	assert.False(t, ok, "SourceReview resolutions must not be stored")
 }
 
@@ -180,13 +182,13 @@ func TestDBMappingStore_ReviewSourceNotWritten(t *testing.T) {
 
 func TestDBMappingStore_NilDB_LookupReturnsMiss(t *testing.T) {
 	store := &DBMappingStore{DB: nil}
-	_, ok := store.Lookup("sig", "f0")
+	_, ok := store.LookupField("any-sig")
 	assert.False(t, ok)
 }
 
 func TestDBMappingStore_NilStore_LookupReturnsMiss(t *testing.T) {
 	var store *DBMappingStore
-	_, ok := store.Lookup("sig", "f0")
+	_, ok := store.LookupField("any-sig")
 	assert.False(t, ok)
 }
 

@@ -1101,7 +1101,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	}
 
 	runID := uuid.NewString()
-	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
+	tailor, scorer, halal, tracker, _, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	if err != nil {
 		return nil, err
 	}
@@ -1181,46 +1181,47 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 
 // buildPerUserLLM constructs task-resolved LLM clients for one user session.
 // Returns startup defaults when no API key is available.
-func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings, apiKey string, isPersonal bool) (ResumeTailor, JobScorer, JobHalalChecker, *llm.UsageTracker, error) {
+// formAnswerC is the form_filling task client used to build LLMFormInterpreter in setupBot.
+func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings, apiKey string, isPersonal bool) (ResumeTailor, JobScorer, JobHalalChecker, *llm.UsageTracker, *llm.Client, error) {
 	client := m.userLLMClient(userID, gs, apiKey, isPersonal)
 	if client == nil {
 		var halal JobHalalChecker
 		if gs.HalalJobFilter {
 			halal = m.halal
 		}
-		return m.tailor, m.scorer, halal, nil, nil
+		return m.tailor, m.scorer, halal, nil, nil, nil
 	}
 	tracker := &llm.UsageTracker{}
 	client = client.WithTracker(tracker)
 	tailorC, err := m.taskClient(client, gs, "tailoring")
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("tailoring task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("tailoring task: %w", err)
 	}
 	coverC, err := m.taskClient(client, gs, "cover_letter")
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("cover_letter task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("cover_letter task: %w", err)
 	}
 	formAnswerC, err := m.taskClient(client, gs, "form_filling")
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("form_filling task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("form_filling task: %w", err)
 	}
 	formVisionC, err := m.taskClient(client, gs, domain.TaskFormVision)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("form_vision task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("form_vision task: %w", err)
 	}
 	scoreC, err := m.taskClient(client, gs, "scoring")
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("scoring task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("scoring task: %w", err)
 	}
 	var halal JobHalalChecker
 	if gs.HalalJobFilter {
 		halalC, err := m.taskClient(client, gs, "halal")
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("halal task: %w", err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("halal task: %w", err)
 		}
 		halal = resume.NewHalalChecker(halalC)
 	}
-	return resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC), resume.NewScorer(scoreC), halal, tracker, nil
+	return resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC), resume.NewScorer(scoreC), halal, tracker, formAnswerC, nil
 }
 
 // userLLMClient builds a ready LLM client from a pre-resolved API key and isPersonal flag.
@@ -1287,7 +1288,7 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 	}
 
 	runID := uuid.NewString()
-	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
+	tailor, scorer, halal, tracker, formAnswerC, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	if err != nil {
 		return nil, gs, err
 	}
@@ -1313,6 +1314,11 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		Sessions:        m.sessions,
 		Documents:       m.documents,
 		Logger:          &runLogger,
+	}
+
+	if formAnswerC != nil {
+		cfg.AdaptiveLLM = NewLLMFormInterpreter(formAnswerC)
+		cfg.AdaptiveMapping = &DBMappingStore{DB: m.db, UserID: userID}
 	}
 
 	if m.browserMeterSvc != nil {

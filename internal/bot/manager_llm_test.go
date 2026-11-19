@@ -41,7 +41,7 @@ func TestBuildPerUserLLM_HalalUsesTaskOverride(t *testing.T) {
 	gs := config.ResolveOperationalSettings(cfgStore, userID, false)
 	apiKey, isPersonal, err := config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, false, &gs)
 	require.NoError(t, err)
-	_, _, halal, _, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
+	_, _, halal, _, _, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	require.NoError(t, err)
 	require.NotNil(t, halal)
 }
@@ -72,7 +72,7 @@ func TestBuildPerUserLLM_InvalidPolicyReturnsError(t *testing.T) {
 	gs := config.ResolveOperationalSettings(cfgStore, userID, false)
 	apiKey, isPersonal, err := config.ResolveEffectiveLLMKey(cfgStore, secrets, userID, false, &gs)
 	require.NoError(t, err)
-	_, _, _, _, err = m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
+	_, _, _, _, _, err = m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	require.Error(t, err)
 }
 
