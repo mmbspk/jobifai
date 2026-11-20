@@ -285,7 +285,12 @@ func (b *Bot) greenhouseApply(ctx context.Context, page *rod.Page, lazy *lazyDoc
 		UserID:    b.cfg.UserID,
 	}
 	se := NewStepExecutor(DefaultStepExecBounds(), guard)
-	filler := &greenhouseRodFiller{page: page, bot: b}
+	filler := &greenhouseRodFiller{
+		page:           page,
+		bot:            b,
+		expectedTenant: expectedTenant,
+		expectedJobID:  expectedJobID,
+	}
 
 	const maxFormSteps = 20
 	for stepIdx := 0; stepIdx < maxFormSteps; stepIdx++ {
@@ -337,15 +342,19 @@ func (b *Bot) greenhouseApply(ctx context.Context, page *rod.Page, lazy *lazyDoc
 			b.log.Info().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).Msg("external_ats: Greenhouse application confirmed")
 			return nil
 		case StepOutcomeAdvanced:
-			// NavigateNext already verified URL identity — persist the step.
-			writeConfirmedStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, false)
-			// Check for blocked states after navigation (e.g., account wall appears mid-flow).
+			// Blocked-state gate BEFORE persistence. NavigateNext already refuses to
+			// confirm a blocked destination, but we re-check the landed page here so
+			// that an account wall / closed / captcha page that somehow advanced the
+			// form marker still yields ZERO accepted_by_form writes for this step.
 			pt, _ := page.Eval(`() => document.body ? document.body.innerText : ''`)
 			if pt != nil {
 				if err := checkATSBlockedState(pt.Value.String()); err != nil {
 					return err
 				}
 			}
+			// NavigateNext verified a distinct, in-application step and a non-blocked
+			// destination — persist only the refs the executor reported as filled.
+			writeConfirmedStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, false)
 		case StepOutcomePaused:
 			return fmt.Errorf("external_ats: step %d paused", stepIdx)
 		default:
@@ -361,9 +370,16 @@ func (b *Bot) greenhouseApply(ctx context.Context, page *rod.Page, lazy *lazyDoc
 // greenhouseRodFiller implements FieldFiller for Greenhouse HTML forms.
 // Greenhouse uses standard HTML form elements so the LinkedIn fill helpers work
 // without modification; navigation is different (single submit button).
+//
+// expectedTenant/expectedJobID anchor the filler to the one application that was
+// verified in greenhouseApply before any candidate data was sent. NavigateNext
+// refuses to treat a post-click page as the next step unless it still provably
+// belongs to that application — a bare URL change is never sufficient.
 type greenhouseRodFiller struct {
-	page *rod.Page
-	bot  *Bot
+	page           *rod.Page
+	bot            *Bot
+	expectedTenant string
+	expectedJobID  string
 }
 
 func (f *greenhouseRodFiller) Fill(ctx context.Context, field SnapField, res FieldResolution) FieldFillResult {
@@ -410,13 +426,110 @@ func currentPageURL(page *rod.Page) string {
 	return res.Value.String()
 }
 
+// greenhouseStepMarker returns a fingerprint of the active Greenhouse form step,
+// derived from stable structure (the primary heading plus the ordered identifiers
+// of the visible form controls). It deliberately ignores field *values*, inline
+// *validation text*, and URL *query parameters* — none of which indicate a real
+// step transition. Returns "" when no form is readable (an unreadable page is
+// never evidence of advancement).
+func greenhouseStepMarker(page *rod.Page) string {
+	res, err := page.Eval(`() => {
+		const scope = document.querySelector('form') || document.body;
+		if (!scope) return '';
+		const h = scope.querySelector('h1,h2,h3,[role="heading"]');
+		const heading = h ? (h.textContent || '').trim().toLowerCase() : '';
+		const ids = [];
+		for (const el of scope.querySelectorAll('input,select,textarea')) {
+			const t = (el.getAttribute('type') || '').toLowerCase();
+			if (t === 'hidden') continue;
+			const key = (el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '').trim().toLowerCase();
+			if (key) ids.push(key);
+		}
+		if (!heading && ids.length === 0) return '';
+		return heading + '::' + ids.join('|');
+	}`)
+	if err != nil || res == nil {
+		return ""
+	}
+	return res.Value.String()
+}
+
+// greenhouseFormJobID reads a verified numeric job identifier out of the active
+// form DOM (hidden input, data attribute, or canonical link). Used to confirm an
+// in-application step when the destination URL omits the job slug — because a
+// missing identifier in the URL is NOT a wildcard. Returns "" when no identifier
+// is present.
+func greenhouseFormJobID(page *rod.Page) string {
+	res, err := page.Eval(`() => {
+		const read = (el) => {
+			if (!el) return '';
+			const v = (el.value || el.getAttribute('data-job-id') || el.getAttribute('data-mapped-job-id') || el.getAttribute('content') || '').trim();
+			return /^[0-9]+$/.test(v) ? v : '';
+		};
+		const sels = [
+			'input[name="job_id"]', 'input[name="id"]', 'input[name="for_ids"]',
+			'[data-job-id]', '[data-mapped-job-id]', 'meta[name="greenhouse:job_id"]'
+		];
+		for (const s of sels) { const r = read(document.querySelector(s)); if (r) return r; }
+		const link = document.querySelector('link[rel="canonical"]');
+		if (link && link.href) { const m = link.href.match(/\/jobs\/([0-9]+)/); if (m) return m[1]; }
+		return '';
+	}`)
+	if err != nil || res == nil {
+		return ""
+	}
+	return res.Value.String()
+}
+
+// destinationInApplication reports whether the page now loaded in f.page provably
+// belongs to the anchored application (f.expectedTenant / f.expectedJobID).
+//
+// Identity must be proven, never assumed: any tenant or job slug the URL *does*
+// carry must match; a slug the URL *omits* is not a wildcard and must instead be
+// recovered from a verified identifier in the active form. If neither the URL nor
+// the form supplies the missing identity, the destination is left unconfirmed.
+func (f *greenhouseRodFiller) destinationInApplication(rawURL string) bool {
+	if classifyExternalATS(rawURL) != ATSKindGreenhouse {
+		return false
+	}
+	urlTenant := greenhouseTenant(rawURL)
+	urlJob := greenhouseJobID(rawURL)
+
+	// A present-but-wrong slug is a redirect to a different application.
+	if urlTenant != "" && f.expectedTenant != "" && urlTenant != f.expectedTenant {
+		return false
+	}
+	if urlJob != "" && f.expectedJobID != "" && urlJob != f.expectedJobID {
+		return false
+	}
+
+	// Full identity present in the URL and matching → confirmed.
+	if urlTenant != "" && urlJob != "" {
+		return true
+	}
+
+	// URL omits part of the identity — require positive evidence from the form.
+	if formJob := greenhouseFormJobID(f.page); formJob != "" && formJob == f.expectedJobID {
+		return true
+	}
+	return false
+}
+
+// destinationBlocked returns the blocked-state error for the currently loaded page
+// (account wall / closed / captcha), or nil when the page is a normal form step.
+func (f *greenhouseRodFiller) destinationBlocked() error {
+	txt, err := f.page.Eval(`() => document.body ? document.body.innerText : ''`)
+	if err != nil || txt == nil {
+		return nil
+	}
+	return checkATSBlockedState(txt.Value.String())
+}
+
 func (f *greenhouseRodFiller) NavigateNext(_ context.Context) (bool, error) {
-	// Capture the pre-click URL and extract its identity so we can verify that
-	// navigation stayed within the same Greenhouse application — a bare URL change
-	// alone could mean a redirect to an unrelated page.
+	// Anchor the step we are leaving BEFORE the click: its structural marker and
+	// its URL. These are what a genuine advance must move away from.
+	prevMarker := greenhouseStepMarker(f.page)
 	prevURL := currentPageURL(f.page)
-	expectedTenant := greenhouseTenant(prevURL)
-	expectedJobID := greenhouseJobID(prevURL)
 
 	res, err := f.page.Eval(`() => {
 		const btn = document.querySelector(
@@ -432,29 +545,43 @@ func (f *greenhouseRodFiller) NavigateNext(_ context.Context) (bool, error) {
 	if !res.Value.Bool() {
 		return false, nil
 	}
-	// Greenhouse is a server-rendered multi-page form; each step produces a new URL.
-	// Poll until the URL changes AND is still a valid Greenhouse path for the same
-	// tenant and job — both conditions must hold for the advance to be confirmed.
+
+	// A genuine advance requires ALL of: (1) a DISTINCT, readable form step now
+	// showing — a changed URL or changed query string with the same step does not
+	// count; (2) the destination still provably belongs to THIS application; and
+	// (3) the destination is not a blocked page (account wall / closed / captcha).
+	// Any of these failing yields zero accepted_by_form writes for the prior step.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
-		newURL := currentPageURL(f.page)
-		if newURL == "" || newURL == prevURL {
+
+		newMarker := greenhouseStepMarker(f.page)
+		if newMarker == "" || newMarker == prevMarker {
+			// Same step still showing, or form not yet readable — keep waiting.
 			continue
 		}
-		// URL changed — verify it is still the same Greenhouse application.
+
+		newURL := currentPageURL(f.page)
+		if newURL == "" {
+			// Distinct markup but URL unreadable — cannot confirm identity.
+			continue
+		}
 		if classifyExternalATS(newURL) != ATSKindGreenhouse {
 			return false, fmt.Errorf("external_ats: navigation left Greenhouse domain: %q", newURL)
 		}
-		if t := greenhouseTenant(newURL); t != "" && expectedTenant != "" && t != expectedTenant {
-			return false, fmt.Errorf("external_ats: tenant changed after navigation: %q → %q", expectedTenant, t)
+		if !f.destinationInApplication(newURL) {
+			return false, fmt.Errorf(
+				"external_ats: navigation left the anchored application (tenant=%q job=%q) → %q",
+				f.expectedTenant, f.expectedJobID, newURL)
 		}
-		if j := greenhouseJobID(newURL); j != "" && expectedJobID != "" && j != expectedJobID {
-			return false, fmt.Errorf("external_ats: job ID changed after navigation: %q → %q", expectedJobID, j)
+		if blockErr := f.destinationBlocked(); blockErr != nil {
+			return false, blockErr
 		}
 		return true, nil
 	}
-	return false, fmt.Errorf("external_ats: step did not advance after click (URL unchanged: %q)", prevURL)
+	return false, fmt.Errorf(
+		"external_ats: step did not advance after click — no distinct in-application form step within 5s (url=%q)",
+		prevURL)
 }
 
 func (f *greenhouseRodFiller) IsSubmitReady(_ context.Context) (bool, error) {
