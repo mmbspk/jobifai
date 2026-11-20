@@ -1604,7 +1604,7 @@ func TestScan_NativeSelect_CaptureAndFill(t *testing.T) {
 
 // htmlSeekFormNoAdvance simulates a SEEK Quick Apply step whose Continue button
 // does nothing — no DOM change, no validation errors — when clicked.
-// Used by TestSeekFiller_SameStepClick_ZeroMappings to prove the write gate.
+// No progress bar → NavigateNext has no advancement signal → must timeout and return false.
 const htmlSeekFormNoAdvance = `<!DOCTYPE html><html><body style="margin:0;padding:16px">
   <h2 id="step-title" style="margin-top:0">Work experience</h2>
   <input id="job-title" aria-label="Most recent job title" value=""
@@ -1613,26 +1613,128 @@ const htmlSeekFormNoAdvance = `<!DOCTYPE html><html><body style="margin:0;paddin
           style="padding:8px 16px;width:120px;height:40px">Continue</button>
 </body></html>`
 
-// TestSeekFiller_SameStepClick_ZeroMappings proves that when a SEEK Continue
-// click succeeds but the form heading does not change (no step advancement, no
-// visible validation errors), NavigateNext returns false and no mappings are
-// written.
+// htmlSeekFormWithProgress simulates a SEEK Quick Apply step with a progress bar.
+// When the Continue button is clicked, JavaScript advances aria-valuenow from 1 to 2,
+// giving NavigateNext the positive evidence it needs to confirm step advancement.
+const htmlSeekFormWithProgress = `<!DOCTYPE html><html><body style="margin:0;padding:16px">
+  <progress id="step-bar" role="progressbar" aria-valuenow="1" aria-valuemax="3" value="0.33"></progress>
+  <h2>Work experience</h2>
+  <input id="job-title" aria-label="Most recent job title" value=""
+         style="display:block;width:200px;height:32px;margin-bottom:8px">
+  <button data-testid="continue-button" id="continue-btn"
+          style="padding:8px 16px;width:120px;height:40px">Continue</button>
+  <script>
+    document.getElementById('continue-btn').addEventListener('click', function() {
+      document.getElementById('step-bar').setAttribute('aria-valuenow','2');
+    });
+  </script>
+</body></html>`
+
+// ── writeConfirmedStep unit tests (no browser needed) ─────────────────────────
+
+// writeGateFixture builds a minimal snap, interp, and mapping store for write-gate tests.
+func writeGateFixture(t *testing.T, dbUserID string) (StepSnapshot, StepInterpretation, *DBMappingStore) {
+	t.Helper()
+	db := openProviderTestDB(t)
+	store := &DBMappingStore{DB: db, UserID: dbUserID}
+	snap := captureStepSnapshot([]formField{
+		{Type: "text", Question: "Current or most recent job title", ID: "job-title", InputType: "text"},
+	}, nil, "seek", 0, "Work experience")
+	interp := StepInterpretation{
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceLLM, Value: "Nurse"}},
+	}
+	return snap, interp, store
+}
+
+// writeGateHasField returns true when f0's field signature is present in the store.
+func writeGateHasField(store *DBMappingStore, snap StepSnapshot) bool {
+	_, found := store.LookupField(snap.Fields[0].FieldSignature(snap.Platform), snap.EmployerKey)
+	return found
+}
+
+// filledStepResult returns a StepExecResult that claims ref f0 was filled.
+func filledStepResult(outcome StepExecOutcome) StepExecResult {
+	return StepExecResult{Outcome: outcome, FieldsFilled: 1, FilledRefs: []string{"f0"}}
+}
+
+// TestWriteGate_Advanced_WritesFilledRefs proves that StepOutcomeAdvanced persists
+// field mappings via writeConfirmedStep (the production gate).
+func TestWriteGate_Advanced_WritesFilledRefs(t *testing.T) {
+	snap, interp, store := writeGateFixture(t, "gate-advanced")
+	result := filledStepResult(StepOutcomeAdvanced)
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+	require.True(t, writeGateHasField(store, snap), "StepOutcomeAdvanced must write filled ref to store")
+	t.Logf("EVIDENCE write-gate-advanced | outcome=%s filledRefs=%v wrote=true", result.Outcome, result.FilledRefs)
+}
+
+// TestWriteGate_ErrorOutcome_ZeroWrites proves that a non-advancing step
+// (NavigateNext returned false → StepOutcomeError) writes zero mappings.
+func TestWriteGate_ErrorOutcome_ZeroWrites(t *testing.T) {
+	snap, interp, store := writeGateFixture(t, "gate-error")
+	result := filledStepResult(StepOutcomeError)
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+	require.False(t, writeGateHasField(store, snap), "StepOutcomeError must write zero mappings")
+	t.Logf("EVIDENCE write-gate-error | outcome=%s wrote=false", result.Outcome)
+}
+
+// TestWriteGate_SubmitWithoutConfirmation_ZeroWrites proves that a submitted step
+// whose platform confirmation check returned false writes zero mappings.
+// Covers: LinkedIn submission with no confirmation signal; SEEK with no post-apply page.
+func TestWriteGate_SubmitWithoutConfirmation_ZeroWrites(t *testing.T) {
+	snap, interp, store := writeGateFixture(t, "gate-submit-unconfirmed")
+	result := filledStepResult(StepOutcomeSubmitted)
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false /* submissionConfirmed=false */)
+	require.False(t, writeGateHasField(store, snap), "unconfirmed submission must write zero mappings")
+	t.Logf("EVIDENCE write-gate-submit-unconfirmed | outcome=%s wrote=false", result.Outcome)
+}
+
+// TestWriteGate_SubmitWithConfirmation_WritesOnce proves that a submitted step
+// whose platform confirmation check returned true writes the filled ref exactly once.
+func TestWriteGate_SubmitWithConfirmation_WritesOnce(t *testing.T) {
+	snap, interp, store := writeGateFixture(t, "gate-submit-confirmed")
+	result := filledStepResult(StepOutcomeSubmitted)
+	writeConfirmedStep(context.Background(), store, snap, interp, result, true /* submissionConfirmed=true */)
+	require.True(t, writeGateHasField(store, snap), "confirmed submission must write filled ref to store")
+	res, found := store.LookupField(snap.Fields[0].FieldSignature(snap.Platform), snap.EmployerKey)
+	require.True(t, found, "field must be in store after confirmed submission")
+	require.Equal(t, "Nurse", res.Value, "stored value must match the filled value")
+	t.Logf("EVIDENCE write-gate-submit-confirmed | outcome=%s value=%q", result.Outcome, res.Value)
+}
+
+// TestWriteGate_NilStore_NoPanic proves that writeConfirmedStep is safe with a nil store.
+func TestWriteGate_NilStore_NoPanic(t *testing.T) {
+	snap := captureStepSnapshot([]formField{
+		{Type: "text", Question: "Job title", InputType: "text"},
+	}, nil, "seek", 0, "step")
+	interp := StepInterpretation{
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceLLM, Value: "x"}},
+	}
+	result := filledStepResult(StepOutcomeAdvanced)
+	require.NotPanics(t, func() {
+		writeConfirmedStep(context.Background(), nil, snap, interp, result, false)
+	})
+}
+
+// ── browser-level NavigateNext + writeConfirmedStep tests ─────────────────────
+
+// TestSeekFiller_SameStepClick_ZeroMappings proves that when a SEEK Continue click
+// does not advance the form (no progress-bar signal, no submit-button appears),
+// the production writeConfirmedStep gate writes zero mappings.
 //
-// This is the regression for the write-gate bug where a click returning nil
-// was trusted as evidence of advancement even when the form stayed on the
-// same step.
+// This is the regression for the bug where a click returning nil was trusted as
+// evidence of advancement even when the form stayed on the same step.
 func TestSeekFiller_SameStepClick_ZeroMappings(t *testing.T) {
 	page := rodTestPage(t, htmlSeekFormNoAdvance)
 	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
 	filler := &seekRodFiller{page: page, bot: b}
 
-	// 1. Verify NavigateNext detects non-advancement.
+	// 1. Verify NavigateNext requires positive evidence and correctly detects non-advancement.
 	advanced, navErr := filler.NavigateNext(context.Background())
-	require.False(t, advanced, "NavigateNext must not report advancement when heading is unchanged")
+	require.False(t, advanced, "NavigateNext must not report advancement when form did not advance")
 	require.Error(t, navErr, "NavigateNext must return an error when the step does not advance")
 	require.Contains(t, navErr.Error(), "did not advance", "error must describe the non-advancement")
 
-	// 2. Run the full StepExecutor pipeline and count mapping writes.
+	// 2. Run the full StepExecutor pipeline through the production write gate.
 	db := openProviderTestDB(t)
 	store := &DBMappingStore{DB: db, UserID: "no-advance-test"}
 	snap := captureStepSnapshot([]formField{
@@ -1644,16 +1746,43 @@ func TestSeekFiller_SameStepClick_ZeroMappings(t *testing.T) {
 	se := NewStepExecutor(DefaultStepExecBounds(), nil)
 	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
 
-	// Apply the same write gate as the runner: only write on Advanced or Submitted.
-	writeCount := 0
-	if result.Outcome == StepOutcomeAdvanced ||
-		(result.Outcome == StepOutcomeSubmitted && result.Err == nil) {
-		_ = store.Write(context.Background(), snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
-		writeCount++
-	}
+	// Call the same production gate the runner calls — not a reproduced if-condition.
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
 
-	require.Equal(t, 0, writeCount, "click on a non-advancing step must write zero mappings")
-	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome, "step outcome must not be Advanced when navigation was rejected")
-	t.Logf("EVIDENCE same-step-click | advanced=%v err=%q outcome=%s writes=%d",
-		advanced, navErr.Error(), result.Outcome, writeCount)
+	require.False(t, writeGateHasField(store, snap),
+		"non-advancing step must write zero mappings via production gate")
+	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
+		"step outcome must not be Advanced when navigation was rejected")
+	t.Logf("EVIDENCE same-step-click | advanced=%v err=%q outcome=%s",
+		advanced, navErr.Error(), result.Outcome)
+}
+
+// TestSeekFiller_RealAdvance_WritesFilledRefs proves that when a SEEK Continue click
+// advances the form (progress bar aria-valuenow changes), NavigateNext returns true
+// and the production writeConfirmedStep gate persists the filled ref.
+func TestSeekFiller_RealAdvance_WritesFilledRefs(t *testing.T) {
+	page := rodTestPage(t, htmlSeekFormWithProgress)
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	filler := &seekRodFiller{page: page, bot: b}
+
+	db := openProviderTestDB(t)
+	store := &DBMappingStore{DB: db, UserID: "real-advance-test"}
+	snap := captureStepSnapshot([]formField{
+		{Type: "text", Question: "Most recent job title", ID: "job-title", InputType: "text"},
+	}, nil, "seek", 0, "Work experience")
+	interp := StepInterpretation{
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceLLM, Value: "Nurse"}},
+	}
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	result, execErr := se.ExecuteStep(context.Background(), snap, interp, filler)
+
+	// Call the production write gate.
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+
+	require.NoError(t, execErr, "execution must not error on successful advance")
+	require.Equal(t, StepOutcomeAdvanced, result.Outcome,
+		"step must advance when progress bar signals step transition")
+	require.True(t, writeGateHasField(store, snap),
+		"real advance must write filled ref via production gate")
+	t.Logf("EVIDENCE real-advance | outcome=%s filledRefs=%v wrote=true", result.Outcome, result.FilledRefs)
 }

@@ -196,15 +196,18 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 
 		// Persist verified resolutions only on confirmed transitions.
-		// StepOutcomeSubmitted with result.Err != nil means the click errored and
-		// the outcome is unknown — do not create mappings from an unconfirmed submission.
-		if b.cfg.AdaptiveMapping != nil {
-			confirmed := result.Outcome == StepOutcomeAdvanced ||
-				(result.Outcome == StepOutcomeSubmitted && result.Err == nil)
-			if confirmed {
-				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
+		// For submission, require a positive LinkedIn confirmation signal — nil
+		// click error alone is not sufficient evidence the application was sent.
+		var submissionConfirmed bool
+		if result.Outcome == StepOutcomeSubmitted && result.Err == nil {
+			expectedID := linkedInExpectedID(lazy.job.URL)
+			submissionConfirmed = linkedInSubmissionConfirmed(filler.page, expectedID, lazy.job.Company)
+			if !submissionConfirmed {
+				b.log.Warn().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).
+					Msg("adaptive: submit clicked but LinkedIn confirmation signal absent — skipping mapping write")
 			}
 		}
+		writeConfirmedStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, submissionConfirmed)
 
 		switch result.Outcome {
 		case StepOutcomeSubmitted:
@@ -252,30 +255,71 @@ func (b *Bot) scanAdaptiveStep(ctx context.Context, page *rod.Page) ([]formField
 
 // ── step-advancement helpers ──────────────────────────────────────────────────
 
-// linkedInStepHeading returns the current Easy Apply modal heading text.
-// Returns "" when the heading cannot be read.
-func linkedInStepHeading(page *rod.Page) string {
+// linkedInStepProgress reads the aria-valuenow attribute from the LinkedIn Easy
+// Apply progress bar inside the modal dialog. Returns -1 when the bar cannot be
+// read; a non-negative value is the current step index (1-based).
+//
+// This is the primary advancement signal for LinkedIn. A missing or unreadable
+// progress bar is never treated as evidence of advancement — the caller must
+// fall back to the final-review-page check in that case.
+func linkedInStepProgress(page *rod.Page) int {
 	res, err := page.Eval(`() => {
-		const h = document.querySelector('[role="dialog"] h3, [role="dialog"] h2, [role="dialog"] h1, .jobs-easy-apply-modal h3');
-		return h ? h.textContent.trim() : '';
+		const bar = document.querySelector(
+			'[role="dialog"] progress, [role="dialog"] [role="progressbar"],' +
+			' .jobs-easy-apply-modal progress'
+		);
+		if (!bar) return -1;
+		const v = bar.getAttribute('aria-valuenow');
+		const n = parseInt(v, 10);
+		return isNaN(n) ? -1 : n;
 	}`)
 	if err != nil || res == nil {
-		return ""
+		return -1
 	}
-	return res.Value.String()
+	return res.Value.Int()
 }
 
-// seekStepHeading returns the current SEEK Quick Apply step heading text.
-// Returns "" when the heading cannot be read.
-func seekStepHeading(page *rod.Page) string {
+// seekStepProgress reads the aria-valuenow attribute from the SEEK Quick Apply
+// progress bar. Returns -1 when the bar cannot be read.
+//
+// This is the primary advancement signal for SEEK. Missing or unreadable means
+// no positive evidence — the caller must fall back to the submit-button signal.
+func seekStepProgress(page *rod.Page) int {
 	res, err := page.Eval(`() => {
-		const h = document.querySelector('h1,h2,h3,[data-testid*="heading"]');
-		return h ? h.textContent.trim() : '';
+		const bar = document.querySelector('[role="progressbar"], progress');
+		if (!bar) return -1;
+		const v = bar.getAttribute('aria-valuenow');
+		const n = parseInt(v, 10);
+		return isNaN(n) ? -1 : n;
 	}`)
 	if err != nil || res == nil {
-		return ""
+		return -1
 	}
-	return res.Value.String()
+	return res.Value.Int()
+}
+
+// writeConfirmedStep persists field mappings to the mapping store only when
+// the step outcome is confirmed:
+//   - StepOutcomeAdvanced: NavigateNext returned (true, nil), proving the form
+//     actually moved to a different step before this is called.
+//   - StepOutcomeSubmitted: submissionConfirmed must be true, meaning the caller
+//     has verified a platform-specific positive confirmation signal (not just nil
+//     click error). Pass false to skip the write.
+//
+// All other outcomes (StepOutcomeError, StepOutcomePaused, etc.) are silently
+// ignored — no mappings are written.
+func writeConfirmedStep(ctx context.Context, store MappingReadWriter, snap StepSnapshot, interp StepInterpretation, result StepExecResult, submissionConfirmed bool) {
+	if store == nil {
+		return
+	}
+	switch result.Outcome {
+	case StepOutcomeAdvanced:
+		_ = store.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
+	case StepOutcomeSubmitted:
+		if submissionConfirmed {
+			_ = store.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
+		}
+	}
 }
 
 // ── linkedInRodFiller ─────────────────────────────────────────────────────────
@@ -324,21 +368,28 @@ func (f *linkedInRodFiller) Fill(_ context.Context, field SnapField, res FieldRe
 }
 
 func (f *linkedInRodFiller) NavigateNext(_ context.Context) (bool, error) {
-	// Capture modal heading before click for step-advancement verification.
-	prevHeading := linkedInStepHeading(f.page)
+	// Capture pre-click progress bar step index as the advancement baseline.
+	prevProgress := linkedInStepProgress(f.page)
 	_, ok, err := f.bot.clickEasyApplyNavigation(f.page)
 	if err != nil || !ok {
 		return ok, err
 	}
-	// Give the React SPA a moment to re-render the next step.
-	time.Sleep(300 * time.Millisecond)
-	// If the heading is unchanged, the click was silently rejected (e.g. client-side
-	// validation without a visible error message) and the step did not advance.
-	newHeading := linkedInStepHeading(f.page)
-	if prevHeading != "" && newHeading == prevHeading {
-		return false, fmt.Errorf("adaptive: step did not advance after click (modal heading unchanged: %q)", prevHeading)
+	// Poll up to 2 s for positive evidence of a different active step.
+	// Two independent signals are accepted:
+	//   1. linkedInPrepareAtFinalReview — unambiguous transition to the review page.
+	//   2. Progress bar aria-valuenow changed — confirmed intermediate step advance.
+	// A missing or unreadable progress bar never counts as evidence.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.bot.linkedInPrepareAtFinalReview(f.page) {
+			return true, nil
+		}
+		if newProgress := linkedInStepProgress(f.page); newProgress >= 0 && prevProgress >= 0 && newProgress != prevProgress {
+			return true, nil
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	return true, nil
+	return false, fmt.Errorf("adaptive: step did not advance — no progress-bar or review-page signal within 2s (prev=%d)", prevProgress)
 }
 
 func (f *linkedInRodFiller) IsSubmitReady(_ context.Context) (bool, error) {
@@ -504,15 +555,18 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 			return fmt.Errorf("seek adaptive: execute step %d: %w", stepIdx, err)
 		}
 
-		// Same provenance gate as LinkedIn: only persist on confirmed step outcomes.
-		// A SubmitWithError result (click errored, outcome unknown) must not create mappings.
-		if b.cfg.AdaptiveMapping != nil {
-			confirmed := result.Outcome == StepOutcomeAdvanced ||
-				(result.Outcome == StepOutcomeSubmitted && result.Err == nil)
-			if confirmed {
-				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
+		// Persist verified resolutions only on confirmed transitions.
+		// For submission, require a positive SEEK post-apply success signal — nil
+		// click error alone is not sufficient evidence the application was sent.
+		var submissionConfirmed bool
+		if result.Outcome == StepOutcomeSubmitted && result.Err == nil {
+			submissionConfirmed = b.seekIsPostApplySuccess(page)
+			if !submissionConfirmed {
+				b.log.Warn().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).
+					Msg("seek adaptive: submit clicked but no post-apply success signal — skipping mapping write")
 			}
 		}
+		writeConfirmedStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, submissionConfirmed)
 
 		switch result.Outcome {
 		case StepOutcomeSubmitted:
@@ -581,26 +635,34 @@ func (f *seekRodFiller) NavigateNext(_ context.Context) (bool, error) {
 	if btn == nil || isSubmit {
 		return false, nil
 	}
-	// Capture step heading before click for advancement verification.
-	prevHeading := seekStepHeading(f.page)
+	// Capture pre-click progress bar step index as the advancement baseline.
+	prevProgress := seekStepProgress(f.page)
 	if err := btn.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		return false, fmt.Errorf("seek adaptive: click continue: %w", err)
 	}
-	time.Sleep(400 * time.Millisecond)
-	// If validation errors are visible, the step was rejected.
-	hasErrors, _ := f.page.Eval(`() =>
-		document.querySelectorAll('[aria-invalid="true"],[data-testid*="error"],[class*="error-message"]').length > 0
-	`)
-	if hasErrors != nil && hasErrors.Value.Bool() {
-		return false, fmt.Errorf("seek adaptive: continue rejected — validation errors visible after click")
+	// Poll up to 2 s for positive evidence of a different active step.
+	// Three signals are accepted (checked in priority order):
+	//   1. Validation errors — explicit rejection; return false immediately.
+	//   2. Progress bar aria-valuenow changed — confirmed intermediate step advance.
+	//   3. Submit button appeared where Continue was — confirmed final-step transition.
+	// A missing or unreadable progress bar never counts as evidence.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hasErrors, _ := f.page.Eval(`() =>
+			document.querySelectorAll('[aria-invalid="true"],[data-testid*="error"],[class*="error-message"]').length > 0
+		`)
+		if hasErrors != nil && hasErrors.Value.Bool() {
+			return false, fmt.Errorf("seek adaptive: continue rejected — validation errors visible after click")
+		}
+		if newProgress := seekStepProgress(f.page); newProgress >= 0 && prevProgress >= 0 && newProgress != prevProgress {
+			return true, nil
+		}
+		if _, nowSubmit := f.bot.seekFindActionButton(f.page); nowSubmit {
+			return true, nil
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	// Verify the step heading changed. If the form stayed on the same page
-	// (silent rejection without a visible error), the heading will be unchanged.
-	newHeading := seekStepHeading(f.page)
-	if prevHeading != "" && newHeading == prevHeading {
-		return false, fmt.Errorf("seek adaptive: step did not advance after click (title: %q)", prevHeading)
-	}
-	return true, nil
+	return false, fmt.Errorf("seek adaptive: step did not advance — no progress-bar or submit-button signal within 2s (prev=%d)", prevProgress)
 }
 
 func (f *seekRodFiller) IsSubmitReady(_ context.Context) (bool, error) {

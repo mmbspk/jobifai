@@ -333,16 +333,12 @@ func (b *Bot) greenhouseApply(ctx context.Context, page *rod.Page, lazy *lazyDoc
 				return errATSAmbiguous
 			}
 			// Persist only after confirmation.
-			if b.cfg.AdaptiveMapping != nil {
-				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
-			}
+			writeConfirmedStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, true)
 			b.log.Info().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).Msg("external_ats: Greenhouse application confirmed")
 			return nil
 		case StepOutcomeAdvanced:
-			// Persist on observed step advancement.
-			if b.cfg.AdaptiveMapping != nil {
-				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
-			}
+			// NavigateNext already verified URL identity — persist the step.
+			writeConfirmedStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, false)
 			// Check for blocked states after navigation (e.g., account wall appears mid-flow).
 			pt, _ := page.Eval(`() => document.body ? document.body.innerText : ''`)
 			if pt != nil {
@@ -415,7 +411,13 @@ func currentPageURL(page *rod.Page) string {
 }
 
 func (f *greenhouseRodFiller) NavigateNext(_ context.Context) (bool, error) {
+	// Capture the pre-click URL and extract its identity so we can verify that
+	// navigation stayed within the same Greenhouse application — a bare URL change
+	// alone could mean a redirect to an unrelated page.
 	prevURL := currentPageURL(f.page)
+	expectedTenant := greenhouseTenant(prevURL)
+	expectedJobID := greenhouseJobID(prevURL)
+
 	res, err := f.page.Eval(`() => {
 		const btn = document.querySelector(
 			'button[type="submit"], input[type="submit"], button.btn-submit, #submit_app'
@@ -431,13 +433,26 @@ func (f *greenhouseRodFiller) NavigateNext(_ context.Context) (bool, error) {
 		return false, nil
 	}
 	// Greenhouse is a server-rendered multi-page form; each step produces a new URL.
-	// Poll until the URL changes (up to 5s) to confirm the step actually advanced.
+	// Poll until the URL changes AND is still a valid Greenhouse path for the same
+	// tenant and job — both conditions must hold for the advance to be confirmed.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
-		if currentPageURL(f.page) != prevURL {
-			return true, nil
+		newURL := currentPageURL(f.page)
+		if newURL == "" || newURL == prevURL {
+			continue
 		}
+		// URL changed — verify it is still the same Greenhouse application.
+		if classifyExternalATS(newURL) != ATSKindGreenhouse {
+			return false, fmt.Errorf("external_ats: navigation left Greenhouse domain: %q", newURL)
+		}
+		if t := greenhouseTenant(newURL); t != "" && expectedTenant != "" && t != expectedTenant {
+			return false, fmt.Errorf("external_ats: tenant changed after navigation: %q → %q", expectedTenant, t)
+		}
+		if j := greenhouseJobID(newURL); j != "" && expectedJobID != "" && j != expectedJobID {
+			return false, fmt.Errorf("external_ats: job ID changed after navigation: %q → %q", expectedJobID, j)
+		}
+		return true, nil
 	}
 	return false, fmt.Errorf("external_ats: step did not advance after click (URL unchanged: %q)", prevURL)
 }
