@@ -250,6 +250,34 @@ func (b *Bot) scanAdaptiveStep(ctx context.Context, page *rod.Page) ([]formField
 	return nil, nil, nil
 }
 
+// ── step-advancement helpers ──────────────────────────────────────────────────
+
+// linkedInStepHeading returns the current Easy Apply modal heading text.
+// Returns "" when the heading cannot be read.
+func linkedInStepHeading(page *rod.Page) string {
+	res, err := page.Eval(`() => {
+		const h = document.querySelector('[role="dialog"] h3, [role="dialog"] h2, [role="dialog"] h1, .jobs-easy-apply-modal h3');
+		return h ? h.textContent.trim() : '';
+	}`)
+	if err != nil || res == nil {
+		return ""
+	}
+	return res.Value.String()
+}
+
+// seekStepHeading returns the current SEEK Quick Apply step heading text.
+// Returns "" when the heading cannot be read.
+func seekStepHeading(page *rod.Page) string {
+	res, err := page.Eval(`() => {
+		const h = document.querySelector('h1,h2,h3,[data-testid*="heading"]');
+		return h ? h.textContent.trim() : '';
+	}`)
+	if err != nil || res == nil {
+		return ""
+	}
+	return res.Value.String()
+}
+
 // ── linkedInRodFiller ─────────────────────────────────────────────────────────
 
 // linkedInRodFiller implements FieldFiller for LinkedIn Easy Apply using the
@@ -296,8 +324,21 @@ func (f *linkedInRodFiller) Fill(_ context.Context, field SnapField, res FieldRe
 }
 
 func (f *linkedInRodFiller) NavigateNext(_ context.Context) (bool, error) {
+	// Capture modal heading before click for step-advancement verification.
+	prevHeading := linkedInStepHeading(f.page)
 	_, ok, err := f.bot.clickEasyApplyNavigation(f.page)
-	return ok, err
+	if err != nil || !ok {
+		return ok, err
+	}
+	// Give the React SPA a moment to re-render the next step.
+	time.Sleep(300 * time.Millisecond)
+	// If the heading is unchanged, the click was silently rejected (e.g. client-side
+	// validation without a visible error message) and the step did not advance.
+	newHeading := linkedInStepHeading(f.page)
+	if prevHeading != "" && newHeading == prevHeading {
+		return false, fmt.Errorf("adaptive: step did not advance after click (modal heading unchanged: %q)", prevHeading)
+	}
+	return true, nil
 }
 
 func (f *linkedInRodFiller) IsSubmitReady(_ context.Context) (bool, error) {
@@ -540,17 +581,24 @@ func (f *seekRodFiller) NavigateNext(_ context.Context) (bool, error) {
 	if btn == nil || isSubmit {
 		return false, nil
 	}
+	// Capture step heading before click for advancement verification.
+	prevHeading := seekStepHeading(f.page)
 	if err := btn.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		return false, fmt.Errorf("seek adaptive: click continue: %w", err)
 	}
 	time.Sleep(400 * time.Millisecond)
-	// Verify the page advanced: if validation errors are still visible the step
-	// was rejected and we must not report advancement to the caller.
+	// If validation errors are visible, the step was rejected.
 	hasErrors, _ := f.page.Eval(`() =>
 		document.querySelectorAll('[aria-invalid="true"],[data-testid*="error"],[class*="error-message"]').length > 0
 	`)
 	if hasErrors != nil && hasErrors.Value.Bool() {
 		return false, fmt.Errorf("seek adaptive: continue rejected — validation errors visible after click")
+	}
+	// Verify the step heading changed. If the form stayed on the same page
+	// (silent rejection without a visible error), the heading will be unchanged.
+	newHeading := seekStepHeading(f.page)
+	if prevHeading != "" && newHeading == prevHeading {
+		return false, fmt.Errorf("seek adaptive: step did not advance after click (title: %q)", prevHeading)
 	}
 	return true, nil
 }

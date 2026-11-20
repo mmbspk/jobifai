@@ -1601,3 +1601,59 @@ func TestScan_NativeSelect_CaptureAndFill(t *testing.T) {
 	require.Equal(t, "AU", val.Value.String(), "native select value must be the option value for 'Australia'")
 	t.Logf("EVIDENCE native-select fill | selected_value=%q", val.Value.String())
 }
+
+// htmlSeekFormNoAdvance simulates a SEEK Quick Apply step whose Continue button
+// does nothing — no DOM change, no validation errors — when clicked.
+// Used by TestSeekFiller_SameStepClick_ZeroMappings to prove the write gate.
+const htmlSeekFormNoAdvance = `<!DOCTYPE html><html><body style="margin:0;padding:16px">
+  <h2 id="step-title" style="margin-top:0">Work experience</h2>
+  <input id="job-title" aria-label="Most recent job title" value=""
+         style="display:block;width:200px;height:32px;margin-bottom:8px">
+  <button data-testid="continue-button"
+          style="padding:8px 16px;width:120px;height:40px">Continue</button>
+</body></html>`
+
+// TestSeekFiller_SameStepClick_ZeroMappings proves that when a SEEK Continue
+// click succeeds but the form heading does not change (no step advancement, no
+// visible validation errors), NavigateNext returns false and no mappings are
+// written.
+//
+// This is the regression for the write-gate bug where a click returning nil
+// was trusted as evidence of advancement even when the form stayed on the
+// same step.
+func TestSeekFiller_SameStepClick_ZeroMappings(t *testing.T) {
+	page := rodTestPage(t, htmlSeekFormNoAdvance)
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	filler := &seekRodFiller{page: page, bot: b}
+
+	// 1. Verify NavigateNext detects non-advancement.
+	advanced, navErr := filler.NavigateNext(context.Background())
+	require.False(t, advanced, "NavigateNext must not report advancement when heading is unchanged")
+	require.Error(t, navErr, "NavigateNext must return an error when the step does not advance")
+	require.Contains(t, navErr.Error(), "did not advance", "error must describe the non-advancement")
+
+	// 2. Run the full StepExecutor pipeline and count mapping writes.
+	db := openProviderTestDB(t)
+	store := &DBMappingStore{DB: db, UserID: "no-advance-test"}
+	snap := captureStepSnapshot([]formField{
+		{Type: "text", Question: "Most recent job title", ID: "job-title", InputType: "text"},
+	}, nil, "seek", 0, "Work experience")
+	interp := StepInterpretation{
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceLLM, Value: "Nurse"}},
+	}
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
+
+	// Apply the same write gate as the runner: only write on Advanced or Submitted.
+	writeCount := 0
+	if result.Outcome == StepOutcomeAdvanced ||
+		(result.Outcome == StepOutcomeSubmitted && result.Err == nil) {
+		_ = store.Write(context.Background(), snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
+		writeCount++
+	}
+
+	require.Equal(t, 0, writeCount, "click on a non-advancing step must write zero mappings")
+	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome, "step outcome must not be Advanced when navigation was rejected")
+	t.Logf("EVIDENCE same-step-click | advanced=%v err=%q outcome=%s writes=%d",
+		advanced, navErr.Error(), result.Outcome, writeCount)
+}

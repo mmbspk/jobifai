@@ -405,8 +405,17 @@ func (f *greenhouseRodFiller) Fill(ctx context.Context, field SnapField, res Fie
 	return FieldFillResult{Filled: true}
 }
 
+// currentPageURL returns the current URL of a page, or "" on error.
+func currentPageURL(page *rod.Page) string {
+	res, err := page.Eval(`() => window.location.href`)
+	if err != nil || res == nil {
+		return ""
+	}
+	return res.Value.String()
+}
+
 func (f *greenhouseRodFiller) NavigateNext(_ context.Context) (bool, error) {
-	// Greenhouse: click the primary submit/next button (selector-based, not JS helper).
+	prevURL := currentPageURL(f.page)
 	res, err := f.page.Eval(`() => {
 		const btn = document.querySelector(
 			'button[type="submit"], input[type="submit"], button.btn-submit, #submit_app'
@@ -418,7 +427,19 @@ func (f *greenhouseRodFiller) NavigateNext(_ context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("external_ats: NavigateNext eval: %w", err)
 	}
-	return res.Value.Bool(), nil
+	if !res.Value.Bool() {
+		return false, nil
+	}
+	// Greenhouse is a server-rendered multi-page form; each step produces a new URL.
+	// Poll until the URL changes (up to 5s) to confirm the step actually advanced.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		if currentPageURL(f.page) != prevURL {
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("external_ats: step did not advance after click (URL unchanged: %q)", prevURL)
 }
 
 func (f *greenhouseRodFiller) IsSubmitReady(_ context.Context) (bool, error) {
