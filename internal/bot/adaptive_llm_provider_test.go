@@ -155,6 +155,15 @@ func TestLLMFormInterpreter_ColdStep_OneProviderRequest(t *testing.T) {
 	assert.True(t, result.LLMUsed, "cold step: LLMUsed must be true")
 	assert.False(t, result.Paused, "cold step: no paused fields")
 
+	// Verify the values the adapter returned.
+	vals := make(map[string]string)
+	for _, r := range result.Fields {
+		vals[r.Ref] = r.Value
+	}
+	assert.Equal(t, "7", vals["f0"])
+	assert.Equal(t, "No", vals["f1"])
+	assert.Equal(t, "Registered Nurse", vals["f2"])
+
 	// Verify label cost estimate.
 	estimateLabelCost(t, 3)
 }

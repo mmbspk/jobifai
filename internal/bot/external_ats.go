@@ -319,14 +319,9 @@ func (b *Bot) greenhouseApply(ctx context.Context, page *rod.Page, lazy *lazyDoc
 			return fmt.Errorf("external_ats: execute step %d: %w", stepIdx, err)
 		}
 
-		// Persist verified resolutions.
-		if b.cfg.AdaptiveMapping != nil {
-			_ = b.cfg.AdaptiveMapping.Write(ctx, snap, interp.Fields)
-		}
-
 		switch result.Outcome {
 		case StepOutcomeSubmitted:
-			// Verify confirmation page.
+			// Verify confirmation page before persisting mappings.
 			time.Sleep(1 * time.Second)
 			confirmText, _ := page.Eval(`() => document.body ? document.body.innerText : ''`)
 			ct := ""
@@ -337,9 +332,17 @@ func (b *Bot) greenhouseApply(ctx context.Context, page *rod.Page, lazy *lazyDoc
 				b.log.Warn().Str("attempt_id", lazy.attemptID).Msg("external_ats: submit clicked but no confirmation detected")
 				return errATSAmbiguous
 			}
+			// Persist only after confirmation.
+			if b.cfg.AdaptiveMapping != nil {
+				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
+			}
 			b.log.Info().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).Msg("external_ats: Greenhouse application confirmed")
 			return nil
 		case StepOutcomeAdvanced:
+			// Persist on observed step advancement.
+			if b.cfg.AdaptiveMapping != nil {
+				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
+			}
 			// Check for blocked states after navigation (e.g., account wall appears mid-flow).
 			pt, _ := page.Eval(`() => document.body ? document.body.innerText : ''`)
 			if pt != nil {
@@ -385,12 +388,14 @@ func (f *greenhouseRodFiller) Fill(ctx context.Context, field SnapField, res Fie
 
 	var fieldTypeParm string
 	switch field.Type {
-	case SnapTypeRadio, SnapTypeSelect:
+	case SnapTypeRadio:
 		fieldTypeParm = "radio"
+	case SnapTypeSelect:
+		fieldTypeParm = "select"
 	default:
 		fieldTypeParm = "text"
 	}
-	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm)
+	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm, field.Group, field.ControlID)
 	if err != nil {
 		return FieldFillResult{Err: fmt.Errorf("external_ats: fill field %s (%q): %w", field.Ref, field.Label, err)}
 	}

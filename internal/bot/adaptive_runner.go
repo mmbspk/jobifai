@@ -36,13 +36,20 @@ import (
 // fill path; this is the safety net.
 var errShadowBrowserAction = errors.New("adaptive_runner: shadow mode must not issue browser actions (bug: wrong routing)")
 
-// filledResolutions returns only the non-pending ActionFill/ActionUpload entries.
-// Skip proposals and unresolved fields are excluded so the mapping store never
-// receives a trusted entry for a field the engine decided not to fill.
-func filledResolutions(fields []FieldResolution) []FieldResolution {
-	out := make([]FieldResolution, 0, len(fields))
+// resolvedFilledRefs returns only the FieldResolutions whose ref appears in filledRefs.
+// This restricts cache writes to fields the executor actually filled, avoiding entries
+// for fields that were interpreted but could not be written (e.g. DOM element missing).
+func resolvedFilledRefs(fields []FieldResolution, filledRefs []string) []FieldResolution {
+	if len(filledRefs) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(filledRefs))
+	for _, ref := range filledRefs {
+		set[ref] = struct{}{}
+	}
+	out := make([]FieldResolution, 0, len(filledRefs))
 	for _, r := range fields {
-		if !r.Pending && (r.Action == ActionFill || r.Action == ActionUpload) {
+		if _, ok := set[r.Ref]; ok {
 			out = append(out, r)
 		}
 	}
@@ -195,7 +202,7 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 			confirmed := result.Outcome == StepOutcomeAdvanced ||
 				(result.Outcome == StepOutcomeSubmitted && result.Err == nil)
 			if confirmed {
-				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, filledResolutions(interp.Fields))
+				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
 			}
 		}
 
@@ -271,8 +278,10 @@ func (f *linkedInRodFiller) Fill(_ context.Context, field SnapField, res FieldRe
 	// ActionFill: use jsFillByQuestionAnswer for text/radio/select/textarea.
 	var fieldTypeParm string
 	switch field.Type {
-	case SnapTypeRadio, SnapTypeSelect:
+	case SnapTypeRadio:
 		fieldTypeParm = "radio"
+	case SnapTypeSelect:
+		fieldTypeParm = "select"
 	default:
 		fieldTypeParm = "text"
 	}
@@ -460,7 +469,7 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 			confirmed := result.Outcome == StepOutcomeAdvanced ||
 				(result.Outcome == StepOutcomeSubmitted && result.Err == nil)
 			if confirmed {
-				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, filledResolutions(interp.Fields))
+				_ = b.cfg.AdaptiveMapping.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
 			}
 		}
 
@@ -509,8 +518,10 @@ func (f *seekRodFiller) Fill(_ context.Context, field SnapField, res FieldResolu
 	}
 	var fieldTypeParm string
 	switch field.Type {
-	case SnapTypeRadio, SnapTypeSelect:
+	case SnapTypeRadio:
 		fieldTypeParm = "radio"
+	case SnapTypeSelect:
+		fieldTypeParm = "select"
 	default:
 		fieldTypeParm = "text"
 	}
@@ -533,6 +544,14 @@ func (f *seekRodFiller) NavigateNext(_ context.Context) (bool, error) {
 		return false, fmt.Errorf("seek adaptive: click continue: %w", err)
 	}
 	time.Sleep(400 * time.Millisecond)
+	// Verify the page advanced: if validation errors are still visible the step
+	// was rejected and we must not report advancement to the caller.
+	hasErrors, _ := f.page.Eval(`() =>
+		document.querySelectorAll('[aria-invalid="true"],[data-testid*="error"],[class*="error-message"]').length > 0
+	`)
+	if hasErrors != nil && hasErrors.Value.Bool() {
+		return false, fmt.Errorf("seek adaptive: continue rejected — validation errors visible after click")
+	}
 	return true, nil
 }
 

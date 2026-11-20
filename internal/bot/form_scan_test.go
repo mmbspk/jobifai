@@ -1553,3 +1553,51 @@ func TestScan_DuplicateLabel_DifferentSection_CaptureAndFill(t *testing.T) {
 	require.Equal(t, resSoftware.Value, softwareVal.Value.String(), "Software Skills input must receive its cached value")
 	require.Equal(t, resMedical.Value, medicalVal.Value.String(), "Medical Skills input must receive its cached value")
 }
+
+// htmlNativeSelectForm is a minimal form with a native <select> for a country selector.
+// Used to verify that jsScanFields captures it as type=select and that
+// jsFillByQuestionAnswer fills it correctly when fieldType is "select".
+const htmlNativeSelectForm = `<!DOCTYPE html><html><body>
+<div role="dialog" class="jobs-easy-apply-modal" style="padding:16px">
+  <label for="country-sel">Country of residence</label>
+  <select id="country-sel" aria-label="Country of residence">
+    <option value="">Select...</option>
+    <option value="AU">Australia</option>
+    <option value="NZ">New Zealand</option>
+    <option value="GB">United Kingdom</option>
+  </select>
+</div>
+</body></html>`
+
+// TestScan_NativeSelect_CaptureAndFill proves the native-select path end-to-end:
+//
+//  1. jsScanFields detects the <select> as type=select with the correct ControlID.
+//  2. jsFillByQuestionAnswer with fieldType="select" selects the target option.
+//  3. The DOM value reflects the chosen option after the fill.
+//
+// The test is skipped when Chrome is not available (CI without headless Chrome).
+func TestScan_NativeSelect_CaptureAndFill(t *testing.T) {
+	page := rodTestPage(t, htmlNativeSelectForm)
+
+	// 1. Scan: select must be captured with type=select and the element id.
+	fields := evalScanFields(t, page)
+	require.Len(t, fields, 1, "expect exactly one field")
+	sel := fields[0]
+	require.Equal(t, "select", sel.Type, "field type must be 'select'")
+	require.Equal(t, "country-sel", sel.ID, "control ID must match element id")
+	require.NotEmpty(t, sel.Options, "options must be captured")
+	t.Logf("EVIDENCE native-select scan | question=%q type=%q id=%q options=%v",
+		sel.Question, sel.Type, sel.ID, sel.Options)
+
+	// 2. Fill: direct id targeting must set the correct option.
+	fillResult, err := page.Eval(jsFillByQuestionAnswer,
+		sel.Question, "Australia", "select", "", sel.ID)
+	require.NoError(t, err)
+	require.True(t, fillResult.Value.Bool(), "fill must return true")
+
+	// 3. Verify: the native select value must reflect the chosen option.
+	val, err := page.Eval(`() => document.getElementById('country-sel').value`)
+	require.NoError(t, err)
+	require.Equal(t, "AU", val.Value.String(), "native select value must be the option value for 'Australia'")
+	t.Logf("EVIDENCE native-select fill | selected_value=%q", val.Value.String())
+}

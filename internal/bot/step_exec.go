@@ -123,6 +123,7 @@ const (
 type StepExecResult struct {
 	Outcome      StepExecOutcome
 	FieldsFilled int              // fields successfully written
+	FilledRefs   []string         // refs the filler reported Filled:true for
 	FieldsFailed []string         // refs that failed even after retries
 	FieldsPended []string         // refs that could not be resolved (pending)
 	NoProgressAt int              // step index where no-progress was detected (0 if none)
@@ -205,6 +206,7 @@ func (se *StepExecutor) ExecuteStep(ctx context.Context, snap StepSnapshot, inte
 		if fillResult.Filled {
 			filledThisStep++
 			result.FieldsFilled++
+			result.FilledRefs = append(result.FilledRefs, res.Ref)
 		} else if !fillResult.Skipped {
 			result.FieldsFailed = append(result.FieldsFailed, res.Ref)
 		}

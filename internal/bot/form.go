@@ -1681,7 +1681,7 @@ const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType, sectionHint,
 		}
 	}
 
-	if (fieldType === 'radio' || fieldType === 'select') {
+	if (fieldType === 'radio') {
 		const lower = ans.toLowerCase();
 		for (const r of allInDOM(container, 'input[type="radio"]')) {
 			if (!inSection(r)) continue;
@@ -1695,6 +1695,39 @@ const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType, sectionHint,
 			if (opt.includes(lower) || pTxt === lower || r.value.toLowerCase() === lower) {
 				if (lbl) lbl.click(); else r.click();
 				r.dispatchEvent(new Event('change', { bubbles: true }));
+				return true;
+			}
+		}
+		return false;
+	}
+	if (fieldType === 'select') {
+		const lower = ans.toLowerCase();
+		// Try direct control-id targeting first; fall back to aria-label search.
+		let sel = null;
+		const cid = (controlID || '').trim();
+		if (cid) {
+			const t = document.getElementById(cid);
+			if (t && t.tagName === 'SELECT') sel = t;
+		}
+		if (!sel) {
+			for (const s of allInDOM(container, 'select')) {
+				if (!inSection(s)) continue;
+				const aria = (s.getAttribute('aria-label') || '').toLowerCase();
+				if (aria.includes(needle) || (needle.length > 10 && aria.includes(needle.slice(0, 40)))) {
+					sel = s;
+					break;
+				}
+			}
+		}
+		if (!sel) return false;
+		for (const opt of sel.options) {
+			if ((opt.text || '').toLowerCase() === lower || (opt.value || '').toLowerCase() === lower) {
+				try {
+					const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+					setter.call(sel, opt.value);
+				} catch (e) { sel.value = opt.value; }
+				sel.dispatchEvent(new Event('input', { bubbles: true }));
+				sel.dispatchEvent(new Event('change', { bubbles: true }));
 				return true;
 			}
 		}
