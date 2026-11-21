@@ -71,6 +71,8 @@ type formField struct {
 	Name            string            `json:"name"`            // radio group name
 	ID              string            `json:"id"`              // select / text element id
 	Question        string            `json:"question"`        // visible label text
+	Group           string            `json:"group"`           // section heading (fieldset legend, h2/h3)
+	HelpText        string            `json:"helpText"`        // hint / description text visible below label
 	Options         []formFieldOption `json:"options"`         // radio / select choices
 	HasFile         bool              `json:"hasFile"`         // file already attached
 	DocumentKind    string            `json:"documentKind"`    // resume | cover_letter | unknown
@@ -179,6 +181,56 @@ const jsScanFieldsInner = `
 		}
 		return 0;
 	}
+
+	// sectionGroupFor returns the section heading (legend, h2-h4, or aria-label on
+	// a role=group ancestor) that contextualises this form element. Used to populate
+	// the SnapField.Group field so the FieldSignature can disambiguate identical
+	// question labels that appear under different headings.
+	function sectionGroupFor(el) {
+		let node = el;
+		for (let depth = 0; depth < 12 && node && node !== document.body; depth++, node = node.parentElement) {
+			// role=group with aria-labelledby is authoritative.
+			if (node !== el && node.getAttribute('role') === 'group') {
+				const lid = node.getAttribute('aria-labelledby');
+				if (lid) {
+					const lbl = document.getElementById(lid);
+					if (lbl) return lbl.textContent.trim().replace(/\s+/g, ' ');
+				}
+			}
+			const parent = node.parentElement;
+			if (!parent) break;
+			// Collect the LAST heading sibling before this node — the closest section.
+			// Two fields under different headings that are flat siblings under one parent
+			// each inherit their own closest (last) heading, not the first one.
+			let lastH = '';
+			for (const c of parent.children) {
+				if (c === node) break;
+				if (/^H[1-6]$/.test(c.tagName)) {
+					const t = c.textContent.trim().replace(/\s+/g, ' ');
+					if (t) lastH = t;
+				}
+			}
+			if (lastH) return lastH;
+		}
+		return '';
+	}
+
+	// helpTextFor returns descriptive hint text visible below a form field label.
+	function helpTextFor(el) {
+		const formEl = el.closest(
+			'[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset'
+		);
+		if (formEl) {
+			const hint = formEl.querySelector(
+				'.fb-form-element__help-text, [data-test-form-element-description], ' +
+				'.artdeco-form-element__helper-text, [class*="helper-text"], ' +
+				'[class*="hint-text"], [class*="help-text"], small'
+			);
+			if (hint) return hint.textContent.trim().replace(/\s+/g, ' ');
+		}
+		return '';
+	}
+
 
 	// ── Review-only steps (Work Experience / Education cards), no inputs, skip immediately ──
 	// These steps show read-only cards with Edit/Remove buttons. There are no form fields
@@ -386,7 +438,8 @@ const jsScanFieldsInner = `
 		const options = all.map(x => {
 			return { id: x.id, value: x.value, label: linkedInRadioOptionLabel(container, x) };
 		});
-		fields.push({ type: 'radio', name: r.name || groupKey, question, options });
+		fields.push({ type: 'radio', name: r.name || groupKey, question, options,
+		              group: sectionGroupFor(r), helpText: helpTextFor(r) });
 	});
 
 	// ── Checkbox groups (Lever ATS / LinkedIn consent questions) ─────────────
@@ -467,7 +520,8 @@ const jsScanFieldsInner = `
 			.map(o => ({ value: o.value, label: o.text.trim() }));
 		if (opts.length === 0) return;
 		fields.push({ type: 'select', id: sel.id,
-		              question: lbl ? lbl.textContent.trim().replace(/\s+/g, ' ') : '', options: opts });
+		              question: lbl ? lbl.textContent.trim().replace(/\s+/g, ' ') : '', options: opts,
+		              group: sectionGroupFor(sel), helpText: helpTextFor(sel) });
 	});
 
 	// ── Text / number / tel / email / textarea that are empty ─────────────────
@@ -522,6 +576,7 @@ const jsScanFieldsInner = `
 		              question: question || el.placeholder || 'Additional details',
 		              isTypeahead,
 		              maxChars,
+		              group: sectionGroupFor(el), helpText: helpTextFor(el),
 		              inputType: (el.id.endsWith('-numeric') || el.type === 'number' || el.getAttribute('inputmode') === 'numeric')
 		                         ? 'numeric'
 		                         : (el.tagName === 'TEXTAREA' ? 'textarea' : (el.type || 'text')) });
@@ -1546,12 +1601,19 @@ func resolveFormFieldAnswer(answer string, err error, fallback string) (string, 
 //   - hasFields=true when the scan found at least one field (even if none could be filled)
 //   - err non-nil on fatal LLM failures (Jobifai quota or provider usage limits) — callers must not click Continue/Submit
 // jsFillByQuestionAnswer finds a visible field by question substring and sets/selects the answer.
-const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType) => {
+// Optional 4th argument sectionHint (string): when non-empty, restricts the search to form
+// elements whose nearest enclosing section heading contains the hint. Enables filling two
+// fields with identical labels that belong to different form sections.
+// Optional 5th argument controlID (string): when non-empty and fieldType is not radio/select,
+// targets the element by DOM id directly — bypassing label search and section filtering.
+const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType, sectionHint, controlID) => {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer() || document.body;
 	const needle = (questionNeedle || '').toLowerCase().trim();
 	const ans = (answer || '').trim();
 	if (!needle || !ans) return false;
+	const hint = (sectionHint || '').toLowerCase().trim();
+
 	function allInDOM(root, sel) {
 		const r = [];
 		try {
@@ -1562,9 +1624,67 @@ const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType) => {
 		} catch (e) {}
 		return r;
 	}
-	if (fieldType === 'radio' || fieldType === 'select') {
+
+	// When sectionHint is set, only consider elements whose ancestor heading
+	// text contains the hint (case-insensitive). Skips elements not in a matching
+	// section so identical labels in different sections are filled independently.
+	function inSection(el) {
+		if (!hint) return true;
+		let node = el;
+		for (let d = 0; d < 12 && node && node !== document.body; d++, node = node.parentElement) {
+			if (node.getAttribute && node.getAttribute('role') === 'group') {
+				const lid = node.getAttribute('aria-labelledby');
+				if (lid) {
+					const lbl = document.getElementById(lid);
+					// A role=group boundary is authoritative: match or exclude.
+					if (lbl) return (lbl.textContent || '').toLowerCase().includes(hint);
+				}
+			}
+			const parent = node.parentElement;
+			if (!parent) break;
+			// Find the LAST heading sibling before this node — that is the section it belongs to.
+			// Using first-found would cause fields in later sections to inherit an earlier heading.
+			let lastH = null;
+			for (const c of parent.children) {
+				if (c === node) break;
+				if (/^H[1-6]$/.test(c.tagName)) lastH = c;
+			}
+			if (lastH !== null) {
+				// A heading boundary was found — this element belongs to that section only.
+				return (lastH.textContent || '').toLowerCase().includes(hint);
+			}
+		}
+		return false;
+	}
+
+	// Direct targeting by DOM id: skip label search for text inputs when controlID is known.
+	// This handles the case where two fields share an identical label (e.g. "Years of experience"
+	// in two separate sections) — the scanned element id routes the fill to the exact control.
+	if (fieldType !== 'radio' && fieldType !== 'select') {
+		const cid = (controlID || '').trim();
+		if (cid) {
+			const target = document.getElementById(cid);
+			if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+				const ty = target.tagName === 'INPUT' ? (target.getAttribute('type') || 'text').toLowerCase() : 'textarea';
+				if (!['hidden', 'file', 'radio', 'checkbox', 'submit', 'button'].includes(ty)) {
+					try {
+						const proto = target.tagName === 'TEXTAREA' ?
+							window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+						const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+						setter.call(target, ans);
+					} catch (e) { target.value = ans; }
+					target.dispatchEvent(new Event('input', { bubbles: true }));
+					target.dispatchEvent(new Event('change', { bubbles: true }));
+					return true;
+				}
+			}
+		}
+	}
+
+	if (fieldType === 'radio') {
 		const lower = ans.toLowerCase();
 		for (const r of allInDOM(container, 'input[type="radio"]')) {
+			if (!inSection(r)) continue;
 			const aria = (r.getAttribute('aria-label') || '').toLowerCase();
 			if (!aria.includes(needle) && needle.length > 10 && !aria.includes(needle.slice(0, 40))) continue;
 			const lbl = [...document.querySelectorAll('label[for]')].find(l => l.htmlFor === r.id);
@@ -1580,11 +1700,45 @@ const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType) => {
 		}
 		return false;
 	}
+	if (fieldType === 'select') {
+		const lower = ans.toLowerCase();
+		// Try direct control-id targeting first; fall back to aria-label search.
+		let sel = null;
+		const cid = (controlID || '').trim();
+		if (cid) {
+			const t = document.getElementById(cid);
+			if (t && t.tagName === 'SELECT') sel = t;
+		}
+		if (!sel) {
+			for (const s of allInDOM(container, 'select')) {
+				if (!inSection(s)) continue;
+				const aria = (s.getAttribute('aria-label') || '').toLowerCase();
+				if (aria.includes(needle) || (needle.length > 10 && aria.includes(needle.slice(0, 40)))) {
+					sel = s;
+					break;
+				}
+			}
+		}
+		if (!sel) return false;
+		for (const opt of sel.options) {
+			if ((opt.text || '').toLowerCase() === lower || (opt.value || '').toLowerCase() === lower) {
+				try {
+					const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+					setter.call(sel, opt.value);
+				} catch (e) { sel.value = opt.value; }
+				sel.dispatchEvent(new Event('input', { bubbles: true }));
+				sel.dispatchEvent(new Event('change', { bubbles: true }));
+				return true;
+			}
+		}
+		return false;
+	}
 	for (const el of allInDOM(container, 'input, textarea')) {
 		if (el.tagName === 'INPUT') {
 			const ty = (el.getAttribute('type') || 'text').toLowerCase();
 			if (['hidden', 'file', 'radio', 'checkbox', 'submit', 'button'].includes(ty)) continue;
 		}
+		if (!inSection(el)) continue;
 		const aria = (el.getAttribute('aria-label') || '').toLowerCase();
 		const labelled = aria.includes(needle) || (needle.length > 10 && aria.includes(needle.slice(0, 40)));
 		if (!labelled) continue;
@@ -1674,6 +1828,18 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		log.Debug().Msgf("form: field found type=%s q=%q inputType=%s", f.Type, f.Question, f.InputType)
 	}
 	log.Info().Int("count", len(fields)).Msg("form: fields to fill")
+
+	// Shadow observation: snapshot the step and run the interpreter in read-only
+	// mode so the adaptive engine can record proposals for comparison analysis.
+	// Must come before any filling so the snapshot reflects the unmodified page state.
+	if b.cfg.ShadowStepFn != nil {
+		platform := string(b.cfg.Platform)
+		if platform == "" {
+			platform = "unknown"
+		}
+		snap := captureStepSnapshot(fields, nil, platform, 0, "shadow-step")
+		b.cfg.ShadowStepFn(ctx, snap)
+	}
 
 	lazy.applyCaps(capsFromFormFields(fields))
 	siteMode := b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted

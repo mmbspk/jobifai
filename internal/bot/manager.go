@@ -460,6 +460,7 @@ func (m *Manager) SubmitSync(ctx context.Context, userID string, req SubmitReque
 // Called directly by SubmitSync and inside a goroutine by SubmitNow.
 func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitRequest) error {
 	ac := newAttemptContext(userID, req.Platform, req.JobID, req.Link, req.Role, req.Company, "runSubmit", "")
+	ac.Engine = pinnedEngine(m.cfgStore, userID, domain.Platform(req.Platform))
 	beginAttempt(m.db, ac)
 	if m.submitWorkGuard != nil {
 		if err := m.submitWorkGuard.BeginWork(ctx, userID); err != nil {
@@ -615,10 +616,35 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	}
 
 	var applyErr error
-	if req.Platform == "seek" {
-		applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
-	} else {
-		applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
+	// Kill-switch guard: re-read engine mode before entering the apply path.
+	// In Legacy mode this is a no-op; it aborts non-legacy paths if the admin
+	// reverted the mode while this attempt was in-flight.
+	if ksErr := killSwitchCheck(m.cfgStore, ac); ksErr != nil {
+		finishAttempt(m.db, ac, OutcomeCancelled, "engine_switch", "kill_switch_reverted", ksErr.Error())
+		return ksErr
+	}
+	switch ac.Engine {
+	case domain.ApplyEngineAdaptive:
+		if req.Platform == "seek" {
+			applyErr = b.adaptiveSeekApply(m.ctx, jobPage, managerLazy, ac)
+		} else {
+			applyErr = b.adaptiveEasyApply(m.ctx, jobPage, managerLazy, ac)
+		}
+	case domain.ApplyEngineShadow:
+		// Shadow: run legacy path unchanged, with the adaptive interpreter observing
+		// each step for comparison. Observer must not issue browser actions.
+		installShadowObserverIfNeeded(b, ac, nil)
+		if req.Platform == "seek" {
+			applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
+		} else {
+			applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
+		}
+	default:
+		if req.Platform == "seek" {
+			applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
+		} else {
+			applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
+		}
 	}
 	if applyErr != nil {
 		if errors.Is(applyErr, errLinkedInSubmissionUnknown) && domain.Platform(req.Platform) == domain.PlatformLinkedIn {
@@ -1075,7 +1101,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	}
 
 	runID := uuid.NewString()
-	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
+	tailor, scorer, halal, tracker, _, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	if err != nil {
 		return nil, err
 	}
@@ -1121,6 +1147,8 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		LLMTracker:   tracker,
 		Sessions:     m.sessions,
 		BrowserMeter: browserMeter,
+		EngineMode:   pinnedEngine(m.cfgStore, userID, platform),
+		EngineStore:  m.cfgStore,
 	}
 
 	if platform == domain.PlatformSeek {
@@ -1153,46 +1181,47 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 
 // buildPerUserLLM constructs task-resolved LLM clients for one user session.
 // Returns startup defaults when no API key is available.
-func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings, apiKey string, isPersonal bool) (ResumeTailor, JobScorer, JobHalalChecker, *llm.UsageTracker, error) {
+// formAnswerC is the form_filling task client used to build LLMFormInterpreter in setupBot.
+func (m *Manager) buildPerUserLLM(userID string, gs domain.GeneralSettings, apiKey string, isPersonal bool) (ResumeTailor, JobScorer, JobHalalChecker, *llm.UsageTracker, *llm.Client, error) {
 	client := m.userLLMClient(userID, gs, apiKey, isPersonal)
 	if client == nil {
 		var halal JobHalalChecker
 		if gs.HalalJobFilter {
 			halal = m.halal
 		}
-		return m.tailor, m.scorer, halal, nil, nil
+		return m.tailor, m.scorer, halal, nil, nil, nil
 	}
 	tracker := &llm.UsageTracker{}
 	client = client.WithTracker(tracker)
 	tailorC, err := m.taskClient(client, gs, "tailoring")
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("tailoring task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("tailoring task: %w", err)
 	}
 	coverC, err := m.taskClient(client, gs, "cover_letter")
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("cover_letter task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("cover_letter task: %w", err)
 	}
 	formAnswerC, err := m.taskClient(client, gs, "form_filling")
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("form_filling task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("form_filling task: %w", err)
 	}
 	formVisionC, err := m.taskClient(client, gs, domain.TaskFormVision)
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("form_vision task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("form_vision task: %w", err)
 	}
 	scoreC, err := m.taskClient(client, gs, "scoring")
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("scoring task: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("scoring task: %w", err)
 	}
 	var halal JobHalalChecker
 	if gs.HalalJobFilter {
 		halalC, err := m.taskClient(client, gs, "halal")
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("halal task: %w", err)
+			return nil, nil, nil, nil, nil, fmt.Errorf("halal task: %w", err)
 		}
 		halal = resume.NewHalalChecker(halalC)
 	}
-	return resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC), resume.NewScorer(scoreC), halal, tracker, nil
+	return resume.NewTailor(tailorC, coverC, formAnswerC, formVisionC), resume.NewScorer(scoreC), halal, tracker, formAnswerC, nil
 }
 
 // userLLMClient builds a ready LLM client from a pre-resolved API key and isPersonal flag.
@@ -1259,7 +1288,7 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 	}
 
 	runID := uuid.NewString()
-	tailor, scorer, halal, tracker, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
+	tailor, scorer, halal, tracker, formAnswerC, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	if err != nil {
 		return nil, gs, err
 	}
@@ -1285,6 +1314,11 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		Sessions:        m.sessions,
 		Documents:       m.documents,
 		Logger:          &runLogger,
+	}
+
+	if formAnswerC != nil {
+		cfg.AdaptiveLLM = NewLLMFormInterpreter(formAnswerC)
+		cfg.AdaptiveMapping = &DBMappingStore{DB: m.db, UserID: userID}
 	}
 
 	if m.browserMeterSvc != nil {
@@ -1327,6 +1361,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	// Begin attempt before any guard so every subsequent failure is captured.
 	// jobID and meta are unknown until the page loads — they are filled in below.
 	ac := newAttemptContext(userID, string(platform), "", jobURL, "", "", "applyFromURL", "")
+	ac.Engine = pinnedEngine(m.cfgStore, userID, platform)
 	beginAttempt(m.db, ac)
 
 	if m.submitWorkGuard != nil {
@@ -1681,6 +1716,25 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		}
 	}
 	if !isEasyApply {
+		// Adaptive engine + ExternalATS enabled: attempt to follow the external link.
+		externalDest := linkedInResolved.Destination
+		if ac.Engine == domain.ApplyEngineAdaptive && b.cfg.EnableExternalATS && classifyExternalATS(externalDest) != ATSKindUnknown {
+			// STEP 4 (external path): build lazy, navigate, run ATS runner.
+			lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: jobID, Company: company, Title: role, URL: jobURL}, jobDesc: jobDesc}
+			lazy.attemptID = ac.AttemptID
+			defer func() { _ = jobPage.Close() }()
+			if ownsBr {
+				defer func() { _ = br.Close() }()
+			}
+			atsErr := b.externalATSApply(ctx, jobPage, lazy, ac, externalDest)
+			if atsErr != nil {
+				log.Error().Err(atsErr).Str("job_id", jobID).Str("dest", externalDest).Msg("ai apply: external ATS failed")
+				finishAttempt(m.db, ac, classifyApplyOutcome(atsErr), "apply", "external_ats_error", atsErr.Error())
+				return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, atsErr
+			}
+			finishAttempt(m.db, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
+			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, nil
+		}
 		b.queueForReview(ctx, &domain.PendingReview{JobID: jobID, Company: company, Role: role, Location: location, Platform: platform, Link: jobURL, SuitabilityScore: score, SuitabilityReasoning: scoreReason, EasyApply: false, HalalVerdict: unmarshalHalalVerdict(halalJSON), CreatedAt: time.Now()})
 		finishAttempt(m.db, ac, OutcomeSkipped, "not_easy_apply", "external_ats", "External application requires manual submission")
 		_ = jobPage.Close()
@@ -1700,10 +1754,23 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	}
 
 	var applyErr error
-	if platform == domain.PlatformSeek {
-		applyErr = b.seekApply(ctx, jobPage, lazy)
+	// Kill-switch guard: re-read engine mode before entering the apply path.
+	if ksErr := killSwitchCheck(m.cfgStore, ac); ksErr != nil {
+		finishAttempt(m.db, ac, OutcomeCancelled, "engine_switch", "kill_switch_reverted", ksErr.Error())
+		return ApplyFromURLResult{}, ksErr
+	}
+	if ac.Engine == domain.ApplyEngineAdaptive {
+		if platform == domain.PlatformSeek {
+			applyErr = b.adaptiveSeekApply(ctx, jobPage, lazy, ac)
+		} else {
+			applyErr = b.adaptiveEasyApply(ctx, jobPage, lazy, ac)
+		}
 	} else {
-		applyErr = b.easyApply(ctx, jobPage, lazy)
+		if platform == domain.PlatformSeek {
+			applyErr = b.seekApply(ctx, jobPage, lazy)
+		} else {
+			applyErr = b.easyApply(ctx, jobPage, lazy)
+		}
 	}
 
 	if applyErr != nil && !errors.Is(applyErr, errAlreadyApplied) {

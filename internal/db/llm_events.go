@@ -33,6 +33,10 @@ type LLMUsageEventInput struct {
 	PricingSource       string
 	PricingVersion      string
 	PersonalProvider    bool
+	// Engine/attempt/platform dimensions for adaptive engine reporting (story #135).
+	Engine         string
+	ApplyAttemptID string
+	Platform       string
 }
 
 // InsertLLMUsageEvent persists one event without quota (tests only).

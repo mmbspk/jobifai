@@ -212,3 +212,80 @@ func TestLedger_ConcurrentSameOperationID_NoDuplicate(t *testing.T) {
 	require.NoError(t, sqldb.QueryRow(`SELECT credits_burned FROM llm_usage_events WHERE user_id='conc-user'`).Scan(&stored))
 	assert.Equal(t, stored, q.credits, "stubQuota credits must equal the single event's credits_burned")
 }
+
+// ── Story #135: Engine/attempt/platform metering dimensions ───────────────────
+
+func TestLedger_EngineDimensions_Persisted(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqldb, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	ledger := &usage.Ledger{
+		DB:      sqldb,
+		Catalog: pricing.DefaultCatalog(),
+		Quota:   &stubQuota{},
+	}
+	err = ledger.Record(context.Background(), usage.RecordInput{
+		Call: domain.LLMCallContext{
+			Task:           domain.TaskJobScoring,
+			UserID:         "user-eng1",
+			OperationID:    "op-eng1",
+			Engine:         domain.ApplyEngineShadow,
+			ApplyAttemptID: "attempt-abc",
+			Platform:       "linkedin",
+		},
+		Provider:  "claude",
+		Requested: "claude-sonnet-4-6",
+		Actual:    "claude-sonnet-4-6",
+		Tokens:    pricing.TokenUsage{InputTokens: 50, OutputTokens: 5},
+		Success:   true,
+		LogicalOp: true,
+	})
+	require.NoError(t, err)
+
+	var engine, attemptID, platform string
+	require.NoError(t, sqldb.QueryRow(
+		`SELECT engine, apply_attempt_id, platform FROM llm_usage_events WHERE user_id='user-eng1' LIMIT 1`,
+	).Scan(&engine, &attemptID, &platform))
+	assert.Equal(t, "shadow", engine)
+	assert.Equal(t, "attempt-abc", attemptID)
+	assert.Equal(t, "linkedin", platform)
+}
+
+func TestLedger_EngineDimensions_DefaultEmpty(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	sqldb, err := appdb.Open(dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqldb.Close() })
+
+	ledger := &usage.Ledger{
+		DB:      sqldb,
+		Catalog: pricing.DefaultCatalog(),
+		Quota:   &stubQuota{},
+	}
+	// Legacy call with no engine/attempt/platform set.
+	err = ledger.Record(context.Background(), usage.RecordInput{
+		Call: domain.LLMCallContext{
+			Task:        domain.TaskJobScoring,
+			UserID:      "user-legacy",
+			OperationID: "op-legacy",
+		},
+		Provider:  "claude",
+		Requested: "claude-sonnet-4-6",
+		Actual:    "claude-sonnet-4-6",
+		Tokens:    pricing.TokenUsage{InputTokens: 50, OutputTokens: 5},
+		Success:   true,
+		LogicalOp: true,
+	})
+	require.NoError(t, err)
+
+	var engine, attemptID, platform string
+	require.NoError(t, sqldb.QueryRow(
+		`SELECT engine, apply_attempt_id, platform FROM llm_usage_events WHERE user_id='user-legacy' LIMIT 1`,
+	).Scan(&engine, &attemptID, &platform))
+	assert.Equal(t, "", engine, "legacy callers produce empty engine")
+	assert.Equal(t, "", attemptID)
+	assert.Equal(t, "", platform)
+}
+

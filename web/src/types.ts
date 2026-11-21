@@ -4,6 +4,26 @@ export type Platform = 'linkedin' | 'seek'
 export type BotState = 'idle' | 'running' | 'paused' | 'pending_review' | 'stopped' | 'error' | 'user_action_required'
 export type LoginMethod = 'email_password' | 'google_oauth' | 'profile_reuse' | 'manual'
 
+// Apply engine mode (epic #127 / story #129)
+export type ApplyEngineMode = 'legacy' | 'shadow' | 'adaptive'
+
+export interface ApplyEngineConfig {
+  mode: ApplyEngineMode
+  platform_overrides?: Record<string, ApplyEngineMode>
+  pilot_user_ids?: string[]
+  external_ats_enabled: boolean
+}
+
+export interface ApplyEngineAuditEntry {
+  id: string
+  admin_id: string
+  old_mode: ApplyEngineMode
+  new_mode: ApplyEngineMode
+  reason?: string
+  config: ApplyEngineConfig
+  created_at: string
+}
+
 export interface PlatformSession {
   platform: string
   has_session: boolean

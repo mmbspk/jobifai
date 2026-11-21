@@ -192,6 +192,28 @@ type Config struct {
 	LinkedInPassword string
 	Sessions         *browser.SessionStore // if set, updated with fresh cookies after each auth
 	BrowserMeter     BrowserUsageMeter     // optional; meters active automation against credit balance
+	// EngineMode is the apply engine mode pinned at run-start time (epic #127).
+	// Legacy is the production default and the zero value behaves as Legacy.
+	EngineMode domain.ApplyEngineMode
+	// EngineStore is used for kill-switch re-reads before irreversible actions.
+	// Nil means no kill-switch enforcement (safe for Legacy-only runs and tests).
+	EngineStore engineConfigReader
+	// AdaptiveLLM is the LLM client used by the adaptive apply engine to interpret
+	// form fields that cannot be resolved deterministically or from the mapping store.
+	// Nil disables adaptive apply (steps requiring LLM will pause).
+	AdaptiveLLM StepInterpreterLLM
+	// AdaptiveMapping is the read/write mapping store used by the adaptive engine to
+	// reuse verified form field resolutions across runs. Nil disables caching.
+	AdaptiveMapping MappingReadWriter
+	// EnableExternalATS enables the adaptive engine to follow external ATS links
+	// (currently Greenhouse) instead of queuing them for manual review.
+	// When false (the default), external listings use the existing manual-routing path.
+	EnableExternalATS bool
+	// ShadowStepFn is called by fillFormStep when the engine is in shadow mode.
+	// It receives a privacy-minimized snapshot of the current form step and must
+	// not issue browser actions or write to the active mapping cache.
+	// Nil means shadow observation is disabled (all non-shadow modes).
+	ShadowStepFn func(ctx context.Context, snap StepSnapshot)
 }
 
 // SubmitRequest bundles the fields needed to submit a single approved job.
@@ -2564,6 +2586,7 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 		b.humanPause()
 
 		ac := newAttemptContext(b.cfg.UserID, platform, j.JobID, j.Link, j.Role, j.Company, "automated_queue", b.cfg.AutomationRunID)
+		ac.Engine = pinnedEngine(b.cfg.EngineStore, b.cfg.UserID, domain.Platform(platform))
 		beginAttempt(b.cfg.DB, ac)
 
 		jobPage, err := br.Page(proto.TargetCreateTarget{URL: j.Link})
