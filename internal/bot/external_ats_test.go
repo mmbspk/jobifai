@@ -399,6 +399,17 @@ const ghDOMJobNoTenantHTML = `<!DOCTYPE html><html><body>` +
 	`<button type="submit">Next</button>` +
 	`</form></body></html>`
 
+// ghVisibilityHiddenFormHTML has a form whose only text input is visibility:hidden.
+// Such a control still has a non-null offsetParent (it occupies layout space), so
+// only the getComputedStyle visibility check prevents it from entering the marker.
+const ghVisibilityHiddenFormHTML = `<!DOCTYPE html><html><body>` +
+	`<h1>Work Experience</h1>` +
+	`<form>` +
+	`<label for="job_title">Job Title</label>` +
+	`<input type="text" id="job_title" name="job_title" style="visibility:hidden"/>` +
+	`<button type="submit">Next</button>` +
+	`</form></body></html>`
+
 // TestGreenhouse_MissingIdentity_ZeroWrites asserts that NavigateNext rejects a destination
 // whose URL carries no tenant or job identity, and that writeConfirmedStep writes zero
 // mappings in that case. The destination has visible form controls to prove that
@@ -582,8 +593,8 @@ func TestGreenhouse_QueryStringOnly_SameStep_ZeroWrites(t *testing.T) {
 // Takes ~5 s (NavigateNext deadline).
 func TestGreenhouse_CSSHiddenForm_ZeroWrites(t *testing.T) {
 	const (
-		initialURL    = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
-		cssHiddenURL  = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
+		initialURL   = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		cssHiddenURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
 	)
 	clickDetected := make(chan struct{}, 1)
 	page := ghHijackPage(t, func(url string) string {
@@ -618,6 +629,52 @@ func TestGreenhouse_CSSHiddenForm_ZeroWrites(t *testing.T) {
 	require.Equal(t, 0, rs.writeCount(),
 		"CSS-hidden form must write zero mappings")
 	t.Logf("EVIDENCE css-hidden | outcome=%s writes=0", result.Outcome)
+}
+
+// TestGreenhouse_VisibilityHiddenForm_ZeroWrites asserts that NavigateNext times out
+// when the destination form's controls are visibility:hidden. Such controls have a
+// non-null offsetParent (they occupy layout space), so only the getComputedStyle
+// visibility check prevents them from entering the step marker.
+//
+// Takes ~5 s (NavigateNext deadline).
+func TestGreenhouse_VisibilityHiddenForm_ZeroWrites(t *testing.T) {
+	const (
+		initialURL    = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		visHiddenURL  = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page3"
+	)
+	clickDetected := make(chan struct{}, 1)
+	page := ghHijackPage(t, func(url string) string {
+		switch url {
+		case visHiddenURL:
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+			return ghVisibilityHiddenFormHTML // controls exist but are visibility:hidden → marker = ""
+		default:
+			return ghStep1(visHiddenURL)
+		}
+	})
+	require.NoError(t, page.Navigate(initialURL))
+
+	snap, interp := ghSnapInterp()
+	filler := ghFiller(page)
+	rs := ghRecordingStore(t, "gh-vis-hidden")
+
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
+	writeConfirmedStep(context.Background(), rs, snap, interp, result, false)
+
+	select {
+	case <-clickDetected:
+	default:
+		t.Fatal("visibility:hidden destination was never requested — click did not reach the hijack")
+	}
+	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
+		"visibility:hidden controls must not advance")
+	require.Equal(t, 0, rs.writeCount(),
+		"visibility:hidden form must write zero mappings")
+	t.Logf("EVIDENCE vis-hidden | outcome=%s writes=0", result.Outcome)
 }
 
 // TestGreenhouse_HeadingOnlyChange_ZeroWrites asserts that NavigateNext times out when the

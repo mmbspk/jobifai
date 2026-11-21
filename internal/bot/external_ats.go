@@ -429,25 +429,42 @@ func currentPageURL(page *rod.Page) string {
 // greenhouseStepMarker returns a fingerprint of the active Greenhouse form step,
 // derived from the ordered identifiers of the *visible* form controls. It
 // deliberately ignores the page heading, field *values*, inline *validation text*,
-// and URL *query parameters* — none of which indicate a real step transition. Only
-// controls that are actually rendered (not type="hidden" and not CSS-hidden via
-// offsetParent) contribute. The form itself must be in a visible container.
-// Returns "" when the active form step cannot be identified (an unidentifiable
-// step is never evidence of advancement, neither before nor after clicking Next).
+// and URL *query parameters* — none of which indicate a real step transition.
+//
+// Visibility: a control must pass both the offsetParent check (catches display:none
+// on the control or any ancestor) and the getComputedStyle visibility check (catches
+// visibility:hidden, which still has a non-null offsetParent). The form itself is
+// subject to the same two-part check.
+//
+// Active form selection: the page may contain multiple forms (e.g. a nav search bar
+// alongside the application form). The function selects the visible form with the
+// most visible controls — the application form consistently has more fields than
+// any auxiliary form on a Greenhouse page.
+//
+// Returns "" when no visible form with at least one visible control is found
+// (an unidentifiable step is never evidence of advancement).
 func greenhouseStepMarker(page *rod.Page) string {
 	res, err := page.Eval(`() => {
-		const form = document.querySelector('form');
-		if (!form || form.offsetParent === null) return '';
-		const ids = [];
-		for (const el of form.querySelectorAll('input,select,textarea')) {
-			const t = (el.getAttribute('type') || '').toLowerCase();
-			if (t === 'hidden') continue;
-			if (el.offsetParent === null) continue;
-			const key = (el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '').trim().toLowerCase();
-			if (key) ids.push(key);
+		function isVis(el) {
+			if (el.offsetParent === null) return false;
+			const s = window.getComputedStyle(el);
+			return s.visibility !== 'hidden' && s.visibility !== 'collapse';
 		}
-		if (ids.length === 0) return '';
-		return ids.join('|');
+		let bestIds = null, bestCount = 0;
+		for (const form of document.querySelectorAll('form')) {
+			if (!isVis(form)) continue;
+			const ids = [];
+			for (const el of form.querySelectorAll('input,select,textarea')) {
+				const t = (el.getAttribute('type') || '').toLowerCase();
+				if (t === 'hidden' || t === 'submit' || t === 'button') continue;
+				if (!isVis(el)) continue;
+				const key = (el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '').trim().toLowerCase();
+				if (key) ids.push(key);
+			}
+			if (ids.length > bestCount) { bestIds = ids; bestCount = ids.length; }
+		}
+		if (!bestIds) return '';
+		return bestIds.join('|');
 	}`)
 	if err != nil || res == nil {
 		return ""
