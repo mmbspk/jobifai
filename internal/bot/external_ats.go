@@ -427,26 +427,27 @@ func currentPageURL(page *rod.Page) string {
 }
 
 // greenhouseStepMarker returns a fingerprint of the active Greenhouse form step,
-// derived from stable structure (the primary heading plus the ordered identifiers
-// of the visible form controls). It deliberately ignores field *values*, inline
-// *validation text*, and URL *query parameters* — none of which indicate a real
-// step transition. Returns "" when no form is readable (an unreadable page is
-// never evidence of advancement).
+// derived from the ordered identifiers of the *visible* form controls. It
+// deliberately ignores the page heading, field *values*, inline *validation text*,
+// and URL *query parameters* — none of which indicate a real step transition. Only
+// controls that are actually rendered (not type="hidden" and not CSS-hidden via
+// offsetParent) contribute. The form itself must be in a visible container.
+// Returns "" when the active form step cannot be identified (an unidentifiable
+// step is never evidence of advancement, neither before nor after clicking Next).
 func greenhouseStepMarker(page *rod.Page) string {
 	res, err := page.Eval(`() => {
-		const scope = document.querySelector('form') || document.body;
-		if (!scope) return '';
-		const h = scope.querySelector('h1,h2,h3,[role="heading"]');
-		const heading = h ? (h.textContent || '').trim().toLowerCase() : '';
+		const form = document.querySelector('form');
+		if (!form || form.offsetParent === null) return '';
 		const ids = [];
-		for (const el of scope.querySelectorAll('input,select,textarea')) {
+		for (const el of form.querySelectorAll('input,select,textarea')) {
 			const t = (el.getAttribute('type') || '').toLowerCase();
 			if (t === 'hidden') continue;
+			if (el.offsetParent === null) continue;
 			const key = (el.getAttribute('name') || el.id || el.getAttribute('aria-label') || '').trim().toLowerCase();
 			if (key) ids.push(key);
 		}
-		if (!heading && ids.length === 0) return '';
-		return heading + '::' + ids.join('|');
+		if (ids.length === 0) return '';
+		return ids.join('|');
 	}`)
 	if err != nil || res == nil {
 		return ""
@@ -454,40 +455,15 @@ func greenhouseStepMarker(page *rod.Page) string {
 	return res.Value.String()
 }
 
-// greenhouseFormJobID reads a verified numeric job identifier out of the active
-// form DOM (hidden input, data attribute, or canonical link). Used to confirm an
-// in-application step when the destination URL omits the job slug — because a
-// missing identifier in the URL is NOT a wildcard. Returns "" when no identifier
-// is present.
-func greenhouseFormJobID(page *rod.Page) string {
-	res, err := page.Eval(`() => {
-		const read = (el) => {
-			if (!el) return '';
-			const v = (el.value || el.getAttribute('data-job-id') || el.getAttribute('data-mapped-job-id') || el.getAttribute('content') || '').trim();
-			return /^[0-9]+$/.test(v) ? v : '';
-		};
-		const sels = [
-			'input[name="job_id"]', 'input[name="id"]', 'input[name="for_ids"]',
-			'[data-job-id]', '[data-mapped-job-id]', 'meta[name="greenhouse:job_id"]'
-		];
-		for (const s of sels) { const r = read(document.querySelector(s)); if (r) return r; }
-		const link = document.querySelector('link[rel="canonical"]');
-		if (link && link.href) { const m = link.href.match(/\/jobs\/([0-9]+)/); if (m) return m[1]; }
-		return '';
-	}`)
-	if err != nil || res == nil {
-		return ""
-	}
-	return res.Value.String()
-}
 
 // destinationInApplication reports whether the page now loaded in f.page provably
 // belongs to the anchored application (f.expectedTenant / f.expectedJobID).
 //
-// Identity must be proven, never assumed: any tenant or job slug the URL *does*
-// carry must match; a slug the URL *omits* is not a wildcard and must instead be
-// recovered from a verified identifier in the active form. If neither the URL nor
-// the form supplies the missing identity, the destination is left unconfirmed.
+// Identity must be established from the URL: greenhouseTenant and greenhouseJobID
+// parse the same path structure, so a URL that carries a tenant slug always carries
+// a job ID too and vice versa. Requiring both IDs from the URL eliminates the
+// need for — and the risk of — DOM fallback: a matching job ID in the form DOM
+// cannot prove the tenant, so we do not use it here.
 func (f *greenhouseRodFiller) destinationInApplication(rawURL string) bool {
 	if classifyExternalATS(rawURL) != ATSKindGreenhouse {
 		return false
@@ -495,24 +471,18 @@ func (f *greenhouseRodFiller) destinationInApplication(rawURL string) bool {
 	urlTenant := greenhouseTenant(rawURL)
 	urlJob := greenhouseJobID(rawURL)
 
-	// A present-but-wrong slug is a redirect to a different application.
-	if urlTenant != "" && f.expectedTenant != "" && urlTenant != f.expectedTenant {
+	// Both IDs must be present in the URL — a URL that omits either has no
+	// provable application identity.
+	if urlTenant == "" || urlJob == "" {
 		return false
 	}
-	if urlJob != "" && f.expectedJobID != "" && urlJob != f.expectedJobID {
+	if f.expectedTenant != "" && urlTenant != f.expectedTenant {
 		return false
 	}
-
-	// Full identity present in the URL and matching → confirmed.
-	if urlTenant != "" && urlJob != "" {
-		return true
+	if f.expectedJobID != "" && urlJob != f.expectedJobID {
+		return false
 	}
-
-	// URL omits part of the identity — require positive evidence from the form.
-	if formJob := greenhouseFormJobID(f.page); formJob != "" && formJob == f.expectedJobID {
-		return true
-	}
-	return false
+	return true
 }
 
 // destinationBlocked returns the blocked-state error for the currently loaded page
@@ -526,9 +496,14 @@ func (f *greenhouseRodFiller) destinationBlocked() error {
 }
 
 func (f *greenhouseRodFiller) NavigateNext(_ context.Context) (bool, error) {
-	// Anchor the step we are leaving BEFORE the click: its structural marker and
-	// its URL. These are what a genuine advance must move away from.
+	// Anchor the step we are leaving BEFORE the click.
+	// If the current form step is not identifiable (no visible controls), we cannot
+	// know what we are advancing FROM — leave the transition unconfirmed so that
+	// no mappings are written based on ambiguous provenance.
 	prevMarker := greenhouseStepMarker(f.page)
+	if prevMarker == "" {
+		return false, fmt.Errorf("external_ats: cannot identify current form step — leaving transition unconfirmed")
+	}
 	prevURL := currentPageURL(f.page)
 
 	res, err := f.page.Eval(`() => {

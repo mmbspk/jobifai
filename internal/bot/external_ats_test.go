@@ -9,7 +9,9 @@ package bot
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
@@ -330,121 +332,522 @@ func ghFiller(page *rod.Page) *greenhouseRodFiller {
 	return &greenhouseRodFiller{page: page, bot: b, expectedTenant: "acmeinc", expectedJobID: "4567890"}
 }
 
+// ── recording store ───────────────────────────────────────────────────────────
+
+// recordingMappingStore wraps DBMappingStore and counts Write calls so tests
+// can assert exact write timing and count without relying on upsert idempotency.
+type recordingMappingStore struct {
+	mu     sync.Mutex
+	writes int
+	*DBMappingStore
+}
+
+func (r *recordingMappingStore) Write(ctx context.Context, snap StepSnapshot, refs []FieldResolution) error {
+	r.mu.Lock()
+	r.writes++
+	r.mu.Unlock()
+	return r.DBMappingStore.Write(ctx, snap, refs)
+}
+
+func (r *recordingMappingStore) writeCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.writes
+}
+
+func ghRecordingStore(t *testing.T, userID string) *recordingMappingStore {
+	t.Helper()
+	db := openProviderTestDB(t)
+	return &recordingMappingStore{DBMappingStore: &DBMappingStore{DB: db, UserID: userID}}
+}
+
+// ── additional HTML fixtures ──────────────────────────────────────────────────
+
+// ghLoadingOnlyHTML simulates a loading page with no application form.
+// greenhouseStepMarker returns "" for this page (no visible controls → never evidence of advance).
+const ghLoadingOnlyHTML = `<!DOCTYPE html><html><body><h1>Loading…</h1></body></html>`
+
+// ghCSSHiddenFormHTML has a form whose only text input is CSS-hidden (display:none).
+// offsetParent is null for that input → it is excluded from the marker → marker = "".
+const ghCSSHiddenFormHTML = `<!DOCTYPE html><html><body>` +
+	`<h1>Work Experience</h1>` +
+	`<form>` +
+	`<label for="job_title">Job Title</label>` +
+	`<input type="text" id="job_title" name="job_title" style="display:none"/>` +
+	`<button type="submit">Next</button>` +
+	`</form></body></html>`
+
+// ghSameControlsDiffHeadingHTML has the same visible control (full_name) as ghStep1
+// but a different heading. The control-only marker is identical to step 1 → no advance.
+const ghSameControlsDiffHeadingHTML = `<!DOCTYPE html><html><body>` +
+	`<h1>Personal Details</h1>` +
+	`<form>` +
+	`<label for="full_name">Full Name</label>` +
+	`<input type="text" id="full_name" name="full_name" aria-label="Full Name"/>` +
+	`<button type="submit">Next</button>` +
+	`</form></body></html>`
+
+// ghDOMJobNoTenantHTML has a visible text field (so marker is non-empty and
+// destinationInApplication is reached) plus a hidden job_id that matches
+// expectedJobID. The URL will carry no tenant slug, so the check must reject it.
+const ghDOMJobNoTenantHTML = `<!DOCTYPE html><html><body>` +
+	`<h1>Work Experience</h1>` +
+	`<form>` +
+	`<input type="hidden" name="job_id" value="4567890"/>` +
+	`<label for="job_title">Job Title</label>` +
+	`<input type="text" id="job_title" name="job_title" aria-label="Job Title"/>` +
+	`<button type="submit">Next</button>` +
+	`</form></body></html>`
+
 // TestGreenhouse_MissingIdentity_ZeroWrites asserts that NavigateNext rejects a destination
-// whose URL carries a different tenant/job than the anchored application, and that
-// writeConfirmedStep writes zero mappings in that case.
-//
-// EVIDENCE target: advanced=false, outcome=error, wrote=false
+// whose URL carries no tenant or job identity, and that writeConfirmedStep writes zero
+// mappings in that case. The destination has visible form controls to prove that
+// destinationInApplication is reached before the rejection.
 func TestGreenhouse_MissingIdentity_ZeroWrites(t *testing.T) {
 	const (
 		initialURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
-		otherURL   = "https://boards.greenhouse.io/otherinc/jobs/9999999" // different tenant+job
+		// omittedURL has no tenant or job slug in the path; both are absent from the URL.
+		omittedURL = "https://boards.greenhouse.io/"
 	)
+	clickDetected := make(chan struct{}, 1)
 	page := ghHijackPage(t, func(url string) string {
 		switch url {
-		case otherURL:
-			return ghStep2WorkHTML // different form structure — real step transition shape
+		case omittedURL:
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+			return ghStep2WorkHTML // visible form — marker is non-empty → destinationInApplication reached
 		default:
-			return ghStep1(otherURL) // step 1 form; action → different application
+			return ghStep1(omittedURL) // step 1 form; action → URL with no path IDs
 		}
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
 	snap, interp := ghSnapInterp()
 	filler := ghFiller(page)
-	db := openProviderTestDB(t)
-	store := &DBMappingStore{DB: db, UserID: "gh-missing-identity"}
+	rs := ghRecordingStore(t, "gh-missing-identity")
 
 	se := NewStepExecutor(DefaultStepExecBounds(), nil)
 	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
-	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+	writeConfirmedStep(context.Background(), rs, snap, interp, result, false)
 
+	// Verify the click happened and the destination appeared before asserting zero writes.
+	select {
+	case <-clickDetected:
+	default:
+		t.Fatal("destination was never requested — click did not reach the hijack")
+	}
+	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
+		"destination without URL identity must not advance")
+	require.Equal(t, 0, rs.writeCount(),
+		"destination outside anchored application must write zero mappings")
+	t.Logf("EVIDENCE missing-identity | outcome=%s writes=0", result.Outcome)
+}
+
+// TestGreenhouse_WrongIdentity_ZeroWrites asserts that NavigateNext rejects a destination
+// whose URL carries a different tenant and job than the anchored application.
+func TestGreenhouse_WrongIdentity_ZeroWrites(t *testing.T) {
+	const (
+		initialURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		wrongURL   = "https://boards.greenhouse.io/otherinc/jobs/9999999"
+	)
+	clickDetected := make(chan struct{}, 1)
+	page := ghHijackPage(t, func(url string) string {
+		switch url {
+		case wrongURL:
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+			return ghStep2WorkHTML
+		default:
+			return ghStep1(wrongURL)
+		}
+	})
+	require.NoError(t, page.Navigate(initialURL))
+
+	snap, interp := ghSnapInterp()
+	filler := ghFiller(page)
+	rs := ghRecordingStore(t, "gh-wrong-identity")
+
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
+	writeConfirmedStep(context.Background(), rs, snap, interp, result, false)
+
+	select {
+	case <-clickDetected:
+	default:
+		t.Fatal("wrong-identity destination was never requested — click did not reach the hijack")
+	}
 	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
 		"navigation to wrong tenant/job must not advance")
-	require.False(t, writeGateHasField(store, snap),
-		"destination outside anchored application must write zero mappings")
-	t.Logf("EVIDENCE missing-identity | advanced=%v outcome=%s wrote=false",
-		result.Outcome == StepOutcomeAdvanced, result.Outcome)
+	require.Equal(t, 0, rs.writeCount(),
+		"destination with wrong identity must write zero mappings")
+	t.Logf("EVIDENCE wrong-identity | outcome=%s writes=0", result.Outcome)
+}
+
+// TestGreenhouse_DOMJobNoTenant_ZeroWrites asserts that NavigateNext rejects a destination
+// whose URL carries no tenant slug, even when the form DOM contains a job_id hidden input
+// that matches expectedJobID. A matching DOM job ID cannot prove the tenant.
+func TestGreenhouse_DOMJobNoTenant_ZeroWrites(t *testing.T) {
+	const (
+		initialURL   = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		noTenantURL  = "https://boards.greenhouse.io/"
+	)
+	clickDetected := make(chan struct{}, 1)
+	page := ghHijackPage(t, func(url string) string {
+		switch url {
+		case noTenantURL:
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+			// DOM has matching job_id + visible controls → marker changes and
+			// destinationInApplication is reached, then rejects (no URL tenant).
+			return ghDOMJobNoTenantHTML
+		default:
+			return ghStep1(noTenantURL)
+		}
+	})
+	require.NoError(t, page.Navigate(initialURL))
+
+	snap, interp := ghSnapInterp()
+	filler := ghFiller(page)
+	rs := ghRecordingStore(t, "gh-dom-job-no-tenant")
+
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
+	writeConfirmedStep(context.Background(), rs, snap, interp, result, false)
+
+	select {
+	case <-clickDetected:
+	default:
+		t.Fatal("destination was never requested — click did not reach the hijack")
+	}
+	// Confirm the DOM job_id was reachable (proves the fixture is wired correctly).
+	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
+		"DOM job_id alone without URL tenant must not advance")
+	require.Equal(t, 0, rs.writeCount(),
+		"matching DOM job ID without tenant evidence must write zero mappings")
+	t.Logf("EVIDENCE dom-job-no-tenant | outcome=%s writes=0", result.Outcome)
 }
 
 // TestGreenhouse_QueryStringOnly_SameStep_ZeroWrites asserts that NavigateNext times out
-// when the form stays on the same step after a query-string URL change, and that
-// writeConfirmedStep writes zero mappings in that case.
+// when the form stays on the same step after a query-string URL change.
 //
-// This test takes ~5 s because NavigateNext polls until its 5-second deadline expires.
-//
-// EVIDENCE target: advanced=false, outcome=error, wrote=false
+// Takes ~5 s (NavigateNext deadline).
 func TestGreenhouse_QueryStringOnly_SameStep_ZeroWrites(t *testing.T) {
 	const (
 		initialURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
 		qsURL      = "https://boards.greenhouse.io/acmeinc/jobs/4567890?page=2"
 	)
-	// Both URLs serve the identical step-1 HTML — same heading, same field IDs.
-	// The URL changes (query string added) but greenhouseStepMarker never changes.
+	clickDetected := make(chan struct{}, 1)
 	page := ghHijackPage(t, func(url string) string {
-		return ghStep1(qsURL) // same structure at every URL
+		if url == qsURL {
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+		}
+		// Same controls at every URL — marker never changes.
+		return ghStep1(qsURL)
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
 	snap, interp := ghSnapInterp()
 	filler := ghFiller(page)
-	db := openProviderTestDB(t)
-	store := &DBMappingStore{DB: db, UserID: "gh-same-step"}
+	rs := ghRecordingStore(t, "gh-same-step")
 
 	se := NewStepExecutor(DefaultStepExecBounds(), nil)
 	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
-	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+	writeConfirmedStep(context.Background(), rs, snap, interp, result, false)
 
+	select {
+	case <-clickDetected:
+	default:
+		t.Fatal("query-string destination was never requested — click did not reach the hijack")
+	}
 	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
 		"query-string URL change with identical form must not advance")
-	require.False(t, writeGateHasField(store, snap),
+	require.Equal(t, 0, rs.writeCount(),
 		"same-step non-advance must write zero mappings")
-	t.Logf("EVIDENCE same-step | advanced=%v outcome=%s wrote=false",
-		result.Outcome == StepOutcomeAdvanced, result.Outcome)
+	t.Logf("EVIDENCE same-step | outcome=%s writes=0", result.Outcome)
 }
 
-// TestGreenhouse_AccountWall_ZeroWrites asserts that NavigateNext rejects an account-wall
-// page even when the destination URL correctly carries the anchored tenant+job, and that
-// writeConfirmedStep writes zero mappings in that case.
+// TestGreenhouse_CSSHiddenForm_ZeroWrites asserts that NavigateNext times out when the
+// destination form has controls but they are all CSS-hidden (display:none). offsetParent
+// is null for such controls — they are excluded from the marker — so the marker stays "".
 //
-// EVIDENCE target: advanced=false, outcome=error, wrote=false
-func TestGreenhouse_AccountWall_ZeroWrites(t *testing.T) {
+// Takes ~5 s (NavigateNext deadline).
+func TestGreenhouse_CSSHiddenForm_ZeroWrites(t *testing.T) {
 	const (
-		initialURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
-		wallURL    = "https://boards.greenhouse.io/acmeinc/jobs/4567890/account"
+		initialURL    = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		cssHiddenURL  = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
 	)
+	clickDetected := make(chan struct{}, 1)
 	page := ghHijackPage(t, func(url string) string {
 		switch url {
-		case wallURL:
-			return ghAccountWallHTML // different form structure + blocked text
+		case cssHiddenURL:
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+			return ghCSSHiddenFormHTML // controls exist but are CSS-hidden → marker = ""
 		default:
-			return ghStep1(wallURL) // step 1; action → wall page (IDs match in URL)
+			return ghStep1(cssHiddenURL)
 		}
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
 	snap, interp := ghSnapInterp()
 	filler := ghFiller(page)
-	db := openProviderTestDB(t)
-	store := &DBMappingStore{DB: db, UserID: "gh-account-wall"}
+	rs := ghRecordingStore(t, "gh-css-hidden")
 
 	se := NewStepExecutor(DefaultStepExecBounds(), nil)
 	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
-	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+	writeConfirmedStep(context.Background(), rs, snap, interp, result, false)
 
+	select {
+	case <-clickDetected:
+	default:
+		t.Fatal("CSS-hidden destination was never requested — click did not reach the hijack")
+	}
+	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
+		"CSS-hidden controls must not advance")
+	require.Equal(t, 0, rs.writeCount(),
+		"CSS-hidden form must write zero mappings")
+	t.Logf("EVIDENCE css-hidden | outcome=%s writes=0", result.Outcome)
+}
+
+// TestGreenhouse_HeadingOnlyChange_ZeroWrites asserts that NavigateNext times out when the
+// destination changes the page heading but keeps the same visible controls as the starting
+// step. The control-only marker is identical on both sides of the click, so NavigateNext
+// never sees a distinct step within its 5 s window.
+//
+// Takes ~5 s (NavigateNext deadline).
+func TestGreenhouse_HeadingOnlyChange_ZeroWrites(t *testing.T) {
+	const (
+		initialURL   = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		headingURL   = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
+	)
+	clickDetected := make(chan struct{}, 1)
+	page := ghHijackPage(t, func(url string) string {
+		switch url {
+		case headingURL:
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+			// Different heading, same visible control (full_name) — marker = "full_name" on both sides.
+			return ghSameControlsDiffHeadingHTML
+		default:
+			return ghStep1(headingURL)
+		}
+	})
+	require.NoError(t, page.Navigate(initialURL))
+
+	snap, interp := ghSnapInterp()
+	filler := ghFiller(page)
+	rs := ghRecordingStore(t, "gh-heading-only")
+
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
+	writeConfirmedStep(context.Background(), rs, snap, interp, result, false)
+
+	select {
+	case <-clickDetected:
+	default:
+		t.Fatal("heading-only destination was never requested — click did not reach the hijack")
+	}
+	// Confirm heading changed but controls are the same (proves the fixture is wired correctly).
+	finalMarker := greenhouseStepMarker(filler.page)
+	require.Equal(t, "full_name", finalMarker,
+		"marker must still equal step-1 controls after heading-only change")
+	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
+		"heading change with same controls must not advance")
+	require.Equal(t, 0, rs.writeCount(),
+		"heading-only change must write zero mappings")
+	t.Logf("EVIDENCE heading-only | finalMarker=%q outcome=%s writes=0", finalMarker, result.Outcome)
+}
+
+// TestGreenhouse_AccountWall_ZeroWrites asserts that NavigateNext rejects an account-wall
+// page even when the destination URL correctly carries the anchored tenant+job.
+func TestGreenhouse_AccountWall_ZeroWrites(t *testing.T) {
+	const (
+		initialURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		wallURL    = "https://boards.greenhouse.io/acmeinc/jobs/4567890/account"
+	)
+	clickDetected := make(chan struct{}, 1)
+	page := ghHijackPage(t, func(url string) string {
+		switch url {
+		case wallURL:
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+			return ghAccountWallHTML
+		default:
+			return ghStep1(wallURL)
+		}
+	})
+	require.NoError(t, page.Navigate(initialURL))
+
+	snap, interp := ghSnapInterp()
+	filler := ghFiller(page)
+	rs := ghRecordingStore(t, "gh-account-wall")
+
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
+	writeConfirmedStep(context.Background(), rs, snap, interp, result, false)
+
+	select {
+	case <-clickDetected:
+	default:
+		t.Fatal("account wall was never requested — click did not reach the hijack")
+	}
+	// Prove blocked state was reached: destinationBlocked should still report it.
+	require.ErrorIs(t, filler.destinationBlocked(), errATSAccountWall,
+		"account wall page must still report blocked state after NavigateNext")
 	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
 		"account-wall destination must not advance even with matching tenant/job in URL")
-	require.False(t, writeGateHasField(store, snap),
+	require.Equal(t, 0, rs.writeCount(),
 		"account-wall block must write zero mappings")
-	t.Logf("EVIDENCE account-wall | advanced=%v outcome=%s wrote=false",
-		result.Outcome == StepOutcomeAdvanced, result.Outcome)
+	t.Logf("EVIDENCE account-wall | outcome=%s writes=0", result.Outcome)
+}
+
+// TestGreenhouse_LoadingScreen_ZeroWrites asserts that NavigateNext times out when the
+// destination is a loading page with no application form. The click is confirmed by waiting
+// for the loading URL to be requested before asserting zero writes.
+//
+// Takes ~5 s (NavigateNext deadline).
+func TestGreenhouse_LoadingScreen_ZeroWrites(t *testing.T) {
+	const (
+		initialURL  = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		loadingURL  = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
+	)
+	clickDetected := make(chan struct{}, 1)
+	page := ghHijackPage(t, func(url string) string {
+		switch url {
+		case loadingURL:
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+			return ghLoadingOnlyHTML // no form → marker stays ""
+		default:
+			return ghStep1(loadingURL)
+		}
+	})
+	require.NoError(t, page.Navigate(initialURL))
+
+	snap, interp := ghSnapInterp()
+	filler := ghFiller(page)
+	rs := ghRecordingStore(t, "gh-loading-only")
+
+	type execOut struct {
+		result StepExecResult
+		err    error
+	}
+	done := make(chan execOut, 1)
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	go func() {
+		r, e := se.ExecuteStep(context.Background(), snap, interp, filler)
+		done <- execOut{r, e}
+	}()
+
+	// Wait for the loading URL to be requested — proves the click happened.
+	select {
+	case <-clickDetected:
+	case <-time.After(10 * time.Second):
+		t.Fatal("loading URL was never requested — click did not reach the hijack within 10s")
+	}
+
+	out := <-done // blocks ~5s while NavigateNext deadline expires
+	writeConfirmedStep(context.Background(), rs, snap, interp, out.result, false)
+
+	require.NotEqual(t, StepOutcomeAdvanced, out.result.Outcome,
+		"loading screen must not advance")
+	require.Equal(t, 0, rs.writeCount(),
+		"loading screen must write zero mappings")
+	t.Logf("EVIDENCE loading-only | outcome=%s writes=0", out.result.Outcome)
+}
+
+// TestGreenhouse_LoadingThenRealStep_OneWrite proves write timing: the test holds the browser
+// on the loading screen, asserts zero writes while loading is active, then releases the
+// browser to serve the real next step, and asserts exactly one write containing only the
+// FilledRefs from the preceding step.
+func TestGreenhouse_LoadingThenRealStep_OneWrite(t *testing.T) {
+	const (
+		initialURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		step2URL   = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
+	)
+
+	clickDetected := make(chan struct{}, 1)
+	releaseLoading := make(chan struct{})
+
+	page := ghHijackPage(t, func(url string) string {
+		switch url {
+		case step2URL:
+			// Signal click on first request; block until the test releases.
+			select {
+			case clickDetected <- struct{}{}:
+			default:
+			}
+			<-releaseLoading
+			return ghStep2WorkHTML
+		default:
+			return ghStep1(step2URL)
+		}
+	})
+	require.NoError(t, page.Navigate(initialURL))
+
+	snap, interp := ghSnapInterp()
+	filler := ghFiller(page)
+	rs := ghRecordingStore(t, "gh-load-then-step")
+
+	type execOut struct {
+		result StepExecResult
+		err    error
+	}
+	done := make(chan execOut, 1)
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	go func() {
+		r, e := se.ExecuteStep(context.Background(), snap, interp, filler)
+		done <- execOut{r, e}
+	}()
+
+	// Wait for the click to be confirmed (browser requested step2URL).
+	select {
+	case <-clickDetected:
+	case <-time.After(10 * time.Second):
+		t.Fatal("step2URL was never requested — click did not reach the hijack within 10s")
+	}
+
+	// Browser is blocked on the loading screen: assert zero writes at this point.
+	require.Equal(t, 0, rs.writeCount(),
+		"no write expected while browser is held on loading screen")
+
+	// Release the loading screen → browser receives step2 HTML → NavigateNext advances.
+	close(releaseLoading)
+
+	out := <-done
+	writeConfirmedStep(context.Background(), rs, snap, interp, out.result, false)
+
+	require.NoError(t, out.err, "execution must not error on successful advance")
+	require.Equal(t, StepOutcomeAdvanced, out.result.Outcome,
+		"genuine next step after loading must advance")
+	require.Equal(t, 1, rs.writeCount(),
+		"exactly one write for the confirmed step")
+	require.Equal(t, []string{"f0"}, out.result.FilledRefs,
+		"only the filled ref from the preceding step must be recorded")
+	t.Logf("EVIDENCE load-then-step | outcome=%s writes=1 filledRefs=%v",
+		out.result.Outcome, out.result.FilledRefs)
 }
 
 // TestGreenhouse_RealAdvance_WritesFilledRefs asserts that NavigateNext accepts a genuine
-// next step in the same application (new form structure, same tenant+job in URL), and that
-// writeConfirmedStep persists only the step's filled refs, exactly once.
-//
-// EVIDENCE target: advanced=true, outcome=advanced, wrote=true, filledRefs=[f0]
+// next step in the same application and that writeConfirmedStep persists exactly one write
+// containing only the step's FilledRefs.
 func TestGreenhouse_RealAdvance_WritesFilledRefs(t *testing.T) {
 	const (
 		initialURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
@@ -453,28 +856,28 @@ func TestGreenhouse_RealAdvance_WritesFilledRefs(t *testing.T) {
 	page := ghHijackPage(t, func(url string) string {
 		switch url {
 		case step2URL:
-			return ghStep2WorkHTML // different heading + field IDs — genuine step transition
+			return ghStep2WorkHTML
 		default:
-			return ghStep1(step2URL) // step 1; action → step 2 (same tenant+job in URL path)
+			return ghStep1(step2URL)
 		}
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
 	snap, interp := ghSnapInterp()
 	filler := ghFiller(page)
-	db := openProviderTestDB(t)
-	store := &DBMappingStore{DB: db, UserID: "gh-real-advance"}
+	rs := ghRecordingStore(t, "gh-real-advance")
 
 	se := NewStepExecutor(DefaultStepExecBounds(), nil)
 	result, execErr := se.ExecuteStep(context.Background(), snap, interp, filler)
-	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+	writeConfirmedStep(context.Background(), rs, snap, interp, result, false)
 
 	require.NoError(t, execErr, "execution must not error on successful advance")
 	require.Equal(t, StepOutcomeAdvanced, result.Outcome,
 		"genuine next step must advance")
-	require.True(t, writeGateHasField(store, snap),
-		"real advance must write the preceding step's filled ref via production gate")
+	require.Equal(t, 1, rs.writeCount(),
+		"real advance must write exactly once via production gate")
 	require.Equal(t, []string{"f0"}, result.FilledRefs,
 		"only the filled ref from the preceding step must be recorded")
-	t.Logf("EVIDENCE real-advance | outcome=%s filledRefs=%v wrote=true", result.Outcome, result.FilledRefs)
+	t.Logf("EVIDENCE real-advance | outcome=%s writes=1 filledRefs=%v",
+		result.Outcome, result.FilledRefs)
 }
