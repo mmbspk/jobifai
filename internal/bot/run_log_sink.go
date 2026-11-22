@@ -28,13 +28,13 @@ type runEntry struct {
 // only stored when a run is active and their log_id + automation_run_id fields
 // match the registered run. The 500-row per-user cap is maintained transactionally.
 type RunLogSink struct {
-	db   *sql.DB
+	db *sql.DB
 	// sinkLog is wired directly to stderr and is NOT in its own writer chain,
 	// preventing recursive log calls.
 	sinkLog zerolog.Logger
 
-	mu           sync.RWMutex
-	runs         map[string]*runEntry // key = userID
+	mu   sync.RWMutex
+	runs map[string]*runEntry // key = userID
 
 	// userMutexes serializes per-user DB operations (Register + Write) so that
 	// a new registration cannot race with an in-flight write for the same user.
@@ -206,7 +206,7 @@ func (s *RunLogSink) LatestRun(ctx context.Context, userID string) (domain.BotRu
 	if err != nil {
 		return domain.BotRunLogs{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	lines := make([]domain.BotRunLog, 0)
 	for rows.Next() {

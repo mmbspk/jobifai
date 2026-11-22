@@ -73,12 +73,12 @@ func fixtureServer(t *testing.T, targetJobID, wrongJobID, targetHTML, wrongHTML 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jobs/view/"+targetJobID, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, targetHTML)
+		_, _ = fmt.Fprint(w, targetHTML)
 	})
 	if wrongJobID != "" {
 		mux.HandleFunc("/jobs/view/"+wrongJobID, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprint(w, wrongHTML)
+			_, _ = fmt.Fprint(w, wrongHTML)
 		})
 	}
 	srv := httptest.NewServer(mux)
@@ -309,7 +309,7 @@ func TestSubmitEasyApply_RedirectDriftNoAppliedRecord(t *testing.T) {
 	})
 	mux.HandleFunc("/jobs/view/999888", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, wrongJobPageHTML)
+		_, _ = fmt.Fprint(w, wrongJobPageHTML)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -317,7 +317,7 @@ func TestSubmitEasyApply_RedirectDriftNoAppliedRecord(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := appdb.Open(dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	b := &Bot{
 		cfg:    Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn},
@@ -379,11 +379,11 @@ func TestSubmitEasyApply_DriftAfterEntry_NoAppliedRecord(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jobs/view/123456789", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, correctJobHTML)
+		_, _ = fmt.Fprint(w, correctJobHTML)
 	})
 	mux.HandleFunc("/jobs/view/999888", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, wrongJobModalHTML)
+		_, _ = fmt.Fprint(w, wrongJobModalHTML)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -391,7 +391,7 @@ func TestSubmitEasyApply_DriftAfterEntry_NoAppliedRecord(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := appdb.Open(dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	b := &Bot{
 		cfg:    Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn},

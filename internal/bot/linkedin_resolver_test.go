@@ -175,7 +175,7 @@ func TestLinkedInResolver_NativeSingleClickAndDrift(t *testing.T) {
 func TestLinkedInReview_PreservesDocumentsAndUserScope(t *testing.T) {
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	b := &Bot{cfg: Config{DB: db, UserID: "u1"}, seenCache: newJobSeenCache()}
 	job := linkedInJob{ID: "4479748087", URL: "https://www.linkedin.com/jobs/view/4479748087", Title: "Role", Company: "Company"}
 	_, err = db.Exec(`INSERT INTO jobs_pending_review(job_id,user_id,company,role,platform,link,document_refs_json,created_at) VALUES(?, 'u1','Company','Role','linkedin',?,'{"resume":"prepared"}',datetime('now'))`, job.ID, job.URL)
@@ -251,7 +251,7 @@ func TestSubmitEasyApply_VerifiedNativeConfirmation(t *testing.T) {
 	srv := fixtureServer(t, "4479748087", "", html, "")
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	b := &Bot{cfg: Config{DB: db, UserID: "u1"}, stopCh: make(chan struct{})}
 	job := linkedInJob{ID: "4479748087", URL: srv.URL + "/jobs/view/4479748087", Title: "Role", Company: "Company"}
 	lazy := &lazyDocGen{b: b, job: job, ctx: context.Background()}

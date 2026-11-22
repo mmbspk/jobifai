@@ -166,6 +166,13 @@ type ConfigStore interface {
 	Set(userID, key string, src any) error
 }
 
+// TransactionalConfigStore keeps settings and related records in one commit.
+type TransactionalConfigStore interface {
+	ConfigStore
+	GetTx(context.Context, *sql.Tx, string, string, any) error
+	SetTx(context.Context, *sql.Tx, string, string, any) error
+}
+
 // SecretsStore is the minimal interface handlers need for secret management.
 type SecretsStore interface {
 	Set(userID, key, value string) error

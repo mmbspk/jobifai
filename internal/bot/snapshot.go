@@ -9,6 +9,7 @@ package bot
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -53,16 +54,31 @@ const (
 // SnapField is one form control in the snapshot.
 // No candidate-specific values: Filled is true/false only.
 type SnapField struct {
-	Ref           string        `json:"ref"`                     // snapshot-scoped opaque token "f0".."fN"
-	Label         string        `json:"label"`                   // normalized visible label
-	Group         string        `json:"group,omitempty"`         // fieldset/legend/section heading
-	HelpText      string        `json:"help_text,omitempty"`     // hint / description text below the label
-	ControlID     string        `json:"control_id,omitempty"`    // DOM element id for direct fill targeting
+	OptionValues []string `json:"option_values,omitempty"`
+	// OptionSetHash covers every label/value pair while the model sees a bounded list.
+	OptionSetHash string `json:"option_set_hash,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
+	// BrowserField preserves current scanned identity for local execution only.
+	// It is excluded from model payloads and persisted snapshots.
+	BrowserField  *formField    `json:"-"`
+	Ref           string        `json:"ref"`                  // snapshot-scoped opaque token "f0".."fN"
+	Label         string        `json:"label"`                // normalized visible label
+	Group         string        `json:"group,omitempty"`      // fieldset/legend/section heading
+	HelpText      string        `json:"help_text,omitempty"`  // hint / description text below the label
+	ControlID     string        `json:"control_id,omitempty"` // DOM element id for direct fill targeting
 	Type          SnapFieldType `json:"type"`
-	Options       []string      `json:"options,omitempty"`       // option labels; radio/select only
+	Options       []string      `json:"options,omitempty"` // option labels; radio/select only
 	Required      bool          `json:"required,omitempty"`
 	Disabled      bool          `json:"disabled,omitempty"`
 	MaxChars      int           `json:"max_chars,omitempty"`
+	MinValue      string        `json:"min_value,omitempty"`
+	MaxValue      string        `json:"max_value,omitempty"`
+	StepValue     string        `json:"step_value,omitempty"`
+	Pattern       string        `json:"pattern,omitempty"`
+	InputType     string        `json:"input_type,omitempty"`
+	Locale        string        `json:"locale,omitempty"`
+	JobContext    string        `json:"job_context,omitempty"`
+	JobTitle      string        `json:"job_title,omitempty"`
 	ValidationErr string        `json:"validation_err,omitempty"`
 	Filled        bool          `json:"filled,omitempty"` // current value present (privacy: value not stored)
 }
@@ -77,7 +93,8 @@ type SnapNav struct {
 // StepSnapshot is a versioned, privacy-minimized point-in-time capture of one form step.
 // Refs are only valid for the step that produced this snapshot; re-capture after any mutation.
 type StepSnapshot struct {
-	V           int         `json:"v"`                     // schema version = SnapshotSchemaV1
+	Truncated   bool        `json:"truncated,omitempty"`
+	V           int         `json:"v"` // schema version = SnapshotSchemaV1
 	Platform    string      `json:"platform"`
 	StepIndex   int         `json:"step_index"`
 	CapturedAt  time.Time   `json:"captured_at"`
@@ -121,18 +138,45 @@ func (s StepSnapshot) NavByRef(ref string) (SnapNav, bool) {
 // field only, leaving unaffected fields in the cache intact.
 func (f SnapField) FieldSignature(platform string) string {
 	opts := make([]string, len(f.Options))
-	copy(opts, f.Options)
+	for i, label := range f.Options {
+		value := ""
+		if i < len(f.OptionValues) {
+			value = f.OptionValues[i]
+		}
+		pair, _ := json.Marshal([]string{strings.ToLower(strings.TrimSpace(label)), value})
+		opts[i] = string(pair)
+	}
 	sort.Strings(opts)
-	raw := strings.Join([]string{
+	if f.OptionSetHash != "" {
+		opts = []string{f.OptionSetHash}
+	}
+	raw, _ := json.Marshal([]string{
 		strings.ToLower(strings.TrimSpace(platform)),
 		strings.ToLower(strings.TrimSpace(f.Group)),
 		strings.ToLower(strings.TrimSpace(f.Label)),
 		string(f.Type),
 		strings.ToLower(strings.TrimSpace(f.HelpText)),
 		strings.Join(opts, ";"),
-	}, "\x00")
-	h := sha256.Sum256([]byte(raw))
-	return fmt.Sprintf("fs1:%x", h[:8])
+		fmt.Sprintf("required=%t;max_chars=%d", f.Required, f.MaxChars),
+		f.MinValue, f.MaxValue, f.StepValue, f.Pattern, f.InputType, strings.ToLower(f.Locale),
+		f.JobContext,
+	})
+	h := sha256.Sum256(raw)
+	return fmt.Sprintf("fs2:%x", h[:16])
+}
+
+// Context-dependent answers are reusable only for the same vacancy. Candidate
+// facts such as contact information and named skills keep field-level reuse.
+func scopeJobDependentFields(snap *StepSnapshot, job linkedInJob) {
+	context, _ := json.Marshal([]string{job.ID, job.URL, normalizeLabel(job.Title)})
+	digest := sha256.Sum256(context)
+	for i := range snap.Fields {
+		f := &snap.Fields[i]
+		if isJobDependentQuestion(f.Label + " " + f.Group + " " + f.HelpText) {
+			f.JobContext = fmt.Sprintf("job:%x", digest[:16])
+			f.JobTitle = job.Title
+		}
+	}
 }
 
 // SemanticSignature returns a stable hash that identifies the form step by its structure
@@ -160,6 +204,7 @@ func (s StepSnapshot) SemanticSignature() string {
 // stepTitle is the visible heading of the current step (empty string is fine).
 func captureStepSnapshot(fields []formField, navActions []SnapNav, platform string, stepIndex int, stepTitle string) StepSnapshot {
 	snap := StepSnapshot{
+		Truncated:  len(fields) > maxSnapFields,
 		V:          SnapshotSchemaV1,
 		Platform:   platform,
 		StepIndex:  stepIndex,
@@ -174,34 +219,62 @@ func captureStepSnapshot(fields []formField, navActions []SnapNav, platform stri
 	for i := range n {
 		f := fields[i]
 		sf := SnapField{
-			Ref:       fmt.Sprintf("f%d", i),
-			Label:     normalizeLabel(f.Question),
-			Group:     normalizeLabel(f.Group),
-			HelpText:  normalizeLabel(f.HelpText),
-			ControlID: f.ID,
-			Required:  f.Required,
-			MaxChars:  f.MaxChars,
-			Filled:    false, // privacy: never store the actual value
+			BrowserField: &f,
+			Ref:          fmt.Sprintf("f%d", i),
+			Label:        normalizeLabel(f.Question),
+			Group:        normalizeLabel(f.Group),
+			HelpText:     normalizeLabel(f.HelpText),
+			ControlID:    f.ID,
+			Required:     f.Required,
+			MaxChars:     f.MaxChars,
+			MinValue:     f.MinValue,
+			MaxValue:     f.MaxValue,
+			StepValue:    f.StepValue,
+			Pattern:      f.Pattern,
+			InputType:    f.InputType,
+			Locale:       f.Locale,
+			Filled:       false, // privacy: never store the actual value
+		}
+		if f.NativeType != "" {
+			sf.InputType = f.NativeType
 		}
 
 		// Detect whether the field currently has a value (without storing it).
 		// For file fields: HasFile signals presence.
-		if f.Type == "file" {
-			sf.Filled = f.HasFile
-		}
+		// A platform attachment is not proof that the currently approved document
+		// is selected. The document filler verifies that against current policy.
 
 		// Determine snapshot field type.
 		sf.Type = snapTypeFrom(f)
 
 		optN := min(len(f.Options), maxSnapOptions)
+		sf.Truncated = len(f.Options) > maxSnapOptions
+		for _, option := range f.Options {
+			if len(option.Label) > maxSnapOptLabel {
+				sf.Truncated = true
+			}
+		}
+		if sf.Truncated {
+			pairs := make([]string, len(f.Options))
+			for j, option := range f.Options {
+				pair, _ := json.Marshal([]string{strings.ToLower(strings.TrimSpace(option.Label)), option.Value})
+				pairs[j] = string(pair)
+			}
+			sort.Strings(pairs)
+			encoded, _ := json.Marshal(pairs)
+			hash := sha256.Sum256(encoded)
+			sf.OptionSetHash = fmt.Sprintf("%x", hash[:16])
+		}
 		if optN > 0 {
 			sf.Options = make([]string, optN)
-		for j := range optN {
+			sf.OptionValues = make([]string, optN)
+			for j := range optN {
 				lbl := f.Options[j].Label
 				if len(lbl) > maxSnapOptLabel {
 					lbl = lbl[:maxSnapOptLabel]
 				}
 				sf.Options[j] = lbl
+				sf.OptionValues[j] = f.Options[j].Value
 			}
 		}
 
@@ -227,7 +300,7 @@ func snapTypeFrom(f formField) SnapFieldType {
 			return SnapTypeTypeahead
 		}
 		switch f.InputType {
-		case "number":
+		case "number", "numeric":
 			return SnapTypeNumber
 		case "textarea":
 			return SnapTypeTextarea

@@ -65,9 +65,12 @@ func (c ApplyEngineConfig) EffectiveModeFor(userID string, platform Platform) Ap
 
 func (c ApplyEngineConfig) modeForPlatform(platform Platform) ApplyEngineMode {
 	if over, ok := c.PlatformOverrides[string(platform)]; ok && over != "" {
-		return over
+		if over == ApplyEngineLegacy || over == ApplyEngineShadow || over == ApplyEngineAdaptive {
+			return over
+		}
+		return ApplyEngineLegacy
 	}
-	if c.Mode == "" {
+	if c.Mode != ApplyEngineShadow && c.Mode != ApplyEngineAdaptive {
 		return ApplyEngineLegacy
 	}
 	return c.Mode
@@ -82,13 +85,13 @@ func (c ApplyEngineConfig) inPilot(userID string) bool {
 
 // ApplyEngineAuditEntry records a change to the engine configuration.
 type ApplyEngineAuditEntry struct {
-	ID        string          `json:"id"`
-	AdminID   string          `json:"admin_id"`
-	OldMode   ApplyEngineMode `json:"old_mode"`
-	NewMode   ApplyEngineMode `json:"new_mode"`
-	Reason    string          `json:"reason,omitempty"`
+	ID        string            `json:"id"`
+	AdminID   string            `json:"admin_id"`
+	OldMode   ApplyEngineMode   `json:"old_mode"`
+	NewMode   ApplyEngineMode   `json:"new_mode"`
+	Reason    string            `json:"reason,omitempty"`
 	Config    ApplyEngineConfig `json:"config"`
-	CreatedAt time.Time       `json:"created_at"`
+	CreatedAt time.Time         `json:"created_at"`
 }
 
 // BotState represents the current state of the automation bot.
@@ -328,9 +331,12 @@ type Language struct {
 // (visa sponsorship, work authorisation, notice period, etc.).
 // These are used by the form-filler before falling back to LLM.
 type ApplicationDefaults struct {
-	RequiresSponsorship bool   `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
-	NoticePeriod        string `json:"notice_period,omitempty" yaml:"notice_period,omitempty"`           // e.g. "2 weeks", "1 month", "Immediately"
-	SalaryExpectation   string `json:"salary_expectation,omitempty" yaml:"salary_expectation,omitempty"` // e.g. "90000" or "90,000 AUD"
+	// FormAnswers are explicitly reviewed candidate facts, kept with the profile
+	// rather than copied into the reusable form mapping cache.
+	FormAnswers         map[string]string `json:"form_answers,omitempty" yaml:"form_answers,omitempty"`
+	RequiresSponsorship bool              `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
+	NoticePeriod        string            `json:"notice_period,omitempty" yaml:"notice_period,omitempty"`           // e.g. "2 weeks", "1 month", "Immediately"
+	SalaryExpectation   string            `json:"salary_expectation,omitempty" yaml:"salary_expectation,omitempty"` // e.g. "90000" or "90,000 AUD"
 }
 
 type ResumeProfile struct {

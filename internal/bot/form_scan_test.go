@@ -418,7 +418,7 @@ func TestLinkedInFinalReviewResumeCheck_Match(t *testing.T) {
 </body></html>`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, html)
+		_, _ = fmt.Fprint(w, html)
 	}))
 	t.Cleanup(srv.Close)
 	page := navigateAndWait(t, br, srv.URL)
@@ -447,7 +447,7 @@ func TestLinkedInFinalReviewResumeCheck_Mismatch(t *testing.T) {
 </body></html>`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, html)
+		_, _ = fmt.Fprint(w, html)
 	}))
 	t.Cleanup(srv.Close)
 	page := navigateAndWait(t, br, srv.URL)
@@ -1520,38 +1520,37 @@ func TestScan_DuplicateLabel_DifferentSection_CaptureAndFill(t *testing.T) {
 	require.NotEqual(t, sigSoftware, sigMedical, "different groups must yield different FieldSignatures")
 	t.Logf("EVIDENCE dom-sig | sig_software=%s | sig_medical=%s", sigSoftware, sigMedical)
 
-	// 3. Cache: write and look up independently via DBMappingStore.
-	db := openMappingDB(t)
-	store := &DBMappingStore{DB: db, UserID: "user-dom-test"}
-	require.NoError(t, store.Write(context.Background(), snap, []FieldResolution{
-		{Ref: snap.Fields[0].Ref, Source: SourceLLM, Action: ActionFill, Value: "5"},
-		{Ref: snap.Fields[1].Ref, Source: SourceLLM, Action: ActionFill, Value: "3"},
-	}))
-	resSoftware, okSoftware := store.LookupField(sigSoftware, "")
-	resMedical, okMedical := store.LookupField(sigMedical, "")
-	require.True(t, okSoftware, "Software Skills field must have a mapping entry")
-	require.True(t, okMedical, "Medical Skills field must have a mapping entry")
-	require.NotEqual(t, resSoftware.Value, resMedical.Value, "each section must resolve independently")
-	t.Logf("EVIDENCE dom-cache | software_value=%q | medical_value=%q", resSoftware.Value, resMedical.Value)
-
-	// 4. Fill: use scanned ControlID to route each fill to the correct input.
-	// Both fills use the same question label; the ControlID makes them unambiguous.
-	fillSW, err := page.Eval(jsFillByQuestionAnswer,
-		softwareField.Question, resSoftware.Value, "text", softwareField.Group, softwareField.ID)
+	// 3. Explicit semantic review, then replay through the production interpreter and filler.
+	store := &DBMappingStore{DB: openMappingDB(t), UserID: "user-dom-test"}
+	resolutions := []FieldResolution{}
+	for _, field := range snap.Fields {
+		key := "application_defaults.form_answers.software_years"
+		if field.Group == "Medical Skills" {
+			key = "application_defaults.form_answers.medical_years"
+		}
+		resolutions = append(resolutions, FieldResolution{Ref: field.Ref, Source: SourceLLM, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: key})
+	}
+	require.NoError(t, reviewFixtureMappings(t, store, snap, resolutions))
+	interpreter := &StepInterpreter{Mapping: store}
+	interp, err := interpreter.InterpretStep(context.Background(), snap, basicProfile())
 	require.NoError(t, err)
-	require.True(t, fillSW.Value.Bool(), "fill must succeed for Software Skills section")
-
-	fillMed, err := page.Eval(jsFillByQuestionAnswer,
-		medicalField.Question, resMedical.Value, "text", medicalField.Group, medicalField.ID)
+	require.False(t, interp.Paused)
+	filler := &linkedInRodFiller{page: page, bot: newTestBot(t)}
+	for _, res := range interp.Fields {
+		field, ok := snap.FieldByRef(res.Ref)
+		require.True(t, ok)
+		result := filler.Fill(context.Background(), field, res)
+		require.NoError(t, result.Err)
+		require.True(t, result.Filled)
+	}
+	softwareVal, err := page.Eval("() => document.getElementById('exp-software').value")
 	require.NoError(t, err)
-	require.True(t, fillMed.Value.Bool(), "fill must succeed for Medical Skills section")
+	medicalVal, err := page.Eval("() => document.getElementById('exp-medical').value")
+	require.NoError(t, err)
+	require.Equal(t, "5", softwareVal.Value.String())
+	require.Equal(t, "3", medicalVal.Value.String())
+	t.Logf("EVIDENCE dom-cache-fill | software=5 medical=3 | interpretation_calls=0")
 
-	softwareVal, _ := page.Eval(`() => document.getElementById('exp-software').value`)
-	medicalVal, _ := page.Eval(`() => document.getElementById('exp-medical').value`)
-	t.Logf("EVIDENCE dom-fill | software_input=%q | medical_input=%q",
-		softwareVal.Value.String(), medicalVal.Value.String())
-	require.Equal(t, resSoftware.Value, softwareVal.Value.String(), "Software Skills input must receive its cached value")
-	require.Equal(t, resMedical.Value, medicalVal.Value.String(), "Medical Skills input must receive its cached value")
 }
 
 // htmlNativeSelectForm is a minimal form with a native <select> for a country selector.
@@ -1606,29 +1605,31 @@ func TestScan_NativeSelect_CaptureAndFill(t *testing.T) {
 // does nothing — no DOM change, no validation errors — when clicked.
 // No progress bar → NavigateNext has no advancement signal → must timeout and return false.
 const htmlSeekFormNoAdvance = `<!DOCTYPE html><html><body style="margin:0;padding:16px">
+  <form data-testid="quick-apply-form">
   <h2 id="step-title" style="margin-top:0">Work experience</h2>
   <input id="job-title" aria-label="Most recent job title" value=""
          style="display:block;width:200px;height:32px;margin-bottom:8px">
-  <button data-testid="continue-button"
+  <button type="button" data-testid="continue-button"
           style="padding:8px 16px;width:120px;height:40px">Continue</button>
-</body></html>`
+</form></body></html>`
 
 // htmlSeekFormWithProgress simulates a SEEK Quick Apply step with a progress bar.
 // When the Continue button is clicked, JavaScript advances aria-valuenow from 1 to 2,
 // giving NavigateNext the positive evidence it needs to confirm step advancement.
 const htmlSeekFormWithProgress = `<!DOCTYPE html><html><body style="margin:0;padding:16px">
+  <form data-testid="quick-apply-form">
   <progress id="step-bar" role="progressbar" aria-valuenow="1" aria-valuemax="3" value="0.33"></progress>
   <h2>Work experience</h2>
   <input id="job-title" aria-label="Most recent job title" value=""
          style="display:block;width:200px;height:32px;margin-bottom:8px">
-  <button data-testid="continue-button" id="continue-btn"
+  <button type="button" data-testid="continue-button" id="continue-btn"
           style="padding:8px 16px;width:120px;height:40px">Continue</button>
   <script>
     document.getElementById('continue-btn').addEventListener('click', function() {
       document.getElementById('step-bar').setAttribute('aria-valuenow','2');
     });
   </script>
-</body></html>`
+</form></body></html>`
 
 // ── writeConfirmedStep unit tests (no browser needed) ─────────────────────────
 
@@ -1638,10 +1639,10 @@ func writeGateFixture(t *testing.T, dbUserID string) (StepSnapshot, StepInterpre
 	db := openProviderTestDB(t)
 	store := &DBMappingStore{DB: db, UserID: dbUserID}
 	snap := captureStepSnapshot([]formField{
-		{Type: "text", Question: "Current or most recent job title", ID: "job-title", InputType: "text"},
+		{Type: "text", Question: "Most recent job title", Group: "Work experience", ID: "job-title", InputType: "text"},
 	}, nil, "seek", 0, "Work experience")
 	interp := StepInterpretation{
-		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceLLM, Value: "Nurse"}},
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceProfile, Value: "Nurse", IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.current_title"}},
 	}
 	return snap, interp, store
 }
@@ -1697,7 +1698,8 @@ func TestWriteGate_SubmitWithConfirmation_WritesOnce(t *testing.T) {
 	require.True(t, writeGateHasField(store, snap), "confirmed submission must write filled ref to store")
 	res, found := store.LookupField(snap.Fields[0].FieldSignature(snap.Platform), snap.EmployerKey)
 	require.True(t, found, "field must be in store after confirmed submission")
-	require.Equal(t, "Nurse", res.Value, "stored value must match the filled value")
+	require.Empty(t, res.Value, "mapping storage must not retain a candidate answer")
+	require.Equal(t, "application_defaults.form_answers.current_title", res.BindingKey)
 	t.Logf("EVIDENCE write-gate-submit-confirmed | outcome=%s value=%q", result.Outcome, res.Value)
 }
 
@@ -1738,10 +1740,10 @@ func TestSeekFiller_SameStepClick_ZeroMappings(t *testing.T) {
 	db := openProviderTestDB(t)
 	store := &DBMappingStore{DB: db, UserID: "no-advance-test"}
 	snap := captureStepSnapshot([]formField{
-		{Type: "text", Question: "Most recent job title", ID: "job-title", InputType: "text"},
+		{Type: "text", Question: "Most recent job title", Group: "Work experience", ID: "job-title", InputType: "text"},
 	}, nil, "seek", 0, "Work experience")
 	interp := StepInterpretation{
-		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceLLM, Value: "Nurse"}},
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceProfile, Value: "Nurse", IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.current_title"}},
 	}
 	se := NewStepExecutor(DefaultStepExecBounds(), nil)
 	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
@@ -1768,10 +1770,10 @@ func TestSeekFiller_RealAdvance_WritesFilledRefs(t *testing.T) {
 	db := openProviderTestDB(t)
 	store := &DBMappingStore{DB: db, UserID: "real-advance-test"}
 	snap := captureStepSnapshot([]formField{
-		{Type: "text", Question: "Most recent job title", ID: "job-title", InputType: "text"},
+		{Type: "text", Question: "Most recent job title", Group: "Work experience", ID: "job-title", InputType: "text"},
 	}, nil, "seek", 0, "Work experience")
 	interp := StepInterpretation{
-		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceLLM, Value: "Nurse"}},
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceProfile, Value: "Nurse", IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.current_title"}},
 	}
 	se := NewStepExecutor(DefaultStepExecBounds(), nil)
 	result, execErr := se.ExecuteStep(context.Background(), snap, interp, filler)

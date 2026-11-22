@@ -13,6 +13,7 @@ package bot
 // corresponding string from a ResumeProfile.
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/user/jobifai/internal/domain"
@@ -20,6 +21,9 @@ import (
 
 // profileBindings maps dotted binding keys to profile field accessors.
 var profileBindings = map[string]func(*domain.ResumeProfile) string{
+	"personal_information.full_name": func(p *domain.ResumeProfile) string {
+		return strings.TrimSpace(p.PersonalInformation.Name + " " + p.PersonalInformation.Surname)
+	},
 	"personal_information.name":    func(p *domain.ResumeProfile) string { return p.PersonalInformation.Name },
 	"personal_information.surname": func(p *domain.ResumeProfile) string { return p.PersonalInformation.Surname },
 	"personal_information.email":   func(p *domain.ResumeProfile) string { return p.PersonalInformation.Email },
@@ -51,7 +55,17 @@ func knownBindingKeys() []string {
 	for k := range profileBindings {
 		keys = append(keys, k)
 	}
+	sort.Strings(keys)
 	return keys
+}
+
+func knownProfileBinding(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if strings.HasPrefix(key, "application_defaults.form_answers.") {
+		return strings.TrimPrefix(key, "application_defaults.form_answers.") != ""
+	}
+	_, ok := profileBindings[strings.ToLower(strings.TrimSpace(key))]
+	return ok
 }
 
 // resolveProfileBinding returns the profile value for key, or ("", false) if unknown or empty.
@@ -59,6 +73,10 @@ func knownBindingKeys() []string {
 func resolveProfileBinding(key string, profile *domain.ResumeProfile) (string, bool) {
 	if profile == nil || key == "" {
 		return "", false
+	}
+	if strings.HasPrefix(key, "application_defaults.form_answers.") {
+		value := profile.ApplicationDefaults.FormAnswers[strings.TrimPrefix(key, "application_defaults.form_answers.")]
+		return value, strings.TrimSpace(value) != ""
 	}
 	fn, ok := profileBindings[strings.ToLower(strings.TrimSpace(key))]
 	if !ok {

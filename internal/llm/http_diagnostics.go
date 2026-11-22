@@ -55,7 +55,7 @@ func (c *Client) traceHTTP(ctx context.Context) (context.Context, func(string), 
 			Int("http_status", status).Int64("deadline_remaining_ms_at_start", deadlineMS).
 			Int64("http_timeout_ms", c.httpCli.Timeout.Milliseconds()).Bool("success", err == nil)
 		if requestID != "" && len(requestID) <= 128 && strings.IndexFunc(requestID, func(r rune) bool {
-			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_.:/", r))
+			return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && !strings.ContainsRune("-_.:/", r)
 		}) < 0 {
 			e = e.Str("provider_request_id", requestID)
 		}

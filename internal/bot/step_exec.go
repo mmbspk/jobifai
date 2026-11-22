@@ -49,9 +49,9 @@ func DefaultStepExecBounds() StepExecBounds {
 // FieldFillResult is the outcome of filling one form field.
 type FieldFillResult struct {
 	Ref     string
-	Filled  bool   // true when the action was executed without error
-	Skipped bool   // true when the action was ActionSkip
-	Err     error  // non-nil if the fill action failed (not a skip)
+	Filled  bool  // true when the action was executed without error
+	Skipped bool  // true when the action was ActionSkip
+	Err     error // non-nil if the fill action failed (not a skip)
 }
 
 // FieldFiller is the browser interaction contract for the step executor.
@@ -122,12 +122,12 @@ const (
 // StepExecResult summarises what happened during one step execution.
 type StepExecResult struct {
 	Outcome      StepExecOutcome
-	FieldsFilled int              // fields successfully written
-	FilledRefs   []string         // refs the filler reported Filled:true for
-	FieldsFailed []string         // refs that failed even after retries
-	FieldsPended []string         // refs that could not be resolved (pending)
-	NoProgressAt int              // step index where no-progress was detected (0 if none)
-	Err          error            // non-nil for StepOutcomeError
+	FieldsFilled int      // fields successfully written
+	FilledRefs   []string // refs the filler reported Filled:true for
+	FieldsFailed []string // refs that failed even after retries
+	FieldsPended []string // refs that could not be resolved (pending)
+	NoProgressAt int      // step index where no-progress was detected (0 if none)
+	Err          error    // non-nil for StepOutcomeError
 }
 
 // ── executor ──────────────────────────────────────────────────────────────────
@@ -137,6 +137,8 @@ type StepExecutor struct {
 	Bounds     StepExecBounds
 	Guard      *SubmitGuard
 	NoProgress *noProgressTracker
+	// BeforeSideEffect rechecks attempt policy at every fill, navigation and submit.
+	BeforeSideEffect func(context.Context) error
 }
 
 // NewStepExecutor creates a StepExecutor with the given bounds and submit guard.
@@ -176,6 +178,7 @@ func (se *StepExecutor) ExecuteStep(ctx context.Context, snap StepSnapshot, inte
 	// Fill each non-pending, non-filled field.
 	filledThisStep := 0
 	attemptedThisStep := 0
+	var fillErrors []error
 	for _, res := range interp.Fields {
 		if res.Pending {
 			continue
@@ -197,8 +200,17 @@ func (se *StepExecutor) ExecuteStep(ctx context.Context, snap StepSnapshot, inte
 				result.Outcome = StepOutcomeTimeout
 				return result, ctx.Err()
 			}
+			if se.BeforeSideEffect != nil {
+				if err := se.BeforeSideEffect(ctx); err != nil {
+					result.Outcome, result.Err = StepOutcomeError, err
+					return result, err
+				}
+			}
 			fillResult = filler.Fill(ctx, f, res)
 			if fillResult.Filled || fillResult.Skipped {
+				break
+			}
+			if errors.Is(fillResult.Err, errAdaptiveQuestionReview) {
 				break
 			}
 		}
@@ -209,13 +221,16 @@ func (se *StepExecutor) ExecuteStep(ctx context.Context, snap StepSnapshot, inte
 			result.FilledRefs = append(result.FilledRefs, res.Ref)
 		} else if !fillResult.Skipped {
 			result.FieldsFailed = append(result.FieldsFailed, res.Ref)
+			if fillResult.Err != nil {
+				fillErrors = append(fillErrors, fillResult.Err)
+			}
 		}
 	}
 
 	// Hard fields failed: surface as error.
 	if len(result.FieldsFailed) > 0 {
 		result.Outcome = StepOutcomeError
-		result.Err = fmt.Errorf("step_exec: %d field(s) could not be filled: %v", len(result.FieldsFailed), result.FieldsFailed)
+		result.Err = errors.Join(append(fillErrors, fmt.Errorf("step_exec: %d field(s) could not be filled: %v", len(result.FieldsFailed), result.FieldsFailed))...)
 		return result, result.Err
 	}
 
@@ -231,6 +246,12 @@ func (se *StepExecutor) ExecuteStep(ctx context.Context, snap StepSnapshot, inte
 	}
 
 	// Check if submit button is ready.
+	if se.BeforeSideEffect != nil {
+		if err := se.BeforeSideEffect(ctx); err != nil {
+			result.Outcome, result.Err = StepOutcomeError, err
+			return result, err
+		}
+	}
 	if filler != nil {
 		ready, err := filler.IsSubmitReady(ctx)
 		if err != nil {

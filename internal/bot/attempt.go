@@ -41,7 +41,7 @@ func unresolvedSubmission(db *sql.DB, userID, jobID, jobURL, currentAttempt stri
 	if err != nil {
 		return fmt.Errorf("check previous submission: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var priorID, priorURL string
 		if err := rows.Scan(&priorID, &priorURL); err != nil {
@@ -58,13 +58,13 @@ func markAttemptSubmitDispatch(db *sql.DB, attemptID, userID string) error {
 	if db == nil || attemptID == "" {
 		return nil
 	}
-	r, err := db.Exec(`UPDATE apply_attempts SET stage='submit_dispatch',reason_code='submit_dispatch' WHERE id=? AND user_id=? AND outcome='in_progress'`, attemptID, userID)
+	r, err := db.Exec(`UPDATE apply_attempts SET stage='submit_dispatch',reason_code='submit_dispatch' WHERE id=? AND user_id=? AND outcome='in_progress' AND stage <> 'submit_dispatch'`, attemptID, userID)
 	if err != nil {
 		return fmt.Errorf("persist submit intent: %w", err)
 	}
 	n, err := r.RowsAffected()
 	if err != nil || n != 1 {
-		return fmt.Errorf("persist submit intent: active attempt missing")
+		return fmt.Errorf("%w: submit already dispatched or active attempt missing", ErrNoActiveAttempt)
 	}
 	return nil
 }
@@ -99,7 +99,8 @@ type AttemptContext struct {
 	AutomationRunID string
 	StartedAt       time.Time
 	// Engine is the mode pinned at dispatch time. Must not change mid-flight.
-	Engine domain.ApplyEngineMode
+	Engine      domain.ApplyEngineMode
+	ExternalATS ATSKind
 }
 
 // newAttemptContext returns an AttemptContext with a fresh v4 UUID.
@@ -188,6 +189,10 @@ func beginAttempt(db *sql.DB, ac *AttemptContext) {
 // for context.DeadlineExceeded, and failed for everything else.
 func classifyApplyOutcome(err error) AttemptOutcome {
 	switch {
+	case errors.Is(err, errLinkedInSubmissionUnknown), errors.Is(err, errSeekSubmitUnconfirmed), errors.Is(err, errATSAmbiguous):
+		return OutcomeSubmissionUnknown
+	case errors.Is(err, errAdaptiveQuestionReview):
+		return OutcomeBlocked
 	case errors.Is(err, context.Canceled):
 		return OutcomeCancelled
 	case errors.Is(err, context.DeadlineExceeded):

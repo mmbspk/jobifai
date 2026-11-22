@@ -82,6 +82,12 @@ type formField struct {
 	UploadViaButton bool              `json:"uploadViaButton"` // slot has no visible input; upload via button click + HandleFileDialog
 	ResumeGroupName string            `json:"resumeGroupName"` // radio group name inside the same section (empty if ambiguous or absent)
 	MaxChars        int               `json:"maxChars"`        // LinkedIn SDUI character cap (maxlength or "N of M characters")
+	MinValue        string            `json:"minValue,omitempty"`
+	MaxValue        string            `json:"maxValue,omitempty"`
+	StepValue       string            `json:"stepValue,omitempty"`
+	Pattern         string            `json:"pattern,omitempty"`
+	Locale          string            `json:"locale,omitempty"`
+	NativeType      string            `json:"nativeType,omitempty"`
 }
 
 func (f formField) optionLabels() []string {
@@ -130,7 +136,7 @@ const jsScanFieldsInner = `
 			let node = el;
 			while (node && node !== document.documentElement) {
 				const s = window.getComputedStyle(node);
-				if (s.display === 'none' || s.visibility === 'hidden') return false;
+				if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse' || Number(s.opacity) === 0 || node.hidden || node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true') return false;
 				node = node.parentElement;
 			}
 			return true;
@@ -161,7 +167,7 @@ const jsScanFieldsInner = `
 	// Use htmlFor property to handle IDs with special characters like ":" (LinkedIn React IDs)
 	function labelFor(id) {
 		if (!id) return null;
-		return [...document.querySelectorAll('label[for]')].find(l => l.htmlFor === id) || null;
+		return allInDOM(container, 'label[for]').find(l => l.htmlFor === id) || null;
 	}
 
 	function charLimitForField(el) {
@@ -244,11 +250,12 @@ const jsScanFieldsInner = `
 	}
 
 	const fields = [];
+	const includeAllCurrentValues = !!(typeof opts !== 'undefined' && opts && opts.includeAnsweredFields);
 
 	// ── File inputs, scan globally via shadow DOM (LinkedIn hides these in shadow roots) ───
 	// Filter to document uploads only (PDF/DOC/TXT), skip image/video/etc.
 	// Use isContainerVisible so we don't pick up file inputs from off-screen steps.
-	allInDOM(document, 'input[type="file"]').filter(el => {
+	allInDOM(container, 'input[type="file"]').filter(el => {
 		const a = (el.accept || '').toLowerCase();
 		const typeOk = !a || a.includes('pdf') || a.includes('doc') || a.includes('txt') || a.includes('rtf');
 		return typeOk && isContainerVisible(el);
@@ -268,7 +275,7 @@ const jsScanFieldsInner = `
 			: (el.getAttribute('aria-label') || el.getAttribute('name') || '');
 		const required = el.required || el.getAttribute('aria-required') === 'true';
 		fields.push({
-			type: 'file', index: i, hasFile: !!(el.files && el.files.length > 0),
+			type: 'file', id: el.id, index: i, hasFile: !!(el.files && el.files.length > 0),
 			question, documentKind: classifyDocumentKind(question), required,
 		});
 	});
@@ -390,7 +397,7 @@ const jsScanFieldsInner = `
 
 	const seenRadio = new Set();
 	allInDOM(container, 'input[type="radio"]').filter(isContainerVisible).forEach(r => {
-		const groupKey = r.name || r.id;
+		const groupKey = (r.name || r.id) + '|' + sectionGroupFor(r);
 		if (!groupKey || seenRadio.has(groupKey)) return;
 		seenRadio.add(groupKey);
 
@@ -398,7 +405,7 @@ const jsScanFieldsInner = `
 		if (r.name) {
 			// Use JS property comparison, CSS selectors break on URN-style names
 			// containing colons and parentheses (LinkedIn's form element names).
-			all = allInDOM(container, 'input[type="radio"]').filter(x => x.name === r.name);
+			all = allInDOM(container, 'input[type="radio"]').filter(x => x.name === r.name && sectionGroupFor(x) === sectionGroupFor(r));
 		} else {
 			const parent = r.closest('[data-test-form-element], .artdeco-form-element, fieldset, [role="group"]') || r.parentElement?.parentElement;
 			all = parent ? allInDOM(parent, 'input[type="radio"]') : [r];
@@ -439,6 +446,7 @@ const jsScanFieldsInner = `
 			return { id: x.id, value: x.value, label: linkedInRadioOptionLabel(container, x) };
 		});
 		fields.push({ type: 'radio', name: r.name || groupKey, question, options,
+		              required: all.some(x => x.required || x.getAttribute('aria-required') === 'true') || (grp && grp.getAttribute('aria-required') === 'true'),
 		              group: sectionGroupFor(r), helpText: helpTextFor(r) });
 	});
 
@@ -463,7 +471,7 @@ const jsScanFieldsInner = `
 		} else {
 			all = [cb];
 		}
-		if (all.length === 0 || all.every(x => x.checked)) return;
+		if (all.length === 0 || (!includeAllCurrentValues && all.every(x => x.checked))) return;
 
 		let question = '';
 		{
@@ -483,7 +491,7 @@ const jsScanFieldsInner = `
 			return { id: x.id, value: x.value || x.id,
 			         label: (lbl ? lbl.textContent : (x.value || x.id)).replace(/\s+/g, ' ').trim() };
 		});
-		fields.push({ type: 'checkbox', name: cb.name || groupKey, question, options });
+		fields.push({ type: 'checkbox', name: cb.name || groupKey, question, options, group: sectionGroupFor(cb), helpText: helpTextFor(cb), required: all.some(x => x.required || x.getAttribute('aria-required') === 'true') });
 	});
 
 	// Seek review step: custom checkbox widgets (role=checkbox) without native inputs.
@@ -512,7 +520,7 @@ const jsScanFieldsInner = `
 		const blank = !sel.value || sel.selectedIndex <= 0
 		              || (sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].disabled)
 		              || sel.getAttribute('aria-invalid') === 'true';
-		if (!blank && sel.getAttribute('aria-invalid') !== 'true') return;
+		if (!includeAllCurrentValues && !blank && sel.getAttribute('aria-invalid') !== 'true') return;
 		const lbl = labelFor(sel.id)
 		            || (formEl && formEl.querySelector('label, legend, .fb-form-element-label, span[aria-hidden="true"]'));
 		const opts = [...sel.options]
@@ -520,6 +528,7 @@ const jsScanFieldsInner = `
 			.map(o => ({ value: o.value, label: o.text.trim() }));
 		if (opts.length === 0) return;
 		fields.push({ type: 'select', id: sel.id,
+		              required: sel.required || sel.getAttribute('aria-required') === 'true',
 		              question: lbl ? lbl.textContent.trim().replace(/\s+/g, ' ') : '', options: opts,
 		              group: sectionGroupFor(sel), helpText: helpTextFor(sel) });
 	});
@@ -546,7 +555,7 @@ const jsScanFieldsInner = `
 		                 || el.getAttribute('aria-autocomplete') === 'list'
 		                 || el.getAttribute('aria-autocomplete') === 'both'
 		                 || (el.closest('.search-basic-typeahead, [data-test-single-typeahead-entity-form-component]') != null);
-		if (el.value.trim() && !isTypeahead && el.getAttribute('aria-invalid') !== 'true') { textIdx++; return; }
+		if (!includeAllCurrentValues && el.value.trim() && !isTypeahead && el.getAttribute('aria-invalid') !== 'true') { textIdx++; return; }
 		const isRequired = el.required || el.getAttribute('aria-required') === 'true'
 		                || el.getAttribute('aria-invalid') === 'true';
 		const formEl = el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset');
@@ -575,7 +584,11 @@ const jsScanFieldsInner = `
 		fields.push({ type: 'text', id: el.id, index: textIdx,
 		              question: question || el.placeholder || 'Additional details',
 		              isTypeahead,
-		              maxChars,
+		              maxChars, required: isRequired,
+		              minValue: el.getAttribute('min') || '', maxValue: el.getAttribute('max') || '',
+		              stepValue: el.getAttribute('step') || '', pattern: el.getAttribute('pattern') || '',
+		              locale: el.closest('[lang]')?.getAttribute('lang') || document.documentElement.lang || '',
+		              nativeType: el.tagName === 'TEXTAREA' ? 'textarea' : el.type,
 		              group: sectionGroupFor(el), helpText: helpTextFor(el),
 		              inputType: (el.id.endsWith('-numeric') || el.type === 'number' || el.getAttribute('inputmode') === 'numeric')
 		                         ? 'numeric'
@@ -636,8 +649,11 @@ var jsFindCheckedRadioLabel string
 //
 // Embedded before jsScanFieldsInner, jsLinkedInAtFinalReviewFunction, and jsClickApplyNavigation
 // so resolveApplyContainer() is in scope wherever those functions run.
-const jsLinkedInApplyContainerFn = `
+const jsLinkedInApplyContainerFn = jsGreenhouseFormScopeFn + `
 function resolveApplyContainer() {
+	if (/^(boards|job-boards)\.greenhouse\.io$/.test(window.location.hostname)) {
+		return resolveGreenhouseApplicationForm();
+	}
 	function rectVisible(el) {
 		try { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2; }
 		catch(e) { return false; }
@@ -1600,6 +1616,7 @@ func resolveFormFieldAnswer(answer string, err error, fallback string) (string, 
 //   - filled=true  when at least one field was successfully written
 //   - hasFields=true when the scan found at least one field (even if none could be filled)
 //   - err non-nil on fatal LLM failures (Jobifai quota or provider usage limits) — callers must not click Continue/Submit
+//
 // jsFillByQuestionAnswer finds a visible field by question substring and sets/selects the answer.
 // Optional 4th argument sectionHint (string): when non-empty, restricts the search to form
 // elements whose nearest enclosing section heading contains the hint. Enables filling two
@@ -1780,7 +1797,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		if fillOpts.IncludeAnsweredRadios {
 			scanArgs["includeAnsweredRadios"] = true
 		}
-		res, err := p.Timeout(10 * time.Second).Eval(jsScanFields, scanArgs)
+		res, err := p.Timeout(10*time.Second).Eval(jsScanFields, scanArgs)
 		if err != nil {
 			continue
 		}
@@ -1838,6 +1855,8 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			platform = "unknown"
 		}
 		snap := captureStepSnapshot(fields, nil, platform, 0, "shadow-step")
+		scopeJobDependentFields(&snap, lazy.job)
+		snap.EmployerKey = lazy.job.Company
 		b.cfg.ShadowStepFn(ctx, snap)
 	}
 
@@ -1971,7 +1990,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				want := strings.ToLower(filepath.Base(path))
 				group := f.ResumeGroupName
 				if group == "" {
-					if res, evalErr := page.Timeout(3 * time.Second).Eval(jsLinkedInResumeRadioGroupName, want); evalErr == nil {
+					if res, evalErr := page.Timeout(3*time.Second).Eval(jsLinkedInResumeRadioGroupName, want); evalErr == nil {
 						group = res.Value.String()
 					}
 				}
@@ -2671,7 +2690,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 		if isVersionScopedFilename(base) {
 			res2, evalErr2 := page.Timeout(3*time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
 			if evalErr2 == nil && res2.Value.Get("accepted").Bool() && res2.Value.Get("filenameVisible").Bool() {
-				log.Info().Str("filename", base).Msg("linkedin: version already in library and selected â reusing without re-upload")
+				log.Info().Str("filename", base).Msg("linkedin: version already in library and selected; reusing without re-upload")
 				return nil
 			}
 			return b.holdUpload(uploadStageVersionScopedNotSel, base)
@@ -3318,7 +3337,7 @@ func isVersionScopedFilename(name string) bool {
 		return false
 	}
 	for _, c := range suffix {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

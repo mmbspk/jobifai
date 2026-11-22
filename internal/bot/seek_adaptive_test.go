@@ -20,8 +20,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/user/jobifai/internal/domain"
 	appdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/domain"
 )
 
 // ── shadow guard ──────────────────────────────────────────────────────────────
@@ -75,8 +75,8 @@ func TestAdaptiveSeekApply_AdaptivePipeline_MultiStepForm(t *testing.T) {
 
 	// Two unresolved fields — LLM must be called at least once.
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "5"},
-		{Ref: "f1", Action: "fill", Value: "Yes"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("5"), Value: "5"},
+		{Ref: "f1", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("Yes"), Value: "Yes"},
 	}}
 
 	b := &Bot{
@@ -109,7 +109,7 @@ func TestAdaptiveSeekApply_AdaptivePipeline_MultiStepForm(t *testing.T) {
 	assert.False(t, interp1.Paused, "step 1 must not pause")
 
 	// Write verified resolutions.
-	require.NoError(t, store.Write(context.Background(), snap1, interp1.Fields))
+	require.NoError(t, reviewFixtureMappings(t, store, snap1, interp1.Fields))
 
 	// Execute step 1 with a stub filler (no browser).
 	guard := &SubmitGuard{DB: b.cfg.DB, AttemptID: "attempt-seek-1", UserID: "test-user"}
@@ -164,7 +164,7 @@ func TestAdaptiveSeekApply_WarmPath_ZeroLLMCalls(t *testing.T) {
 	db := openMappingDB(t)
 	store := &DBMappingStore{DB: db, UserID: "user-seek"}
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "10"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("10"), Value: "10"},
 	}}
 	si := &StepInterpreter{LLM: llm, Mapping: store}
 	profile := basicProfile()
@@ -177,7 +177,7 @@ func TestAdaptiveSeekApply_WarmPath_ZeroLLMCalls(t *testing.T) {
 	interp, err := si.InterpretStep(context.Background(), snap, profile)
 	require.NoError(t, err)
 	assert.Equal(t, 1, llm.calls, "cold run must call LLM")
-	require.NoError(t, store.Write(context.Background(), snap, interp.Fields))
+	require.NoError(t, reviewFixtureMappings(t, store, snap, interp.Fields))
 
 	// Warm run — disable model to prove it's not needed.
 	llm.err = errModelDisabled
@@ -205,7 +205,7 @@ func TestAdaptiveSeekApply_PersistsMappings_SurvivesWorkerRestart(t *testing.T) 
 
 	store1 := &DBMappingStore{DB: db1, UserID: "user-seek-restart"}
 	llm1 := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "Healthcare"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("Healthcare"), Value: "Healthcare"},
 	}}
 	si1 := &StepInterpreter{LLM: llm1, Mapping: store1}
 
@@ -216,7 +216,7 @@ func TestAdaptiveSeekApply_PersistsMappings_SurvivesWorkerRestart(t *testing.T) 
 	// Cold run: write mappings.
 	interp, err := si1.InterpretStep(context.Background(), snap, basicProfile())
 	require.NoError(t, err)
-	require.NoError(t, store1.Write(context.Background(), snap, interp.Fields))
+	require.NoError(t, reviewFixtureMappings(t, store1, snap, interp.Fields))
 	_ = db1.Close()
 
 	// Simulate worker restart: open same DB file with a new interpreter.

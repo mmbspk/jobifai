@@ -57,7 +57,7 @@ func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jobs/view/123456789", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+		_, _ = fmt.Fprint(w, `<!DOCTYPE html><html><body>
 <main data-job-id="123456789">
   <h1>Test Role at TestCo</h1>
   <button data-live-test-easy-apply
@@ -70,7 +70,7 @@ func TestRunSubmit_PostApplyDriftNoAppliedRecord(t *testing.T) {
 	})
 	mux.HandleFunc("/jobs/view/999888", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+		_, _ = fmt.Fprint(w, `<!DOCTYPE html><html><body>
 <main data-job-id="123456789"><p>Application submitted. Your application was sent to TestCo.</p></main>
 </body></html>`)
 	})

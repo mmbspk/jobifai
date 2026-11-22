@@ -11,6 +11,7 @@ package bot
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -35,6 +36,7 @@ func basicProfile() *domain.ResumeProfile {
 			Address: "10 Bridge St",
 		},
 		ApplicationDefaults: domain.ApplicationDefaults{
+			FormAnswers:         fixtureFormAnswers(),
 			NoticePeriod:        "2 weeks",
 			SalaryExpectation:   "90000",
 			RequiresSponsorship: false,
@@ -144,6 +146,46 @@ func TestInterpreter_FirstNameFromProfile(t *testing.T) {
 	assert.Equal(t, ActionFill, r.Action)
 }
 
+func TestInterpreter_QualifiedQuestionsCannotReuseSimpleCandidateFacts(t *testing.T) {
+	for _, label := range []string{"Previous employer email address", "Emergency contact phone number", "Do you not require sponsorship?", "Country of citizenship", "Previous salary", "Availability for night shifts", "Recruiter first name"} {
+		t.Run(label, func(t *testing.T) {
+			field := textField("f0", label)
+			if label == "Do you not require sponsorship?" {
+				field = radioField("f0", label, "Yes", "No")
+			}
+			interp, err := (&StepInterpreter{}).InterpretStep(context.Background(), makeSnap(field), basicProfile())
+			require.NoError(t, err)
+			require.True(t, interp.Paused)
+			assert.Empty(t, interp.Fields[0].Value)
+		})
+	}
+}
+
+func TestInterpreter_ModelCannotOverrideFactQualifiersOrRepurposeQuestionAnswers(t *testing.T) {
+	for _, tc := range []struct{ label, binding string }{
+		{"Expected monthly salary", "application_defaults.salary_expectation"},
+		{"Salary in AUD", "application_defaults.salary_expectation"},
+		{"Emergency contact email address", "personal_information.email"},
+		{"Country of citizenship", "personal_information.country"},
+		{"Do you not require sponsorship?", "application_defaults.requires_sponsorship"},
+		{"Are you legally allowed to work in Australia?", "application_defaults.requires_sponsorship"},
+		{"Are you legally entitled to work here?", "application_defaults.requires_sponsorship"},
+		{"Are you eligible to work in New Zealand?", "application_defaults.requires_sponsorship"},
+		{"Are you authorised to work in a different country?", "application_defaults.form_answers.mapping_unrelated"},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			profile := basicProfile()
+			profile.ApplicationDefaults.FormAnswers["mapping_unrelated"] = "Yes"
+			field := textField("f0", tc.label)
+			delegate := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: tc.binding}}}
+			result, err := (&StepInterpreter{LLM: delegate}).InterpretStep(context.Background(), makeSnap(field), profile)
+			require.NoError(t, err)
+			require.True(t, result.Paused)
+			assert.Empty(t, result.Fields[0].Value)
+		})
+	}
+}
+
 func TestInterpreter_LastNameFromProfile(t *testing.T) {
 	si := &StepInterpreter{}
 	snap := makeSnap(textField("f0", "Last Name"))
@@ -212,7 +254,7 @@ func TestInterpreter_SponsorshipYes(t *testing.T) {
 
 func TestInterpreter_SponsorshipOptionMissing_FallsToLLM(t *testing.T) {
 	// Options don't have Yes/No — deterministic can't resolve, field goes to LLM.
-	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", Value: "Absolutely"}}}
+	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("Absolutely"), Value: "Absolutely"}}}
 	si := &StepInterpreter{LLM: llm}
 	snap := makeSnap(radioField("f0", "Require Sponsorship", "Absolutely", "Never"))
 	interp, err := si.InterpretStep(context.Background(), snap, basicProfile())
@@ -248,8 +290,8 @@ func TestInterpreter_NilProfileNameField_Pending(t *testing.T) {
 
 func TestInterpreter_MappingHit_NoLLMCall(t *testing.T) {
 	field := selectField("f0", "Job Title", "Engineer", "Manager")
-	fixedRes := FieldResolution{Ref: "f0", Source: SourceMapping, Action: ActionFill, Value: "Engineer"}
-	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", Value: "wrong"}}}
+	fixedRes := FieldResolution{Ref: "f0", Source: SourceMapping, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: fixtureBinding("Engineer")}
+	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("wrong"), Value: "wrong"}}}
 	si := &StepInterpreter{
 		LLM:     llm,
 		Mapping: &stubMapping{fieldSig: field.FieldSignature("linkedin"), res: fixedRes},
@@ -265,7 +307,7 @@ func TestInterpreter_MappingHit_NoLLMCall(t *testing.T) {
 }
 
 func TestInterpreter_MappingMiss_FallsToLLM(t *testing.T) {
-	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", Value: "Manager"}}}
+	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("Manager"), Value: "Manager"}}}
 	si := &StepInterpreter{
 		LLM:     llm,
 		Mapping: &stubMapping{}, // empty fieldSig → always miss
@@ -282,7 +324,7 @@ func TestInterpreter_MappingMiss_FallsToLLM(t *testing.T) {
 
 func TestInterpreter_LLMBatch_Success(t *testing.T) {
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "5 years"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("5 years"), Value: "5 years"},
 		{Ref: "f1", Action: "skip"},
 	}}
 	si := &StepInterpreter{LLM: llm}
@@ -368,7 +410,7 @@ func TestInterpreter_LLMInvalidAction_Pending(t *testing.T) {
 
 func TestInterpreter_LLMBadOptionForSelect_Pending(t *testing.T) {
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "Purple"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("Purple"), Value: "Purple"},
 	}}
 	si := &StepInterpreter{LLM: llm}
 	snap := makeSnap(selectField("f0", "Preferred Shift", "Morning", "Afternoon", "Night"))
@@ -381,7 +423,7 @@ func TestInterpreter_LLMBadOptionForSelect_Pending(t *testing.T) {
 
 func TestInterpreter_LLMValidOptionForSelect(t *testing.T) {
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "Morning"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("Morning"), Value: "Morning"},
 	}}
 	si := &StepInterpreter{LLM: llm}
 	snap := makeSnap(selectField("f0", "Preferred Shift", "Morning", "Afternoon", "Night"))
@@ -395,7 +437,7 @@ func TestInterpreter_LLMValidOptionForSelect(t *testing.T) {
 func TestInterpreter_LLMOptionCaseInsensitiveMatch(t *testing.T) {
 	// LLM returns "morning" (lowercase), field has "Morning"
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "morning"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("morning"), Value: "morning"},
 	}}
 	si := &StepInterpreter{LLM: llm}
 	snap := makeSnap(selectField("f0", "Preferred Shift", "Morning", "Afternoon"))
@@ -408,7 +450,7 @@ func TestInterpreter_LLMOptionCaseInsensitiveMatch(t *testing.T) {
 func TestInterpreter_LLMMissingRef_Pending(t *testing.T) {
 	// LLM returns a proposal for f1 but we asked for f0 — f0 becomes malformed.
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f1", Action: "fill", Value: "something"},
+		{Ref: "f1", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("something"), Value: "something"},
 	}}
 	si := &StepInterpreter{LLM: llm}
 	snap := makeSnap(textField("f0", "Cover Letter"))
@@ -423,14 +465,14 @@ func TestInterpreter_LLMMissingRef_Pending(t *testing.T) {
 
 func TestInterpreter_MixedFields_OneFieldPendingPausesStep(t *testing.T) {
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f2", Action: "fill", Value: "5 years"},
+		{Ref: "f2", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("5 years"), Value: "5 years"},
 	}}
 	si := &StepInterpreter{LLM: llm}
 	snap := makeSnap(
-		textField("f0", "First Name"),                       // deterministic
-		fileField("f1", "Resume"),                           // deterministic (upload)
-		textField("f2", "Years of Experience"),              // LLM
-		unsupportedField("f3", "Secret validation widget"),  // unsupported → pending
+		textField("f0", "First Name"),                      // deterministic
+		fileField("f1", "Resume"),                          // deterministic (upload)
+		textField("f2", "Years of Experience"),             // LLM
+		unsupportedField("f3", "Secret validation widget"), // unsupported → pending
 	)
 	interp, err := si.InterpretStep(context.Background(), snap, basicProfile())
 	require.NoError(t, err)
@@ -546,4 +588,17 @@ func TestProfileValueForLabel_KnownLabels(t *testing.T) {
 
 func TestProfileValueForLabel_Unknown(t *testing.T) {
 	assert.Equal(t, "", profileValueForLabel("years of experience", basicProfile()))
+}
+
+// These are explicit candidate-approved facts for synthetic fixtures. The LLM
+// returns only a key into this profile; no model-generated value is replayed.
+func fixtureFormAnswers() map[string]string {
+	answers := map[string]string{"experience_years": "7", "drivers_licence": "No", "current_title": "Registered Nurse", "earliest_start": "immediately", "software_years": "5", "medical_years": "3", "ten_years": "10", "five_years": "5", "education": "Bachelor's degree", "portfolio": "https://portfolio.example.com"}
+	for _, value := range []string{"Engineer", "Manager", "Morning", "morning", "Purple", "Absolutely", "5 years", "5", "Yes", "No", "10", "3", "immediately", "something", "Healthcare"} {
+		answers["test_"+hex.EncodeToString([]byte(value))] = value
+	}
+	return answers
+}
+func fixtureBinding(value string) string {
+	return "application_defaults.form_answers.test_" + hex.EncodeToString([]byte(value))
 }

@@ -15,17 +15,21 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
+	"github.com/user/jobifai/internal/llmreuse"
 )
 
 // ── mock HTTP server ──────────────────────────────────────────────────────────
@@ -37,8 +41,9 @@ import (
 // responseFor receives the raw request body and must return a valid JSON array
 // string of LLMFieldProposal objects. If nil, every call returns an empty array.
 type countingServer struct {
-	server     *httptest.Server
-	requests   atomic.Int32
+	server      *httptest.Server
+	requests    atomic.Int32
+	inputBytes  atomic.Int64
 	responseFor func(body []byte) string // may be nil → returns "[]"
 }
 
@@ -49,11 +54,10 @@ func newCountingServer(t *testing.T, responseFor func(body []byte) string) *coun
 		cs.requests.Add(1)
 		var body []byte
 		if r.Body != nil {
-			buf := make([]byte, 1<<20)
-			n, _ := r.Body.Read(buf)
-			body = buf[:n]
+			body, _ = io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		}
 		text := "[]"
+		cs.inputBytes.Add(int64(len(body)))
 		if cs.responseFor != nil {
 			text = cs.responseFor(body)
 		}
@@ -85,7 +89,7 @@ func (cs *countingServer) newClient(t *testing.T) *llm.Client {
 // so the mapping DB entries are compatible.
 func providerThreeFieldSnap() StepSnapshot {
 	return captureStepSnapshot([]formField{
-		{Type: "text", Question: "Total years of relevant experience", InputType: "text"},
+		{Type: "text", Question: "Total years of work experience", InputType: "text"},
 		{Type: "radio", Question: "Do you have a driver's licence?", InputType: "radio",
 			Options: []formFieldOption{{Label: "Yes"}, {Label: "No"}}},
 		{Type: "text", Question: "Current or most recent job title", InputType: "text"},
@@ -95,9 +99,9 @@ func providerThreeFieldSnap() StepSnapshot {
 // coldProposalsJSON returns a JSON array matching providerThreeFieldSnap fields.
 func coldProposalsJSON() string {
 	proposals := []map[string]any{
-		{"ref": "f0", "action": "fill", "intent_type": "llm", "binding_key": "", "value": "7"},
-		{"ref": "f1", "action": "fill", "intent_type": "llm", "binding_key": "", "value": "No"},
-		{"ref": "f2", "action": "fill", "intent_type": "llm", "binding_key": "", "value": "Registered Nurse"},
+		{"ref": "f0", "action": "fill", "intent_type": "profile", "binding_key": "application_defaults.form_answers.experience_years", "value": ""},
+		{"ref": "f1", "action": "fill", "intent_type": "profile", "binding_key": "application_defaults.form_answers.drivers_licence", "value": ""},
+		{"ref": "f2", "action": "fill", "intent_type": "profile", "binding_key": "application_defaults.form_answers.current_title", "value": ""},
 	}
 	b, _ := json.Marshal(proposals)
 	return string(b)
@@ -106,7 +110,7 @@ func coldProposalsJSON() string {
 // partialProposalJSON returns a JSON array for only the new field (f3) in a 4-field partial snap.
 func partialProposalJSON(ref string) string {
 	proposals := []map[string]any{
-		{"ref": ref, "action": "fill", "intent_type": "llm", "binding_key": "", "value": "immediately"},
+		{"ref": ref, "action": "fill", "intent_type": "profile", "binding_key": "application_defaults.form_answers.earliest_start", "value": ""},
 	}
 	b, _ := json.Marshal(proposals)
 	return string(b)
@@ -168,6 +172,53 @@ func TestLLMFormInterpreter_ColdStep_OneProviderRequest(t *testing.T) {
 	estimateLabelCost(t, 3)
 }
 
+func TestLLMFormInterpreter_ConcurrentMissesCoalesceWithinVerifiedScope(t *testing.T) {
+	db := openProviderTestDB(t)
+	for _, id := range []string{"owner", "other"} {
+		_, err := db.Exec(`INSERT INTO users(id,email,password_hash) VALUES(?,?,?)`, id, id+"@fixture.test", "fixture")
+		require.NoError(t, err)
+	}
+	server := newCountingServer(t, func([]byte) string {
+		time.Sleep(100 * time.Millisecond)
+		return `[{"ref":"f0","action":"fill","intent_type":"profile","binding_key":"application_defaults.notice_period"}]`
+	})
+	client := server.newClient(t).WithUserID("owner").WithReuse(&llm.ReuseCoordinator{Store: &llmreuse.Store{DB: db}})
+	adapter := NewLLMFormInterpreter(client)
+	snap := makeSnap(textField("f0", "How soon can you leave?"))
+	snap.EmployerKey = "verified-issuer-a"
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	results := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := adapter.InterpretFields(context.Background(), basicProfile(), snap, []string{"f0"})
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	for err := range results {
+		require.NoError(t, err)
+	}
+	assert.Equal(t, int32(1), server.requests.Load(), "one provider request for eight concurrent misses")
+	changed := snap
+	changed.EmployerKey = "verified-issuer-b"
+	_, err := adapter.InterpretFields(context.Background(), basicProfile(), changed, []string{"f0"})
+	require.NoError(t, err)
+	current := basicProfile()
+	current.ApplicationDefaults.NoticePeriod = "1 month"
+	_, err = adapter.InterpretFields(context.Background(), current, snap, []string{"f0"})
+	require.NoError(t, err)
+	other := NewLLMFormInterpreter(server.newClient(t).WithUserID("other").WithReuse(&llm.ReuseCoordinator{Store: &llmreuse.Store{DB: db}}))
+	_, err = other.InterpretFields(context.Background(), basicProfile(), snap, []string{"f0"})
+	require.NoError(t, err)
+	assert.Equal(t, int32(4), server.requests.Load(), "employer, profile and user changes cannot reuse a pending proposal across scope")
+}
+
 // TestLLMFormInterpreter_WarmStep_ZeroProviderRequests proves that when all 3 fields
 // are in the mapping cache, the LLMFormInterpreter is never invoked (zero HTTP requests).
 func TestLLMFormInterpreter_WarmStep_ZeroProviderRequests(t *testing.T) {
@@ -181,11 +232,11 @@ func TestLLMFormInterpreter_WarmStep_ZeroProviderRequests(t *testing.T) {
 	// Seed the mapping cache directly (simulating a prior cold run).
 	snap := providerThreeFieldSnap()
 	seedResolutions := []FieldResolution{
-		{Ref: "f0", Source: SourceLLM, Action: ActionFill, Value: "7"},
-		{Ref: "f1", Source: SourceLLM, Action: ActionFill, Value: "No"},
-		{Ref: "f2", Source: SourceLLM, Action: ActionFill, Value: "Registered Nurse"},
+		{Ref: "f0", Source: SourceLLM, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.experience_years"},
+		{Ref: "f1", Source: SourceLLM, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.drivers_licence"},
+		{Ref: "f2", Source: SourceLLM, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.current_title"},
 	}
-	require.NoError(t, store.Write(context.Background(), snap, seedResolutions))
+	require.NoError(t, reviewFixtureMappings(t, store, snap, seedResolutions))
 
 	// Now run the interpreter with the production adapter (should not be called).
 	interpreter := &LLMFormInterpreter{client: srv.newClient(t)}
@@ -202,7 +253,7 @@ func TestLLMFormInterpreter_WarmStep_ZeroProviderRequests(t *testing.T) {
 		}
 	}
 
-	t.Logf("EVIDENCE provider-warm | provider_requests=%d | fields_from_mapping=%d | llm_used=%v | estimated_warm_cost=$0.00",
+	t.Logf("EVIDENCE provider-warm | provider_requests=%d | fields_from_mapping=%d | llm_used=%v",
 		requests, fromMapping, result.LLMUsed)
 
 	assert.Equal(t, 0, requests, "warm step: zero provider HTTP requests")
@@ -228,15 +279,15 @@ func TestLLMFormInterpreter_PartialMiss_OneRequestWithNewField(t *testing.T) {
 	// Seed 3 known fields.
 	snap3 := providerThreeFieldSnap()
 	seedResolutions := []FieldResolution{
-		{Ref: "f0", Source: SourceLLM, Action: ActionFill, Value: "7"},
-		{Ref: "f1", Source: SourceLLM, Action: ActionFill, Value: "No"},
-		{Ref: "f2", Source: SourceLLM, Action: ActionFill, Value: "Registered Nurse"},
+		{Ref: "f0", Source: SourceLLM, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.experience_years"},
+		{Ref: "f1", Source: SourceLLM, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.drivers_licence"},
+		{Ref: "f2", Source: SourceLLM, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.current_title"},
 	}
-	require.NoError(t, store.Write(context.Background(), snap3, seedResolutions))
+	require.NoError(t, reviewFixtureMappings(t, store, snap3, seedResolutions))
 
 	// Partial snap: same 3 known fields + 1 new field.
 	snap4 := captureStepSnapshot([]formField{
-		{Type: "text", Question: "Total years of relevant experience", InputType: "text"},
+		{Type: "text", Question: "Total years of work experience", InputType: "text"},
 		{Type: "radio", Question: "Do you have a driver's licence?", InputType: "radio",
 			Options: []formFieldOption{{Label: "Yes"}, {Label: "No"}}},
 		{Type: "text", Question: "Current or most recent job title", InputType: "text"},
@@ -326,20 +377,8 @@ func extractRefsFromPromptBody(body []byte) []string {
 	return refs
 }
 
-// estimateLabelCost logs the estimated token cost for a cold step.
+// estimateLabelCost reports the mock's declared usage without invented rates.
 func estimateLabelCost(t *testing.T, fieldCount int) {
 	t.Helper()
-	const (
-		fixedInputTokens  = 450
-		perFieldInputTokens = 15
-		perFieldOutputTokens = 25
-		claudeHaikuInputCostPerMTok  = 0.25
-		claudeHaikuOutputCostPerMTok = 1.25
-	)
-	inputTokens := fixedInputTokens + fieldCount*perFieldInputTokens
-	outputTokens := fieldCount * perFieldOutputTokens
-	costUSD := float64(inputTokens)*claudeHaikuInputCostPerMTok/1_000_000 +
-		float64(outputTokens)*claudeHaikuOutputCostPerMTok/1_000_000
-	t.Logf("COST ESTIMATE | fields=%d | input_tokens=%d | output_tokens=%d | cost_usd=%.8f",
-		fieldCount, inputTokens, outputTokens, costUSD)
+	t.Logf("FIXTURE USAGE | fields=%d | declared_mock_input_tokens=50 | declared_mock_output_tokens=25 | production_cost=unknown", fieldCount)
 }

@@ -188,6 +188,9 @@ func NewRouter(svc *Services) *chi.Mux {
 		// ── Settings ─────────────────────────────────────────────────
 		r.Route("/api/settings", func(r chi.Router) {
 			r.Get("/resume", settings.ResumeGet)
+			r.Get("/form-mappings", settings.FormMappings)
+			r.Post("/form-mappings/{id}/confirm", settings.ConfirmFormMapping)
+			r.Delete("/form-mappings/{id}", settings.InvalidateFormMapping)
 			r.Post("/resume", settings.ResumeSet)
 			r.Post("/resume/upload", settings.ResumeUpload)
 			r.Get("/resume/download", settings.ResumeDownload)

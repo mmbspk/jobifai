@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/user/jobifai/internal/auth"
@@ -31,7 +32,7 @@ func (h *AdminApplyEngineHandlers) Get(w http.ResponseWriter, r *http.Request) {
 // Only accepts valid mode values; rejects unknown modes to prevent silent no-ops.
 func (h *AdminApplyEngineHandlers) Set(w http.ResponseWriter, r *http.Request) {
 	var incoming domain.ApplyEngineConfig
-	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768)).Decode(&incoming); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid request body: " + err.Error()})
 		return
 	}
@@ -42,6 +43,10 @@ func (h *AdminApplyEngineHandlers) Set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for platform, mode := range incoming.PlatformOverrides {
+		if platform != string(domain.PlatformLinkedIn) && platform != string(domain.PlatformSeek) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "unsupported platform override"})
+			return
+		}
 		if !validEngineMode(mode) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"message": "invalid platform override mode for " + platform + ": must be legacy, shadow or adaptive",
@@ -50,12 +55,23 @@ func (h *AdminApplyEngineHandlers) Set(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var old domain.ApplyEngineConfig
-	if err := h.svc.Config.Get(domain.SystemUserID, keyApplyEngineConfig, &old); err != nil {
-		old = domain.ApplyEngineConfig{Mode: domain.ApplyEngineLegacy}
+	configTx, ok := h.svc.Config.(TransactionalConfigStore)
+	if !ok || h.svc.DB == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "transactional engine updates are unavailable"})
+		return
 	}
-
-	if err := h.svc.Config.Set(domain.SystemUserID, keyApplyEngineConfig, incoming); err != nil {
+	tx, err := h.svc.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not begin engine update"})
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+	old := domain.ApplyEngineConfig{Mode: domain.ApplyEngineLegacy}
+	if err := configTx.GetTx(r.Context(), tx, domain.SystemUserID, keyApplyEngineConfig, &old); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not read engine configuration"})
+		return
+	}
+	if err := configTx.SetTx(r.Context(), tx, domain.SystemUserID, keyApplyEngineConfig, incoming); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
@@ -65,7 +81,14 @@ func (h *AdminApplyEngineHandlers) Set(w http.ResponseWriter, r *http.Request) {
 	if q := r.URL.Query().Get("reason"); q != "" {
 		reason = q
 	}
-	bot.WriteEngineAudit(h.svc.DB, adminID, reason, old, incoming)
+	if err := bot.WriteEngineAuditTx(r.Context(), tx, adminID, reason, old, incoming); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not record engine audit"})
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not save engine update"})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message": "apply engine config saved",

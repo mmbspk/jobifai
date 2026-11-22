@@ -36,6 +36,28 @@ import (
 // fill path; this is the safety net.
 var errShadowBrowserAction = errors.New("adaptive_runner: shadow mode must not issue browser actions (bug: wrong routing)")
 
+// Confirmation observation never retries Submit. A timeout leaves the durable
+// submit intent for reconciliation instead of reporting an application as sent.
+func waitAdaptiveConfirmation(ctx context.Context, confirmed func() bool) bool {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		if confirmed() {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
 // resolvedFilledRefs returns only the FieldResolutions whose ref appears in filledRefs.
 // This restricts cache writes to fields the executor actually filled, avoiding entries
 // for fields that were interpreted but could not be written (e.g. DOM element missing).
@@ -71,6 +93,8 @@ func shadowSeekApply() error {
 // It runs the same pre-flight checks as the legacy path and then uses
 // StepInterpreter + StepExecutor for each modal step.
 func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen, ac *AttemptContext) (retErr error) {
+	ctx, cancel := beginAdaptiveRun(ctx)
+	defer cancel()
 	if ac != nil && ac.Engine == domain.ApplyEngineShadow {
 		return shadowEasyApply()
 	}
@@ -79,6 +103,13 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	if lazy == nil {
 		return fmt.Errorf("%w: missing declared job", errLinkedInIdentity)
 	}
+	if b.cfg.DB == nil || ac == nil || ac.AttemptID == "" {
+		return ErrNoActiveAttempt
+	}
+	if page == nil {
+		return fmt.Errorf("%w: application page is missing", errLinkedInIdentity)
+	}
+	page, lazy.ctx = page.Context(ctx), ctx
 	if err := unresolvedSubmission(b.cfg.DB, b.cfg.UserID, lazy.job.ID, lazy.job.URL, lazy.attemptID); err != nil {
 		return fmt.Errorf("%w: %v", errLinkedInSubmissionUnknown, err)
 	}
@@ -116,6 +147,7 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	// Wait for the modal to render (up to 20s): scan until at least one field appears.
 	var firstFields []formField
 	var firstPage *rod.Page
+	initialStepReady := false
 	modalDeadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(modalDeadline) {
 		if ctx.Err() != nil {
@@ -123,11 +155,16 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 		firstFields, firstPage, _ = b.scanAdaptiveStep(ctx, page)
 		if len(firstFields) > 0 {
+			initialStepReady = true
+			break
+		}
+		if _, kind, found, _, err := b.peekEasyApplyPrimary(page); err == nil && found && applyPrimaryIsSubmit(kind) {
+			initialStepReady = true
 			break
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	if len(firstFields) == 0 {
+	if !initialStepReady {
 		return fmt.Errorf("adaptive: modal did not render fields within timeout")
 	}
 	activePage := page
@@ -136,11 +173,12 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	}
 
 	b.log.Info().Str("attempt_id", lazy.attemptID).Int("initial_fields", len(firstFields)).Msg("adaptive: modal ready, entering step loop")
+	employerScope := nativeEmployerScope(ctx, page, "linkedin", lazy.job)
 
 	// Set up the adaptive pipeline components.
 	profile := b.currentProfile()
 	si := &StepInterpreter{
-		LLM:     b.cfg.AdaptiveLLM,
+		LLM:     boundFormLLM(b.cfg.AdaptiveLLM),
 		Mapping: b.cfg.AdaptiveMapping,
 	}
 	guard := &SubmitGuard{
@@ -149,7 +187,23 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		UserID:    b.cfg.UserID,
 	}
 	se := NewStepExecutor(DefaultStepExecBounds(), guard)
-	filler := &linkedInRodFiller{page: activePage, bot: b}
+	se.BeforeSideEffect = func(ctx context.Context) error {
+		if err := b.checkAdaptiveSideEffect(); err != nil {
+			return err
+		}
+		if err := killSwitchCheck(b.cfg.EngineStore, ac); err != nil {
+			return err
+		}
+		r, err := resolveLinkedInJob(page.Context(ctx), linkedInExpectedID(lazy.job.URL), false, lazy.job)
+		if err != nil {
+			return err
+		}
+		if !r.IdentityVerified {
+			return r.resolutionError()
+		}
+		return nil
+	}
+	filler := &linkedInRodFiller{page: activePage, bot: b, lazy: lazy}
 
 	const maxModalSteps = 30
 	for stepIdx := 0; stepIdx < maxModalSteps; stepIdx++ {
@@ -176,7 +230,9 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 
 		snap := captureStepSnapshot(fields, nil, "linkedin", stepIdx, stepTitle)
-		snap.EmployerKey = lazy.job.Company
+		scopeJobDependentFields(&snap, lazy.job)
+		lazy.applyCaps(capsFromFormFields(fields))
+		snap.EmployerKey = employerScope
 
 		// Interpret: deterministic → mapping → LLM.
 		interp, err := si.InterpretStep(ctx, snap, profile)
@@ -185,12 +241,15 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 
 		if interp.Paused {
+			recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
 			log.Warn().Int("step", stepIdx).Str("reason", string(interp.PauseReason)).Msg("adaptive: step paused, needs human review")
-			return fmt.Errorf("adaptive: step %d paused: %s", stepIdx, interp.PauseReason)
+			return fmt.Errorf("%w: step %d (%s)", errAdaptiveQuestionReview, stepIdx, interp.PauseReason)
 		}
 
 		// Execute: fill fields + navigate.
+		recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
 		result, err := se.ExecuteStep(ctx, snap, interp, filler)
+		invalidateFailedMappings(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		if err != nil && result.Outcome != StepOutcomeSubmitted {
 			return fmt.Errorf("adaptive: execute step %d: %w", stepIdx, err)
 		}
@@ -201,7 +260,9 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		var submissionConfirmed bool
 		if result.Outcome == StepOutcomeSubmitted && result.Err == nil {
 			expectedID := linkedInExpectedID(lazy.job.URL)
-			submissionConfirmed = linkedInSubmissionConfirmed(filler.page, expectedID, lazy.job.Company)
+			submissionConfirmed = waitAdaptiveConfirmation(ctx, func() bool {
+				return linkedInSubmissionConfirmed(filler.page, expectedID, lazy.job.Company)
+			})
 			if !submissionConfirmed {
 				b.log.Warn().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).
 					Msg("adaptive: submit clicked but LinkedIn confirmation signal absent — skipping mapping write")
@@ -212,6 +273,9 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		switch result.Outcome {
 		case StepOutcomeSubmitted:
 			submitClicked = true
+			if !submissionConfirmed {
+				return errLinkedInSubmissionUnknown
+			}
 			b.log.Info().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).Msg("adaptive: submit clicked")
 			return nil
 		case StepOutcomeAdvanced:
@@ -238,7 +302,7 @@ func (b *Bot) scanAdaptiveStep(ctx context.Context, page *rod.Page) ([]formField
 		}
 	}
 	for _, p := range pages {
-		res, err := p.Timeout(10 * time.Second).Eval(jsScanFields, map[string]interface{}{})
+		res, err := p.Context(ctx).Timeout(10*time.Second).Eval(jsScanFields, map[string]interface{}{"includeAnsweredRadios": true, "includeAnsweredFields": true})
 		if err != nil {
 			continue
 		}
@@ -262,40 +326,22 @@ func (b *Bot) scanAdaptiveStep(ctx context.Context, page *rod.Page) ([]formField
 // This is the primary advancement signal for LinkedIn. A missing or unreadable
 // progress bar is never treated as evidence of advancement — the caller must
 // fall back to the final-review-page check in that case.
-func linkedInStepProgress(page *rod.Page) int {
-	res, err := page.Eval(`() => {
-		const bar = document.querySelector(
-			'[role="dialog"] progress, [role="dialog"] [role="progressbar"],' +
-			' .jobs-easy-apply-modal progress'
-		);
-		if (!bar) return -1;
-		const v = bar.getAttribute('aria-valuenow');
-		const n = parseInt(v, 10);
-		return isNaN(n) ? -1 : n;
-	}`)
-	if err != nil || res == nil {
-		return -1
-	}
-	return res.Value.Int()
-}
+func linkedInStepProgress(page *rod.Page) int { return adaptiveStepProgress(page) }
+func seekStepProgress(page *rod.Page) int     { return adaptiveStepProgress(page) }
 
-// seekStepProgress reads the aria-valuenow attribute from the SEEK Quick Apply
-// progress bar. Returns -1 when the bar cannot be read.
-//
-// This is the primary advancement signal for SEEK. Missing or unreadable means
-// no positive evidence — the caller must fall back to the submit-button signal.
-func seekStepProgress(page *rod.Page) int {
-	res, err := page.Eval(`() => {
-		const bar = document.querySelector('[role="progressbar"], progress');
-		if (!bar) return -1;
-		const v = bar.getAttribute('aria-valuenow');
-		const n = parseInt(v, 10);
-		return isNaN(n) ? -1 : n;
-	}`)
-	if err != nil || res == nil {
+func adaptiveStepProgress(page *rod.Page) int {
+	result, err := page.Eval(`() => {` + jsLinkedInApplyContainerFn + `
+  const scope=resolveApplyContainer();if(!scope)return -1;
+  const bars=allInDOM(scope,'progress,[role="progressbar"]').filter(el=>{const r=el.getBoundingClientRect();if(!r.width||!r.height)return false;for(let p=el;p;p=p.parentElement){const s=getComputedStyle(p);if(p.hidden||p.getAttribute('aria-hidden')==='true'||s.display==='none'||s.visibility==='hidden')return false;}return true;});
+  if(bars.length!==1)return -1;
+  const value=bars[0].getAttribute('aria-valuenow')||bars[0].getAttribute('value');
+  if(value===null||value.trim()==='')return -1;
+  const n=Number(value);return Number.isFinite(n)&&n>=0?n:-1;
+ }`)
+	if err != nil || result == nil {
 		return -1
 	}
-	return res.Value.Int()
+	return result.Value.Int()
 }
 
 // writeConfirmedStep persists field mappings to the mapping store only when
@@ -312,12 +358,16 @@ func writeConfirmedStep(ctx context.Context, store MappingReadWriter, snap StepS
 	if store == nil {
 		return
 	}
+	fields := resolvedFilledRefs(interp.Fields, result.FilledRefs)
+	if len(fields) == 0 || result.Err != nil {
+		return
+	}
 	switch result.Outcome {
 	case StepOutcomeAdvanced:
-		_ = store.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
+		_ = store.Write(ctx, snap, fields)
 	case StepOutcomeSubmitted:
 		if submissionConfirmed {
-			_ = store.Write(ctx, snap, resolvedFilledRefs(interp.Fields, result.FilledRefs))
+			_ = store.Write(ctx, snap, fields)
 		}
 	}
 }
@@ -329,48 +379,26 @@ func writeConfirmedStep(ctx context.Context, store MappingReadWriter, snap StepS
 type linkedInRodFiller struct {
 	page *rod.Page
 	bot  *Bot
+	lazy *lazyDocGen
 }
 
-func (f *linkedInRodFiller) Fill(_ context.Context, field SnapField, res FieldResolution) FieldFillResult {
+func (f *linkedInRodFiller) Fill(ctx context.Context, field SnapField, res FieldResolution) FieldFillResult {
 	if res.Action == ActionSkip {
 		return FieldFillResult{Skipped: true}
 	}
 	if res.Action == ActionUpload {
-		idx, err := refIndex(field.Ref)
-		if err != nil {
-			return FieldFillResult{Err: err}
-		}
-		result, evalErr := f.page.Eval(jsFillFileNth, idx)
-		if evalErr != nil || result == nil || !result.Value.Bool() {
-			return FieldFillResult{Err: fmt.Errorf("adaptive: file upload slot not found (ref %s)", field.Ref)}
-		}
-		return FieldFillResult{Filled: true}
+		return f.bot.fillAdaptiveDocument(ctx, f.page, f.lazy, field)
 	}
 
 	// ActionFill: use jsFillByQuestionAnswer for text/radio/select/textarea.
-	var fieldTypeParm string
-	switch field.Type {
-	case SnapTypeRadio:
-		fieldTypeParm = "radio"
-	case SnapTypeSelect:
-		fieldTypeParm = "select"
-	default:
-		fieldTypeParm = "text"
-	}
-	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm, field.Group, field.ControlID)
-	if err != nil {
-		return FieldFillResult{Err: fmt.Errorf("adaptive: fill field %s (%q): %w", field.Ref, field.Label, err)}
-	}
-	if !result.Value.Bool() {
-		return FieldFillResult{Err: fmt.Errorf("adaptive: fill returned false for field %s (%q)", field.Ref, field.Label)}
-	}
-	return FieldFillResult{Filled: true}
+	return fillAdaptiveControl(ctx, f.page, field, res.Value)
 }
 
-func (f *linkedInRodFiller) NavigateNext(_ context.Context) (bool, error) {
+func (f *linkedInRodFiller) NavigateNext(ctx context.Context) (bool, error) {
+	page := f.page.Context(ctx)
 	// Capture pre-click progress bar step index as the advancement baseline.
-	prevProgress := linkedInStepProgress(f.page)
-	_, ok, err := f.bot.clickEasyApplyNavigation(f.page)
+	prevProgress := linkedInStepProgress(page)
+	_, ok, err := f.bot.clickEasyApplyNavigation(page)
 	if err != nil || !ok {
 		return ok, err
 	}
@@ -381,10 +409,13 @@ func (f *linkedInRodFiller) NavigateNext(_ context.Context) (bool, error) {
 	// A missing or unreadable progress bar never counts as evidence.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if f.bot.linkedInPrepareAtFinalReview(f.page) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if f.bot.linkedInPrepareAtFinalReview(page) {
 			return true, nil
 		}
-		if newProgress := linkedInStepProgress(f.page); newProgress >= 0 && prevProgress >= 0 && newProgress != prevProgress {
+		if newProgress := linkedInStepProgress(page); newProgress >= 0 && prevProgress >= 0 && newProgress != prevProgress {
 			return true, nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -392,24 +423,54 @@ func (f *linkedInRodFiller) NavigateNext(_ context.Context) (bool, error) {
 	return false, fmt.Errorf("adaptive: step did not advance — no progress-bar or review-page signal within 2s (prev=%d)", prevProgress)
 }
 
-func (f *linkedInRodFiller) IsSubmitReady(_ context.Context) (bool, error) {
-	_, kind, found, _, err := f.bot.peekEasyApplyPrimary(f.page)
+func (f *linkedInRodFiller) IsSubmitReady(ctx context.Context) (bool, error) {
+	page := f.page.Context(ctx)
+	_, kind, found, _, err := f.bot.peekEasyApplyPrimary(page)
 	if err != nil || !found {
 		return false, nil
 	}
-	return applyPrimaryIsSubmit(kind), nil
+	ready := applyPrimaryIsSubmit(kind)
+	if ready && f.lazy != nil {
+		if f.lazy.policyBlocked() {
+			return false, fmt.Errorf("documents: %s", f.lazy.holdReason)
+		}
+		if resumePath, _ := f.lazy.peek(); resumePath != "" {
+			if err := f.bot.linkedInVerifyFinalReviewResume(page, resumePath); err != nil {
+				return false, err
+			}
+		}
+	}
+	return ready, nil
 }
 
-func (f *linkedInRodFiller) ClickSubmit(_ context.Context) error {
-	_, ok, err := f.bot.clickEasyApplyNavigation(f.page)
+func (f *linkedInRodFiller) ClickSubmit(ctx context.Context) error {
+	page := f.page.Context(ctx)
+	ready, err := page.Eval(jsLinkedInAdaptiveSubmit, false)
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return errors.New("adaptive: submit click returned not-ok")
+	if ready == nil || !ready.Value.Bool() {
+		return errors.New("adaptive: submit control is missing or ambiguous")
 	}
-	return nil
+	button, err := page.ElementByJS(rod.Eval(jsLinkedInAdaptiveSubmit, true))
+	if err != nil {
+		return err
+	}
+	return button.Click(proto.InputMouseButtonLeft, 1)
 }
+
+const jsLinkedInAdaptiveSubmit = `(element)=>{` + jsLinkedInApplyContainerFn + `
+ const scope=resolveApplyContainer();if(!scope)return element?null:false;
+ const candidates=allInDOM(scope,'button,[role=button]').filter(el=>{
+  const label=(el.getAttribute('aria-label')||el.textContent||'').trim().toLowerCase();
+  if(!/^(submit|submit application|send application)$/.test(label))return false;
+  if(el.disabled||el.getAttribute('aria-disabled')==='true')return false;
+  const r=el.getBoundingClientRect();if(!r.width||!r.height)return false;
+  for(let p=el;p;p=p.parentElement){const s=getComputedStyle(p);if(p.hidden||p.inert||p.getAttribute('aria-hidden')==='true'||s.display==='none'||s.visibility==='hidden')return false;}
+  return true;
+ });
+ return element?(candidates.length===1?candidates[0]:null):candidates.length===1;
+}`
 
 // refIndex extracts the numeric index from a SnapField ref of the form "f{n}".
 func refIndex(ref string) (int, error) {
@@ -436,11 +497,23 @@ func refIndex(ref string) (int, error) {
 // (login, session persistence, auth-wall detection) mirrors the legacy path
 // to ensure the same reliability guarantees.
 func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen, ac *AttemptContext) (retErr error) {
+	ctx, cancel := beginAdaptiveRun(ctx)
+	defer cancel()
 	if ac != nil && ac.Engine == domain.ApplyEngineShadow {
 		return shadowSeekApply()
 	}
 	if lazy == nil {
 		return fmt.Errorf("seek adaptive: missing declared job: %w", errLinkedInIdentity)
+	}
+	if b.cfg.DB == nil || ac == nil || ac.AttemptID == "" {
+		return ErrNoActiveAttempt
+	}
+	if page == nil {
+		return fmt.Errorf("%w: application page is missing", errLinkedInIdentity)
+	}
+	page, lazy.ctx = page.Context(ctx), ctx
+	if err := unresolvedSubmission(b.cfg.DB, b.cfg.UserID, lazy.job.ID, lazy.job.URL, lazy.attemptID); err != nil {
+		return fmt.Errorf("%w: %v", errSeekSubmitUnconfirmed, err)
 	}
 
 	// Wait for the job page to be fully loaded.
@@ -450,6 +523,10 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 	}
 	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+	if err := verifyAdaptiveSeekIdentity(ctx, page, lazy, true); err != nil {
+		return err
+	}
+	employerScope := nativeEmployerScope(ctx, page, "seek", lazy.job)
 
 	// Persist session tokens before any navigation so a fresh rotate is recorded.
 	b.seekPersistSession(page)
@@ -457,6 +534,18 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	// Verify the session is authenticated.
 	if err := b.seekEnsureLoggedIn(page); err != nil {
 		return fmt.Errorf("seek adaptive: session expired — re-add Seek credentials: %w", err)
+	}
+	if err := verifyAdaptiveSeekIdentity(ctx, page, lazy, false); err != nil {
+		return err
+	}
+	if b.cfg.EnableExternalATS {
+		destination, err := seekExternalHandoff(ctx, page)
+		if err != nil {
+			return err
+		}
+		if classifyExternalATS(destination) != ATSKindUnknown {
+			return b.externalATSApply(ctx, page, lazy, ac, destination)
+		}
 	}
 
 	// Open Quick Apply form.
@@ -503,7 +592,7 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 
 	profile := b.currentProfile()
 	si := &StepInterpreter{
-		LLM:     b.cfg.AdaptiveLLM,
+		LLM:     boundFormLLM(b.cfg.AdaptiveLLM),
 		Mapping: b.cfg.AdaptiveMapping,
 	}
 	guard := &SubmitGuard{
@@ -512,7 +601,16 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		UserID:    b.cfg.UserID,
 	}
 	se := NewStepExecutor(DefaultStepExecBounds(), guard)
-	filler := &seekRodFiller{page: page, bot: b}
+	se.BeforeSideEffect = func(ctx context.Context) error {
+		if err := b.checkAdaptiveSideEffect(); err != nil {
+			return err
+		}
+		if err := killSwitchCheck(b.cfg.EngineStore, ac); err != nil {
+			return err
+		}
+		return verifyAdaptiveSeekIdentity(ctx, page, lazy, false)
+	}
+	filler := &seekRodFiller{page: page, bot: b, lazy: lazy}
 
 	const maxFormSteps = 15
 	for stepIdx := 0; stepIdx < maxFormSteps; stepIdx++ {
@@ -540,17 +638,22 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 
 		snap := captureStepSnapshot(fields, nil, "seek", stepIdx, stepTitle)
-		snap.EmployerKey = lazy.job.Company
+		scopeJobDependentFields(&snap, lazy.job)
+		lazy.applyCaps(capsFromFormFields(fields))
+		snap.EmployerKey = employerScope
 
 		interp, err := si.InterpretStep(ctx, snap, profile)
 		if err != nil {
 			return fmt.Errorf("seek adaptive: interpret step %d: %w", stepIdx, err)
 		}
 		if interp.Paused {
-			return fmt.Errorf("seek adaptive: step %d paused: %s", stepIdx, interp.PauseReason)
+			recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
+			return fmt.Errorf("%w: step %d (%s)", errAdaptiveQuestionReview, stepIdx, interp.PauseReason)
 		}
 
+		recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
 		result, err := se.ExecuteStep(ctx, snap, interp, filler)
+		invalidateFailedMappings(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		if err != nil && result.Outcome != StepOutcomeSubmitted {
 			return fmt.Errorf("seek adaptive: execute step %d: %w", stepIdx, err)
 		}
@@ -560,7 +663,7 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		// click error alone is not sufficient evidence the application was sent.
 		var submissionConfirmed bool
 		if result.Outcome == StepOutcomeSubmitted && result.Err == nil {
-			submissionConfirmed = b.seekIsPostApplySuccess(page)
+			submissionConfirmed = b.seekWaitSubmitConfirmation(page.Context(ctx), lazy.job.ID, lazy.job.URL) == nil
 			if !submissionConfirmed {
 				b.log.Warn().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).
 					Msg("seek adaptive: submit clicked but no post-apply success signal — skipping mapping write")
@@ -570,6 +673,9 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 
 		switch result.Outcome {
 		case StepOutcomeSubmitted:
+			if !submissionConfirmed {
+				return errSeekSubmitUnconfirmed
+			}
 			b.seekPersistSession(page)
 			b.log.Info().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).Msg("seek adaptive: submit clicked")
 			return nil
@@ -594,49 +700,30 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 type seekRodFiller struct {
 	page *rod.Page
 	bot  *Bot
+	lazy *lazyDocGen
 }
 
-func (f *seekRodFiller) Fill(_ context.Context, field SnapField, res FieldResolution) FieldFillResult {
+func (f *seekRodFiller) Fill(ctx context.Context, field SnapField, res FieldResolution) FieldFillResult {
 	if res.Action == ActionSkip {
 		return FieldFillResult{Skipped: true}
 	}
 	if res.Action == ActionUpload {
-		idx, err := refIndex(field.Ref)
-		if err != nil {
-			return FieldFillResult{Err: err}
-		}
-		result, evalErr := f.page.Eval(jsFillFileNth, idx)
-		if evalErr != nil || result == nil || !result.Value.Bool() {
-			return FieldFillResult{Err: fmt.Errorf("seek adaptive: file upload slot not found (ref %s)", field.Ref)}
-		}
-		return FieldFillResult{Filled: true}
+		return f.bot.fillAdaptiveDocument(ctx, f.page, f.lazy, field)
 	}
-	var fieldTypeParm string
-	switch field.Type {
-	case SnapTypeRadio:
-		fieldTypeParm = "radio"
-	case SnapTypeSelect:
-		fieldTypeParm = "select"
-	default:
-		fieldTypeParm = "text"
-	}
-	result, err := f.page.Eval(jsFillByQuestionAnswer, field.Label, res.Value, fieldTypeParm, field.Group, field.ControlID)
-	if err != nil {
-		return FieldFillResult{Err: fmt.Errorf("seek adaptive: fill field %s (%q): %w", field.Ref, field.Label, err)}
-	}
-	if !result.Value.Bool() {
-		return FieldFillResult{Err: fmt.Errorf("seek adaptive: fill returned false for field %s (%q)", field.Ref, field.Label)}
-	}
-	return FieldFillResult{Filled: true}
+	return fillAdaptiveControl(ctx, f.page, field, res.Value)
 }
 
-func (f *seekRodFiller) NavigateNext(_ context.Context) (bool, error) {
-	btn, isSubmit := f.bot.seekFindActionButton(f.page)
+func (f *seekRodFiller) NavigateNext(ctx context.Context) (bool, error) {
+	page := f.page.Context(ctx)
+	btn, isSubmit, err := seekAdaptiveActionButton(page)
+	if err != nil {
+		return false, err
+	}
 	if btn == nil || isSubmit {
 		return false, nil
 	}
 	// Capture pre-click progress bar step index as the advancement baseline.
-	prevProgress := seekStepProgress(f.page)
+	prevProgress := seekStepProgress(page)
 	if err := btn.Click(proto.InputMouseButtonLeft, 1); err != nil {
 		return false, fmt.Errorf("seek adaptive: click continue: %w", err)
 	}
@@ -648,16 +735,19 @@ func (f *seekRodFiller) NavigateNext(_ context.Context) (bool, error) {
 	// A missing or unreadable progress bar never counts as evidence.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		hasErrors, _ := f.page.Eval(`() =>
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		hasErrors, _ := page.Eval(`() =>
 			document.querySelectorAll('[aria-invalid="true"],[data-testid*="error"],[class*="error-message"]').length > 0
 		`)
 		if hasErrors != nil && hasErrors.Value.Bool() {
 			return false, fmt.Errorf("seek adaptive: continue rejected — validation errors visible after click")
 		}
-		if newProgress := seekStepProgress(f.page); newProgress >= 0 && prevProgress >= 0 && newProgress != prevProgress {
+		if newProgress := seekStepProgress(page); newProgress >= 0 && prevProgress >= 0 && newProgress != prevProgress {
 			return true, nil
 		}
-		if _, nowSubmit := f.bot.seekFindActionButton(f.page); nowSubmit {
+		if _, nowSubmit, err := seekAdaptiveActionButton(page); err == nil && nowSubmit {
 			return true, nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -665,13 +755,18 @@ func (f *seekRodFiller) NavigateNext(_ context.Context) (bool, error) {
 	return false, fmt.Errorf("seek adaptive: step did not advance — no progress-bar or submit-button signal within 2s (prev=%d)", prevProgress)
 }
 
-func (f *seekRodFiller) IsSubmitReady(_ context.Context) (bool, error) {
-	_, isSubmit := f.bot.seekFindActionButton(f.page)
-	return isSubmit, nil
+func (f *seekRodFiller) IsSubmitReady(ctx context.Context) (bool, error) {
+	page := f.page.Context(ctx)
+	_, isSubmit, err := seekAdaptiveActionButton(page)
+	return isSubmit, err
 }
 
-func (f *seekRodFiller) ClickSubmit(_ context.Context) error {
-	btn, isSubmit := f.bot.seekFindActionButton(f.page)
+func (f *seekRodFiller) ClickSubmit(ctx context.Context) error {
+	page := f.page.Context(ctx)
+	btn, isSubmit, err := seekAdaptiveActionButton(page)
+	if err != nil {
+		return err
+	}
 	if btn == nil {
 		return fmt.Errorf("seek adaptive: submit button not found")
 	}
@@ -682,4 +777,32 @@ func (f *seekRodFiller) ClickSubmit(_ context.Context) error {
 		return fmt.Errorf("seek adaptive: click submit: %w", err)
 	}
 	return nil
+}
+
+const jsSeekAdaptiveAction = `(element)=>{` + jsLinkedInApplyContainerFn + `
+ const scope=resolveApplyContainer();if(!scope)return element?null:'';
+ const actionable=el=>{const r=el.getBoundingClientRect();if(!r.width||!r.height||el.disabled||el.getAttribute('aria-disabled')==='true')return false;for(let p=el;p;p=p.parentElement){const s=getComputedStyle(p);if(p.hidden||p.inert||p.getAttribute('aria-hidden')==='true'||s.display==='none'||s.visibility==='hidden')return false;}return true;};
+ const buttons=allInDOM(scope,'button,input[type=submit],[role=button]').filter(actionable);
+ const label=el=>(el.getAttribute('aria-label')||el.textContent||el.value||'').trim().toLowerCase();
+ const next=buttons.filter(el=>/^(continue|next|review|review application|save and continue)$/.test(label(el)));
+ const submit=buttons.filter(el=>/^(submit|submit application|send application)$/.test(label(el)));
+ const choices=next.length?next:submit;
+ if(element)return choices.length===1?choices[0]:null;
+ return choices.length>1?'ambiguous':next.length?'next':submit.length?'submit':'';
+}`
+
+func seekAdaptiveActionButton(page *rod.Page) (*rod.Element, bool, error) {
+	result, err := page.Eval(jsSeekAdaptiveAction, false)
+	if err != nil {
+		return nil, false, err
+	}
+	kind := result.Value.String()
+	if kind == "ambiguous" {
+		return nil, false, fmt.Errorf("%w: multiple current navigation controls", errAdaptiveQuestionReview)
+	}
+	if kind == "" {
+		return nil, false, nil
+	}
+	element, err := page.ElementByJS(rod.Eval(jsSeekAdaptiveAction, true))
+	return element, kind == "submit", err
 }

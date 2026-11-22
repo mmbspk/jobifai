@@ -173,3 +173,21 @@ func TestApplyEngine_PlatformOverridesRoundTrip(t *testing.T) {
 	require.NotNil(t, got.PlatformOverrides)
 	assert.Equal(t, domain.ApplyEngineShadow, got.PlatformOverrides["linkedin"])
 }
+
+func TestApplyEngine_AuditFailureRollsBackConfiguration(t *testing.T) {
+	svc, db := newTestServices(t)
+	router := handler.NewRouter(svc)
+	token := registerAndLogin(t, router, "admin-engine-atomic@example.com", "password123")
+	setUserAdmin(t, db, "admin-engine-atomic@example.com")
+	require.Equal(t, http.StatusOK, authPut(t, router, "/api/admin/apply-engine", token, domain.ApplyEngineConfig{Mode: domain.ApplyEngineShadow}).Code)
+	_, err := db.Exec(`CREATE TRIGGER reject_engine_audit BEFORE INSERT ON apply_engine_audit BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END`)
+	require.NoError(t, err)
+	result := authPut(t, router, "/api/admin/apply-engine", token, domain.ApplyEngineConfig{Mode: domain.ApplyEngineAdaptive})
+	require.Equal(t, http.StatusInternalServerError, result.Code)
+	var cfg domain.ApplyEngineConfig
+	require.NoError(t, json.NewDecoder(authGet(t, router, "/api/admin/apply-engine", token).Body).Decode(&cfg))
+	assert.Equal(t, domain.ApplyEngineShadow, cfg.Mode)
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM apply_engine_audit`).Scan(&count))
+	assert.Equal(t, 1, count)
+}

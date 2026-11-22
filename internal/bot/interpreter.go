@@ -79,18 +79,21 @@ const (
 	ProvenanceAcceptedByForm VerificationProvenance = "accepted_by_form"
 	// ProvenanceConfirmedByReviewer: human reviewer explicitly promoted the mapping.
 	ProvenanceConfirmedByReviewer VerificationProvenance = "confirmed_by_reviewer"
+	// Mechanical form acceptance is not semantic evidence. Only these reference
+	// bindings or a human review may activate a reusable interpretation.
+	ProvenanceTrustedReference VerificationProvenance = "trusted_reference"
 )
 
 // FieldResolution is the resolution outcome for one form field.
 type FieldResolution struct {
-	Ref        string                `json:"ref"`
-	Source     ResolutionSource      `json:"source"`
-	Action     AllowedAction         `json:"action"`
-	Value      string                `json:"value,omitempty"`
-	Pending    bool                  `json:"pending,omitempty"`
-	Reason     PendingReason         `json:"reason,omitempty"`
-	IntentType FieldIntentType       `json:"intent_type,omitempty"`
-	BindingKey string                `json:"binding_key,omitempty"`
+	Ref        string                 `json:"ref"`
+	Source     ResolutionSource       `json:"source"`
+	Action     AllowedAction          `json:"action"`
+	Value      string                 `json:"value,omitempty"`
+	Pending    bool                   `json:"pending,omitempty"`
+	Reason     PendingReason          `json:"reason,omitempty"`
+	IntentType FieldIntentType        `json:"intent_type,omitempty"`
+	BindingKey string                 `json:"binding_key,omitempty"`
 	Provenance VerificationProvenance `json:"provenance,omitempty"`
 }
 
@@ -98,7 +101,7 @@ type FieldResolution struct {
 type StepInterpretation struct {
 	SnapshotSig string            `json:"snapshot_sig"` // from StepSnapshot.SemanticSignature()
 	Fields      []FieldResolution `json:"fields"`
-	Paused      bool              `json:"paused"`       // any field is Pending
+	Paused      bool              `json:"paused"` // any field is Pending
 	PauseReason PendingReason     `json:"pause_reason,omitempty"`
 	LLMUsed     bool              `json:"llm_used"`
 }
@@ -106,7 +109,7 @@ type StepInterpretation struct {
 // LLMFieldProposal is one field's proposal from the LLM batch response.
 type LLMFieldProposal struct {
 	Ref        string          `json:"ref"`
-	Action     string          `json:"action"`      // "fill" | "upload" | "skip"
+	Action     string          `json:"action"` // "fill" | "upload" | "skip"
 	Value      string          `json:"value"`
 	IntentType FieldIntentType `json:"intent_type"` // "profile" | "llm"
 	BindingKey string          `json:"binding_key"` // non-empty when intent_type="profile"
@@ -130,7 +133,9 @@ type MappingLookup interface {
 // nopMappingLookup is a no-op MappingLookup used when no mapping store is wired.
 type nopMappingLookup struct{}
 
-func (nopMappingLookup) LookupField(_, _ string) (FieldResolution, bool) { return FieldResolution{}, false }
+func (nopMappingLookup) LookupField(_, _ string) (FieldResolution, bool) {
+	return FieldResolution{}, false
+}
 
 // StepInterpreter drives the three-pass resolution pipeline.
 type StepInterpreter struct {
@@ -148,10 +153,32 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 
 	sig := snap.SemanticSignature()
 	result := StepInterpretation{SnapshotSig: sig}
+	if snap.Truncated {
+		result.Paused, result.PauseReason = true, PendingLimitExceeded
+		return result, nil
+	}
 
 	var toLLM []string // refs of fields that need LLM resolution
+	counts := make(map[string]int)
+	for _, f := range snap.Fields {
+		counts[f.FieldSignature(snap.Platform)]++
+	}
 
 	for _, f := range snap.Fields {
+		if counts[f.FieldSignature(snap.Platform)] > 1 {
+			result.Fields = append(result.Fields, FieldResolution{Ref: f.Ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingAmbiguous})
+			continue
+		}
+		if f.Truncated && f.BrowserField == nil {
+			result.Fields = append(result.Fields, FieldResolution{Ref: f.Ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingLimitExceeded})
+			continue
+		}
+		if f.Truncated {
+			f.Options = make([]string, len(f.BrowserField.Options))
+			for i, option := range f.BrowserField.Options {
+				f.Options[i] = option.Label
+			}
+		}
 		if f.Filled {
 			// Already has a value — skip; don't re-fill.
 			continue
@@ -159,6 +186,9 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 
 		// Pass 1: deterministic
 		if res, ok := deterministicResolve(f, profile); ok {
+			if res.Action == ActionFill && !bindingValueCompatible(f, res.BindingKey, res.Value) {
+				res = FieldResolution{Ref: f.Ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingInvalidOption}
+			}
 			result.Fields = append(result.Fields, res)
 			continue
 		}
@@ -170,20 +200,28 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 			res.Source = SourceMapping
 			// Profile-bound entries: resolve the current value from the live profile so
 			// the warm hit always reflects the candidate's latest data.
-			if res.IntentType == FieldIntentProfile && res.BindingKey != "" {
+			if res.IntentType != FieldIntentProfile || !knownProfileBinding(res.BindingKey) {
+				toLLM = append(toLLM, f.Ref)
+				continue
+			}
+			if res.IntentType == FieldIntentProfile {
 				v, resolved := resolveProfileBinding(res.BindingKey, profile)
 				if !resolved || v == "" {
 					// Candidate cleared this profile field — do not reuse the stale answer.
-					toLLM = append(toLLM, f.Ref)
+					result.Fields = append(result.Fields, FieldResolution{Ref: f.Ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingMissingProfile})
 					continue
 				}
 				res.Value = v
+			}
+			if !bindingValueCompatible(f, res.BindingKey, res.Value) {
+				result.Fields = append(result.Fields, FieldResolution{Ref: f.Ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingInvalidOption})
+				continue
 			}
 			// For radio/select: reject warm-hit values that no longer appear in the
 			// current option list (form may have changed its option set).
 			if res.Action == ActionFill && (f.Type == SnapTypeRadio || f.Type == SnapTypeSelect) && len(f.Options) > 0 {
 				if !containsOptionIgnoreCase(f.Options, res.Value) {
-					toLLM = append(toLLM, f.Ref)
+					result.Fields = append(result.Fields, FieldResolution{Ref: f.Ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingInvalidOption})
 					continue
 				}
 			}
@@ -191,6 +229,11 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 			continue
 		}
 
+		// A bounded option list cannot authorize a model decision over omitted choices.
+		if f.Truncated {
+			result.Fields = append(result.Fields, FieldResolution{Ref: f.Ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingLimitExceeded})
+			continue
+		}
 		// Not resolved yet — queue for LLM.
 		toLLM = append(toLLM, f.Ref)
 	}
@@ -264,6 +307,23 @@ func deterministicResolve(f SnapField, profile *domain.ResumeProfile) (FieldReso
 	}
 
 	label := strings.ToLower(strings.TrimSpace(f.Label))
+	contextText := strings.ToLower(f.Label + " " + f.Group + " " + f.HelpText)
+	if matchesAny(contextText, "terms and conditions", "terms of service", "privacy consent", "i certify", "i agree", "criminal", "disability", "veteran", "ethnicity") {
+		return FieldResolution{Ref: f.Ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingAmbiguous}, true
+	}
+	// Sponsorship is not legal work authorization. The profile's sponsorship
+	// preference cannot answer a country-specific eligibility declaration.
+	if isWorkAuthorizationQuestion(contextText) || isJobDependentQuestion(contextText) {
+		return FieldResolution{}, false
+	}
+	if matchesAny(contextText, "total compensation", "monthly", "hourly", "weekly", "base salary", "per month", "per hour") && matchesAny(label, "salary", "compensation", "pay") {
+		return FieldResolution{}, false // qualifiers require an independently verified mapping
+	}
+	// Substrings cannot establish whose contact details or which declaration is
+	// requested. Only simple, affirmative candidate questions resolve locally.
+	if personalBindingContextIsQualified(contextText) || matchesAny(contextText, "not require", "do not need", "without sponsorship") || !simpleCandidateQuestion(label) {
+		return FieldResolution{}, false
+	}
 
 	if profile == nil {
 		if needsProfile(label) {
@@ -319,13 +379,14 @@ func deterministicResolve(f SnapField, profile *domain.ResumeProfile) (FieldReso
 		return makeText(f.Ref, ad.NoticePeriod), true
 	}
 	if matchesAny(label, "salary", "expected salary", "salary expectation", "desired salary", "compensation") && ad.SalaryExpectation != "" {
-		return makeText(f.Ref, ad.SalaryExpectation), true
+		res := makeText(f.Ref, ad.SalaryExpectation)
+		res.BindingKey = "application_defaults.salary_expectation"
+		return res, true
 	}
 
 	// Sponsorship (yes/no radio/select).
 	if (f.Type == SnapTypeRadio || f.Type == SnapTypeSelect) && matchesAny(label,
-		"require sponsorship", "need sponsorship", "visa sponsorship", "work authorization",
-		"authorized to work", "right to work") {
+		"require sponsorship", "need sponsorship", "visa sponsorship") {
 		ans := "No"
 		if ad.RequiresSponsorship {
 			ans = "Yes"
@@ -365,13 +426,31 @@ func makeText(ref, value string) FieldResolution {
 	}
 }
 
+func simpleCandidateQuestion(label string) bool {
+	label = strings.Trim(strings.Join(strings.Fields(label), " "), " *?:.")
+	switch label {
+	case "first name", "given name", "forename", "last name", "surname", "family name", "full name", "your name",
+		"phone", "phone number", "mobile", "mobile number", "telephone", "telephone number", "email", "email address",
+		"city", "town", "city/town", "country", "country of residence", "zip", "zip code", "postcode", "postal code", "address", "street address",
+		"notice period", "availability", "salary", "expected salary", "salary expectation", "desired salary",
+		"require sponsorship", "need sponsorship", "visa sponsorship", "do you require sponsorship", "do you need sponsorship",
+		"will you require sponsorship", "do you now or in the future require sponsorship":
+		return true
+	}
+	return false
+}
+
 // validateLLMProposals validates LLM proposals against the snapshot and builds FieldResolutions.
 // Fields in toLLM that have no valid proposal become review/pending.
 // Profile-intent proposals are resolved from the live profile at validate time.
 func validateLLMProposals(proposals []LLMFieldProposal, toLLM []string, snap StepSnapshot, profile *domain.ResumeProfile) []FieldResolution {
 	// Index proposals by ref.
 	byRef := make(map[string]LLMFieldProposal, len(proposals))
+	duplicates := make(map[string]bool)
 	for _, p := range proposals {
+		if _, exists := byRef[p.Ref]; exists {
+			duplicates[p.Ref] = true
+		}
 		byRef[p.Ref] = p
 	}
 
@@ -380,7 +459,7 @@ func validateLLMProposals(proposals []LLMFieldProposal, toLLM []string, snap Ste
 		f, fieldOK := snap.FieldByRef(ref)
 		p, propOK := byRef[ref]
 
-		if !propOK || !fieldOK {
+		if !propOK || !fieldOK || duplicates[ref] {
 			out = append(out, FieldResolution{
 				Ref:     ref,
 				Source:  SourceReview,
@@ -409,17 +488,37 @@ func validateLLMProposals(proposals []LLMFieldProposal, toLLM []string, snap Ste
 		intentType := p.IntentType
 		bindingKey := p.BindingKey
 		value := p.Value
+		if action == ActionSkip {
+			out = append(out, FieldResolution{Ref: ref, Source: SourceReview, Action: ActionSkip, Pending: f.Required, Reason: PendingMissingProfile})
+			continue
+		}
+		if action != ActionFill || intentType != FieldIntentProfile || !knownProfileBinding(bindingKey) {
+			out = append(out, FieldResolution{Ref: ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingAmbiguous})
+			continue
+		}
+		if modelBindingNeedsReview(f, bindingKey) {
+			out = append(out, FieldResolution{Ref: ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingAmbiguous})
+			continue
+		}
+		label := strings.ToLower(f.Label)
+		if isWorkAuthorizationQuestion(label+" "+strings.ToLower(f.Group)+" "+strings.ToLower(f.HelpText)) && !strings.HasPrefix(bindingKey, "application_defaults.form_answers.") {
+			out = append(out, FieldResolution{Ref: ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingMissingProfile})
+			continue
+		}
 		if intentType == FieldIntentProfile && bindingKey != "" {
 			if v, ok := resolveProfileBinding(bindingKey, profile); ok {
 				value = v
 			} else {
-				// Unknown binding key — degrade to opaque LLM intent.
-				intentType = FieldIntentLLM
-				bindingKey = ""
+				out = append(out, FieldResolution{Ref: ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingMissingProfile})
+				continue
 			}
 		}
 		if intentType == "" {
 			intentType = FieldIntentLLM
+		}
+		if !bindingValueCompatible(f, bindingKey, value) {
+			out = append(out, FieldResolution{Ref: ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingInvalidOption})
+			continue
 		}
 
 		// For radio/select: value must match one of the declared options.
@@ -443,9 +542,44 @@ func validateLLMProposals(proposals []LLMFieldProposal, toLLM []string, snap Ste
 			Value:      value,
 			IntentType: intentType,
 			BindingKey: bindingKey,
+			Provenance: ProvenancePending,
 		})
 	}
 	return out
+}
+
+func modelBindingNeedsReview(field SnapField, binding string) bool {
+	contextText := strings.ToLower(field.Label + " " + field.Group + " " + field.HelpText)
+	if isJobDependentQuestion(contextText) {
+		return true
+	}
+	// A question-specific reviewed answer is authority only for its verified
+	// question/scope. The mapping lookup handles that; a model cannot repurpose it.
+	if strings.HasPrefix(binding, "application_defaults.form_answers.mapping_") {
+		return true
+	}
+	if strings.HasPrefix(binding, "personal_information.") && personalBindingContextIsQualified(contextText) {
+		return true
+	}
+	if binding == "application_defaults.requires_sponsorship" && matchesAny(contextText, "not require", "do not need", "without sponsorship", "no sponsorship") {
+		return true
+	}
+	if binding == "application_defaults.salary_expectation" && matchesAny(contextText, "monthly", "per month", "hourly", "per hour", "weekly", "per week", "base salary", "total compensation", "previous salary", "current salary", "currency", "aud", "usd", "eur", "gbp", "nzd", "€", "£", "$") {
+		return true
+	}
+	return false
+}
+
+func isJobDependentQuestion(contextText string) bool {
+	return matchesAny(strings.ToLower(contextText), "this role", "this position", "this job", "this opportunity", "our company", "our team", "join us", "why are you", "why do you", "why would you", "why should we", "relevant experience", "required skills", "relocat")
+}
+
+func isWorkAuthorizationQuestion(contextText string) bool {
+	return matchesAny(strings.ToLower(contextText), "work authorization", "authorized to work", "authorised to work", "right to work", "legally allowed to work", "legally entitled to work", "eligible to work", "legally able to work", "permission to work", "work permit", "work visa", "working rights", "unrestricted work rights")
+}
+
+func personalBindingContextIsQualified(contextText string) bool {
+	return matchesAny(strings.ToLower(contextText), "previous employer", "emergency contact", "reference contact", "referee", "recruiter", "references", "citizenship", "nationality", "country of birth", "place of birth", "birth name", "education", "institution", "school", "university", "company address", "company information", "employer details", "office location")
 }
 
 // ErrLLMUnavailable signals the LLM provider could not fulfil the request.
@@ -453,6 +587,7 @@ var ErrLLMUnavailable = errors.New("interpreter: LLM unavailable")
 
 // ErrLLMLimitExceeded signals the request exceeded the LLM's budget or token limit.
 var ErrLLMLimitExceeded = errors.New("interpreter: LLM limit exceeded")
+var errAdaptiveQuestionReview = errors.New("application question needs your review in Settings → Profile → Application question mappings")
 
 func pendingReasonFromErr(err error) PendingReason {
 	if errors.Is(err, ErrLLMLimitExceeded) {

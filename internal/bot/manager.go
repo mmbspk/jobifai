@@ -75,6 +75,7 @@ type Manager struct {
 	usageLedger      *usage.Ledger
 	retention        retentionAfterSubmit
 	llmReuse         *llmreuse.Store
+	formLearning     *FormLearningCoordinator
 	submitWorkGuard  documents.UserWorkGuard
 	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
 	browserMeterSvc  MeterService                                 // optional browser automation billing service
@@ -195,6 +196,7 @@ func NewManager(
 		seekBrowsers:     make(map[string]*rod.Browser),
 		linkedInBrowsers: make(map[string]*rod.Browser),
 		applyInProgress:  make(map[string]bool),
+		formLearning:     &FormLearningCoordinator{},
 	}
 }
 
@@ -623,29 +625,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		finishAttempt(m.db, ac, OutcomeCancelled, "engine_switch", "kill_switch_reverted", ksErr.Error())
 		return ksErr
 	}
-	switch ac.Engine {
-	case domain.ApplyEngineAdaptive:
-		if req.Platform == "seek" {
-			applyErr = b.adaptiveSeekApply(m.ctx, jobPage, managerLazy, ac)
-		} else {
-			applyErr = b.adaptiveEasyApply(m.ctx, jobPage, managerLazy, ac)
-		}
-	case domain.ApplyEngineShadow:
-		// Shadow: run legacy path unchanged, with the adaptive interpreter observing
-		// each step for comparison. Observer must not issue browser actions.
-		installShadowObserverIfNeeded(b, ac, nil)
-		if req.Platform == "seek" {
-			applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
-		} else {
-			applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
-		}
-	default:
-		if req.Platform == "seek" {
-			applyErr = b.seekApply(m.ctx, jobPage, managerLazy)
-		} else {
-			applyErr = b.easyApply(m.ctx, jobPage, managerLazy)
-		}
-	}
+	applyErr = b.applyAttempt(m.ctx, jobPage, managerLazy, ac)
 	if applyErr != nil {
 		if errors.Is(applyErr, errLinkedInSubmissionUnknown) && domain.Platform(req.Platform) == domain.PlatformLinkedIn {
 			if linkedInSubmitReconciled(jobPage, req.Link, req.Company) {
@@ -1101,7 +1081,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 	}
 
 	runID := uuid.NewString()
-	tailor, scorer, halal, tracker, _, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
+	tailor, scorer, halal, tracker, formAnswerC, err := m.buildPerUserLLM(userID, gs, apiKey, isPersonal)
 	if err != nil {
 		return nil, err
 	}
@@ -1150,6 +1130,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		EngineMode:   pinnedEngine(m.cfgStore, userID, platform),
 		EngineStore:  m.cfgStore,
 	}
+	m.configureApplyEngine(cfg, formAnswerC)
 
 	if platform == domain.PlatformSeek {
 		if raw, err := m.secrets.Get(userID, "cred:seek"); err == nil {
@@ -1316,10 +1297,7 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		Logger:          &runLogger,
 	}
 
-	if formAnswerC != nil {
-		cfg.AdaptiveLLM = NewLLMFormInterpreter(formAnswerC)
-		cfg.AdaptiveMapping = &DBMappingStore{DB: m.db, UserID: userID}
-	}
+	m.configureApplyEngine(&cfg, formAnswerC)
 
 	if m.browserMeterSvc != nil {
 		inc, incErr := m.browserMeterSvc.BrowserIncrementDuration()
@@ -1718,21 +1696,38 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	if !isEasyApply {
 		// Adaptive engine + ExternalATS enabled: attempt to follow the external link.
 		externalDest := linkedInResolved.Destination
+		if platform == domain.PlatformSeek && ac.Engine == domain.ApplyEngineAdaptive && b.cfg.EnableExternalATS {
+			if err := verifyAdaptiveSeekIdentity(ctx, jobPage, &lazyDocGen{job: job}, true); err == nil {
+				externalDest, _ = seekExternalHandoff(ctx, jobPage)
+			}
+		}
 		if ac.Engine == domain.ApplyEngineAdaptive && b.cfg.EnableExternalATS && classifyExternalATS(externalDest) != ATSKindUnknown {
 			// STEP 4 (external path): build lazy, navigate, run ATS runner.
-			lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: jobID, Company: company, Title: role, URL: jobURL}, jobDesc: jobDesc}
+			lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: jobID, Company: company, Title: role, URL: jobURL, Location: location}, jobDesc: jobDesc}
 			lazy.attemptID = ac.AttemptID
 			defer func() { _ = jobPage.Close() }()
 			if ownsBr {
 				defer func() { _ = br.Close() }()
 			}
 			atsErr := b.externalATSApply(ctx, jobPage, lazy, ac, externalDest)
-			if atsErr != nil {
+			if atsErr != nil && !errors.Is(atsErr, errAlreadyApplied) {
 				log.Error().Err(atsErr).Str("job_id", jobID).Str("dest", externalDest).Msg("ai apply: external ATS failed")
 				finishAttempt(m.db, ac, classifyApplyOutcome(atsErr), "apply", "external_ats_error", atsErr.Error())
 				return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, atsErr
 			}
-			finishAttempt(m.db, ac, OutcomeSubmittedConfirmed, "submitted", "", "")
+			outcome := OutcomeSubmittedConfirmed
+			if errors.Is(atsErr, errAlreadyApplied) {
+				outcome = OutcomeAlreadyApplied
+			}
+			finishAttempt(m.db, ac, outcome, "submitted", "", "")
+			resumePath, coverPath := lazy.get()
+			b.recordApplied(lazy.job, resumePath, coverPath, lazy.resumeVersionID, lazy.coverVersionID, lazy.packJSONForPersist(), score, halalJSON)
+			if _, err := m.db.ExecContext(ctx, `DELETE FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL); err != nil {
+				log.Error().Err(err).Msg("external_ats: could not remove completed review")
+			}
+			if m.retention != nil {
+				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
+			}
 			return ApplyFromURLResult{Company: company, Role: role, Score: score, ScoreReason: scoreReason, JobID: jobID}, nil
 		}
 		b.queueForReview(ctx, &domain.PendingReview{JobID: jobID, Company: company, Role: role, Location: location, Platform: platform, Link: jobURL, SuitabilityScore: score, SuitabilityReasoning: scoreReason, EasyApply: false, HalalVerdict: unmarshalHalalVerdict(halalJSON), CreatedAt: time.Now()})
@@ -1759,19 +1754,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		finishAttempt(m.db, ac, OutcomeCancelled, "engine_switch", "kill_switch_reverted", ksErr.Error())
 		return ApplyFromURLResult{}, ksErr
 	}
-	if ac.Engine == domain.ApplyEngineAdaptive {
-		if platform == domain.PlatformSeek {
-			applyErr = b.adaptiveSeekApply(ctx, jobPage, lazy, ac)
-		} else {
-			applyErr = b.adaptiveEasyApply(ctx, jobPage, lazy, ac)
-		}
-	} else {
-		if platform == domain.PlatformSeek {
-			applyErr = b.seekApply(ctx, jobPage, lazy)
-		} else {
-			applyErr = b.easyApply(ctx, jobPage, lazy)
-		}
-	}
+	applyErr = b.applyAttempt(ctx, jobPage, lazy, ac)
 
 	if applyErr != nil && !errors.Is(applyErr, errAlreadyApplied) {
 		if linkedInNeedsReview(applyErr) {

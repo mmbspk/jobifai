@@ -7,6 +7,7 @@ import { Button } from '../../components/Button'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { TagInput } from '../../components/TagInput'
 import { OpenProfileLink } from '../../components/profile/OpenProfileLink'
+import { FormMappingReview } from '../../components/settings/FormMappingReview'
 import type {
   ResumeProfile, EducationDetail, ExperienceDetail, Language,
   Project, Certification, Publication, Presentation, Grant,
@@ -609,6 +610,7 @@ export function Resume() {
       >
         {saved ? 'Saved' : 'Save changes'}
       </Button>
+      <FormMappingReview />
     </div>
   )
 }

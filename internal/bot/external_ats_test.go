@@ -9,6 +9,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -106,10 +107,10 @@ func TestTenantMatchesCompany(t *testing.T) {
 		// Exact match after normalization.
 		{"acmeinc", "Acme Inc.", true},
 		{"acme", "Acme Corporation", true},
-		// Slug is a prefix of company name.
-		{"techcorp", "TechCorp Solutions", true},
-		// Company name contains tenant slug.
-		{"globalfin", "Global Finance Group", true},
+		// Partial names do not verify an issuer relationship.
+		{"techcorp", "TechCorp Solutions", false},
+		{"globalfin", "Global Finance Group", false},
+		{"acmeincfraud", "Acme Inc.", false},
 		// Mismatch — different companies.
 		{"acmeinc", "Beta Industries", false},
 		{"gamma", "Alpha Corp", false},
@@ -288,7 +289,7 @@ func ghHijackPage(t *testing.T, dispatch func(url string) string) *rod.Page {
 func ghStep1(actionURL string) string {
 	return `<!DOCTYPE html><html><body>` +
 		`<h1>Your Information</h1>` +
-		`<form method="POST" action="` + actionURL + `">` +
+		`<form id="application_form" method="POST" action="` + actionURL + `">` +
 		`<label for="full_name">Full Name</label>` +
 		`<input type="text" id="full_name" name="full_name" aria-label="Full Name"/>` +
 		`<button type="submit">Next</button>` +
@@ -298,7 +299,7 @@ func ghStep1(actionURL string) string {
 // ghStep2WorkHTML is served at the second step URL to simulate a real step transition.
 const ghStep2WorkHTML = `<!DOCTYPE html><html><body>` +
 	`<h1>Work Experience</h1>` +
-	`<form>` +
+	`<form id="application_form">` +
 	`<label for="job_title">Job Title</label>` +
 	`<input type="text" id="job_title" name="job_title" aria-label="Job Title"/>` +
 	`<button type="submit">Next</button>` +
@@ -307,7 +308,7 @@ const ghStep2WorkHTML = `<!DOCTYPE html><html><body>` +
 // ghAccountWallHTML is served to simulate an account-wall block after clicking Next.
 const ghAccountWallHTML = `<!DOCTYPE html><html><body>` +
 	`<h1>Account Required</h1>` +
-	`<form>` +
+	`<form id="application_form">` +
 	`<label for="acct_email">Email</label>` +
 	`<input type="email" id="acct_email" name="email" aria-label="Email"/>` +
 	`<button type="submit">Sign In</button>` +
@@ -316,13 +317,15 @@ const ghAccountWallHTML = `<!DOCTYPE html><html><body>` +
 	`</body></html>`
 
 // ghSnapInterp returns a minimal snapshot + interpretation for the "Full Name" text field.
-func ghSnapInterp() (StepSnapshot, StepInterpretation) {
-	snap := captureStepSnapshot([]formField{
-		{Type: "text", Question: "Full Name", ID: "full_name", InputType: "text"},
-	}, nil, "greenhouse", 0, "Your Information")
-	interp := StepInterpretation{
-		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceLLM, Value: "Jane Smith"}},
-	}
+func ghSnapInterp(t *testing.T, page *rod.Page) (StepSnapshot, StepInterpretation) {
+	t.Helper()
+	raw, err := page.Eval(jsScanFields, map[string]any{})
+	require.NoError(t, err)
+	var fields []formField
+	require.NoError(t, json.Unmarshal([]byte(raw.Value.String()), &fields))
+	snap := captureStepSnapshot(fields, nil, "greenhouse", 0, "Your Information")
+	require.Len(t, snap.Fields, 1)
+	interp := StepInterpretation{Fields: []FieldResolution{{Ref: snap.Fields[0].Ref, Action: ActionFill, Source: SourceProfile, Value: "Jane Smith", IntentType: FieldIntentProfile, BindingKey: "personal_information.full_name"}}}
 	return snap, interp
 }
 
@@ -371,7 +374,7 @@ const ghLoadingOnlyHTML = `<!DOCTYPE html><html><body><h1>Loading…</h1></body>
 // offsetParent is null for that input → it is excluded from the marker → marker = "".
 const ghCSSHiddenFormHTML = `<!DOCTYPE html><html><body>` +
 	`<h1>Work Experience</h1>` +
-	`<form>` +
+	`<form id="application_form">` +
 	`<label for="job_title">Job Title</label>` +
 	`<input type="text" id="job_title" name="job_title" style="display:none"/>` +
 	`<button type="submit">Next</button>` +
@@ -381,7 +384,7 @@ const ghCSSHiddenFormHTML = `<!DOCTYPE html><html><body>` +
 // but a different heading. The control-only marker is identical to step 1 → no advance.
 const ghSameControlsDiffHeadingHTML = `<!DOCTYPE html><html><body>` +
 	`<h1>Personal Details</h1>` +
-	`<form>` +
+	`<form id="application_form">` +
 	`<label for="full_name">Full Name</label>` +
 	`<input type="text" id="full_name" name="full_name" aria-label="Full Name"/>` +
 	`<button type="submit">Next</button>` +
@@ -392,7 +395,7 @@ const ghSameControlsDiffHeadingHTML = `<!DOCTYPE html><html><body>` +
 // expectedJobID. The URL will carry no tenant slug, so the check must reject it.
 const ghDOMJobNoTenantHTML = `<!DOCTYPE html><html><body>` +
 	`<h1>Work Experience</h1>` +
-	`<form>` +
+	`<form id="application_form">` +
 	`<input type="hidden" name="job_id" value="4567890"/>` +
 	`<label for="job_title">Job Title</label>` +
 	`<input type="text" id="job_title" name="job_title" aria-label="Job Title"/>` +
@@ -404,7 +407,7 @@ const ghDOMJobNoTenantHTML = `<!DOCTYPE html><html><body>` +
 // only the getComputedStyle visibility check prevents it from entering the marker.
 const ghVisibilityHiddenFormHTML = `<!DOCTYPE html><html><body>` +
 	`<h1>Work Experience</h1>` +
-	`<form>` +
+	`<form id="application_form">` +
 	`<label for="job_title">Job Title</label>` +
 	`<input type="text" id="job_title" name="job_title" style="visibility:hidden"/>` +
 	`<button type="submit">Next</button>` +
@@ -435,7 +438,7 @@ func TestGreenhouse_MissingIdentity_ZeroWrites(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-missing-identity")
 
@@ -478,7 +481,7 @@ func TestGreenhouse_WrongIdentity_ZeroWrites(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-wrong-identity")
 
@@ -503,8 +506,8 @@ func TestGreenhouse_WrongIdentity_ZeroWrites(t *testing.T) {
 // that matches expectedJobID. A matching DOM job ID cannot prove the tenant.
 func TestGreenhouse_DOMJobNoTenant_ZeroWrites(t *testing.T) {
 	const (
-		initialURL   = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
-		noTenantURL  = "https://boards.greenhouse.io/"
+		initialURL  = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		noTenantURL = "https://boards.greenhouse.io/"
 	)
 	clickDetected := make(chan struct{}, 1)
 	page := ghHijackPage(t, func(url string) string {
@@ -523,7 +526,7 @@ func TestGreenhouse_DOMJobNoTenant_ZeroWrites(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-dom-job-no-tenant")
 
@@ -566,7 +569,7 @@ func TestGreenhouse_QueryStringOnly_SameStep_ZeroWrites(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-same-step")
 
@@ -611,7 +614,7 @@ func TestGreenhouse_CSSHiddenForm_ZeroWrites(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-css-hidden")
 
@@ -639,8 +642,8 @@ func TestGreenhouse_CSSHiddenForm_ZeroWrites(t *testing.T) {
 // Takes ~5 s (NavigateNext deadline).
 func TestGreenhouse_VisibilityHiddenForm_ZeroWrites(t *testing.T) {
 	const (
-		initialURL    = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
-		visHiddenURL  = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page3"
+		initialURL   = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		visHiddenURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page3"
 	)
 	clickDetected := make(chan struct{}, 1)
 	page := ghHijackPage(t, func(url string) string {
@@ -657,7 +660,7 @@ func TestGreenhouse_VisibilityHiddenForm_ZeroWrites(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-vis-hidden")
 
@@ -685,8 +688,8 @@ func TestGreenhouse_VisibilityHiddenForm_ZeroWrites(t *testing.T) {
 // Takes ~5 s (NavigateNext deadline).
 func TestGreenhouse_HeadingOnlyChange_ZeroWrites(t *testing.T) {
 	const (
-		initialURL   = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
-		headingURL   = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
+		initialURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		headingURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
 	)
 	clickDetected := make(chan struct{}, 1)
 	page := ghHijackPage(t, func(url string) string {
@@ -696,7 +699,7 @@ func TestGreenhouse_HeadingOnlyChange_ZeroWrites(t *testing.T) {
 			case clickDetected <- struct{}{}:
 			default:
 			}
-			// Different heading, same visible control (full_name) — marker = "full_name" on both sides.
+			// Different heading, same semantic control on both sides.
 			return ghSameControlsDiffHeadingHTML
 		default:
 			return ghStep1(headingURL)
@@ -704,9 +707,10 @@ func TestGreenhouse_HeadingOnlyChange_ZeroWrites(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-heading-only")
+	initialMarker := greenhouseStepMarker(page)
 
 	se := NewStepExecutor(DefaultStepExecBounds(), nil)
 	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
@@ -719,7 +723,7 @@ func TestGreenhouse_HeadingOnlyChange_ZeroWrites(t *testing.T) {
 	}
 	// Confirm heading changed but controls are the same (proves the fixture is wired correctly).
 	finalMarker := greenhouseStepMarker(filler.page)
-	require.Equal(t, "full_name", finalMarker,
+	require.Equal(t, initialMarker, finalMarker,
 		"marker must still equal step-1 controls after heading-only change")
 	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
 		"heading change with same controls must not advance")
@@ -750,7 +754,7 @@ func TestGreenhouse_AccountWall_ZeroWrites(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-account-wall")
 
@@ -780,8 +784,8 @@ func TestGreenhouse_AccountWall_ZeroWrites(t *testing.T) {
 // Takes ~5 s (NavigateNext deadline).
 func TestGreenhouse_LoadingScreen_ZeroWrites(t *testing.T) {
 	const (
-		initialURL  = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
-		loadingURL  = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
+		initialURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890"
+		loadingURL = "https://boards.greenhouse.io/acmeinc/jobs/4567890/page2"
 	)
 	clickDetected := make(chan struct{}, 1)
 	page := ghHijackPage(t, func(url string) string {
@@ -798,7 +802,7 @@ func TestGreenhouse_LoadingScreen_ZeroWrites(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-loading-only")
 
@@ -859,7 +863,7 @@ func TestGreenhouse_LoadingThenRealStep_OneWrite(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-load-then-step")
 
@@ -920,7 +924,7 @@ func TestGreenhouse_RealAdvance_WritesFilledRefs(t *testing.T) {
 	})
 	require.NoError(t, page.Navigate(initialURL))
 
-	snap, interp := ghSnapInterp()
+	snap, interp := ghSnapInterp(t, page)
 	filler := ghFiller(page)
 	rs := ghRecordingStore(t, "gh-real-advance")
 

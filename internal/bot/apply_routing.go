@@ -28,7 +28,7 @@ func verifyJobIdentity(page *rod.Page, expectedJobPath string) error {
 		return fmt.Errorf("%w: job identity: cannot read page URL (expected job path %s)", errLinkedInIdentity, expectedJobPath)
 	}
 	u, parseErr := url.Parse(info.URL)
-	if parseErr != nil || !(u.Hostname() == "linkedin.com" || strings.HasSuffix(u.Hostname(), ".linkedin.com") || u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1") {
+	if parseErr != nil || (u.Hostname() != "linkedin.com" && !strings.HasSuffix(u.Hostname(), ".linkedin.com") && u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" && u.Hostname() != "::1") {
 		return fmt.Errorf("%w: unexpected page origin", errLinkedInIdentity)
 	}
 	cp := linkedInJobPath(info.URL)

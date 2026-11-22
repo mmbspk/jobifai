@@ -213,6 +213,7 @@ export interface Language {
 }
 
 export interface ApplicationDefaults {
+  form_answers?: Record<string, string>
   requires_sponsorship?: boolean
   notice_period?: string
   salary_expectation?: string

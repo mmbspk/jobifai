@@ -11,7 +11,7 @@ import (
 // failure branch that calls applyErr.Error() (panic on nil).
 func TestRunSubmitApplyErr_ReconcileClearsBeforeFailureBranch(t *testing.T) {
 	t.Parallel()
-	var applyErr error = errLinkedInSubmissionUnknown
+	applyErr := errLinkedInSubmissionUnknown
 	if applyErr != nil {
 		if errors.Is(applyErr, errLinkedInSubmissionUnknown) {
 			applyErr = nil // successful linkedInSubmitReconciled

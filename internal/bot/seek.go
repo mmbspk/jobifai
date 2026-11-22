@@ -168,7 +168,21 @@ func isExternalApplyHref(href string) bool {
 	if h == "" || !strings.HasPrefix(h, "http") {
 		return false
 	}
-	return !strings.Contains(strings.ToLower(h), "seek.com")
+	return !trustedSeekURL(h)
+}
+
+func trustedSeekURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.User != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	for _, domain := range []string{"seek.com", "seek.com.au", "seek.co.nz"} {
+		if host == domain || strings.HasSuffix(host, "."+domain) {
+			return true
+		}
+	}
+	return false
 }
 
 // isSeekHostedApplyHref reports Seek-hosted apply/application URLs.
@@ -177,11 +191,11 @@ func isSeekHostedApplyHref(href string) bool {
 	if resolved == "" {
 		return false
 	}
-	lu := strings.ToLower(resolved)
-	if !strings.Contains(lu, "seek.com") {
+	if !trustedSeekURL(resolved) {
 		return false
 	}
-	return strings.Contains(lu, "/apply") || strings.Contains(lu, "application")
+	u, _ := url.Parse(resolved)
+	return strings.Contains(strings.ToLower(u.Path), "/apply") || strings.Contains(strings.ToLower(u.Path), "application")
 }
 
 // seekDetailPageExternalApply returns true when the job detail HTML references an
@@ -892,7 +906,7 @@ func (b *Bot) processSeekJob(ctx context.Context, br *rod.Browser, job seekJob) 
 func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job seekJob, reevaluate bool) bool {
 	b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Str("company", job.Company).Msgf("seek: processing, %q @ %s", job.Title, job.Company)
 
-	if reason := b.alreadyAppliedReason(job.ID); reason != "" && !(reevaluate && (reason == "in approved queue" || reason == "in Top Matches")) {
+	if reason := b.alreadyAppliedReason(job.ID); reason != "" && (!reevaluate || (reason != "in approved queue" && reason != "in Top Matches")) {
 		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
@@ -954,7 +968,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 		return false
 	}
 
-	if !job.EasyApply {
+	if !job.EasyApply && (!b.cfg.EnableExternalATS || pinnedEngine(b.cfg.EngineStore, b.cfg.UserID, domain.PlatformSeek) != domain.ApplyEngineAdaptive) {
 		b.saveSeekPendingReview(ctx, &domain.PendingReview{
 			JobID:                job.ID,
 			Company:              job.Company,
@@ -1017,12 +1031,13 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 			return result.Score, result.Reasoning, nil, false
 		}
 		b.resetEvaluationFailures()
-		if verdict.Verdict == "HARAM" {
+		switch verdict.Verdict {
+		case "HARAM":
 			verdictJSON, _ := json.Marshal(verdict)
 			b.recordSeekSkipped(job, "halal filter", result.Score, result.Reasoning, verdictJSON)
 			b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("seek: halal skip (HARAM) %q @ %s", job.Title, job.Company)
 			return result.Score, result.Reasoning, nil, false
-		} else if verdict.Verdict == "DOUBTFUL" {
+		case "DOUBTFUL":
 			halalVerdict, _ = json.Marshal(verdict)
 			b.log.Info().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("seek: halal DOUBTFUL, letting through %q @ %s", job.Title, job.Company)
 		}
@@ -1306,6 +1321,7 @@ func (b *Bot) routeSeekToTopMatches(ctx context.Context, job seekJob, score int,
 
 func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job seekJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) seekSubmitOutcome {
 	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformSeek), job.ID, job.URL, job.Title, job.Company, "automated_seek", b.cfg.AutomationRunID)
+	ac.Engine = pinnedEngine(b.cfg.EngineStore, b.cfg.UserID, domain.PlatformSeek)
 	beginAttempt(b.cfg.DB, ac)
 	release, err := b.beginDocumentWork(ctx)
 	if err != nil {
@@ -1317,7 +1333,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	if lazy != nil {
 		lazy.attemptID = ac.AttemptID
 	}
-	if !job.EasyApply {
+	if !job.EasyApply && (!b.cfg.EnableExternalATS || ac.Engine != domain.ApplyEngineAdaptive) {
 		b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
 		b.routeSeekToTopMatches(ctx, job, score, reasoning, halalVerdict)
 		finishAttempt(b.cfg.DB, ac, OutcomeSkipped, "routing", "not_quick_apply", "routed to Top Matches")
@@ -1332,7 +1348,7 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	}
 	defer func() { _ = jobPage.Close() }()
 
-	if err := b.seekApply(ctx, jobPage, lazy); err != nil {
+	if err := b.applyAttempt(ctx, jobPage, lazy, ac); err != nil {
 		b.log.Error().Str("error", sanitizeErr(err)).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: apply failed")
 		if isSeekSubmitUnconfirmedError(err) {
 			b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("seek: submit clicked but outcome unconfirmed — recording submission_unknown")
@@ -1589,6 +1605,9 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string) error {
 	deadline := time.Now().Add(35 * time.Second)
 	for time.Now().Before(deadline) {
+		if err := page.GetContext().Err(); err != nil {
+			return err
+		}
 		b.humanPause()
 		_ = page.Timeout(3 * time.Second).WaitStable(500 * time.Millisecond)
 
@@ -1770,6 +1789,12 @@ func (b *Bot) seekVerifyAppliedOnJobPage(page *rod.Page, jobURL string) error {
 		}
 		_ = page.Timeout(30 * time.Second).WaitLoad()
 		_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
+		if trustedSeekURL(jobURL) {
+			current := currentPageURL(page)
+			if !trustedSeekURL(current) || seekJobIDFromURL(current) != seekJobIDFromURL(jobURL) {
+				return fmt.Errorf("job identity changed during SEEK confirmation")
+			}
+		}
 		if detectSeekPageApplied(page) {
 			return nil
 		}
@@ -1781,7 +1806,11 @@ func (b *Bot) seekVerifyAppliedOnJobPage(page *rod.Page, jobURL string) error {
 var reSeekJobID = regexp.MustCompile(`/job/(\d{6,})`)
 
 func seekJobIDFromURL(raw string) string {
-	if m := reSeekJobID.FindStringSubmatch(raw); len(m) > 1 {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if m := reSeekJobID.FindStringSubmatch(u.Path); len(m) > 1 {
 		return m[1]
 	}
 	return ""

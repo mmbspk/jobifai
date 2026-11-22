@@ -10,6 +10,11 @@ export interface AIProviderTestResult {
 }
 
 export const settingsApi = {
+  formMappings: {
+    list: () => apiGet<{ entries: FormMappingReview[] }>('/settings/form-mappings'),
+    confirm: (id: string, body: { confirmed: true; binding_key?: string; answer?: string }) => apiPost<void>('/settings/form-mappings/' + encodeURIComponent(id) + '/confirm', body),
+    invalidate: (id: string) => apiDelete<void>('/settings/form-mappings/' + encodeURIComponent(id)),
+  },
   general: {
     get: () => apiGet<GeneralSettings>('/settings/general'),
     set: (body: GeneralSettings) => apiPost<void>('/settings/general', body),
@@ -51,4 +56,13 @@ export const settingsApi = {
   locations: {
     suggest: (q: string) => apiGet<string[]>(`/settings/locations/suggest?q=${encodeURIComponent(q)}`),
   },
+}
+
+export interface FormMappingReview {
+  id: string
+  field: { label: string; group?: string; help_text?: string; type: string; options?: string[]; job_title?: string; max_chars?: number; min_value?: string; max_value?: string; step_value?: string; pattern?: string; locale?: string; input_type?: string }
+  platform: string
+  employer_key: string
+  binding_key: string
+  provenance: string
 }

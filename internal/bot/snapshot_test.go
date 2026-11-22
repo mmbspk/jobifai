@@ -56,7 +56,7 @@ func TestSnapshot_PrivacyNoValues(t *testing.T) {
 	}
 	snap := bot.ExportCaptureStepSnapshot(fields, nil, "seek", 1, "")
 
-	assert.True(t, snap.Fields[0].Filled, "file field with HasFile=true → Filled=true")
+	assert.False(t, snap.Fields[0].Filled, "an existing platform attachment does not prove the approved document is selected")
 	assert.False(t, snap.Fields[1].Filled, "text field not filled → Filled=false")
 }
 

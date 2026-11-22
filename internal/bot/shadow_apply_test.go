@@ -23,7 +23,7 @@ import (
 func TestWireShadowObserver_SetsStepFn(t *testing.T) {
 	b := newTestBot(t)
 	b.cfg.AdaptiveLLM = &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "5"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("5"), Value: "5"},
 	}}
 	ac := &AttemptContext{Engine: domain.ApplyEngineShadow}
 
@@ -52,8 +52,8 @@ func TestShadow_ProducesComparison_WithLLMProposals(t *testing.T) {
 	shadowStore := &DBMappingStore{DB: db, UserID: "user-shadow", ReadOnly: true}
 
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "5 years"},
-		{Ref: "f1", Action: "fill", Value: "Yes"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("5 years"), Value: "5 years"},
+		{Ref: "f1", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("Yes"), Value: "Yes"},
 	}}
 	b := &Bot{
 		cfg: Config{
@@ -104,7 +104,7 @@ func TestShadow_ProducesComparison_WithLLMProposals(t *testing.T) {
 // the legacy fill path.
 func TestShadow_ZeroBrowserActions(t *testing.T) {
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "Yes"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("Yes"), Value: "Yes"},
 	}}
 	b := &Bot{cfg: Config{UserID: "user-shadow", AdaptiveLLM: llm}}
 	ac := &AttemptContext{Engine: domain.ApplyEngineShadow}
@@ -134,7 +134,7 @@ func TestShadow_ZeroMappingCacheWrites(t *testing.T) {
 	activeStore := &DBMappingStore{DB: db, UserID: "user-shadow-cache"}
 
 	llm := &stubLLM{proposals: []LLMFieldProposal{
-		{Ref: "f0", Action: "fill", Value: "10"},
+		{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("10"), Value: "10"},
 	}}
 	// Shadow uses a read-only adapter over the same DB store.
 	b := &Bot{cfg: Config{
@@ -164,8 +164,8 @@ func TestShadow_ZeroMappingCacheWrites(t *testing.T) {
 
 func TestInstallShadowObserver_OnlyForShadowMode(t *testing.T) {
 	cases := []struct {
-		engine     domain.ApplyEngineMode
-		wantWired  bool
+		engine    domain.ApplyEngineMode
+		wantWired bool
 	}{
 		{domain.ApplyEngineShadow, true},
 		{domain.ApplyEngineAdaptive, false},
@@ -199,12 +199,12 @@ func TestShadow_MappingHit_NoLLM(t *testing.T) {
 	// otherwise deterministicResolve fires before the mapping lookup when profile=nil.
 	fields := []formField{{Type: "text", Question: "Years in current role"}}
 	snap := captureStepSnapshot(fields, nil, "linkedin", 0, "Logistics")
-	require.NoError(t, store.Write(context.Background(), snap, []FieldResolution{
-		{Ref: "f0", Source: SourceLLM, Action: ActionFill, Value: "3"},
+	require.NoError(t, reviewFixtureMappings(t, store, snap, []FieldResolution{
+		{Ref: "f0", Source: SourceLLM, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: fixtureBinding("3")},
 	}))
 
-	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", Value: "5"}}}
-	b := &Bot{cfg: Config{UserID: "user-shadow-warm", AdaptiveLLM: llm, AdaptiveMapping: store}}
+	llm := &stubLLM{proposals: []LLMFieldProposal{{Ref: "f0", Action: "fill", IntentType: FieldIntentProfile, BindingKey: fixtureBinding("5"), Value: "5"}}}
+	b := &Bot{cfg: Config{UserID: "user-shadow-warm", Profile: basicProfile(), AdaptiveLLM: llm, AdaptiveMapping: store}}
 	ac := &AttemptContext{Engine: domain.ApplyEngineShadow}
 
 	var observations []ShadowObservation
