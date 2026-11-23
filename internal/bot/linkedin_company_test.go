@@ -18,9 +18,14 @@ func TestLinkedInResolver_CompanyBadgesDoNotReplaceIdentityChecks(t *testing.T) 
 		{"missing company", "", "123", true},
 		{"salary", "$190K/yr - $260K/yr", "123", true},
 		{"salary without period", "$80K–$120K", "123", true},
+		{"single currency salary", "AUD 150000", "123", true},
+		{"posted badge", "Posted today", "123", true},
+		{"reposted badge", "Reposted 2 days ago", "123", true},
 		{"connection badge", "1 connection works here", "123", true},
 		{"alumni badge", "11 company alumni work here", "123", true},
 		{"different employer", "Unrelated Employer", "123", false},
+		{"legitimate alumni employer", "Alumni Ventures", "123", false},
+		{"legitimate posted employer", "Posted Labs", "123", false},
 		{"badge on a wrong job", "$190K/yr - $260K/yr", "999", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

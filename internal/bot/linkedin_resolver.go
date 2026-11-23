@@ -259,6 +259,8 @@ func evalLinkedInJob(page *rod.Page, expectedID string, click, expand bool, job 
 	}
 	expectedCompany := job.Company
 	if linkedInBadgeCompany(expectedCompany) {
+		log.Warn().Str("job_id", expectedID).Str("stored_company", expectedCompany).
+			Msg("linkedin: stored company is a badge; reading current listing metadata")
 		expectedCompany = ""
 	}
 	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInResolve, expectedID, click, expand, job.Title, expectedCompany)
@@ -274,6 +276,9 @@ func evalLinkedInJob(page *rod.Page, expectedID string, click, expand bool, job 
 // A badge stored by an older scraper is not a declared employer. The job ID
 // must still match and its employer is refreshed from the verified detail pane.
 var linkedInCompanyBadgePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)^(?:be an early applicant|viewed|promoted|(?:re)?posted (?:today|yesterday))$`),
+	regexp.MustCompile(`(?i)^(?:(?:posted|reposted)\s+)?\d+\s+(?:hour|day|week|month)s?\s+ago$`),
+	regexp.MustCompile(`(?i)^(?:AUD|USD|GBP|EUR|CAD|NZD|AU\$|A\$|US\$|CA\$|NZ\$|£|€|\$)\s*\d[\d,.]*[KM]?$`),
 	regexp.MustCompile(`(?i)^\d+\s+(?:company|school)\s+alumni\b`),
 	regexp.MustCompile(`(?i)^\d+\s+connections?\s+works?\s+here\b`),
 	regexp.MustCompile(`(?i)^actively\s+(?:reviewing|hiring)\b`),
