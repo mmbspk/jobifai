@@ -60,7 +60,7 @@ export const settingsApi = {
 
 export interface FormMappingReview {
   id: string
-  field: { label: string; group?: string; help_text?: string; type: string; options?: string[]; job_title?: string; max_chars?: number; min_value?: string; max_value?: string; step_value?: string; pattern?: string; locale?: string; input_type?: string }
+  field: { label: string; group?: string; help_text?: string; type: string; options?: string[]; job_title?: string; job_location?: string; max_chars?: number; min_value?: string; max_value?: string; step_value?: string; pattern?: string; locale?: string; input_type?: string }
   platform: string
   employer_key: string
   binding_key: string

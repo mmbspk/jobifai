@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
 )
@@ -35,6 +34,7 @@ import (
 // action. It signals a programming error — shadow must never replace the legacy
 // fill path; this is the safety net.
 var errShadowBrowserAction = errors.New("adaptive_runner: shadow mode must not issue browser actions (bug: wrong routing)")
+var errAdaptiveStepUnchanged = errors.New("adaptive: step did not advance")
 
 // Confirmation observation never retries Submit. A timeout leaves the durable
 // submit intent for reconciliation instead of reporting an application as sent.
@@ -203,9 +203,18 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 		return nil
 	}
-	filler := &linkedInRodFiller{page: activePage, bot: b, lazy: lazy}
+	filler := &linkedInRodFiller{page: activePage, bot: b, lazy: lazy, beforeClick: se.BeforeSideEffect}
+	defer func() {
+		if retErr != nil {
+			if dir := saveAdaptiveDiagnostic(filler.page, "linkedin"); dir != "" {
+				b.log.Warn().Str("diagnostic_dir", dir).Msg("private application diagnostic saved")
+			}
+		}
+	}()
 
 	const maxModalSteps = 30
+	rescannedSteps := map[int]int{}
+	var retryFields []formField
 	for stepIdx := 0; stepIdx < maxModalSteps; stepIdx++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -213,11 +222,18 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 
 		// Scan fields for this step.
 		var fields []formField
-		if stepIdx == 0 {
+		if retryFields != nil {
+			fields = retryFields
+			retryFields = nil
+		} else if stepIdx == 0 {
 			fields = firstFields // already scanned above
 		} else {
 			var scanPage *rod.Page
-			fields, scanPage, _ = b.scanAdaptiveStep(ctx, page)
+			var scanErr error
+			fields, scanPage, scanErr = b.scanAdaptiveStep(ctx, page)
+			if scanErr != nil {
+				return fmt.Errorf("adaptive: scan step %d: %w", stepIdx, scanErr)
+			}
 			if scanPage != nil {
 				filler.page = scanPage
 			}
@@ -230,6 +246,13 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 
 		snap := captureStepSnapshot(fields, nil, "linkedin", stepIdx, stepTitle)
+		selects := 0
+		for _, field := range fields {
+			if field.Type == "select" {
+				selects++
+			}
+		}
+		b.log.Debug().Int("step", stepIdx).Int("fields", len(fields)).Int("selects", selects).Msg("adaptive: scanned current controls")
 		scopeJobDependentFields(&snap, lazy.job)
 		lazy.applyCaps(capsFromFormFields(fields))
 		snap.EmployerKey = employerScope
@@ -249,7 +272,27 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		// Execute: fill fields + navigate.
 		recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
 		result, err := se.ExecuteStep(ctx, snap, interp, filler)
+		writeVerifiedFilledStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		invalidateFailedMappings(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
+		if errors.Is(err, errAdaptiveStepUnchanged) && rescannedSteps[stepIdx] < se.Bounds.MaxFillAttempts && !interpretationUploads(interp) {
+			fresh, freshPage, changed, scanErr := b.newAdaptiveControls(ctx, page, snap, lazy.job)
+			if scanErr != nil {
+				return fmt.Errorf("adaptive: changed form could not be bound: %w", scanErr)
+			}
+			if scanErr == nil && freshPage != nil {
+				progress := linkedInStepProgress(freshPage)
+				if (filler.previousProgress >= 0 && progress > filler.previousProgress) || b.linkedInPrepareAtFinalReview(freshPage) {
+					result.Outcome, result.Err, err = StepOutcomeAdvanced, nil, nil
+					filler.page = freshPage
+				} else if changed {
+					retryFields, filler.page = fresh, freshPage
+					rescannedSteps[stepIdx]++
+					b.log.Debug().Int("step", stepIdx).Int("rescan", rescannedSteps[stepIdx]).Msg("adaptive: newly rendered controls require fresh interpretation")
+					stepIdx--
+					continue
+				}
+			}
+		}
 		if err != nil && result.Outcome != StepOutcomeSubmitted {
 			return fmt.Errorf("adaptive: execute step %d: %w", stepIdx, err)
 		}
@@ -261,7 +304,7 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		if result.Outcome == StepOutcomeSubmitted && result.Err == nil {
 			expectedID := linkedInExpectedID(lazy.job.URL)
 			submissionConfirmed = waitAdaptiveConfirmation(ctx, func() bool {
-				return linkedInSubmissionConfirmed(filler.page, expectedID, lazy.job.Company)
+				return linkedInSubmissionConfirmed(filler.page, expectedID, lazy.job.Company, lazy.job.Title)
 			})
 			if !submissionConfirmed {
 				b.log.Warn().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).
@@ -294,6 +337,7 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 // the fields plus the page that hosted the form. Pure read-only.
 func (b *Bot) scanAdaptiveStep(ctx context.Context, page *rod.Page) ([]formField, *rod.Page, error) {
 	pages := []*rod.Page{page}
+	var scanErr error
 	if frames, err := page.Elements("iframe, frame"); err == nil {
 		for _, fr := range frames {
 			if fp, ferr := fr.Frame(); ferr == nil && fp != nil {
@@ -302,19 +346,31 @@ func (b *Bot) scanAdaptiveStep(ctx context.Context, page *rod.Page) ([]formField
 		}
 	}
 	for _, p := range pages {
+		if _, err := p.Context(ctx).Timeout(2 * time.Second).Eval(jsLinkedInMaterializeForm); err != nil {
+			return nil, nil, fmt.Errorf("materialize current application controls: %w", err)
+		}
 		res, err := p.Context(ctx).Timeout(10*time.Second).Eval(jsScanFields, map[string]interface{}{"includeAnsweredRadios": true, "includeAnsweredFields": true})
 		if err != nil {
+			if scanErr == nil {
+				scanErr = fmt.Errorf("read current form controls: %w", err)
+			}
 			continue
 		}
 		var fields []formField
 		if err := json.Unmarshal([]byte(res.Value.String()), &fields); err != nil {
+			if scanErr == nil {
+				scanErr = fmt.Errorf("decode current form controls: %w", err)
+			}
 			continue
 		}
 		if len(fields) > 0 {
+			if err := b.prepareLinkedInScannedFields(ctx, p, fields); err != nil {
+				return nil, nil, err
+			}
 			return fields, p, nil
 		}
 	}
-	return nil, nil, nil
+	return nil, nil, scanErr
 }
 
 // ── step-advancement helpers ──────────────────────────────────────────────────
@@ -377,9 +433,11 @@ func writeConfirmedStep(ctx context.Context, store MappingReadWriter, snap StepS
 // linkedInRodFiller implements FieldFiller for LinkedIn Easy Apply using the
 // existing Rod-based JS helpers (jsFillByQuestionAnswer, jsClickApplyNavigation).
 type linkedInRodFiller struct {
-	page *rod.Page
-	bot  *Bot
-	lazy *lazyDocGen
+	page             *rod.Page
+	bot              *Bot
+	lazy             *lazyDocGen
+	previousProgress int
+	beforeClick      func(context.Context) error
 }
 
 func (f *linkedInRodFiller) Fill(ctx context.Context, field SnapField, res FieldResolution) FieldFillResult {
@@ -390,14 +448,18 @@ func (f *linkedInRodFiller) Fill(ctx context.Context, field SnapField, res Field
 		return f.bot.fillAdaptiveDocument(ctx, f.page, f.lazy, field)
 	}
 
-	// ActionFill: use jsFillByQuestionAnswer for text/radio/select/textarea.
-	return fillAdaptiveControl(ctx, f.page, field, res.Value)
+	var profile *domain.ResumeProfile
+	if f.bot != nil {
+		profile = f.bot.currentProfile()
+	}
+	return fillAdaptiveControl(ctx, f.page, field, res.Value, profile)
 }
 
 func (f *linkedInRodFiller) NavigateNext(ctx context.Context) (bool, error) {
 	page := f.page.Context(ctx)
 	// Capture pre-click progress bar step index as the advancement baseline.
 	prevProgress := linkedInStepProgress(page)
+	f.previousProgress = prevProgress
 	_, ok, err := f.bot.clickEasyApplyNavigation(page)
 	if err != nil || !ok {
 		return ok, err
@@ -420,7 +482,7 @@ func (f *linkedInRodFiller) NavigateNext(ctx context.Context) (bool, error) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return false, fmt.Errorf("adaptive: step did not advance — no progress-bar or review-page signal within 2s (prev=%d)", prevProgress)
+	return false, fmt.Errorf("%w — no progress-bar or review-page signal within 2s (prev=%d)", errAdaptiveStepUnchanged, prevProgress)
 }
 
 func (f *linkedInRodFiller) IsSubmitReady(ctx context.Context) (bool, error) {
@@ -444,19 +506,30 @@ func (f *linkedInRodFiller) IsSubmitReady(ctx context.Context) (bool, error) {
 }
 
 func (f *linkedInRodFiller) ClickSubmit(ctx context.Context) error {
-	page := f.page.Context(ctx)
-	ready, err := page.Eval(jsLinkedInAdaptiveSubmit, false)
-	if err != nil {
-		return err
-	}
-	if ready == nil || !ready.Value.Bool() {
-		return errors.New("adaptive: submit control is missing or ambiguous")
-	}
-	button, err := page.ElementByJS(rod.Eval(jsLinkedInAdaptiveSubmit, true))
-	if err != nil {
-		return err
-	}
-	return button.Click(proto.InputMouseButtonLeft, 1)
+	return clickLinkedInAdaptiveSubmit(ctx, f.page, func(ctx context.Context) error {
+		if f.beforeClick != nil {
+			if err := f.beforeClick(ctx); err != nil {
+				return err
+			}
+		}
+		if f.lazy != nil {
+			r, err := resolveLinkedInJob(f.page.Context(ctx), linkedInExpectedID(f.lazy.job.URL), false, f.lazy.job)
+			if err != nil {
+				return err
+			}
+			if !r.IdentityVerified {
+				return r.resolutionError()
+			}
+		}
+		ready, err := f.IsSubmitReady(ctx)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			return errors.New("adaptive: submit control or approved document changed")
+		}
+		return nil
+	})
 }
 
 const jsLinkedInAdaptiveSubmit = `(element)=>{` + jsLinkedInApplyContainerFn + `
@@ -610,7 +683,7 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 		return verifyAdaptiveSeekIdentity(ctx, page, lazy, false)
 	}
-	filler := &seekRodFiller{page: page, bot: b, lazy: lazy}
+	filler := &seekRodFiller{page: page, bot: b, lazy: lazy, beforeClick: se.BeforeSideEffect}
 
 	const maxFormSteps = 15
 	for stepIdx := 0; stepIdx < maxFormSteps; stepIdx++ {
@@ -627,9 +700,19 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		_, _ = page.Eval(`() => { window.scrollTo(0, document.body.scrollHeight); }`)
 		time.Sleep(300 * time.Millisecond)
 
-		fields, scanPage, _ := b.scanAdaptiveStep(ctx, page)
+		fields, scanPage, scanErr := b.scanAdaptiveStep(ctx, page)
+		if scanErr != nil {
+			return fmt.Errorf("seek adaptive: scan step %d: %w", stepIdx, scanErr)
+		}
 		if scanPage != nil && scanPage != page {
 			filler.page = scanPage
+		}
+		if stepIdx == 0 && len(fields) == 0 && b.policiesRequireVerifiedDocuments() {
+			diagnostic, diagnosticErr := page.Eval(jsSeekDocumentDiagnostic)
+			if diagnosticErr == nil {
+				b.log.Warn().Str("job_id", lazy.job.ID).RawJSON("document_shape", []byte(diagnostic.Value.String())).Msg("seek: document controls unresolved")
+			}
+			return fmt.Errorf("seek adaptive: document step has no resolved controls")
 		}
 
 		stepTitle := fmt.Sprintf("seek_step_%d", stepIdx)
@@ -653,6 +736,7 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 
 		recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
 		result, err := se.ExecuteStep(ctx, snap, interp, filler)
+		writeVerifiedFilledStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		invalidateFailedMappings(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		if err != nil && result.Outcome != StepOutcomeSubmitted {
 			return fmt.Errorf("seek adaptive: execute step %d: %w", stepIdx, err)
@@ -663,7 +747,7 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		// click error alone is not sufficient evidence the application was sent.
 		var submissionConfirmed bool
 		if result.Outcome == StepOutcomeSubmitted && result.Err == nil {
-			submissionConfirmed = b.seekWaitSubmitConfirmation(page.Context(ctx), lazy.job.ID, lazy.job.URL) == nil
+			submissionConfirmed = b.seekWaitSubmitConfirmation(page.Context(ctx), lazy.job.ID, lazy.job.URL, lazy.job.Company) == nil
 			if !submissionConfirmed {
 				b.log.Warn().Str("attempt_id", lazy.attemptID).Int("step", stepIdx).
 					Msg("seek adaptive: submit clicked but no post-apply success signal — skipping mapping write")
@@ -698,9 +782,10 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 // Navigation uses seekFindActionButton: Continue for intermediate steps, Submit
 // for the final review step.
 type seekRodFiller struct {
-	page *rod.Page
-	bot  *Bot
-	lazy *lazyDocGen
+	page        *rod.Page
+	bot         *Bot
+	lazy        *lazyDocGen
+	beforeClick func(context.Context) error
 }
 
 func (f *seekRodFiller) Fill(ctx context.Context, field SnapField, res FieldResolution) FieldFillResult {
@@ -710,7 +795,11 @@ func (f *seekRodFiller) Fill(ctx context.Context, field SnapField, res FieldReso
 	if res.Action == ActionUpload {
 		return f.bot.fillAdaptiveDocument(ctx, f.page, f.lazy, field)
 	}
-	return fillAdaptiveControl(ctx, f.page, field, res.Value)
+	var profile *domain.ResumeProfile
+	if f.bot != nil {
+		profile = f.bot.currentProfile()
+	}
+	return fillAdaptiveControl(ctx, f.page, field, res.Value, profile)
 }
 
 func (f *seekRodFiller) NavigateNext(ctx context.Context) (bool, error) {
@@ -724,14 +813,16 @@ func (f *seekRodFiller) NavigateNext(ctx context.Context) (bool, error) {
 	}
 	// Capture pre-click progress bar step index as the advancement baseline.
 	prevProgress := seekStepProgress(page)
-	if err := btn.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	prevHeading := seekApplicationHeading(page)
+	if err := clickSeekAdaptiveAction(ctx, page, false, f.beforeClick); err != nil {
 		return false, fmt.Errorf("seek adaptive: click continue: %w", err)
 	}
 	// Poll up to 2 s for positive evidence of a different active step.
-	// Three signals are accepted (checked in priority order):
+	// Signals are checked in priority order:
 	//   1. Validation errors — explicit rejection; return false immediately.
 	//   2. Progress bar aria-valuenow changed — confirmed intermediate step advance.
-	//   3. Submit button appeared where Continue was — confirmed final-step transition.
+	//   3. Scoped application heading changed — current full-page native layout.
+	//   4. Submit button appeared where Continue was — confirmed final-step transition.
 	// A missing or unreadable progress bar never counts as evidence.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -747,18 +838,39 @@ func (f *seekRodFiller) NavigateNext(ctx context.Context) (bool, error) {
 		if newProgress := seekStepProgress(page); newProgress >= 0 && prevProgress >= 0 && newProgress != prevProgress {
 			return true, nil
 		}
+		if heading := seekApplicationHeading(page); prevHeading != "" && heading != "" && heading != prevHeading {
+			return true, nil
+		}
 		if _, nowSubmit, err := seekAdaptiveActionButton(page); err == nil && nowSubmit {
 			return true, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return false, fmt.Errorf("seek adaptive: step did not advance — no progress-bar or submit-button signal within 2s (prev=%d)", prevProgress)
+	return false, fmt.Errorf("seek adaptive: step did not advance — no progress-bar, heading or submit-button signal within 2s (prev=%d)", prevProgress)
+}
+
+func seekApplicationHeading(page *rod.Page) string {
+	value, err := page.Eval(`()=>{` + jsLinkedInApplyContainerFn + `
+  const scope=resolveApplyContainer();if(!scope)return '';
+  const headings=[...scope.querySelectorAll('h1,h2,h3')].filter(el=>{const r=el.getBoundingClientRect();return r.width>0&&r.height>0;});
+  return headings.length&&headings.length<=10?headings.map(el=>(el.textContent||'').replace(/\s+/g,' ').trim()).join('|'):'';
+ }`)
+	if err != nil || value == nil {
+		return ""
+	}
+	return value.Value.String()
 }
 
 func (f *seekRodFiller) IsSubmitReady(ctx context.Context) (bool, error) {
 	page := f.page.Context(ctx)
 	_, isSubmit, err := seekAdaptiveActionButton(page)
-	return isSubmit, err
+	if err != nil || !isSubmit {
+		return isSubmit, err
+	}
+	if err := seekVerifyFinalReviewDocuments(ctx, page, f.lazy); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (f *seekRodFiller) ClickSubmit(ctx context.Context) error {
@@ -773,17 +885,90 @@ func (f *seekRodFiller) ClickSubmit(ctx context.Context) error {
 	if !isSubmit {
 		return fmt.Errorf("seek adaptive: expected submit button but found continue")
 	}
-	if err := btn.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	beforeClick := func(ctx context.Context) error {
+		if f.beforeClick != nil {
+			if err := f.beforeClick(ctx); err != nil {
+				return err
+			}
+		}
+		return seekVerifyFinalReviewDocuments(ctx, page, f.lazy)
+	}
+	if err := clickSeekAdaptiveAction(ctx, page, true, beforeClick); err != nil {
 		return fmt.Errorf("seek adaptive: click submit: %w", err)
 	}
 	return nil
+}
+
+func clickSeekAdaptiveAction(ctx context.Context, page *rod.Page, submit bool, beforeClick func(context.Context) error) error {
+	clickCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	page = page.Context(clickCtx)
+	for refresh := 0; refresh < 3; refresh++ {
+		button, currentSubmit, err := seekAdaptiveActionButton(page)
+		if err != nil {
+			return err
+		}
+		if button == nil || currentSubmit != submit {
+			return fmt.Errorf("%w: navigation action changed before click", errAdaptiveQuestionReview)
+		}
+		if _, err := button.Eval(`()=>this.scrollIntoView({block:'center',inline:'center',behavior:'instant'})`); err != nil {
+			return err
+		}
+		point, err := adaptiveTypeaheadClickPoint(clickCtx, page, button)
+		if err != nil {
+			return err
+		}
+		if err := moveBoundedMouse(clickCtx, page, *point); err != nil {
+			return err
+		}
+		if beforeClick != nil {
+			if err := beforeClick(clickCtx); err != nil {
+				return err
+			}
+		}
+		// Reacquire an equivalent action after hover hydration; a Next action
+		// becoming Submit always holds before any native mouse press.
+		current, err := button.Eval(`(submit)=>{const action=`+jsSeekAdaptiveAction+`;return action(false)===(submit?'submit':'next') && action(true)===this;}`, submit)
+		if err != nil {
+			return err
+		}
+		if current == nil || !current.Value.Bool() {
+			continue
+		}
+		// Movement is safe when the current hit test still owns the control.
+		// Dispatch once at its fresh point, rather than at the stale geometry.
+		point, err = adaptiveTypeaheadClickPoint(clickCtx, page, button)
+		if err != nil {
+			return err
+		}
+		if beforeClick != nil {
+			if err := beforeClick(clickCtx); err != nil {
+				return err
+			}
+		}
+		if !page.IsIframe() {
+			point, err = probeLinkedInNativeClickPoint(clickCtx, button)
+			if err != nil {
+				continue
+			}
+		}
+		current, err = button.Eval(`(submit)=>{const action=`+jsSeekAdaptiveAction+`;return action(false)===(submit?'submit':'next') && action(true)===this;}`, submit)
+		if err != nil {
+			return err
+		}
+		if current == nil || !current.Value.Bool() {
+			continue
+		}
+		return clickBoundedMouse(clickCtx, page, *point)
+	}
+	return fmt.Errorf("%w: navigation control kept changing before dispatch", errAdaptiveQuestionReview)
 }
 
 const jsSeekAdaptiveAction = `(element)=>{` + jsLinkedInApplyContainerFn + `
  const scope=resolveApplyContainer();if(!scope)return element?null:'';
  const actionable=el=>{const r=el.getBoundingClientRect();if(!r.width||!r.height||el.disabled||el.getAttribute('aria-disabled')==='true')return false;for(let p=el;p;p=p.parentElement){const s=getComputedStyle(p);if(p.hidden||p.inert||p.getAttribute('aria-hidden')==='true'||s.display==='none'||s.visibility==='hidden')return false;}return true;};
  const buttons=allInDOM(scope,'button,input[type=submit],[role=button]').filter(actionable);
- const label=el=>(el.getAttribute('aria-label')||el.textContent||el.value||'').trim().toLowerCase();
+ const label=el=>(el.getAttribute('aria-label')||el.textContent||el.value||'').replace(/[\u2060\uFEFF\u200B-\u200D\u00AD]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
  const next=buttons.filter(el=>/^(continue|next|review|review application|save and continue)$/.test(label(el)));
  const submit=buttons.filter(el=>/^(submit|submit application|send application)$/.test(label(el)));
  const choices=next.length?next:submit;
@@ -801,8 +986,34 @@ func seekAdaptiveActionButton(page *rod.Page) (*rod.Element, bool, error) {
 		return nil, false, fmt.Errorf("%w: multiple current navigation controls", errAdaptiveQuestionReview)
 	}
 	if kind == "" {
-		return nil, false, nil
+		diagnostic, diagnosticErr := page.Eval(jsSeekNavigationDiagnostic)
+		if diagnosticErr == nil {
+			log.Warn().RawJSON("navigation_shape", []byte(diagnostic.Value.String())).Msg("seek: navigation control unresolved")
+		}
+		return nil, false, fmt.Errorf("seek adaptive: navigation control missing")
 	}
 	element, err := page.ElementByJS(rod.Eval(jsSeekAdaptiveAction, true))
 	return element, kind == "submit", err
 }
+
+// Structural diagnostics contain no input values, applicant answers, or URL
+// query strings. They make a changed jobsite form diagnosable from run logs.
+const jsSeekNavigationDiagnostic = `()=>{` + jsLinkedInApplyContainerFn + `
+ const meta=el=>({tag:el.tagName,testid:el.getAttribute('data-testid')||'',automation:el.getAttribute('data-automation')||'',role:el.getAttribute('role')||''});
+ const visible=el=>{const r=el.getBoundingClientRect();return r.width>0&&r.height>0&&getComputedStyle(el).display!=='none'&&getComputedStyle(el).visibility!=='hidden';};
+ const normalize=s=>(s||'').replace(/[\u2060\uFEFF\u200B-\u200D\u00AD]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+ const controls=[...document.querySelectorAll('button,input[type=submit],[role=button]')].filter(visible).filter(el=>/^(continue|next|review|review application|save and continue|submit|submit application|send application)$/.test(normalize(el.getAttribute('aria-label')||el.textContent||el.value))).slice(0,10).map(el=>{
+  const ancestors=[];for(let p=el.parentElement;p&&ancestors.length<15;p=p.parentElement)ancestors.push(meta(p));
+  return {...meta(el),label:normalize(el.getAttribute('aria-label')||el.textContent||el.value),disabled:!!el.disabled,ancestors};
+ });
+ return JSON.stringify({scope_found:!!resolveApplyContainer(),native_apply_route:isNativeSeekApplyPage(),heading_count:[...document.querySelectorAll('h1')].filter(visible).length,landmarks:[...document.querySelectorAll('main,[role=main]')].filter(visible).slice(0,10).map(meta),forms:[...document.querySelectorAll('form')].filter(visible).slice(0,10).map(meta),controls});
+}`
+
+const jsSeekDocumentDiagnostic = `()=>{` + jsLinkedInApplyContainerFn + `
+ const scope=resolveApplyContainer();
+ const meta=el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {tag:el.tagName,testid:el.getAttribute('data-testid')||'',role:el.getAttribute('role')||'',type:el.getAttribute('type')||'',in_scope:!!scope&&scope.contains(el),left:Math.round(r.left),right:Math.round(r.right),width:Math.round(r.width),height:Math.round(r.height),display:s.display,visibility:s.visibility,opacity:s.opacity};};
+ const elements=[...document.querySelectorAll('input[type=file],input[name=resume-method],input[name=coverLetter-method],[data-testid=resumeFileInput],[data-testid=coverLetterFileInput]')].slice(0,12).map(el=>{
+  const ancestors=[];for(let p=el.parentElement;p&&ancestors.length<12;p=p.parentElement)ancestors.push(meta(p));return {...meta(el),ancestors};
+ });
+ return JSON.stringify({scope_found:!!scope,viewport_width:window.innerWidth,scoped_file_inputs:scope?scope.querySelectorAll('input[type=file]').length:0,scoped_radios:scope?scope.querySelectorAll('input[type=radio],[role=radio]').length:0,elements});
+}`

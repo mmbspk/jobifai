@@ -26,7 +26,7 @@ func TestPairedReplay_LegacyColdWarmAndPartiallyChangedForm(t *testing.T) {
 	_, err := db.Exec(`INSERT INTO users(id,email,password_hash) VALUES('paired','paired@fixture.test','fixture')`)
 	require.NoError(t, err)
 	generationCache := &llmreuse.Store{DB: db}
-	server := newCountingServer(t, func(body []byte) string {
+	server := newGroundedCountingServer(t, func(body []byte) string {
 		if strings.Contains(string(body), "Fields to interpret") {
 			var proposals []LLMFieldProposal
 			for _, ref := range extractRefsFromPromptBody(body) {
@@ -80,9 +80,9 @@ func TestPairedReplay_LegacyColdWarmAndPartiallyChangedForm(t *testing.T) {
 		requests int
 	}{
 		{"legacy_base", "52345678", domain.ApplyEngineLegacy, 2},
-		{"adaptive_cold", "52345679", domain.ApplyEngineAdaptive, 1},
+		{"adaptive_cold", "52345679", domain.ApplyEngineAdaptive, 2},
 		{"adaptive_warm", "52345680", domain.ApplyEngineAdaptive, 0},
-		{"adaptive_partial", "52345681", domain.ApplyEngineAdaptive, 1},
+		{"adaptive_partial", "52345681", domain.ApplyEngineAdaptive, 2},
 		{"legacy_partial", "52345682", domain.ApplyEngineLegacy, 1},
 		{"adaptive_profile_changed", "52345683", domain.ApplyEngineAdaptive, 0},
 		{"legacy_profile_changed", "52345684", domain.ApplyEngineLegacy, 2},
@@ -111,7 +111,7 @@ func TestPairedReplay_LegacyColdWarmAndPartiallyChangedForm(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, reviews, 2)
 				for _, review := range reviews {
-					require.NoError(t, ConfirmFormMapping(context.Background(), db, b.cfg.UserID, review.ID, review.BindingKey, basicProfile()))
+					require.Equal(t, string(ProvenanceVerifiedByModel), review.Provenance, "successful verified answers activate cache automatically")
 				}
 			}
 		})

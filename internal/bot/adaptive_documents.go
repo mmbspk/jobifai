@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -11,9 +12,23 @@ import (
 	"github.com/user/jobifai/internal/domain"
 )
 
+var errAdaptiveDocumentReview = errors.New("document attachment needs your review")
+
 // Resolve the current approved document through the same policy used by Legacy.
 // An opaque field ref is never used as an ordinal among file inputs.
-func (b *Bot) fillAdaptiveDocument(ctx context.Context, page *rod.Page, lazy *lazyDocGen, field SnapField) FieldFillResult {
+func (b *Bot) fillAdaptiveDocument(ctx context.Context, page *rod.Page, lazy *lazyDocGen, field SnapField) (result FieldFillResult) {
+	defer func() {
+		if result.Err != nil {
+			var hold *uploadIdentityHold
+			if lazy != nil && errors.As(result.Err, &hold) {
+				lazy.holdReason, lazy.holdStage, lazy.holdFile = hold.Error(), hold.stage, hold.filename
+			}
+			// A chooser click or file delivery may already have happened. Retrying
+			// the same opaque slot can dispatch another upload while the first is
+			// still processing; every uncertain document result stops this step.
+			result.Err = fmt.Errorf("%w: %w", errAdaptiveDocumentReview, result.Err)
+		}
+	}()
 	if b == nil || lazy == nil || page == nil || field.BrowserField == nil {
 		return FieldFillResult{Err: fmt.Errorf("adaptive: upload lacks current scanned control or approved document context")}
 	}

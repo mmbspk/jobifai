@@ -26,8 +26,14 @@ func (s *DBMappingStore) RecordProposals(ctx context.Context, snap StepSnapshot,
 		return nil
 	}
 	for _, r := range interp.Fields {
+		if r.Source == SourceReview && !r.Pending {
+			continue
+		}
 		if r.Source != SourceLLM && r.Source != SourceReview {
 			continue
+		}
+		if r.Provenance == ProvenanceVerifiedByModel && r.grounded != nil && !r.Pending {
+			continue // successful local fill writes the verified cache atomically
 		}
 		f, ok := snap.FieldByRef(r.Ref)
 		if !ok || f.Type == SnapTypeFile || f.Type == SnapTypeUnsupported {
@@ -47,6 +53,10 @@ func (s *DBMappingStore) RecordProposals(ctx context.Context, snap StepSnapshot,
    ON CONFLICT(field_sig,user_id,employer_key) DO UPDATE SET
     field_conditions_json=excluded.field_conditions_json,
     binding_key=CASE WHEN excluded.binding_key <> '' THEN excluded.binding_key ELSE form_field_mappings.binding_key END,
+    provenance=CASE WHEN form_field_mappings.provenance='verified_by_model' THEN 'pending' ELSE form_field_mappings.provenance END,
+    resolved_value=CASE WHEN form_field_mappings.provenance='verified_by_model' THEN '' ELSE form_field_mappings.resolved_value END,
+    verified_by=CASE WHEN form_field_mappings.provenance='verified_by_model' THEN '' ELSE form_field_mappings.verified_by END,
+    verified_at=CASE WHEN form_field_mappings.provenance='verified_by_model' THEN NULL ELSE form_field_mappings.verified_at END,
     updated_at=CURRENT_TIMESTAMP
    WHERE form_field_mappings.provenance NOT IN ('confirmed_by_reviewer','trusted_reference')`,
 			uuid.NewString(), f.FieldSignature(snap.Platform), f.Label, string(f.Type), f.Group,
@@ -89,7 +99,8 @@ func invalidateFailedMappings(ctx context.Context, store MappingReadWriter, snap
 	}
 	for _, ref := range result.FieldsFailed {
 		for _, resolution := range interp.Fields {
-			if resolution.Ref != ref || resolution.Source != SourceMapping {
+			learned := resolution.Source == SourceMapping || (resolution.Source == SourceLLM && resolution.Provenance == ProvenanceVerifiedByModel)
+			if resolution.Ref != ref || !learned {
 				continue
 			}
 			if field, found := snap.FieldByRef(ref); found {

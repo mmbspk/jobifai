@@ -60,27 +60,29 @@ type SnapField struct {
 	Truncated     bool   `json:"truncated,omitempty"`
 	// BrowserField preserves current scanned identity for local execution only.
 	// It is excluded from model payloads and persisted snapshots.
-	BrowserField  *formField    `json:"-"`
-	Ref           string        `json:"ref"`                  // snapshot-scoped opaque token "f0".."fN"
-	Label         string        `json:"label"`                // normalized visible label
-	Group         string        `json:"group,omitempty"`      // fieldset/legend/section heading
-	HelpText      string        `json:"help_text,omitempty"`  // hint / description text below the label
-	ControlID     string        `json:"control_id,omitempty"` // DOM element id for direct fill targeting
-	Type          SnapFieldType `json:"type"`
-	Options       []string      `json:"options,omitempty"` // option labels; radio/select only
-	Required      bool          `json:"required,omitempty"`
-	Disabled      bool          `json:"disabled,omitempty"`
-	MaxChars      int           `json:"max_chars,omitempty"`
-	MinValue      string        `json:"min_value,omitempty"`
-	MaxValue      string        `json:"max_value,omitempty"`
-	StepValue     string        `json:"step_value,omitempty"`
-	Pattern       string        `json:"pattern,omitempty"`
-	InputType     string        `json:"input_type,omitempty"`
-	Locale        string        `json:"locale,omitempty"`
-	JobContext    string        `json:"job_context,omitempty"`
-	JobTitle      string        `json:"job_title,omitempty"`
-	ValidationErr string        `json:"validation_err,omitempty"`
-	Filled        bool          `json:"filled,omitempty"` // current value present (privacy: value not stored)
+	BrowserField      *formField    `json:"-"`
+	Ref               string        `json:"ref"`                  // snapshot-scoped opaque token "f0".."fN"
+	Label             string        `json:"label"`                // normalized visible label
+	Group             string        `json:"group,omitempty"`      // fieldset/legend/section heading
+	HelpText          string        `json:"help_text,omitempty"`  // hint / description text below the label
+	ControlID         string        `json:"control_id,omitempty"` // DOM element id for direct fill targeting
+	Type              SnapFieldType `json:"type"`
+	Options           []string      `json:"options,omitempty"` // option labels; radio/select only
+	Required          bool          `json:"required,omitempty"`
+	Disabled          bool          `json:"disabled,omitempty"`
+	MaxChars          int           `json:"max_chars,omitempty"`
+	MinValue          string        `json:"min_value,omitempty"`
+	MaxValue          string        `json:"max_value,omitempty"`
+	StepValue         string        `json:"step_value,omitempty"`
+	Pattern           string        `json:"pattern,omitempty"`
+	InputType         string        `json:"input_type,omitempty"`
+	Locale            string        `json:"locale,omitempty"`
+	JobContext        string        `json:"job_context,omitempty"`
+	ProfileRecordPath string        `json:"profile_record_path,omitempty"`
+	JobTitle          string        `json:"job_title,omitempty"`
+	JobLocation       string        `json:"job_location,omitempty"`
+	ValidationErr     string        `json:"validation_err,omitempty"`
+	Filled            bool          `json:"filled,omitempty"` // current value present (privacy: value not stored)
 }
 
 // SnapNav is a visible navigation action in the step.
@@ -150,7 +152,7 @@ func (f SnapField) FieldSignature(platform string) string {
 	if f.OptionSetHash != "" {
 		opts = []string{f.OptionSetHash}
 	}
-	raw, _ := json.Marshal([]string{
+	parts := []string{
 		strings.ToLower(strings.TrimSpace(platform)),
 		strings.ToLower(strings.TrimSpace(f.Group)),
 		strings.ToLower(strings.TrimSpace(f.Label)),
@@ -160,7 +162,11 @@ func (f SnapField) FieldSignature(platform string) string {
 		fmt.Sprintf("required=%t;max_chars=%d", f.Required, f.MaxChars),
 		f.MinValue, f.MaxValue, f.StepValue, f.Pattern, f.InputType, strings.ToLower(f.Locale),
 		f.JobContext,
-	})
+	}
+	if f.ProfileRecordPath != "" {
+		parts = append(parts, "record:"+f.ProfileRecordPath)
+	}
+	raw, _ := json.Marshal(parts)
 	h := sha256.Sum256(raw)
 	return fmt.Sprintf("fs2:%x", h[:16])
 }
@@ -168,13 +174,19 @@ func (f SnapField) FieldSignature(platform string) string {
 // Context-dependent answers are reusable only for the same vacancy. Candidate
 // facts such as contact information and named skills keep field-level reuse.
 func scopeJobDependentFields(snap *StepSnapshot, job linkedInJob) {
-	context, _ := json.Marshal([]string{job.ID, job.URL, normalizeLabel(job.Title)})
+	context, _ := json.Marshal([]string{job.ID, job.URL, normalizeLabel(job.Title), normalizeLabel(job.Location)})
 	digest := sha256.Sum256(context)
 	for i := range snap.Fields {
 		f := &snap.Fields[i]
-		if isJobDependentQuestion(f.Label + " " + f.Group + " " + f.HelpText) {
+		// All questions receive the verified listing context so country-scoped
+		// candidate facts can be checked even for generic question wording.
+		f.JobTitle = job.Title
+		f.JobLocation = job.Location
+		question := f.Label + " " + f.Group + " " + f.HelpText
+		// Eligibility and sponsorship answers can depend on the vacancy's
+		// jurisdiction even when the visible label omits the country.
+		if isJobDependentQuestion(question) || isWorkAuthorizationQuestion(question) || matchesAny(strings.ToLower(question), "sponsor") {
 			f.JobContext = fmt.Sprintf("job:%x", digest[:16])
-			f.JobTitle = job.Title
 		}
 	}
 }
@@ -219,21 +231,22 @@ func captureStepSnapshot(fields []formField, navActions []SnapNav, platform stri
 	for i := range n {
 		f := fields[i]
 		sf := SnapField{
-			BrowserField: &f,
-			Ref:          fmt.Sprintf("f%d", i),
-			Label:        normalizeLabel(f.Question),
-			Group:        normalizeLabel(f.Group),
-			HelpText:     normalizeLabel(f.HelpText),
-			ControlID:    f.ID,
-			Required:     f.Required,
-			MaxChars:     f.MaxChars,
-			MinValue:     f.MinValue,
-			MaxValue:     f.MaxValue,
-			StepValue:    f.StepValue,
-			Pattern:      f.Pattern,
-			InputType:    f.InputType,
-			Locale:       f.Locale,
-			Filled:       false, // privacy: never store the actual value
+			BrowserField:      &f,
+			Ref:               fmt.Sprintf("f%d", i),
+			Label:             normalizeLabel(f.Question),
+			Group:             normalizeLabel(f.Group),
+			ProfileRecordPath: f.ProfileRecordPath,
+			HelpText:          normalizeLabel(f.HelpText),
+			ControlID:         f.ID,
+			Required:          f.Required,
+			MaxChars:          f.MaxChars,
+			MinValue:          f.MinValue,
+			MaxValue:          f.MaxValue,
+			StepValue:         f.StepValue,
+			Pattern:           f.Pattern,
+			InputType:         f.InputType,
+			Locale:            f.Locale,
+			Filled:            false, // privacy: never store the actual value
 		}
 		if f.NativeType != "" {
 			sf.InputType = f.NativeType

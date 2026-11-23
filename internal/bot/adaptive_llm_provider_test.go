@@ -5,9 +5,9 @@ package bot
 // These tests use a counting mock HTTP server and the production LLMFormInterpreter
 // (not stubLLM) to prove the batch adapter's cost properties end-to-end:
 //
-//   Cold step     : 3 unresolved fields → 1 provider request, all 3 refs sent.
+//   Cold step     : 3 unresolved fields → proposal + semantic verification batches.
 //   Warm step     : all 3 fields in mapping cache → 0 provider requests.
-//   Partial miss  : 2 cached + 1 new field → 1 provider request, only the new ref sent.
+//   Partial miss  : cached fields stay local; only new refs reach both batches.
 //
 // Evidence is published via t.Logf and can be verified against the mapping store.
 
@@ -128,11 +128,11 @@ func openProviderTestDB(t *testing.T) *sql.DB {
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-// TestLLMFormInterpreter_ColdStep_OneProviderRequest proves that a cold step with
-// 3 unresolved fields issues exactly 1 provider request containing all 3 refs.
-func TestLLMFormInterpreter_ColdStep_OneProviderRequest(t *testing.T) {
+// TestLLMFormInterpreter_ColdStep_TwoBatchedProviderRequests proves that a cold step with
+// 3 unresolved fields issues two batched requests containing all 3 refs.
+func TestLLMFormInterpreter_ColdStep_TwoBatchedProviderRequests(t *testing.T) {
 	var capturedRefs []string
-	srv := newCountingServer(t, func(body []byte) string {
+	srv := newGroundedCountingServer(t, func(body []byte) string {
 		// Extract the refs from the prompt body to verify all 3 are sent.
 		capturedRefs = extractRefsFromPromptBody(body)
 		return coldProposalsJSON()
@@ -154,7 +154,7 @@ func TestLLMFormInterpreter_ColdStep_OneProviderRequest(t *testing.T) {
 	t.Logf("EVIDENCE provider-cold | provider_requests=%d | refs_sent=%v | llm_used=%v | paused=%v",
 		requests, capturedRefs, result.LLMUsed, result.Paused)
 
-	assert.Equal(t, 1, requests, "cold step: exactly one provider HTTP request")
+	assert.Equal(t, 2, requests, "cold step: proposal and independent verification HTTP requests")
 	assert.Equal(t, 3, len(result.Fields), "cold step: 3 fields resolved")
 	assert.True(t, result.LLMUsed, "cold step: LLMUsed must be true")
 	assert.False(t, result.Paused, "cold step: no paused fields")
@@ -178,7 +178,7 @@ func TestLLMFormInterpreter_ConcurrentMissesCoalesceWithinVerifiedScope(t *testi
 		_, err := db.Exec(`INSERT INTO users(id,email,password_hash) VALUES(?,?,?)`, id, id+"@fixture.test", "fixture")
 		require.NoError(t, err)
 	}
-	server := newCountingServer(t, func([]byte) string {
+	server := newGroundedCountingServer(t, func([]byte) string {
 		time.Sleep(100 * time.Millisecond)
 		return `[{"ref":"f0","action":"fill","intent_type":"profile","binding_key":"application_defaults.notice_period"}]`
 	})
@@ -204,7 +204,7 @@ func TestLLMFormInterpreter_ConcurrentMissesCoalesceWithinVerifiedScope(t *testi
 	for err := range results {
 		require.NoError(t, err)
 	}
-	assert.Equal(t, int32(1), server.requests.Load(), "one provider request for eight concurrent misses")
+	assert.Equal(t, int32(2), server.requests.Load(), "one proposal and one independent verification request for eight concurrent misses")
 	changed := snap
 	changed.EmployerKey = "verified-issuer-b"
 	_, err := adapter.InterpretFields(context.Background(), basicProfile(), changed, []string{"f0"})
@@ -216,13 +216,13 @@ func TestLLMFormInterpreter_ConcurrentMissesCoalesceWithinVerifiedScope(t *testi
 	other := NewLLMFormInterpreter(server.newClient(t).WithUserID("other").WithReuse(&llm.ReuseCoordinator{Store: &llmreuse.Store{DB: db}}))
 	_, err = other.InterpretFields(context.Background(), basicProfile(), snap, []string{"f0"})
 	require.NoError(t, err)
-	assert.Equal(t, int32(4), server.requests.Load(), "employer, profile and user changes cannot reuse a pending proposal across scope")
+	assert.Equal(t, int32(8), server.requests.Load(), "employer, profile and user changes require scoped proposal and verification batches")
 }
 
 // TestLLMFormInterpreter_WarmStep_ZeroProviderRequests proves that when all 3 fields
 // are in the mapping cache, the LLMFormInterpreter is never invoked (zero HTTP requests).
 func TestLLMFormInterpreter_WarmStep_ZeroProviderRequests(t *testing.T) {
-	srv := newCountingServer(t, func(_ []byte) string {
+	srv := newGroundedCountingServer(t, func(_ []byte) string {
 		return "[]" // must never be called
 	})
 
@@ -262,13 +262,13 @@ func TestLLMFormInterpreter_WarmStep_ZeroProviderRequests(t *testing.T) {
 	assert.False(t, result.Paused, "warm step: no paused fields")
 }
 
-// TestLLMFormInterpreter_PartialMiss_OneRequestWithNewField proves that when 2 of 3
-// fields are in the mapping cache and 1 is new, exactly 1 provider request is made
-// and it contains only the new field's ref.
-func TestLLMFormInterpreter_PartialMiss_OneRequestWithNewField(t *testing.T) {
+// TestLLMFormInterpreter_PartialMiss_TwoBatchesWithNewField proves that when 2 of 3
+// fields are in the mapping cache and 1 is new, two batched requests contain only
+// the new field's ref.
+func TestLLMFormInterpreter_PartialMiss_TwoBatchesWithNewField(t *testing.T) {
 	const newFieldRef = "f3"
 	var capturedRefs []string
-	srv := newCountingServer(t, func(body []byte) string {
+	srv := newGroundedCountingServer(t, func(body []byte) string {
 		capturedRefs = extractRefsFromPromptBody(body)
 		return partialProposalJSON(newFieldRef)
 	})
@@ -311,7 +311,7 @@ func TestLLMFormInterpreter_PartialMiss_OneRequestWithNewField(t *testing.T) {
 	t.Logf("EVIDENCE provider-partial | provider_requests=%d | refs_sent_to_provider=%v | fields_from_mapping=%d | total_fields=%d",
 		requests, capturedRefs, fromMapping, len(result.Fields))
 
-	assert.Equal(t, 1, requests, "partial miss: exactly 1 provider request for the new field")
+	assert.Equal(t, 2, requests, "partial miss: one proposal and one verification batch for the new field")
 	assert.Equal(t, []string{newFieldRef}, capturedRefs, "partial miss: only the new field ref sent to provider")
 	assert.Equal(t, 3, fromMapping, "partial miss: 3 known fields served from mapping cache")
 	assert.Equal(t, 4, len(result.Fields), "partial miss: all 4 fields resolved")

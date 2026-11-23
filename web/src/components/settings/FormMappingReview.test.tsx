@@ -22,6 +22,30 @@ function renderReview() {
   return render(<QueryClientProvider client={client}><FormMappingReview /></QueryClientProvider>)
 }
 describe('FormMappingReview', () => {
+  it('shows automatically verified mappings without requiring candidate confirmation', async () => {
+    vi.mocked(settingsApi.formMappings.list).mockResolvedValue({ entries: [{
+      id: 'automatic', platform: 'seek', employer_key: 'Acme',
+      field: { label: 'Where are you based?', type: 'radio', job_title: 'Coordinator', job_location: 'Adelaide' },
+      binding_key: '', provenance: 'verified_by_model',
+    }] })
+    vi.mocked(settingsApi.formMappings.invalidate).mockResolvedValue(undefined)
+    renderReview()
+    await screen.findByText(/Verified automatically/)
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Confirm question mapping' })).not.toBeInTheDocument()
+    expect(settingsApi.formMappings.confirm).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Disable mapping' }))
+    await waitFor(() => expect(settingsApi.formMappings.invalidate).toHaveBeenCalledWith('automatic'))
+    await userEvent.click(screen.getByRole('button', { name: 'Review or override' }))
+    expect(screen.getByRole('button', { name: 'Confirm question mapping' })).toBeDisabled()
+  })
+  it('shows missing sponsorship separately from an explicit no', async () => {
+    vi.mocked(settingsApi.formMappings.list).mockResolvedValue({ entries: [{ id: 'sponsor', platform: 'seek', employer_key: 'Acme', field: { label: 'Require sponsorship?', type: 'radio', options: ['Yes', 'No'] }, binding_key: 'application_defaults.requires_sponsorship', provenance: 'pending' }] })
+    renderReview()
+    await screen.findByText(/Current saved answer: Missing/)
+    await userEvent.click(screen.getByRole('checkbox'))
+    expect(screen.getByRole('button', { name: 'Confirm question mapping' })).toBeDisabled()
+  })
   it('requires explicit confirmation before promoting a proposed binding', async () => {
     renderReview()
     const button = await screen.findByRole('button', { name: 'Confirm question mapping' })

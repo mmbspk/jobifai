@@ -128,6 +128,48 @@ test('confirmation on a separate success route needs an explicit matching job ID
 
 const sduiHeader = id => '<div id="'+id+'"><a href="/jobs/view/'+target+'">Software Engineer</a><span aria-label="Company, Example.">Example</span><button>Easy Apply</button></div>';
 const sduiDescription = '<div id="JobDetails_AboutTheJob_'+target+'">Intended description with enough content for extraction.</div>';
+// Reduced standalone layout: explicit component IDs, plain heading, repeated
+// company/logo links, no linked job title. Never use private live captures.
+const standaloneHeader = '<div class="primary"><div><h2>Senior Coordinator</h2><div><a aria-label="Company, Acme." href="/company/acme">Acme</a><a aria-label="Company, Acme." href="/company/acme">Logo</a></div><div><button>Easy Apply</button></div></div></div>';
+const standalone = '<div class="owner"><div id="JobDetails_ManageJobBanner_'+target+'"></div>'+standaloneHeader+'<section>'+sduiDescription+'<aside><h2>Other opportunity</h2><button>Easy Apply</button></aside></section></div>';
+test('standalone SDUI verifies a plain heading using unique job component IDs',()=>{
+ const p=page(standalone);
+ try {let clicks=0;p.dom.window.document.querySelector('.primary button').onclick=()=>clicks++;
+  const r=p.resolve(true,{title:'Senior Coordinator',company:'Acme'});
+  assert.equal(r.identity_verified,true);assert.equal(r.kind,'native');assert.equal(r.company,'Acme');
+  assert.ok(r.description.includes('Intended description'));assert.equal(clicks,1);
+ }finally{p.dom.window.close()}
+});
+test('standalone SDUI verifies an exact expected paragraph title',()=>{
+ const p=page(standalone.replace('<h2>Senior Coordinator</h2>','<p>Senior Coordinator</p>'));
+ try {const r=p.resolve(false,{title:'Senior Coordinator',company:'Acme'});assert.equal(r.identity_verified,true);assert.equal(r.kind,'native');}
+ finally{p.dom.window.close()}
+});
+test('standalone SDUI identity guard can recheck explicit component ownership without title metadata',()=>{
+ const p=page(standalone.replace('<h2>Senior Coordinator</h2>','<p>Senior Coordinator</p>'));
+ try {const r=p.resolve(false);assert.equal(r.identity_verified,true);assert.equal(r.kind,'native');}
+ finally{p.dom.window.close()}
+});
+for(const [name,change] of [
+ ['wrong banner ID',d=>d.querySelector('[id^="JobDetails_ManageJobBanner_"]').id='JobDetails_ManageJobBanner_'+other],
+ ['wrong description ID',d=>d.querySelector('[id^="JobDetails_AboutTheJob_"]').id='JobDetails_AboutTheJob_'+other],
+ ['conflicting component ID',d=>d.querySelector('.primary').insertAdjacentHTML('beforeend','<div id="JobDetails_ResumeReview_'+other+'"></div>')],
+ ['conflicting header job ID',d=>d.querySelector('.primary').setAttribute('data-job-id',other)],
+ ['conflicting job link',d=>d.querySelector('.primary').insertAdjacentHTML('beforeend','<a href="/jobs/view/'+other+'">Another listing</a>')],
+ ['duplicate owners',d=>d.querySelector('.owner').after(d.querySelector('.owner').cloneNode(true))],
+ ['duplicate local headers',d=>d.querySelector('.primary').after(d.querySelector('.primary').cloneNode(true))],
+ ['duplicate header with different title',d=>{const h=d.querySelector('.primary').cloneNode(true);h.querySelector('h2').textContent='Other title';d.querySelector('.primary').after(h)}],
+ ['conflicting title',d=>d.querySelector('h2').textContent='Other title'],
+ ['conflicting employer',d=>d.querySelectorAll('[aria-label^="Company,"]').forEach(e=>e.setAttribute('aria-label','Company, OtherCo.'))],
+ ['recommendation control only',d=>d.querySelector('.primary button').remove()],
+ ['page shell is the shared owner',d=>d.querySelector('.owner').replaceWith(...d.querySelector('.owner').childNodes)],
+]) test('standalone SDUI rejects '+name,()=>{
+ const p=page(standalone);
+ try {change(p.dom.window.document);let clicks=0;p.dom.window.document.addEventListener('click',()=>clicks++);
+  const r=p.resolve(true,{title:'Senior Coordinator',company:'Acme'});
+  assert.equal(r.identity_verified,false);assert.equal(r.action,'');assert.equal(clicks,0);
+ }finally{p.dom.window.close()}
+});
 test('sticky SDUI sibling does not compete with the unique header-description block',()=>{
  const p=page('<div>'+sduiHeader('primary')+sduiDescription+'</div>'+sduiHeader('sticky'));
  try {
@@ -158,7 +200,7 @@ test('legacy description pane wins over condensed sibling',()=>{
 
 // Execute the production SERP parser rather than a copied skip expression.
 const searchScript=source.match(/const jsLinkedInSearchJobs = `([\s\S]*?)`\n/)[1];
-for(const salary of ['$80K–$120K','137.8K AUD/yr – 147.4K AUD/yr','A$137,800 – A$147,400','AUD 137,800 - AUD 147,400','USD 80,000 — USD 120,000']){
+for(const salary of ['$80K–$120K','$190K/yr - $260K/yr','A$80/hr - A$100/hr','137.8K AUD/yr – 147.4K AUD/yr','A$137,800 – A$147,400','AUD 137,800 - AUD 147,400','USD 80,000 — USD 120,000']){
  test('SERP excludes salary company-slot line: '+salary,()=>{
   const p=page('<div role="button" componentkey="job-card-component-ref-'+target+'"><p>Software Engineer</p><p>'+salary+'</p><p>11 company alumni work here</p><p>Example</p><p>Adelaide, SA</p></div>');
   try{
@@ -169,7 +211,7 @@ for(const salary of ['$80K–$120K','137.8K AUD/yr – 147.4K AUD/yr','A$137,800
   }finally{p.dom.window.close()}
  });
 }
-for(const badge of ['Actively reviewing applicants','Actively hiring','1 school alumni works here','3 school alumni work here']){
+for(const badge of ['Actively reviewing applicants','Actively hiring','1 school alumni works here','3 school alumni work here','1 connection works here','3 connections work here']){
  test('SERP excludes badge company-slot line: '+badge,()=>{
   const p=page('<div role="button" componentkey="job-card-component-ref-'+target+'"><p>Senior Engineer</p><p>'+badge+'</p><p>Acme Corp</p><p>Sydney, NSW</p></div>');
   try{
@@ -179,3 +221,15 @@ for(const badge of ['Actively reviewing applicants','Actively hiring','1 school 
   }finally{p.dom.window.close()}
  });
 }
+test('SERP keeps plain paragraph company text beside nested spans',()=>{
+ const p=page('<div role="button" componentkey="job-card-component-ref-'+target+'"><p><span>Senior Coordinator</span></p><p>Acme Corp</p><p><span>1 connection works here</span></p><p><span>Adelaide, SA (Remote)</span></p></div>');
+ try {
+  const jobs=JSON.parse(p.dom.window.eval('('+searchScript+')')());
+  assert.equal(jobs.length,1);assert.equal(jobs[0].company,'Acme Corp');assert.equal(jobs[0].location,'Adelaide, SA (Remote)');
+ } finally {p.dom.window.close()}
+});
+test('SERP does not turn a location into a missing company',()=>{
+ const p=page('<div role="button" componentkey="job-card-component-ref-'+target+'"><span>Senior Coordinator</span><span>Adelaide, SA (Remote)</span></div>');
+ try {const jobs=JSON.parse(p.dom.window.eval('('+searchScript+')')());assert.equal(jobs[0].company,'');assert.equal(jobs[0].location,'Adelaide, SA (Remote)');}
+ finally {p.dom.window.close()}
+});

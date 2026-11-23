@@ -46,7 +46,7 @@ func TestWorkerBrowser_LinkedInColdWarmThroughHistory(t *testing.T) {
 	db := openMappingDB(t)
 	settings := config.NewStore(db)
 	require.NoError(t, settings.Set(domain.SystemUserID, keyApplyEngineConfig, domain.ApplyEngineConfig{Mode: domain.ApplyEngineAdaptive}))
-	srv := newCountingServer(t, func([]byte) string {
+	srv := newGroundedCountingServer(t, func([]byte) string {
 		return `[{"ref":"f1","action":"fill","intent_type":"profile","binding_key":"application_defaults.notice_period"}]`
 	})
 	mappings := &DBMappingStore{DB: db, UserID: "fixture-user"}
@@ -60,11 +60,13 @@ func TestWorkerBrowser_LinkedInColdWarmThroughHistory(t *testing.T) {
 		if id == "12345678" {
 			var mappingID string
 			require.NoError(t, db.QueryRow(`SELECT id FROM form_field_mappings WHERE user_id=? AND binding_key='application_defaults.notice_period'`, b.cfg.UserID).Scan(&mappingID))
-			require.NoError(t, ConfirmFormMapping(ctx, db, b.cfg.UserID, mappingID, "application_defaults.notice_period", basicProfile()))
+			var provenance string
+			require.NoError(t, db.QueryRow(`SELECT provenance FROM form_field_mappings WHERE id=?`, mappingID).Scan(&provenance))
+			require.Equal(t, string(ProvenanceVerifiedByModel), provenance, "cache activation needs no human confirmation")
 			b.cfg.AdaptiveLLM = nil
 		}
 	}
-	assert.Equal(t, int32(1), srv.requests.Load())
+	assert.Equal(t, int32(2), srv.requests.Load())
 	assert.Equal(t, 2, retained)
 	var count int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM jobs_applied WHERE user_id=?`, b.cfg.UserID).Scan(&count))
@@ -92,7 +94,7 @@ func TestWorkerBrowser_SeekColdWarmThroughHistory(t *testing.T) {
 	db := openMappingDB(t)
 	settings := config.NewStore(db)
 	require.NoError(t, settings.Set(domain.SystemUserID, keyApplyEngineConfig, domain.ApplyEngineConfig{Mode: domain.ApplyEngineAdaptive}))
-	srv := newCountingServer(t, func([]byte) string {
+	srv := newGroundedCountingServer(t, func([]byte) string {
 		return `[{"ref":"f1","action":"fill","intent_type":"profile","binding_key":"application_defaults.notice_period"}]`
 	})
 	mappings := &DBMappingStore{DB: db, UserID: "seek-fixture"}
@@ -107,11 +109,13 @@ func TestWorkerBrowser_SeekColdWarmThroughHistory(t *testing.T) {
 		if id == "22345678" {
 			var mappingID string
 			require.NoError(t, db.QueryRow(`SELECT id FROM form_field_mappings WHERE user_id=? AND binding_key='application_defaults.notice_period'`, b.cfg.UserID).Scan(&mappingID))
-			require.NoError(t, ConfirmFormMapping(ctx, db, b.cfg.UserID, mappingID, "application_defaults.notice_period", basicProfile()))
+			var provenance string
+			require.NoError(t, db.QueryRow(`SELECT provenance FROM form_field_mappings WHERE id=?`, mappingID).Scan(&provenance))
+			require.Equal(t, string(ProvenanceVerifiedByModel), provenance, "cache activation needs no human confirmation")
 			b.cfg.AdaptiveLLM = nil
 		}
 	}
-	assert.Equal(t, int32(1), srv.requests.Load())
+	assert.Equal(t, int32(2), srv.requests.Load())
 	var count int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM jobs_applied WHERE user_id=?`, b.cfg.UserID).Scan(&count))
 	assert.Equal(t, 2, count)
@@ -167,7 +171,7 @@ func TestWorkerBrowser_WrongEmployerConfirmationCannotRecordOrResubmit(t *testin
 	db := openMappingDB(t)
 	settings := config.NewStore(db)
 	require.NoError(t, settings.Set(domain.SystemUserID, keyApplyEngineConfig, domain.ApplyEngineConfig{Mode: domain.ApplyEngineAdaptive}))
-	srv := newCountingServer(t, func([]byte) string {
+	srv := newGroundedCountingServer(t, func([]byte) string {
 		return `[{"ref":"f1","action":"fill","intent_type":"profile","binding_key":"application_defaults.notice_period"}]`
 	})
 	b := New(Config{DB: db, UserID: "false-confirmation", Platform: domain.PlatformLinkedIn, Profile: basicProfile(), EngineStore: settings, AdaptiveLLM: NewLLMFormInterpreter(srv.newClient(t))})
@@ -181,7 +185,7 @@ func TestWorkerBrowser_WrongEmployerConfirmationCannotRecordOrResubmit(t *testin
 	submits, err := probe.Eval(`()=>localStorage.getItem('submits')`)
 	require.NoError(t, err)
 	assert.Equal(t, "1", submits.Value.String())
-	assert.Equal(t, int32(1), srv.requests.Load())
+	assert.Equal(t, int32(2), srv.requests.Load())
 	var count int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM jobs_applied WHERE user_id=?`, b.cfg.UserID).Scan(&count))
 	assert.Zero(t, count)

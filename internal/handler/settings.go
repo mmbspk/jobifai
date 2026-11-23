@@ -55,6 +55,10 @@ func (h *SettingsHandlers) ResumeSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
+	if err := p.ApplicationDefaults.Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
 	if err := h.svc.Config.Set(userID, keyResumeProfile, p); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return

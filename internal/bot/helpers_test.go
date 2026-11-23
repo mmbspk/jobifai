@@ -41,10 +41,10 @@ func TestDeduplicateTitle(t *testing.T) {
 func TestParseEmploymentYears(t *testing.T) {
 	currentYear := time.Now().Year()
 	cases := []struct {
-		name        string
-		period      string
-		wantStart   int
-		wantEnd     int
+		name      string
+		period    string
+		wantStart int
+		wantEnd   int
 	}{
 		{"empty", "", 0, 0},
 		{"full range", "Jan 2019 - Mar 2023", 2019, 2023},
@@ -151,7 +151,10 @@ func TestProfileContactAnswer(t *testing.T) {
 	assert.Equal(t, "jane.doe@example.com", profileContactAnswer("Email address", "email", &pi))
 	assert.Equal(t, "Jane", profileContactAnswer("First name", "text", &pi))
 	assert.Equal(t, "Doe", profileContactAnswer("Last name", "text", &pi))
-	assert.Equal(t, "Sydney, NSW", profileContactAnswer("Location (city)", "text", &pi))
+	assert.Equal(t, "Sydney", profileContactAnswer("Location (city)", "text", &pi))
+	assert.Equal(t, "Sydney", profileContactAnswer("City", "text", &pi))
+	assert.Equal(t, "Australia", profileContactAnswer("Country", "text", &pi))
+	assert.Equal(t, "Sydney, Australia", profileContactAnswer("Current location", "text", &pi), "an address cannot replace the declared city and country")
 	assert.Equal(t, "", profileContactAnswer("How many years of experience with mobile apps?", "text", &pi))
 }
 
@@ -161,7 +164,7 @@ func TestContainsAny(t *testing.T) {
 	assert.True(t, containsAny("hello world", "world", "foo"))
 	assert.True(t, containsAny("hello world", "hello"))
 	assert.False(t, containsAny("hello world", "xyz", "abc"))
-	assert.False(t, containsAny("hello", /* no subs */))
+	assert.False(t, containsAny("hello" /* no subs */))
 }
 
 // ── pickFormOption ────────────────────────────────────────────────────────────
@@ -171,8 +174,9 @@ func TestPickFormOption(t *testing.T) {
 
 	assert.Equal(t, "No sponsorship needed", pickFormOption(options, "No sponsorship"))
 	assert.Equal(t, "Yes, I require sponsorship", pickFormOption(options, "require sponsorship"))
-	// No match → fallback to first option
-	assert.Equal(t, "Yes, I require sponsorship", pickFormOption(options, "nomatch"))
+	// Missing or ambiguous matches do not guess the first option.
+	assert.Empty(t, pickFormOption(options, "nomatch"))
+	assert.Empty(t, pickFormOption(options, "sponsorship"))
 	// nil options → needle is returned as-is
 	assert.Equal(t, "anything", pickFormOption(nil, "anything"))
 }

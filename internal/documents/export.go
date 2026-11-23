@@ -10,6 +10,8 @@ import (
 )
 
 // ExportApplicationUploadFile writes bytes to a user- and version-scoped path with a unique temp file.
+// Only this application export gets a job filename; saved document artifacts and
+// previously recorded application paths retain their existing names.
 func ExportApplicationUploadFile(root, userID, jobID, versionID, kind, filename string, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", fmt.Errorf("empty upload payload")
@@ -21,6 +23,7 @@ func ExportApplicationUploadFile(root, userID, jobID, versionID, kind, filename 
 			filename = "resume.pdf"
 		}
 	}
+	filename = ApplicationUploadFilename(jobID, filename)
 	seg := versionID
 	if seg == "" {
 		seg = uuid.NewString()
@@ -50,6 +53,9 @@ func sanitizePath(s string) string {
 	}, s)
 	if s == "" {
 		return "application"
+	}
+	if s == "." || s == ".." {
+		return strings.Repeat("_", len(s))
 	}
 	return s
 }

@@ -214,9 +214,49 @@ export interface Language {
 
 export interface ApplicationDefaults {
   form_answers?: Record<string, string>
-  requires_sponsorship?: boolean
+  requires_sponsorship?: boolean | null
   notice_period?: string
   salary_expectation?: string
+  availability?: string
+  earliest_start_date?: string
+  salary_range?: ApplicationSalaryRange | null
+  work_rights?: ApplicationWorkRight[]
+  relocation?: ApplicationRelocation | null
+  additional_details?: string
+  custom_answers?: ApplicationAnswer[]
+}
+
+export interface ApplicationSalaryRange {
+  minimum?: number | null
+  maximum?: number | null
+  currency?: string
+  pay_period?: string
+  basis?: string
+  includes_benefits?: boolean | null
+  benefits_details?: string
+  details?: string
+}
+
+export interface ApplicationWorkRight {
+  country?: string
+  status?: string
+  requires_sponsorship?: boolean | null
+  visa_type?: string
+  visa_expiry_date?: string
+  work_restrictions?: string
+  details?: string
+}
+
+export interface ApplicationRelocation {
+  willing?: boolean | null
+  locations?: string[]
+  details?: string
+}
+
+export interface ApplicationAnswer {
+  question?: string
+  answer?: string
+  country?: string
 }
 
 export interface ResumeProfile {

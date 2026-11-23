@@ -116,6 +116,42 @@ func TestMappingVerification_OpaqueAnswersAndInvalidBindingsCannotActivate(t *te
 	assert.Zero(t, n)
 }
 
+func TestMappingVerification_ReviewedAnswerFillsMissingSponsorshipFact(t *testing.T) {
+	store := &DBMappingStore{DB: openMappingDB(t), UserID: "candidate"}
+	profile := basicProfile()
+	profile.ApplicationDefaults.RequiresSponsorship = nil
+	snap := makeSnap(radioField("f0", "Require Sponsorship", "Yes", "No"))
+	snap.EmployerKey = "employer"
+	scopeJobDependentFields(&snap, linkedInJob{ID: "123", URL: "https://www.linkedin.com/jobs/view/123", Title: "Coordinator", Location: "Sydney, Australia"})
+	cold, err := (&StepInterpreter{Mapping: store}).InterpretStep(context.Background(), snap, profile)
+	require.NoError(t, err)
+	require.True(t, cold.Paused)
+	require.NoError(t, store.RecordProposals(context.Background(), snap, cold))
+	items, err := ListFormMappingReviews(context.Background(), store.DB, store.UserID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	key := "mapping_" + items[0].ID
+	profile.ApplicationDefaults.FormAnswers[key] = "No"
+	require.NoError(t, ConfirmFormMapping(context.Background(), store.DB, store.UserID, items[0].ID, "application_defaults.form_answers."+key, profile))
+	warm, err := (&StepInterpreter{Mapping: store}).InterpretStep(context.Background(), snap, profile)
+	require.NoError(t, err)
+	require.False(t, warm.Paused)
+	require.Equal(t, SourceMapping, warm.Fields[0].Source)
+	require.Equal(t, "No", warm.Fields[0].Value)
+	other := makeSnap(radioField("f0", "Require Sponsorship", "Yes", "No"))
+	other.EmployerKey = snap.EmployerKey
+	scopeJobDependentFields(&other, linkedInJob{ID: "456", URL: "https://www.linkedin.com/jobs/view/456", Title: "Coordinator", Location: "Seattle, USA"})
+	elsewhere, err := (&StepInterpreter{Mapping: store}).InterpretStep(context.Background(), other, profile)
+	require.NoError(t, err)
+	require.True(t, elsewhere.Paused, "a reviewed answer for this vacancy is not eligibility evidence for another country")
+	require.Empty(t, elsewhere.Fields[0].Value)
+	profile.ApplicationDefaults.FormAnswers[key] = ""
+	cleared, err := (&StepInterpreter{Mapping: store}).InterpretStep(context.Background(), snap, profile)
+	require.NoError(t, err)
+	require.True(t, cleared.Paused)
+	require.Empty(t, cleared.Fields[0].Value)
+}
+
 func TestMappingVerification_FailedDeterministicFieldCreatesReview(t *testing.T) {
 	store := &DBMappingStore{DB: openMappingDB(t), UserID: "candidate"}
 	snap := makeSnap(textField("f0", "First name"))

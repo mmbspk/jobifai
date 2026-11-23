@@ -24,6 +24,7 @@ import (
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func basicProfile() *domain.ResumeProfile {
+	sponsorship := false
 	return &domain.ResumeProfile{
 		PersonalInformation: domain.PersonalInformation{
 			Name:    "Fatima",
@@ -39,7 +40,7 @@ func basicProfile() *domain.ResumeProfile {
 			FormAnswers:         fixtureFormAnswers(),
 			NoticePeriod:        "2 weeks",
 			SalaryExpectation:   "90000",
-			RequiresSponsorship: false,
+			RequiresSponsorship: &sponsorship,
 		},
 	}
 }
@@ -241,10 +242,27 @@ func TestInterpreter_SponsorshipNo(t *testing.T) {
 	assert.Equal(t, SourceProfile, r.Source)
 }
 
+func TestInterpreter_UnknownSponsorshipRequiresCandidateFact(t *testing.T) {
+	profile := basicProfile()
+	profile.ApplicationDefaults.RequiresSponsorship = nil
+	delegate := &stubLLM{}
+	result, err := (&StepInterpreter{LLM: delegate}).InterpretStep(context.Background(), makeSnap(radioField("f0", "Require Sponsorship", "Yes", "No")), profile)
+	require.NoError(t, err)
+	require.True(t, result.Paused)
+	require.Equal(t, PendingMissingProfile, result.Fields[0].Reason)
+	require.Empty(t, result.Fields[0].Value)
+	require.Zero(t, delegate.calls)
+	b := New(Config{Profile: profile})
+	answer, err := b.answerFormQuestion(context.Background(), nil, "Do you require sponsorship?", []string{"Yes", "No"})
+	require.ErrorIs(t, err, errAdaptiveQuestionReview)
+	require.Empty(t, answer, "missing facts must not fall back to the first choice")
+}
+
 func TestInterpreter_SponsorshipYes(t *testing.T) {
 	si := &StepInterpreter{}
 	p := basicProfile()
-	p.ApplicationDefaults.RequiresSponsorship = true
+	sponsorship := true
+	p.ApplicationDefaults.RequiresSponsorship = &sponsorship
 	snap := makeSnap(radioField("f0", "Require Sponsorship", "Yes", "No"))
 	interp, err := si.InterpretStep(context.Background(), snap, p)
 	require.NoError(t, err)
@@ -269,6 +287,7 @@ func TestInterpreter_MissingProfilePending(t *testing.T) {
 	p := basicProfile()
 	p.PersonalInformation.Email = ""
 	snap := makeSnap(textField("f0", "Email Address"))
+	snap.Fields[0].Required = true
 	interp, err := si.InterpretStep(context.Background(), snap, p)
 	require.NoError(t, err)
 	// Deterministic handler doesn't match because value is empty; field goes to LLM (nil) → pending.

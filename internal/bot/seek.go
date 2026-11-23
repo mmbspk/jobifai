@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -572,14 +572,8 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 			}
 			// Unexpected: page loaded but no cards and no zero-results indicator — selector may need updating.
 			b.log.Warn().Str("keyword", keyword).Msg("seek: no job cards found, selectors may need updating")
-			tp := page.Timeout(5 * time.Second)
-			if html, err := tp.HTML(); err == nil {
-				_ = os.WriteFile("debug_seek_page.html", []byte(html), 0o644)
-				b.log.Warn().Msg("seek: page HTML saved to debug_seek_page.html")
-			}
-			if shot, err := tp.Screenshot(false, nil); err == nil {
-				_ = os.WriteFile("debug_seek_page.png", shot, 0o644)
-				b.log.Warn().Msg("seek: screenshot saved to debug_seek_page.png")
+			if dir := saveAdaptiveDiagnostic(page, "seek"); dir != "" {
+				b.log.Warn().Str("diagnostic_dir", dir).Msg("seek: private application diagnostic saved")
 			}
 			return nil, errSeekSearchUnrecognized
 		}
@@ -991,7 +985,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 	}
 
 	// Docs generated lazily at the file-upload step, only when toggle is on.
-	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: job.ID, Company: job.Company, Title: job.Title, URL: job.URL}, jobDesc: details.Description}
+	lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: job.ID, Company: job.Company, Title: job.Title, URL: job.URL, Location: job.Location}, jobDesc: details.Description}
 	return b.submitSeekApplication(ctx, br, job, lazy, score, reasoning, halalVerdict, llmBefore) == seekSubmitApplied
 }
 
@@ -1265,7 +1259,7 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 		jobDetails := scraper.ParseHTML(rawHTML)
 
 		job := seekJob{ID: p.jobID, Company: p.company, Title: p.role, Location: p.location, URL: p.link, EasyApply: true}
-		lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: p.jobID, Company: p.company, Title: p.role, URL: p.link}, jobDesc: jobDetails.Description}
+		lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: p.jobID, Company: p.company, Title: p.role, URL: p.link, Location: p.location}, jobDesc: jobDetails.Description}
 
 		outcome := b.submitSeekApplication(ctx, br, job, lazy, p.score, "", p.halalVerdict, b.llmSnapshot())
 		switch outcome {
@@ -1332,6 +1326,9 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	defer release()
 	if lazy != nil {
 		lazy.attemptID = ac.AttemptID
+		if job.Location != "" {
+			lazy.job.Location = job.Location
+		}
 	}
 	if !job.EasyApply && (!b.cfg.EnableExternalATS || ac.Engine != domain.ApplyEngineAdaptive) {
 		b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: submitSeekApplication called for non-Quick Apply job — routing to Top Matches")
@@ -1349,8 +1346,12 @@ func (b *Bot) submitSeekApplication(ctx context.Context, br *rod.Browser, job se
 	defer func() { _ = jobPage.Close() }()
 
 	if err := b.applyAttempt(ctx, jobPage, lazy, ac); err != nil {
+		if dir := saveAdaptiveDiagnostic(jobPage, "seek"); dir != "" {
+			b.log.Warn().Str("diagnostic_directory", dir).Str("job_id", job.ID).Msg("seek: private application diagnostic saved")
+		}
 		b.log.Error().Str("error", sanitizeErr(err)).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("seek: apply failed")
 		if isSeekSubmitUnconfirmedError(err) {
+			b.preserveUnknownSubmissionDocuments(ctx, domain.PlatformSeek, lazy.job, lazy, score, reasoning, halalVerdict)
 			b.log.Warn().Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("seek: submit clicked but outcome unconfirmed — recording submission_unknown")
 			b.recordSeekSkipped(job, "seek apply: "+err.Error(), score, reasoning, halalVerdict)
 			finishAttempt(b.cfg.DB, ac, OutcomeSubmissionUnknown, "confirmation", "seek_submit_unconfirmed", err.Error())
@@ -1534,8 +1535,8 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			if msgs := b.seekValidationMessages(page); len(msgs) > 0 {
 				b.log.Warn().Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Strs("errors", msgs).Int("step", step+1).Msg("seek: validation errors with unfilled fields")
 			}
-			if shot, err := page.Screenshot(false, nil); err == nil {
-				_ = os.WriteFile(fmt.Sprintf("debug_seek_step_%d_unfilled.png", step+1), shot, 0o644)
+			if dir := saveAdaptiveDiagnostic(page, "seek"); dir != "" {
+				b.log.Warn().Str("diagnostic_dir", dir).Int("step", step+1).Msg("seek: private application diagnostic saved")
 			}
 			return fmt.Errorf("required screening questions could not be filled at step %d", step+1)
 		}
@@ -1546,9 +1547,8 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		actionBtn, isSubmit := b.seekFindActionButton(page)
 		if actionBtn == nil {
 			// Save a debug snapshot to help diagnose what's on the page.
-			if shot, err := page.Screenshot(false, nil); err == nil {
-				_ = os.WriteFile("debug_seek_apply_stuck.png", shot, 0o644)
-				b.log.Warn().Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).Msg("seek: screenshot saved to debug_seek_apply_stuck.png")
+			if dir := saveAdaptiveDiagnostic(page, "seek"); dir != "" {
+				b.log.Warn().Str("job_id", lazy.job.ID).Str("diagnostic_dir", dir).Msg("seek: private application diagnostic saved")
 			}
 			return fmt.Errorf("no continue or submit button found at form step %d", step+1)
 		}
@@ -1584,7 +1584,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 
 		if isSubmit {
 			b.log.Info().Msgf("seek: submit clicked (%q), verifying confirmation", btnText)
-			if err := b.seekWaitSubmitConfirmation(page, lazy.job.ID, jobURL); err != nil {
+			if err := b.seekWaitSubmitConfirmation(page, lazy.job.ID, jobURL, lazy.job.Company); err != nil {
 				b.log.Warn().Err(err).Str("job_id", lazy.job.ID).Str("url", redactURL(lazy.job.URL)).
 					Msg("seek: submit confirmation failed — outcome unknown, manual reconciliation required")
 				return fmt.Errorf("%w: %w", errSeekSubmitUnconfirmed, err)
@@ -1602,11 +1602,19 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 
 // seekWaitSubmitConfirmation polls after Submit until Seek shows success UI or
 // the job page confirms Applied.
-func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string) error {
+func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string, employers ...string) error {
+	company := ""
+	if len(employers) == 1 {
+		company = employers[0]
+	}
 	deadline := time.Now().Add(35 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := page.GetContext().Err(); err != nil {
 			return err
+		}
+		if seekNativeSubmissionConfirmed(page, jobID, jobURL, company) {
+			b.log.Info().Msg("seek: current job and employer confirmed by native application-sent banner")
+			return nil
 		}
 		b.humanPause()
 		_ = page.Timeout(3 * time.Second).WaitStable(500 * time.Millisecond)
@@ -1654,8 +1662,8 @@ func (b *Bot) seekWaitSubmitConfirmation(page *rod.Page, jobID, jobURL string) e
 	if info, _ := page.Info(); info != nil {
 		b.log.Warn().Str("url", redactURL(info.URL)).Str("title", info.Title).Msg("seek: could not confirm submission — page state")
 	}
-	if shot, err := page.Screenshot(false, nil); err == nil {
-		_ = os.WriteFile("debug_seek_submit_unconfirmed.png", shot, 0o644)
+	if dir := saveAdaptiveDiagnostic(page, "seek"); dir != "" {
+		b.log.Warn().Str("diagnostic_dir", dir).Msg("seek: private application diagnostic saved")
 	}
 	// Fallback: success UI may be slow/missing but Seek recorded the application.
 	if jobURL != "" {
@@ -1863,7 +1871,7 @@ func (b *Bot) ensureSeekApplyFormVisible(page *rod.Page, jobURL string) error {
 
 	b.log.Warn().Msg("seek: retrying Quick Apply click once")
 	if err := b.seekClickQuickApply(page); err != nil {
-		return fmt.Errorf("seek session expired — Quick Apply redirected to login (apply button vanished): %w", err)
+		return fmt.Errorf("seek apply recovery: could not reopen Quick Apply: %w", err)
 	}
 	b.humanPause()
 	if onLogin, e := b.seekWaitPastLogin(page); e != nil {
@@ -1921,9 +1929,15 @@ func (b *Bot) seekPageNeedsLogin(page *rod.Page) bool {
 // Returns blocked when an external ATS / captcha page is detected so callers
 // don't misreport a valid session as expired.
 func (b *Bot) seekWaitForApplyForm(page *rod.Page, timeout time.Duration) (found bool, blocked string) {
+	if page == nil {
+		return false, "browser page unavailable"
+	}
 	deadline := time.Now().Add(timeout)
 	lastLog := time.Time{}
 	for time.Now().Before(deadline) {
+		if _, err := page.Timeout(3 * time.Second).Info(); err != nil {
+			return false, "browser page unavailable: " + sanitizeErr(err)
+		}
 		if b.seekApplyFormPresent(page) {
 			b.log.Info().Msg("seek: Quick Apply form visible")
 			return true, ""
@@ -2424,118 +2438,95 @@ const jsClickUploadByText = `(pattern) => {
 	return false;
 }`
 
-// seekDumpUploadDebug writes a snapshot of the current page so we can update
-// upload selectors when Seek changes its DOM. Best-effort; failures are logged
-// but do not propagate. Each call is bounded by hard timeouts so a partially
-// dead CDP socket can't freeze the whole bot (we've seen multi-hour stalls
-// when page.HTML()/Screenshot() hung on a closing socket).
+// Legacy upload diagnostics use the same opt-in private capture path as Adaptive.
+// Raw application pages must not be written into the checkout by default.
 func seekDumpUploadDebug(page *rod.Page, slug string) {
-	htmlPath := "debug_seek_upload_" + slug + ".html"
-	pngPath := "debug_seek_upload_" + slug + ".png"
-	tp := page.Timeout(5 * time.Second)
-	if html, err := tp.HTML(); err == nil {
-		if werr := os.WriteFile(htmlPath, []byte(html), 0o644); werr == nil {
-			log.Warn().Msgf("seek: upload debug HTML saved to %s", htmlPath)
-		}
-	} else {
-		log.Warn().Err(err).Msgf("seek: upload debug HTML capture timed out for %s", slug)
-	}
-	if shot, err := tp.Screenshot(false, nil); err == nil {
-		if werr := os.WriteFile(pngPath, shot, 0o644); werr == nil {
-			log.Warn().Msgf("seek: upload debug screenshot saved to %s", pngPath)
-		}
-	} else {
-		log.Warn().Err(err).Msgf("seek: upload debug screenshot capture timed out for %s", slug)
+	if dir := saveAdaptiveDiagnostic(page, "seek-upload"); dir != "" {
+		log.Warn().Str("stage", slug).Str("capture_dir", dir).Msg("seek: private upload diagnostic saved")
 	}
 }
 
 // seekUploadResume activates the "Upload a resumé" radio and sets the resume file.
-// If Seek's 10-resume library limit dialog appears, it selects the oldest bot-uploaded
-// resume from the dropdown, clicks the delete button (no further confirmation), then retries.
+// A full saved-resume library evicts one old, unprotected attachment and then
+// retries upload after the selected saved document's deletion is verified.
 func (b *Bot) seekUploadResume(page *rod.Page, filePath string) error {
+	selected, err := page.Timeout(3*time.Second).Eval(jsSeekDocumentSelected, "resume", strings.ToLower(filepath.Base(filePath)))
+	if err == nil && selected != nil && selected.Value.Get("selected").Bool() && !selected.Value.Get("error").Bool() && !selected.Value.Get("ambiguous").Bool() {
+		b.seekRecordResumeUse(page, filePath)
+		return nil
+	}
 	if ok, _ := page.Eval(jsFillRadio, "resume-method", "upload"); ok == nil || !ok.Value.Bool() {
 		// Text-based fallback for renamed radio groups.
 		if ok, _ := page.Eval(jsClickUploadByText, `^upload( a| an| new)? (resum|cv)`); ok != nil && ok.Value.Bool() {
 			b.log.Info().Msg("seek: resume upload radio selected via text fallback")
 		} else {
-			b.log.Warn().Msg("seek: resume-method=upload radio not found, upload may fail")
+			b.log.Debug().Msg("seek: legacy resume upload radio not present")
 		}
 	}
 	time.Sleep(600 * time.Millisecond)
 
 	// Handle "Resumé limit reached" dialog if it appeared after selecting upload.
+	capacityRecovered := false
 	if err := seekHandleResumeLimitDialog(page); err != nil {
-		return fmt.Errorf("seek: resume limit dialog: %w", err)
+		if !errors.Is(err, errSeekResumeLibraryFull) {
+			return fmt.Errorf("seek: resume limit dialog: %w", err)
+		}
+		var recoveryErr error
+		capacityRecovered, recoveryErr = b.seekRecoverResumeLibrary(page, filePath)
+		if recoveryErr != nil {
+			return recoveryErr
+		}
 	}
 
 	// Primary selector first; fall back to any visible PDF-accepting file input
 	// inside the apply form anchor when Seek renames the testid.
-	inputs, err := page.Elements("[data-testid='resumeFileInput'] input[type='file']")
-	if err != nil || len(inputs) == 0 {
-		fallback, ferr := page.Elements("[data-testid='quick-apply-form'] input[type='file'][accept*='pdf'], [data-automation='apply-form'] input[type='file'][accept*='pdf']")
-		if ferr == nil && len(fallback) > 0 {
-			b.log.Info().Msg("seek: resume file input located via fallback selector")
-			inputs = fallback
-		} else {
-			seekDumpUploadDebug(page, "resume")
-			return fmt.Errorf("resume file input not found after selecting upload radio")
-		}
+	if _, err := seekDocumentInput(page, "resume"); err != nil {
+		return err
 	}
-	return inputs[0].SetFiles([]string{filePath})
+	activate := func() (bool, error) {
+		if capacityRecovered {
+			return b.seekActivateResumeUploadOnce(page)
+		}
+		return b.seekActivateResumeUpload(page, filePath)
+	}
+	if _, err := activate(); err != nil {
+		return fmt.Errorf("%w: resume upload activation: %w", errAdaptiveDocumentReview, err)
+	}
+	input, err := seekDocumentInput(page, "resume")
+	if err != nil {
+		return err
+	}
+	if err := input.SetFiles([]string{filePath}); err != nil {
+		return fmt.Errorf("%w: resume upload dispatch: %v", errAdaptiveDocumentReview, err)
+	}
+	if err := b.seekWaitDocumentSelected(page, "resume", filePath); err != nil {
+		return err
+	}
+	b.seekRecordResumeUse(page, filePath)
+	return nil
 }
 
-// seekHandleResumeLimitDialog checks for Seek's 10-resume limit dialog. If present,
-// it selects the oldest bot-uploaded resume from the dropdown and clicks the delete
-// button. Seek closes the dialog and deletes in the background — no further
-// confirmation dialog appears.
+// Detect the limit without mutating the page. Upload recovery supplies the
+// approved filename, usage ranking and exact saved-document deletion checks.
 func seekHandleResumeLimitDialog(page *rod.Page) error {
-	els, err := page.Elements("[data-testid='10-resume-limit-text'], #docLimitExceededDropdown")
-	if err != nil || len(els) == 0 {
-		return nil // no dialog
-	}
-	log.Info().Msg("seek: resume library full, selecting oldest bot-uploaded resume for deletion")
-	// to first (newest); fall back to the very last option if no pattern matches.
-	res, evalErr := page.Eval(`() => {
-		const sel = document.getElementById('docLimitExceededDropdown');
-		if (!sel) return null;
-		const opts = [...sel.options];
-		for (let i = opts.length - 1; i >= 0; i--) {
-			const text = opts[i].text.toLowerCase();
-			if (text.includes('resume.pdf')) {
-				sel.value = opts[i].value;
-				sel.dispatchEvent(new Event('change', { bubbles: true }));
-				return opts[i].text;
+	state, err := page.Timeout(5 * time.Second).Eval(`() => {
+		const markers = [...document.querySelectorAll("[data-testid='10-resume-limit-text'], #docLimitExceededDropdown")];
+		return markers.some(el => {
+			const rect = el.getBoundingClientRect();
+			if (rect.width < 2 && rect.height < 2) return false;
+			for (let n = el; n; n = n.parentElement) {
+				const style = getComputedStyle(n);
+				if (n.hidden || n.inert || n.getAttribute('aria-hidden') === 'true' || style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
 			}
-		}
-		if (opts.length > 0) {
-			const last = opts[opts.length - 1];
-			sel.value = last.value;
-			sel.dispatchEvent(new Event('change', { bubbles: true }));
-			return last.text;
-		}
-		return null;
+			return true;
+		});
 	}`)
-	if evalErr != nil {
-		return fmt.Errorf("evaluate dropdown: %w", evalErr)
+	if err != nil {
+		return fmt.Errorf("%w: inspect SEEK resume library limit: %v", errAdaptiveDocumentReview, err)
 	}
-	if res.Value.Str() != "" {
-		log.Info().Str("deleted_resume", res.Value.Str()).Msg("seek: selected resume for deletion")
+	if state.Value.Bool() {
+		return fmt.Errorf("%w: %w", errAdaptiveDocumentReview, errSeekResumeLibraryFull)
 	}
-
-	time.Sleep(300 * time.Millisecond)
-
-	// Click the delete button — dialog closes and deletion proceeds in background.
-	deleteBtn, btnErr := page.Timeout(8 * time.Second).Element(`[data-automation="10-resume-delete"]`)
-	if btnErr != nil {
-		return fmt.Errorf("delete button not found: %w", btnErr)
-	}
-	if clickErr := deleteBtn.Click(proto.InputMouseButtonLeft, 1); clickErr != nil {
-		return fmt.Errorf("click delete button: %w", clickErr)
-	}
-	log.Info().Msg("seek: resume limit dialog dismissed, waiting for deletion")
-
-	// Wait for dialog to close and deletion to complete before retrying upload.
-	time.Sleep(1500 * time.Millisecond)
 	return nil
 }
 
@@ -2545,20 +2536,18 @@ func (b *Bot) seekUploadCoverLetter(page *rod.Page, filePath string) error {
 		if ok, _ := page.Eval(jsClickUploadByText, `^upload( a| an| new)? cover`); ok != nil && ok.Value.Bool() {
 			b.log.Info().Msg("seek: cover letter upload radio selected via text fallback")
 		} else {
-			b.log.Warn().Msg("seek: coverLetter-method=upload radio not found, upload may fail")
+			b.log.Debug().Msg("seek: legacy cover letter upload radio not present")
 		}
 	}
 	time.Sleep(600 * time.Millisecond)
-	if inputs, err := page.Elements("[data-testid='coverLetterFileInput'] input[type='file']"); err == nil && len(inputs) > 0 {
-		return inputs[0].SetFiles([]string{filePath})
+	input, err := seekDocumentInput(page, "cover_letter")
+	if err != nil {
+		return err
 	}
-	if fallback, ferr := page.Elements("[data-testid='quick-apply-form'] input[type='file'][accept*='pdf'], [data-automation='apply-form'] input[type='file'][accept*='pdf']"); ferr == nil && len(fallback) > 1 {
-		// Skip the first match — likely the resume input — and use the next one.
-		b.log.Info().Msg("seek: cover letter file input located via fallback selector")
-		return fallback[1].SetFiles([]string{filePath})
+	if err := input.SetFiles([]string{filePath}); err != nil {
+		return fmt.Errorf("%w: cover letter upload dispatch: %v", errAdaptiveDocumentReview, err)
 	}
-	seekDumpUploadDebug(page, "cover_letter")
-	return fmt.Errorf("cover letter file input not found after selecting upload radio")
+	return b.seekWaitDocumentSelected(page, "cover_letter", filePath)
 }
 
 // ── DB helpers (Seek-specific wrappers) ───────────────────────────────────

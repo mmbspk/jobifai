@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
 )
@@ -19,88 +21,109 @@ var errLinkedInExternal = errors.New("LinkedIn listing requires external applica
 var errLinkedInUnknown = errors.New("LinkedIn application control could not be verified")
 
 type linkedInResolution struct {
-	Kind             string `json:"kind"`
-	Reason           string `json:"reason"`
-	ExpectedID       string `json:"expected_id"`
-	ObservedID       string `json:"observed_id"`
-	IdentityVerified bool   `json:"identity_verified"`
-	Label            string `json:"label"`
-	Destination      string `json:"destination"`
-	URL              string `json:"url"`
-	Description      string `json:"description"`
-	HeaderText       string `json:"header_text"`
-	Action           string `json:"action"`
+	Kind                string `json:"kind"`
+	Reason              string `json:"reason"`
+	ExpectedID          string `json:"expected_id"`
+	ObservedID          string `json:"observed_id"`
+	IdentityVerified    bool   `json:"identity_verified"`
+	Label               string `json:"label"`
+	Destination         string `json:"destination"`
+	URL                 string `json:"url"`
+	Description         string `json:"description"`
+	DescriptionExpanded bool   `json:"description_expanded"`
+	HeaderText          string `json:"header_text"`
+	Company             string `json:"company"`
+	Action              string `json:"action"`
 }
 
 func linkedInExpectedID(raw string) string {
 	return strings.TrimPrefix(linkedInJobPath(raw), "/jobs/view/")
 }
 
-func linkedInAppliedLoose(page *rod.Page, expectedID string) bool {
-	value, err := page.Timeout(5 * time.Second).Eval(jsLinkedInAppliedLoose, expectedID)
+func linkedInAppliedLoose(page *rod.Page, expectedID string, jobs ...linkedInJob) bool {
+	var job linkedInJob
+	if len(jobs) > 0 {
+		job = jobs[0]
+	}
+	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInAppliedLoose, expectedID, job.Title, job.Company)
 	return err == nil && value.Value.Bool()
 }
 
-func linkedInSubmissionConfirmed(page *rod.Page, expectedID, company string) bool {
-	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInSubmissionConfirmed, expectedID, company)
+func linkedInSubmissionConfirmed(page *rod.Page, expectedID, company string, titles ...string) bool {
+	title := ""
+	if len(titles) > 0 {
+		title = titles[0]
+	}
+	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInSubmissionConfirmed, expectedID, company, title)
 	if err == nil && value.Value.Bool() {
 		return true
 	}
-	return linkedInAppliedLoose(page, expectedID)
+	return linkedInAppliedLoose(page, expectedID, linkedInJob{Title: title, Company: company})
 }
 
-func verifyLinkedInCompletion(page *rod.Page, jobURL, company string) error {
-	if linkedInSubmissionConfirmed(page, linkedInExpectedID(jobURL), company) {
+func verifyLinkedInCompletion(page *rod.Page, jobURL, company string, titles ...string) error {
+	if linkedInSubmissionConfirmed(page, linkedInExpectedID(jobURL), company, titles...) {
 		return nil
 	}
 	return verifyJobIdentity(page, linkedInJobPath(jobURL))
 }
 
-func linkedInSubmitReconciled(page *rod.Page, jobURL, company string) bool {
+func linkedInSubmitReconciled(page *rod.Page, jobURL, company string, titles ...string) bool {
+	ctx, cancel := context.WithTimeout(page.GetContext(), 45*time.Second)
+	defer cancel()
+	page = page.Context(ctx)
 	expectedID := linkedInExpectedID(jobURL)
-	if linkedInSubmissionConfirmed(page, expectedID, company) {
+	job := linkedInJob{ID: expectedID, URL: jobURL, Company: company}
+	if len(titles) > 0 {
+		job.Title = titles[0]
+	}
+	if linkedInSubmissionConfirmed(page, expectedID, company, titles...) {
 		return true
 	}
-	if r, err := resolveLinkedInJob(page, expectedID, false); err == nil && r.IdentityVerified && r.Kind == "already_applied" {
+	if r, err := resolveLinkedInJob(page, expectedID, false, job); err == nil && r.IdentityVerified && r.Kind == "already_applied" {
 		return true
 	}
-	if linkedInAppliedLoose(page, expectedID) {
+	if linkedInAppliedLoose(page, expectedID, job) {
 		return true
 	}
 	_ = page.Navigate(jobURL)
 	_ = page.Timeout(30 * time.Second).WaitLoad()
 	_ = page.Timeout(5 * time.Second).WaitStable(2 * time.Second)
-	if linkedInSubmissionConfirmed(page, expectedID, company) {
+	if linkedInSubmissionConfirmed(page, expectedID, company, titles...) {
 		return true
 	}
-	r, err := resolveLinkedInJob(page, expectedID, false)
+	r, err := resolveLinkedInJob(page, expectedID, false, job)
 	if err == nil && r.IdentityVerified && r.Kind == "already_applied" {
 		return true
 	}
-	return linkedInAppliedLoose(page, expectedID)
+	return linkedInAppliedLoose(page, expectedID, job)
 }
 
-func waitLinkedInConfirmation(ctx context.Context, page *rod.Page, expectedID, company, jobURL string) error {
+func waitLinkedInConfirmation(ctx context.Context, page *rod.Page, expectedID, company, jobURL string, titles ...string) error {
 	deadline := time.NewTimer(30 * time.Second)
 	defer deadline.Stop()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if linkedInSubmissionConfirmed(page, expectedID, company) {
+		if linkedInSubmissionConfirmed(page, expectedID, company, titles...) {
 			return nil
 		}
-		if r, err := resolveLinkedInJob(page, expectedID, false); err == nil && r.IdentityVerified && r.Kind == "already_applied" {
+		job := linkedInJob{ID: expectedID, URL: jobURL, Company: company}
+		if len(titles) > 0 {
+			job.Title = titles[0]
+		}
+		if r, err := resolveLinkedInJob(page, expectedID, false, job); err == nil && r.IdentityVerified && r.Kind == "already_applied" {
 			return nil
 		}
-		if linkedInAppliedLoose(page, expectedID) {
+		if linkedInAppliedLoose(page, expectedID, job) {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			if jobURL != "" && linkedInSubmitReconciled(page, jobURL, company) {
+			if jobURL != "" && linkedInSubmitReconciled(page, jobURL, company, titles...) {
 				return nil
 			}
 			return errLinkedInSubmissionUnknown
@@ -109,15 +132,124 @@ func waitLinkedInConfirmation(ctx context.Context, page *rod.Page, expectedID, c
 	}
 }
 
-// Resolve and click share one JS execution: a stale Go-side element cannot be
-// clicked after the SPA replaces the selected job. ExpectedID never comes from
-// the currently selected collection job.
+// Classification and control lookup use the same resolver. Native mouse input
+// rechecks that exact element after hover, so a stale SPA control cannot be used.
+// ExpectedID never comes from the currently selected collection job.
 func resolveLinkedInJob(page *rod.Page, expectedID string, click bool, jobs ...linkedInJob) (linkedInResolution, error) {
 	var job linkedInJob
 	if len(jobs) > 0 {
 		job = jobs[0]
 	}
-	return evalLinkedInJob(page, expectedID, click, false, job)
+	result, err := evalLinkedInJob(page, expectedID, false, false, job)
+	if err != nil || !click || !result.IdentityVerified || result.Kind != "native" {
+		return result, err
+	}
+	ctx, cancel := context.WithTimeout(page.GetContext(), 15*time.Second)
+	defer cancel()
+	page = page.Context(ctx)
+	if err = (proto.TargetActivateTarget{TargetID: page.TargetID}).Call(page.Browser().Context(ctx)); err != nil {
+		return result, fmt.Errorf("activate native application page: %w", err)
+	}
+	company := job.Company
+	if linkedInBadgeCompany(company) {
+		company = ""
+	}
+	button, err := page.ElementByJS(rod.Eval(jsLinkedInResolve, expectedID, false, false, job.Title, company, true))
+	if err != nil {
+		return result, fmt.Errorf("%w: locate native control: %v", errLinkedInIdentity, err)
+	}
+	if _, err = button.Eval(`()=>this.scrollIntoView({block:'center',behavior:'instant'})`); err != nil {
+		return result, err
+	}
+	point, err := linkedInNativeClickPoint(ctx, button)
+	if err != nil || point == nil {
+		return result, fmt.Errorf("native control has no clickable point: %v", err)
+	}
+	if err = moveBoundedMouse(ctx, page, *point); err != nil {
+		return result, err
+	}
+	// Hover can hydrate a new DOM node for the same native action. Reacquire
+	// only after re-verifying the job/action, then check that fresh node before
+	// the single click. Never reuse a control for another job or action kind.
+	for refresh := 0; refresh < 3; refresh++ {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+		result, err = evalLinkedInJob(page, expectedID, false, false, job)
+		if err != nil {
+			return result, err
+		}
+		if !result.IdentityVerified || result.Kind != "native" {
+			return result, result.resolutionError()
+		}
+		button, err = page.ElementByJS(rod.Eval(jsLinkedInResolve, expectedID, false, false, job.Title, company, true))
+		if err != nil {
+			return result, fmt.Errorf("%w: reacquire native control: %v", errLinkedInIdentity, err)
+		}
+		point, err = linkedInNativeClickPoint(ctx, button)
+		if err != nil || point == nil {
+			return result, fmt.Errorf("native control moved out of reach: %v", err)
+		}
+		fresh, probeErr := button.Eval(`(id,title,company)=>this===(`+jsLinkedInResolve+`)(id,false,false,title,company,true)`, expectedID, job.Title, company)
+		if probeErr != nil {
+			return result, probeErr
+		}
+		if fresh == nil || !fresh.Value.Bool() {
+			continue
+		}
+		if err = clickBoundedMouse(ctx, page, *point); err != nil {
+			return result, err
+		}
+		result.Action = "clicked"
+		return result, nil
+	}
+	return result, fmt.Errorf("%w: native control kept rerendering before click", errLinkedInIdentity)
+}
+
+// CDP can report an owned CSS ::after decoration as a different node. DOM hit
+// testing resolves its originating element, while still rejecting unrelated
+// overlays. The probe neither waits for animation frames nor reads form values.
+func linkedInNativeClickPoint(ctx context.Context, button *rod.Element) (*proto.Point, error) {
+	for attempt := 0; ; attempt++ {
+		point, err := probeLinkedInNativeClickPoint(ctx, button)
+		if err == nil || attempt == 4 || !strings.Contains(err.Error(), "control_hidden") {
+			return point, err
+		}
+		// A modal can fade in or re-render after selection. Wait only for
+		// this already-owned control to become visible; no input is sent.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(75 * time.Millisecond):
+		}
+	}
+}
+
+func probeLinkedInNativeClickPoint(ctx context.Context, button *rod.Element) (*proto.Point, error) {
+	state, err := button.Context(ctx).Eval(`()=>{
+  if(!this.isConnected||this.disabled||this.getAttribute('aria-disabled')==='true')return {verified:false,reason:'control_unavailable'};
+  for(let n=this;n;n=n.parentElement||(n.getRootNode&&n.getRootNode().host)){const s=getComputedStyle(n);if(n.hidden||n.inert||n.getAttribute('aria-hidden')==='true'||s.display==='none'||s.visibility==='hidden'||s.opacity==='0')return {verified:false,reason:'control_hidden'};}
+  // Modal portals can disable pointer events on an ancestor and enable them
+  // again on their controls. The live hit test below establishes whether this
+  // exact control actually receives native input.
+  const r=this.getBoundingClientRect(),left=Math.max(0,r.left),right=Math.min(innerWidth,r.right),top=Math.max(0,r.top),bottom=Math.min(innerHeight,r.bottom);
+  if(right-left<2||bottom-top<2)return {verified:false,reason:'control_outside_viewport'};
+  const x=(left+right)/2,y=(top+bottom)/2;let hit=document.elementFromPoint(x,y);
+  for(let i=0;hit&&hit.shadowRoot&&i<10;i++){const next=hit.shadowRoot.elementFromPoint(x,y);if(!next||next===hit)break;hit=next;}
+  for(let n=hit;n;n=n.parentElement||(n.getRootNode&&n.getRootNode().host))if(n===this)return {verified:true,x,y};
+  return {verified:false,reason:'unrelated_overlay'};
+ }`)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil || !state.Value.Get("verified").Bool() {
+		reason := "no hit-test result"
+		if state != nil {
+			reason = state.Value.Get("reason").String()
+		}
+		return nil, fmt.Errorf("native control hit test: %s", reason)
+	}
+	return &proto.Point{X: state.Value.Get("x").Num(), Y: state.Value.Get("y").Num()}, nil
 }
 
 func evalLinkedInJob(page *rod.Page, expectedID string, click, expand bool, job linkedInJob) (linkedInResolution, error) {
@@ -125,7 +257,11 @@ func evalLinkedInJob(page *rod.Page, expectedID string, click, expand bool, job 
 	if expectedID == "" {
 		return result, fmt.Errorf("%w: missing intended job ID", errLinkedInIdentity)
 	}
-	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInResolve, expectedID, click, expand, job.Title, job.Company)
+	expectedCompany := job.Company
+	if linkedInBadgeCompany(expectedCompany) {
+		expectedCompany = ""
+	}
+	value, err := page.Timeout(5*time.Second).Eval(jsLinkedInResolve, expectedID, click, expand, job.Title, expectedCompany)
 	if err != nil {
 		return result, fmt.Errorf("%w: browser read: %w", errLinkedInIdentity, err)
 	}
@@ -133,6 +269,27 @@ func evalLinkedInJob(page *rod.Page, expectedID string, click, expand bool, job 
 		return result, fmt.Errorf("%w: invalid browser evidence: %v", errLinkedInIdentity, err)
 	}
 	return result, nil
+}
+
+// A badge stored by an older scraper is not a declared employer. The job ID
+// must still match and its employer is refreshed from the verified detail pane.
+var linkedInCompanyBadgePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)^\d+\s+(?:company|school)\s+alumni\b`),
+	regexp.MustCompile(`(?i)^\d+\s+connections?\s+works?\s+here\b`),
+	regexp.MustCompile(`(?i)^actively\s+(?:reviewing|hiring)\b`),
+	regexp.MustCompile(`(?i)\b(?:AUD|USD|GBP|EUR|CAD|NZD)\s*/\s*(?:yr|year|mo|month|wk|week|hr|hour)\b`),
+	regexp.MustCompile(`(?i)(?:AU|US|CA|NZ|A)?[$£€]\s*\d[\d,.]*[KM]?\s*/\s*(?:yr|year|mo|month|wk|week|hr|hour)\b`),
+	regexp.MustCompile(`(?i)^(?:(?:AUD|USD|GBP|EUR|CAD|NZD)\s*|(?:AU|US|CA|NZ|A)?[$£€]\s*)?\d[\d,.]*[KM]?\s*[-–—]\s*(?:(?:AUD|USD|GBP|EUR|CAD|NZD)\s*|(?:AU|US|CA|NZ|A)?[$£€]\s*)?\d[\d,.]*[KM]?\b`),
+}
+
+func linkedInBadgeCompany(company string) bool {
+	value := strings.Join(strings.Fields(company), " ")
+	for _, pattern := range linkedInCompanyBadgePatterns {
+		if pattern.MatchString(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string, jobs ...linkedInJob) (linkedInResolution, error) {
@@ -181,6 +338,7 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 	// first read is never sufficient on its own — expansion must be given time
 	// to settle before we select the final description.
 	bestDesc := r.Description
+	expanded := r.DescriptionExpanded
 	deadline := time.NewTimer(2 * time.Second)
 	defer deadline.Stop()
 	wait := 400 * time.Millisecond
@@ -212,10 +370,12 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 		case <-time.After(wait):
 			wait = 200 * time.Millisecond
 		}
-		r, err = resolveLinkedInJob(page, expectedID, false, job)
+		// The expand control may itself arrive with a lazy-loaded description.
+		r, err = evalLinkedInJob(page, expectedID, false, !expanded, job)
 		if err != nil {
 			return r, err
 		}
+		expanded = expanded || r.DescriptionExpanded
 		// Genuine navigation drift — abort immediately.
 		if r.ObservedID != "" && r.ObservedID != expectedID {
 			return r, r.resolutionError()

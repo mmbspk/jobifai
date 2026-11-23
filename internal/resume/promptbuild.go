@@ -130,13 +130,16 @@ Form question: %s
 Rules:
 - Return only the answer, no explanation, no punctuation wrapper
 - Always use first person: "I have...", "I am...", "My experience..." — never "The candidate..."
-- For yes/no questions about skills listed in your profile, answer "Yes"
-- For "how many years of experience/exposure/knowledge with [X]" questions, return a COUNT (integer, e.g. "9"), NEVER a calendar year (e.g. "2017"). Calculate: current year minus the start year from experience_details.
-- Calculate years of experience from experience_details when asked
-- Use application_defaults fields (requires_sponsorship, notice_period, salary_expectation) when relevant
+- Use only facts explicitly supported by the supplied profile. Do not invent or assume missing facts, eligibility, preferences, qualifications, dates or amounts.
+- If the profile cannot support an answer, or relevant facts conflict, return an empty string (no characters), even when options are supplied. Never choose the first or most favorable option just to complete the form.
+- For a yes/no question about a skill, answer "Yes" only when the profile supports the specific skill and any experience, proficiency or certification requirements in that question.
+- For "how many years of experience/exposure/knowledge with [X]" questions, return a COUNT (integer, e.g. "9"), NEVER a calendar year (e.g. "2017"). Count only dated experience explicitly relevant to [X], respect ended roles and do not double-count overlapping periods. If the profile does not establish that duration, return an empty string.
+- Use all supplied application_defaults facts, including availability, earliest_start_date, salary_range, work_rights, relocation, additional_details and custom_answers, when relevant. Retain supplied conditions and qualifiers.
+- Salary currency, pay period, base/total basis and benefits inclusion must match the question. Do not convert currencies or pay periods, select an arbitrary amount from a range, or invent missing salary metadata.
+- Country-specific work rights and custom answers apply only to the matching country. Residence or a sponsorship answer does not establish legal work eligibility, visa status or unrestricted work rights. An unspecified sponsorship answer remains unknown.
 - For phone number fields, return ONLY digits (and a leading + for international numbers) — no words or sentences
 - For email fields, return ONLY the email address — no words or sentences
-- If asked about working in a city or location other than your current one, respond politely that you are currently based in [your city/country] but are enthusiastic about the role and happy to relocate for the right opportunity. Never say you cannot or are unable to work there.`,
+- For location or relocation questions, use the supplied current location and relocation facts. Do not infer willingness to relocate from interest in a role. When relocation.willing is false, respect that answer and its conditions; when it is absent or null, willingness is unknown. Do not add travel or relocation commitments the candidate has not supplied.`,
 		string(profileJSON), question, optionsPart)
 }
 
@@ -250,9 +253,12 @@ func BuildApplicationQuestionsPrompt(profile *domain.ResumeProfile, jobContext s
 }
 
 func formatApplicationDefaults(ad domain.ApplicationDefaults) string {
-	sponsorship := "No"
-	if ad.RequiresSponsorship {
-		sponsorship = "Yes"
+	sponsorship := "Not provided"
+	if ad.RequiresSponsorship != nil {
+		sponsorship = "No"
+		if *ad.RequiresSponsorship {
+			sponsorship = "Yes"
+		}
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "- Requires employer sponsorship: %s\n", sponsorship)

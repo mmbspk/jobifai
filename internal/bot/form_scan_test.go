@@ -704,7 +704,7 @@ document.getElementById('next-2').addEventListener('click', function() {
 			tmpFile := filepath.Join(t.TempDir(), "my_tailored_resume.pdf")
 			require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
 
-			b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+			b := &Bot{cfg: Config{Profile: basicProfile(), Platform: domain.PlatformLinkedIn}, seenCache: newJobSeenCache()}
 			b.cfg.Settings.GenerateNewResumeDocs = true
 			lazy := &lazyDocGen{
 				b:                 b,
@@ -725,6 +725,9 @@ document.getElementById('next-2').addEventListener('click', function() {
 				require.NoError(t, err, "correct upload must complete without error")
 				require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true on success")
 				require.Empty(t, lazy.holdReason, "holdReason must be empty on success")
+				city, cityErr := page.Eval(`() => document.getElementById('city').value`)
+				require.NoError(t, cityErr)
+				require.Equal(t, b.cfg.Profile.PersonalInformation.City, city.Value.String(), "preparation uses an explicit current profile fact")
 
 				// The upload step is now hidden. Its acceptance probe must not treat
 				// hidden controls as an active upload page. Check the retained selection
@@ -774,7 +777,7 @@ document.getElementById('next-2').addEventListener('click', function() {
 //   - Resume fieldset with library_resume.pdf (unchecked) + upload button + radio group "resume-select"
 //
 // After fillFormStep:
-//   - "work-auth" is answered via normal (LLM-less fallback) path — option "Yes" selected
+//   - "work-auth" stays unanswered because work rights are absent
 //   - "resume-select" is confirmed via jsFindCheckedRadioLabel (my_tailored_resume.pdf)
 //   - library_resume.pdf is NOT re-selected and still exists in the DOM
 func TestFillFormStep_UnrelatedRadioBeforeResumeGroup(t *testing.T) {
@@ -848,18 +851,18 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 	lazy.once.Do(func() { lazy.resume = tmpFile })
 
 	filled, _, err := b.fillFormStep(context.Background(), page, lazy)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, errAdaptiveQuestionReview)
 	require.True(t, filled)
-	require.Empty(t, lazy.holdReason, "holdReason must be empty: both groups should resolve cleanly")
+	require.Empty(t, lazy.holdReason, "the resume group must resolve independently of the missing work-rights fact")
 
-	// The work-auth radio must have been answered via the normal (fallback) path.
-	// Without LLM, the fallback picks the first scanned option: "Yes".
+	// Missing work rights must remain unanswered; a successful resume upload
+	// must not authorize the unrelated first radio option.
 	waRes, waErr := page.Eval(`() => {
 		const checked = [...document.querySelectorAll('input[name="work-auth"]')].find(r => r.checked);
 		return checked ? checked.value : '';
 	}`)
 	require.NoError(t, waErr)
-	require.Equal(t, "Yes", waRes.Value.String(), "work-auth radio must be answered via normal fallback (first option)")
+	require.Empty(t, waRes.Value.String(), "work rights must not be guessed from the first option")
 
 	// my_tailored_resume.pdf must be selected in the resume group.
 	acceptRes, aErr := page.Eval(jsLinkedInCheckResumeAccepted, "my_tailored_resume.pdf")
@@ -1100,8 +1103,9 @@ func TestJsScanFields_TextInput_AriaLabelledBy_EmptyTarget_FallsBackToAriaLabel(
 //	site_resume_no_file               resumeUseSiteOverride, HTML has NO Change resume → blocks
 //	cover_skip                        coverSkipOverride, HTML adds optional cover field
 func TestScanApplyStepsForPrepare_PrepareUploadPolicy(t *testing.T) {
-	// job_applications/ is written by ExportApplicationUploadFile using os.Getwd().
-	t.Cleanup(func() { _ = os.RemoveAll("job_applications") })
+	// Keep materialized uploads private to this test process. Concurrent
+	// qualification runs must not share or remove each other's artifacts.
+	t.Chdir(t.TempDir())
 
 	br := launchTestBrowser(t)
 	const jobID = "prep-upload-policy-job"
@@ -1114,9 +1118,11 @@ func TestScanApplyStepsForPrepare_PrepareUploadPolicy(t *testing.T) {
 	// DOM radio label does not match the actual uploaded file — triggers upload-identity hold.
 	buildHTML := func(hasChangeResumeBtn, hasCoverField, wrongUploadInDOM bool) string {
 		changeResumeBtn := ""
+		selectedSiteResume := ""
 		if hasChangeResumeBtn {
 			changeResumeBtn = `
         <button type="button" class="change-resume-btn">Change resume</button>`
+			selectedSiteResume = " checked"
 		}
 		coverField := ""
 		if hasCoverField {
@@ -1143,7 +1149,7 @@ func TestScanApplyStepsForPrepare_PrepareUploadPolicy(t *testing.T) {
       <fieldset id="resume-section">
         <legend>Resume</legend>
         <div>
-          <input type="radio" name="resume-select" id="r-lib1">
+          <input type="radio" name="resume-select" id="r-lib1"` + selectedSiteResume + `>
           <label for="r-lib1">library_resume.pdf</label>
         </div>` + changeResumeBtn + `
         <button type="button" id="upload-btn">
@@ -1366,7 +1372,8 @@ document.getElementById('next-2').addEventListener('click', function() {
 			srv := fixtureServer(t, jobID, "", html, "")
 			page := navigateAndWait(t, br, srv.URL+"/jobs/view/"+jobID)
 
-			b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+			profile := basicProfile()
+			b := &Bot{cfg: Config{Profile: profile, Platform: domain.PlatformLinkedIn}, seenCache: newJobSeenCache()}
 			b.cfg.Settings.GenerateNewResumeDocs = true
 			b.cfg.UserID = "user-" + tc.name
 
@@ -1398,6 +1405,9 @@ document.getElementById('next-2').addEventListener('click', function() {
 			require.NoError(t, err, "prepare must complete without error for %s", tc.name)
 			require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true for %s", tc.name)
 			require.Empty(t, lazy.holdReason, "holdReason must be empty on success for %s", tc.name)
+			location, locationErr := page.Eval(`() => document.getElementById('location').value`)
+			require.NoError(t, locationErr)
+			require.Equal(t, "Sydney, Australia", location.Value.String(), "current location comes from the declared profile")
 
 			if tc.name == "site_resume_skip" {
 				// No new upload: window._uploadedResumeName must be empty.

@@ -628,7 +628,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	applyErr = b.applyAttempt(m.ctx, jobPage, managerLazy, ac)
 	if applyErr != nil {
 		if errors.Is(applyErr, errLinkedInSubmissionUnknown) && domain.Platform(req.Platform) == domain.PlatformLinkedIn {
-			if linkedInSubmitReconciled(jobPage, req.Link, req.Company) {
+			if linkedInSubmitReconciled(jobPage, req.Link, req.Company, req.Role) {
 				log.Info().Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).
 					Msg("approve: submission confirmed on job page after reconcile")
 				applyErr = nil
@@ -764,7 +764,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	// rather than a confirmed apply. Leaves jobs_pending_review intact so the user can
 	// reconcile the submission manually (the application may have gone through on a different job).
 	if domain.Platform(req.Platform) == domain.PlatformLinkedIn {
-		if err := verifyLinkedInCompletion(jobPage, req.Link, req.Company); err != nil {
+		if err := verifyLinkedInCompletion(jobPage, req.Link, req.Company, req.Role); err != nil {
 			log.Error().Err(err).
 				Str("attempt_id", ac.AttemptID).
 				Str("job_id", req.JobID).
@@ -1829,12 +1829,12 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 				confirmed = detectSeekPageApplied(jobPage)
 			}
 		default:
-			confirmed = linkedInSubmissionConfirmed(jobPage, linkedInExpectedID(jobURL), company)
+			confirmed = linkedInSubmissionConfirmed(jobPage, linkedInExpectedID(jobURL), company, role)
 			if !confirmed {
 				_ = jobPage.Navigate(jobURL)
 				_ = jobPage.Timeout(30 * time.Second).WaitLoad()
 				_ = jobPage.Timeout(5 * time.Second).WaitStable(2 * time.Second)
-				confirmed = b.linkedInPageApplied(jobPage, linkedInExpectedID(jobURL))
+				confirmed = linkedInSubmissionConfirmed(jobPage, linkedInExpectedID(jobURL), company, role)
 			}
 		}
 		if !confirmed {
@@ -1846,7 +1846,7 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		// Post-apply identity check for LinkedIn — fail-closed: an unreadable or non-job-view
 		// URL after submission is treated as submission-unknown rather than a confirmed apply.
 		if platform == domain.PlatformLinkedIn {
-			if err := verifyLinkedInCompletion(jobPage, jobURL, company); err != nil {
+			if err := verifyLinkedInCompletion(jobPage, jobURL, company, role); err != nil {
 				log.Error().Err(err).Str("attempt_id", ac.AttemptID).Str("job_id", jobID).Str("url", redactURL(jobURL)).
 					Msg("ai apply: post-apply identity check failed")
 				b.recordListingFailure(ctx, platform, job, score, scoreReason, halalJSON, fmt.Errorf("%w: %v", errLinkedInSubmissionUnknown, err))

@@ -71,7 +71,9 @@ func (c *FormLearningCoordinator) Interpret(ctx context.Context, scope string, p
 			if byRef[proposal.Ref] != nil {
 				duplicates[proposal.Ref] = true
 			}
-			proposal.Value = "" // semantic proposals only; live profile resolution is downstream
+			if proposal.grounded == nil {
+				proposal.Value = "" // unverified answers are never shared
+			}
 			copy := proposal
 			byRef[proposal.Ref] = &copy
 		}

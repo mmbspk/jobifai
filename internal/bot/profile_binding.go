@@ -38,10 +38,31 @@ var profileBindings = map[string]func(*domain.ResumeProfile) string{
 		return p.ApplicationDefaults.NoticePeriod
 	},
 	"application_defaults.salary_expectation": func(p *domain.ResumeProfile) string {
-		return p.ApplicationDefaults.SalaryExpectation
+		return currentSalaryExpectation(p)
+	},
+	"application_defaults.availability":        func(p *domain.ResumeProfile) string { return p.ApplicationDefaults.Availability },
+	"application_defaults.earliest_start_date": func(p *domain.ResumeProfile) string { return p.ApplicationDefaults.EarliestStartDate },
+	"application_defaults.additional_details":  func(p *domain.ResumeProfile) string { return p.ApplicationDefaults.AdditionalDetails },
+	"application_defaults.relocation.willing": func(p *domain.ResumeProfile) string {
+		if p.ApplicationDefaults.Relocation == nil || p.ApplicationDefaults.Relocation.Willing == nil {
+			return ""
+		}
+		if *p.ApplicationDefaults.Relocation.Willing {
+			return "Yes"
+		}
+		return "No"
+	},
+	"application_defaults.relocation.details": func(p *domain.ResumeProfile) string {
+		if p.ApplicationDefaults.Relocation == nil {
+			return ""
+		}
+		return p.ApplicationDefaults.Relocation.Details
 	},
 	"application_defaults.requires_sponsorship": func(p *domain.ResumeProfile) string {
-		if p.ApplicationDefaults.RequiresSponsorship {
+		if p.ApplicationDefaults.RequiresSponsorship == nil {
+			return ""
+		}
+		if *p.ApplicationDefaults.RequiresSponsorship {
 			return "Yes"
 		}
 		return "No"
@@ -68,9 +89,19 @@ func knownProfileBinding(key string) bool {
 	return ok
 }
 
+func normalizeProfileBindingKey(key string) string {
+	key = strings.TrimSpace(key)
+	const answerPrefix = "application_defaults.form_answers."
+	if strings.HasPrefix(strings.ToLower(key), answerPrefix) {
+		return answerPrefix + key[len(answerPrefix):] // user-defined keys are case-sensitive
+	}
+	return strings.ToLower(key)
+}
+
 // resolveProfileBinding returns the profile value for key, or ("", false) if unknown or empty.
 // key must be a dotted path in the profileBindings registry.
 func resolveProfileBinding(key string, profile *domain.ResumeProfile) (string, bool) {
+	key = normalizeProfileBindingKey(key)
 	if profile == nil || key == "" {
 		return "", false
 	}

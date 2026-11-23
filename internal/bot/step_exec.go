@@ -207,10 +207,15 @@ func (se *StepExecutor) ExecuteStep(ctx context.Context, snap StepSnapshot, inte
 				}
 			}
 			fillResult = filler.Fill(ctx, f, res)
+			if errors.Is(fillResult.Err, errAdaptiveDocumentReview) {
+				result.FieldsFailed = append(result.FieldsFailed, res.Ref)
+				result.Outcome, result.Err = StepOutcomeError, fillResult.Err
+				return result, result.Err
+			}
 			if fillResult.Filled || fillResult.Skipped {
 				break
 			}
-			if errors.Is(fillResult.Err, errAdaptiveQuestionReview) {
+			if errors.Is(fillResult.Err, errAdaptiveQuestionReview) || errors.Is(fillResult.Err, errAdaptiveDocumentReview) {
 				break
 			}
 		}

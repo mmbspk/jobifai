@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -87,6 +88,21 @@ func detectSiteResumeOnField(f formField, siteMode bool) (present, ambiguous boo
 }
 
 func probeApplyFormCaps(page *rod.Page) documents.FormDocumentCapabilities {
+	if native, err := page.Eval(`()=>{` + jsLinkedInApplyContainerFn + `return isNativeSeekApplyPage();}`); err == nil && native.Value.Bool() {
+		if raw, err := page.Eval(jsScanFields, map[string]any{"includeAnsweredRadios": true, "includeAnsweredFields": true}); err == nil {
+			var fields []formField
+			if json.Unmarshal([]byte(raw.Value.String()), &fields) == nil {
+				caps := capsFromFormFields(fields)
+				for _, field := range fields {
+					if present, ambiguous := detectSiteResumeOnField(field, false); present {
+						caps.SiteResumePresent = true
+						caps.SiteResumeAmbiguous = ambiguous
+					}
+				}
+				return caps
+			}
+		}
+	}
 	res, err := page.Eval(`() => {
 		function classifyDocumentKind(text) {
 			const q = (text || '').toLowerCase();

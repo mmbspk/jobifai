@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/domain"
@@ -82,6 +83,7 @@ func (h *AdminApplyEngineHandlers) Set(w http.ResponseWriter, r *http.Request) {
 		reason = q
 	}
 	if err := bot.WriteEngineAuditTx(r.Context(), tx, adminID, reason, old, incoming); err != nil {
+		log.Error().Err(err).Str("admin_id", adminID).Msg("apply engine: audit write failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not record engine audit"})
 		return
 	}
