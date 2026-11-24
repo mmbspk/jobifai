@@ -3,16 +3,16 @@ import { Link, NavLink } from 'react-router-dom'
 import { JobifaiLogo } from '../brand/JobifaiLogo'
 import { cn } from '../../lib'
 
-export function PublicLayout({ children }: Readonly<{ children: ReactNode }>) {
+export function PublicLayout({ children, className }: Readonly<{ children: ReactNode; className?: string }>) {
   return (
-    <div className="min-h-dvh bg-[var(--color-background)] text-[var(--color-text)]">
-      <header className="sticky top-0 z-40 border-b border-[var(--color-border-subtle)] bg-[color-mix(in_oklch,var(--color-background)_88%,transparent)] backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-[1180px] items-center gap-6 px-4 sm:px-6">
+    <div className={cn('min-h-dvh bg-[var(--color-background)] text-[var(--color-text)]', className)}>
+      <header className="public-header sticky top-0 z-40 border-b border-[var(--color-border-subtle)] bg-[color-mix(in_oklch,var(--color-background)_88%,transparent)] backdrop-blur-xl">
+        <div className="mx-auto flex min-h-16 max-w-[1180px] flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:gap-x-6 sm:px-6">
           <Link to="/welcome" aria-label="Jobifai home" className="shrink-0">
             <JobifaiLogo markSize={28} />
           </Link>
 
-          <nav className="hidden items-center gap-1 md:flex" aria-label="Public navigation">
+          <nav className="order-last flex w-full items-center justify-center gap-1 md:order-none md:w-auto" aria-label="Public navigation">
             <a href="/welcome#how-it-works" className="rounded-lg px-3 py-2 text-sm text-[var(--color-text-muted)] hover:text-[var(--color-text)]">
               How it works
             </a>
@@ -54,7 +54,7 @@ export function PublicLayout({ children }: Readonly<{ children: ReactNode }>) {
           <div className="space-y-3">
             <JobifaiLogo />
             <p className="max-w-md text-sm text-[var(--color-text-muted)]">
-              Job application automation with clear review points, transparent usage, and you in control.
+              Find roles, prepare documents and keep track of every application.
             </p>
           </div>
           <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-[var(--color-text-muted)]">

@@ -6,7 +6,7 @@ import { usePublicPlans } from '../hooks/usePublicPlans'
 const faqs = [
   {
     q: 'What are Jobifai credits?',
-    a: 'Credits are used when Jobifai performs AI work such as role matching, application analysis, tailoring, and preparing application answers. Usage varies with the work required.',
+    a: 'Credits cover AI work such as role matching and tailoring, as well as browser automation and PDF rendering. Your Usage page shows a breakdown for each category.',
   },
   {
     q: 'What happens when I run out?',
@@ -62,12 +62,12 @@ export function Pricing() {
         <div className="mx-auto grid max-w-[980px] gap-8 px-4 py-14 sm:px-6 md:grid-cols-2 md:items-start">
           <div>
             <p className="text-sm font-semibold text-[var(--color-accent)]">Credits, without the guesswork</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-tight">One balance for Jobifai's AI work.</h2>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight">One balance for your application work.</h2>
           </div>
           <div className="space-y-3 text-sm leading-6 text-[var(--color-text-muted)]">
             <p>
-              Credits cover AI-assisted work such as scoring roles, evaluating fit, tailoring resumes and cover letters,
-              and preparing application answers.
+              Credits cover AI-assisted work such as scoring roles and tailoring documents, as well as browser
+              automation and PDF rendering. Your Usage page breaks down each category.
             </p>
             <p>
               Jobifai keeps the balance visible in the app. Subscribers can buy extra credits for the current billing
