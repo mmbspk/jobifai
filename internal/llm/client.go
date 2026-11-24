@@ -188,13 +188,20 @@ func (c *Client) ChatValidated(ctx context.Context, msgs []Message, validate fun
 }
 
 // TestConnection sends a minimal message to verify the configured provider and API key.
+// It always contacts the provider without customer quota, billing, or response reuse.
 // Returns the effective provider, model, round-trip latency, and any error.
 func (c *Client) TestConnection(ctx context.Context) (provider, model string, latencyMS int64, err error) {
 	if c == nil || c.apiKey == "" {
 		return "", "", 0, errors.New("no API key configured")
 	}
+	// Use a separate diagnostic client: the system settings scope is not a user,
+	// and connection checks must not create quota rows or consume customer credits.
+	cfg := c.cfg
+	cfg.MaxTokens = 32
+	probe := New(cfg, c.apiKey).WithUserID(c.userID)
+	probe.httpCli = c.httpCli
 	start := time.Now()
-	resp, chatErr := c.Chat(ctx, []Message{{Role: "user", Content: "Respond with the word OK and nothing else."}})
+	resp, chatErr := probe.Chat(ctx, []Message{{Role: "user", Content: "Respond with the word OK and nothing else."}})
 	latencyMS = time.Since(start).Milliseconds()
 	if chatErr != nil {
 		return c.cfg.Provider, c.cfg.Model, latencyMS, chatErr
