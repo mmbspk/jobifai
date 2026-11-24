@@ -1,177 +1,124 @@
-import { ArrowRight, Check, CircleCheck, Search, ShieldCheck, Sparkles } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { ApplicationPreview } from '../components/marketing/ApplicationPreview'
 import { PublicLayout } from '../components/marketing/PublicLayout'
-import { PlanCard } from '../components/pricing/PlanCard'
 import { usePublicPlans } from '../hooks/usePublicPlans'
+import './Landing.css'
 
 export function Landing() {
   const { data: plans = [] } = usePublicPlans()
+  const trial = plans.find(plan => plan.id === 'trial')
 
   return (
-    <PublicLayout>
-      <section className="relative overflow-hidden">
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-[520px] bg-[radial-gradient(ellipse_at_top,var(--color-accent-soft),transparent_68%)] opacity-70" />
-        <div className="relative mx-auto grid max-w-[1180px] gap-12 px-4 pb-20 pt-16 sm:px-6 sm:pt-24 lg:grid-cols-[1.05fr_.95fr] lg:items-center lg:pb-28">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-[var(--color-accent)]/20 bg-[var(--color-accent-soft)]/50 px-3 py-1.5 text-xs font-medium text-[var(--color-accent)]">
-              <Sparkles size={14} />
-              Calm automation for your job search
-            </div>
-            <h1 className="mt-6 max-w-3xl text-5xl font-bold leading-[1.02] tracking-[-0.055em] text-[var(--color-text)] sm:text-6xl">
-              Job applications, without the repetitive work.
-            </h1>
-            <p className="mt-6 max-w-2xl text-lg leading-8 text-[var(--color-text-muted)]">
-              Jobifai finds relevant roles, evaluates your fit, prepares tailored application materials, and handles
-              routine application steps while you stay in control of what gets submitted.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <Link to="/register" className="inline-flex min-h-[48px] items-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-accent)] px-5 text-sm font-semibold text-white shadow-[var(--shadow-sm)] hover:bg-[var(--color-accent-hover)]">
-                Start free <ArrowRight size={16} />
-              </Link>
-              <a href="#how-it-works" className="inline-flex min-h-[48px] items-center rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-5 text-sm font-medium text-[var(--color-text)] hover:bg-[var(--color-surface-2)]">
-                See how it works
-              </a>
-            </div>
-            <div className="mt-7 flex flex-wrap gap-x-5 gap-y-2 text-sm text-[var(--color-text-muted)]">
-              {['Any profession', 'Review before submission', 'Transparent credit usage'].map(item => (
-                <span key={item} className="inline-flex items-center gap-1.5">
-                  <Check size={15} className="text-[var(--color-accent)]" /> {item}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          <div className="relative">
-            <div className="rounded-[26px] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 shadow-[var(--shadow-popover)] sm:p-5">
-              <div className="flex items-center justify-between border-b border-[var(--color-border-subtle)] pb-4">
-                <div>
-                  <p className="text-xs text-[var(--color-text-dim)]">Automation</p>
-                  <p className="mt-1 text-sm font-semibold">Searching your target roles</p>
-                </div>
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--color-success-soft)] px-2.5 py-1 text-xs font-medium text-[var(--color-success)]">
-                  <span className="h-1.5 w-1.5 rounded-full bg-current" /> Running
-                </span>
-              </div>
-
-              <div className="py-5">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-xs text-[var(--color-text-dim)]">Current match</p>
-                    <h2 className="mt-1 text-xl font-semibold tracking-tight">Project Coordinator</h2>
-                    <p className="mt-1 text-sm text-[var(--color-text-muted)]">Arcadia Health · Adelaide · Hybrid</p>
-                  </div>
-                  <span className="rounded-full bg-[var(--color-info-soft)] px-2.5 py-1 text-sm font-semibold text-[var(--color-info)]">8.9</span>
-                </div>
-
-                <div className="mt-5 space-y-2.5 rounded-[var(--radius-lg)] bg-[var(--color-surface-2)] p-4">
-                  <p className="text-xs font-medium text-[var(--color-text-dim)]">Why this matches</p>
-                  {['Relevant coordination experience', 'Preferred work arrangement', 'Strong skills overlap'].map(signal => (
-                    <p key={signal} className="flex items-center gap-2 text-sm text-[var(--color-text-muted)]">
-                      <CircleCheck size={15} className="text-[var(--color-success)]" /> {signal}
-                    </p>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between rounded-[var(--radius-lg)] border border-[var(--color-accent)]/25 bg-[var(--color-accent-soft)]/35 px-4 py-3">
-                <div>
-                  <p className="text-xs text-[var(--color-text-dim)]">Next step</p>
-                  <p className="text-sm font-medium">Added to your review queue</p>
-                </div>
-                <ArrowRight size={17} className="text-[var(--color-accent)]" />
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="how-it-works" className="border-y border-[var(--color-border-subtle)] bg-[var(--color-surface)]/30">
-        <div className="mx-auto max-w-[1180px] px-4 py-20 sm:px-6">
-          <div className="max-w-2xl">
-            <p className="text-sm font-semibold text-[var(--color-accent)]">How it works</p>
-            <h2 className="mt-2 text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">Automation with clear checkpoints.</h2>
-          </div>
-          <div className="mt-10 grid gap-4 md:grid-cols-3">
-            {[
-              { icon: Search, title: 'Find relevant roles', body: 'Jobifai searches supported job platforms using the roles, locations, and work modes you choose.' },
-              { icon: Sparkles, title: 'Evaluate and prepare', body: 'AI scores the match and can tailor your resume, cover letter, and application answers to the role.' },
-              { icon: ShieldCheck, title: 'Review or automate', body: 'Keep human review before submission, or configure the automation level that suits your workflow.' },
-            ].map(item => (
-              <article key={item.title} className="rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface)] p-6">
-                <div className="flex h-11 w-11 items-center justify-center rounded-[var(--radius-md)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]">
-                  <item.icon size={20} />
-                </div>
-                <h3 className="mt-5 text-lg font-semibold">{item.title}</h3>
-                <p className="mt-2 text-sm leading-6 text-[var(--color-text-muted)]">{item.body}</p>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section id="features" className="mx-auto grid max-w-[1180px] gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:items-center">
-        <div>
-          <p className="text-sm font-semibold text-[var(--color-accent)]">You remain the decision-maker</p>
-          <h2 className="mt-2 text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">Review what matters before it goes anywhere.</h2>
-          <p className="mt-5 max-w-xl text-base leading-7 text-[var(--color-text-muted)]">
-            Review score reasoning, application materials, platform details, and employment-ethics flags before approving a submission.
-            Automation saves repetitive work without hiding the important decisions.
+    <PublicLayout className="welcome-page">
+      <section className="welcome-hero welcome-container" aria-labelledby="welcome-heading">
+        <div className="welcome-intro">
+          <h1 id="welcome-heading">The job search<br />is a job in itself.</h1>
+          <p className="welcome-lead">
+            Let Jobifai help with the legwork. Find roles that fit your experience,
+            prepare your documents and decide what gets sent.
           </p>
+          <div className="welcome-actions">
+            <Link to="/register" className="welcome-button">Start free</Link>
+            <a href="#how-it-works" className="welcome-text-link">See how it works</a>
+          </div>
+          <p className="welcome-platforms">Job search and applications for any profession.</p>
         </div>
+        <ApplicationPreview />
+      </section>
 
-        <div className="rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5 shadow-[var(--shadow-card)] sm:p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-xs text-[var(--color-text-dim)]">Review application</p>
-              <h3 className="mt-1 text-lg font-semibold">Operations Manager</h3>
-              <p className="mt-1 text-sm text-[var(--color-text-muted)]">Ridgeway Group · Melbourne</p>
-            </div>
-            <span className="rounded-full bg-[var(--color-info-soft)] px-2.5 py-1 text-sm font-semibold text-[var(--color-info)]">8.7 Strong</span>
+      <div className="welcome-platform-bar welcome-container">
+        <p>Works with <strong>LinkedIn</strong> and <strong>SEEK</strong></p>
+        <p>Already found a role? Bring a job URL or description.</p>
+      </div>
+
+      <section id="how-it-works" className="welcome-workflow welcome-container" aria-labelledby="workflow-heading">
+        <div className="welcome-section-intro">
+          <h2 id="workflow-heading">A little setup.<br />A lot less repetition.</h2>
+          <p>Start with your experience and what you want from your next role. Jobifai takes it from there.</p>
+        </div>
+        <ol className="welcome-steps">
+          <li>
+            <h3>Tell it what you’re looking for</h3>
+            <p>
+              Upload your resume, review your profile and choose your target roles and locations.
+              Connect your LinkedIn or SEEK account to start a search.
+            </p>
+          </li>
+          <li>
+            <h3>Get the fit, then the paperwork</h3>
+            <p>
+              AI scores each role against your profile and explains the match. Reuse your saved
+              resume and cover letter, or have them tailored to the job.
+            </p>
+          </li>
+          <li>
+            <h3>Review it. Make your move.</h3>
+            <p>
+              Prepare and preview the documents before you approve. Jobifai can submit supported
+              applications, including LinkedIn Easy Apply. Strong matches that need a manual
+              application stay in Top Matches.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section id="features" className="welcome-features" aria-labelledby="features-heading">
+        <div className="welcome-container">
+          <div className="welcome-features-heading">
+            <h2 id="features-heading">Your documents.<br />Ready for the next role.</h2>
+            <p>Your profile, your documents and the work you’ve already put in, together in one place.</p>
           </div>
-          <div className="mt-5 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-[var(--radius-md)] bg-[var(--color-surface-2)] p-4">
-              <p className="text-xs text-[var(--color-text-dim)]">Documents</p>
-              <p className="mt-2 text-sm font-medium">Tailored resume</p>
-              <p className="mt-1 text-sm font-medium">Cover letter</p>
-            </div>
-            <div className="rounded-[var(--radius-md)] bg-[var(--color-warn-soft)] p-4">
-              <p className="text-xs text-[var(--color-text-dim)]">Employment ethics</p>
-              <p className="mt-2 text-sm font-medium text-[var(--color-warn)]">Potential concern</p>
-              <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">Open the reasoning before deciding.</p>
-            </div>
-          </div>
-          <div className="mt-5 flex justify-end gap-2 border-t border-[var(--color-border-subtle)] pt-5">
-            <span className="inline-flex h-10 items-center rounded-[var(--radius-md)] border border-[var(--color-border)] px-4 text-sm text-[var(--color-text-muted)]">Reject</span>
-            <span className="inline-flex h-10 items-center rounded-[var(--radius-md)] bg-[var(--color-accent)] px-4 text-sm font-semibold text-white">Approve application</span>
+          <div className="welcome-feature-grid">
+            <article>
+              <h3>A document library that keeps your work</h3>
+              <p>
+                Upload originals, edit saved resume and cover letter versions, and choose your defaults.
+                Use regional resume styles and set the tone of your cover letters. Preview and download
+                the PDFs when you need them.
+              </p>
+            </article>
+            <article>
+              <h3>Help with the role you found yourself</h3>
+              <p>
+                Add a job URL or paste a description in Generate. Check your fit, tailor a resume,
+                write a cover letter or prepare answers to application questions.
+              </p>
+            </article>
+            <article>
+              <h3>Your own rules for applying</h3>
+              <p>
+                Set a minimum match score and a daily application limit. Keep review-before-submit
+                enabled or choose automatic submission. An optional Halal job filter checks roles
+                against Islamic employment ethics.
+              </p>
+            </article>
+            <article>
+              <h3>A clear record of what happened</h3>
+              <p>
+                Track applied, skipped and manual-step jobs, with run activity that survives a refresh.
+                See credit usage broken down into AI, browser automation and document rendering.
+              </p>
+            </article>
           </div>
         </div>
       </section>
 
-      <section className="border-y border-[var(--color-border-subtle)] bg-[var(--color-surface)]/30">
-        <div className="mx-auto max-w-[1180px] px-4 py-20 sm:px-6">
-          <div className="flex flex-wrap items-end justify-between gap-5">
-            <div>
-              <p className="text-sm font-semibold text-[var(--color-accent)]">Simple pricing</p>
-              <h2 className="mt-2 text-3xl font-semibold tracking-[-0.04em]">Start with a trial. Upgrade when you need more.</h2>
-            </div>
-            <Link to="/pricing" className="inline-flex items-center gap-2 text-sm font-semibold text-[var(--color-accent)] hover:underline">
-              Compare plans <ArrowRight size={15} />
-            </Link>
-          </div>
-          <div className="mt-9 grid gap-4 md:grid-cols-3">
-            {plans.map(plan => <PlanCard key={plan.id} plan={plan} recommended={plan.id === 'pro'} compact />)}
-          </div>
+      <section className="welcome-start welcome-container" aria-labelledby="start-heading">
+        <div>
+          <h2 id="start-heading">Start with your resume.</h2>
+          <p>Create an account, add your profile and choose your first search.</p>
+          {trial && (
+            <p className="welcome-trial">
+              Your free trial includes {trial.credits.toLocaleString()} credits
+              {trial.trial_days ? ` to use over ${trial.trial_days} days` : ''}.
+              {' '}Credits cover AI work, browser automation and PDF rendering.
+            </p>
+          )}
         </div>
-      </section>
-
-      <section className="mx-auto max-w-[900px] px-4 py-20 text-center sm:px-6 sm:py-24">
-        <h2 className="text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">Spend less time repeating application work.</h2>
-        <p className="mx-auto mt-4 max-w-2xl text-base leading-7 text-[var(--color-text-muted)]">
-          Set up your profile and preferences, connect a supported platform, and let Jobifai take care of the repetitive steps.
-        </p>
-        <Link to="/register" className="mt-7 inline-flex min-h-[48px] items-center gap-2 rounded-[var(--radius-md)] bg-[var(--color-accent)] px-5 text-sm font-semibold text-white hover:bg-[var(--color-accent-hover)]">
-          Start free <ArrowRight size={16} />
-        </Link>
+        <div className="welcome-start-actions">
+          <Link to="/register" className="welcome-button">Start free</Link>
+          <Link to="/pricing" className="welcome-text-link">Compare plans</Link>
+        </div>
       </section>
     </PublicLayout>
   )

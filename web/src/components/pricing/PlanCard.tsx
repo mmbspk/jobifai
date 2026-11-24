@@ -65,7 +65,7 @@ export function PlanCard({
         <p className="mt-2 text-sm text-[var(--color-text-muted)]">
           {isTrial
             ? `${plan.trial_days || 7} days to explore Jobifai`
-            : `${plan.credits.toLocaleString()} AI credits each month`}
+            : `${plan.credits.toLocaleString()} credits each month`}
         </p>
       </div>
 

@@ -31,7 +31,7 @@ test.describe('Auth flows', () => {
 
     await page.getByTitle('Sign out').click()
     await page.waitForURL('/')
-    await expect(page.getByRole('heading', { name: /Job applications, without the repetitive work/i })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: /The job search is a job in itself/i })).toBeVisible()
   })
 
   test('protected routes redirect unauthenticated users to login', async ({ page }) => {
@@ -47,7 +47,7 @@ test.describe('Auth flows', () => {
 
   test('app root shows welcome for new visitors', async ({ page }) => {
     await page.goto('/')
-    await expect(page.getByRole('heading', { name: /Job applications, without the repetitive work/i })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: /The job search is a job in itself/i })).toBeVisible()
   })
 
   test('login returns to the protected page the user tried to open', async ({ page, request }) => {
