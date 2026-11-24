@@ -176,6 +176,49 @@ func TestMarkApplied_EmptyLinkDoesNotReconcileUnrelatedEmptyLinks(t *testing.T) 
 	require.Equal(t, "submission_unknown", outcome)
 }
 
+func TestMarkApplied_CannotApplyDocumentsRequireCompatibleListingURL(t *testing.T) {
+	for _, tc := range []struct {
+		name, skippedLink, preparedLink string
+		wantDocuments                   bool
+	}{
+		{"matching listing", reconciliationLink, reconciliationLink, true},
+		{"conflicting listing", reconciliationLink, "https://www.linkedin.com/jobs/view/different-job", false},
+		{"legacy prepared row without link", reconciliationLink, "", true},
+		{"legacy skipped row without link", "", reconciliationLink, true},
+		{"legacy rows without links", "", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, db := newTestServices(t)
+			seedReconciliationReview(t, db, true, tc.preparedLink)
+			_, err := db.Exec(`UPDATE jobs_skipped SET link=? WHERE id=? AND user_id=?`,
+				tc.skippedLink, reconciliationJobID, reconciliationUser)
+			require.NoError(t, err)
+
+			response := markReconciliationApplied(t, svc, true, reconciliationUser)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var link, resume, cover, resumeVersion, coverVersion, pack string
+			require.NoError(t, db.QueryRow(`SELECT link,resume_path,cover_letter_path,
+ resume_content_version_id,cover_letter_content_version_id,document_refs_json
+ FROM jobs_applied WHERE id=? AND user_id=?`, reconciliationJobID, reconciliationUser).
+				Scan(&link, &resume, &cover, &resumeVersion, &coverVersion, &pack))
+			require.Equal(t, tc.skippedLink, link)
+			if tc.wantDocuments {
+				require.Equal(t, "resume.pdf", resume)
+				require.Equal(t, "cover.pdf", cover)
+				require.Equal(t, "resume-version", resumeVersion)
+				require.Equal(t, "cover-version", coverVersion)
+				require.JSONEq(t, reconciliationPack, pack)
+			} else {
+				require.Empty(t, resume, "a conflicting listing cannot supply the applied resume")
+				require.Empty(t, cover)
+				require.Empty(t, resumeVersion)
+				require.Empty(t, coverVersion)
+				require.Empty(t, pack)
+			}
+		})
+	}
+}
+
 func TestMarkApplied_CollisionCannotBorrowOtherUserOrPlatformHistory(t *testing.T) {
 	for _, conflict := range []struct{ name, user, platform string }{{"other user", "other-candidate", "linkedin"}, {"other platform", reconciliationUser, "seek"}} {
 		t.Run(conflict.name, func(t *testing.T) {

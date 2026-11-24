@@ -258,11 +258,21 @@ func TestSeekFinalReviewDocuments_RechecksImmediatelyBeforeSubmitClick(t *testin
 						return err
 					}
 				}
-				err = filler.ClickSubmit(context.Background())
+				db := openMappingDB(t)
+				ac := newAttemptContext("fixture-user", "seek", "12345678", "https://au.seek.com/job/12345678", "Coordinator", "Acme", "fixture", "fixture-run")
+				beginAttempt(db, ac)
+				guard := &SubmitGuard{DB: db, AttemptID: ac.AttemptID, UserID: ac.UserID}
+				result, err := NewStepExecutor(DefaultStepExecBounds(), guard).ExecuteStep(context.Background(), StepSnapshot{}, StepInterpretation{}, filler)
+				var stage string
+				require.NoError(t, db.QueryRow("SELECT stage FROM apply_attempts WHERE id=?", ac.AttemptID).Scan(&stage))
 				if mode == "unchanged" {
 					require.NoError(t, err)
+					assert.Equal(t, StepOutcomeSubmitted, result.Outcome)
+					assert.Equal(t, "submit_dispatch", stage)
 				} else {
 					require.ErrorIs(t, err, errAdaptiveDocumentReview)
+					assert.Equal(t, StepOutcomeError, result.Outcome)
+					assert.NotEqual(t, "submit_dispatch", stage, "late document rejection must not leave a false submission intent")
 				}
 				submits, err := page.Eval(`()=>window.submits||0`)
 				require.NoError(t, err)

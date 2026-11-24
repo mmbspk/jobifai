@@ -115,9 +115,9 @@ func (b *Bot) fillAdaptiveDocument(ctx context.Context, page *rod.Page, lazy *la
 func uploadAdaptiveFile(ctx context.Context, page *rod.Page, field formField, path string) error {
 	page = page.Context(ctx)
 	el, err := page.ElementByJS(rod.Eval(`(id, index) => {`+jsLinkedInApplyContainerFn+`
-  const scope = resolveApplyContainer();
+  const scope = resolveApplyFormContainer();
   if (!scope) return null;
-  const files = allInDOM(scope, 'input[type="file"]');
+  const files = documentUploadInputs(scope);
   const matches = id ? files.filter(el => el.id === id) : files.filter((_, i) => i === index);
   return matches.length === 1 ? matches[0] : null;
  }`, field.ID, field.Index))

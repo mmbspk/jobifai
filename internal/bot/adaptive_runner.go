@@ -272,7 +272,7 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		// Execute: fill fields + navigate.
 		recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
 		result, err := se.ExecuteStep(ctx, snap, interp, filler)
-		writeVerifiedFilledStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
+		verifiedRefs := writeVerifiedFilledStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		invalidateFailedMappings(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		if errors.Is(err, errAdaptiveStepUnchanged) && rescannedSteps[stepIdx] < se.Bounds.MaxFillAttempts && !interpretationUploads(interp) {
 			fresh, freshPage, changed, scanErr := b.newAdaptiveControls(ctx, page, snap, lazy.job)
@@ -297,7 +297,8 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 			return fmt.Errorf("adaptive: execute step %d: %w", stepIdx, err)
 		}
 
-		// Persist verified resolutions only on confirmed transitions.
+		// Learn remaining trusted bindings only on confirmed transitions;
+		// independently grounded fills were already learned above.
 		// For submission, require a positive LinkedIn confirmation signal — nil
 		// click error alone is not sufficient evidence the application was sent.
 		var submissionConfirmed bool
@@ -311,7 +312,7 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 					Msg("adaptive: submit clicked but LinkedIn confirmation signal absent — skipping mapping write")
 			}
 		}
-		writeConfirmedStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, submissionConfirmed)
+		writeConfirmedRemainingStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, submissionConfirmed, verifiedRefs)
 
 		switch result.Outcome {
 		case StepOutcomeSubmitted:
@@ -467,7 +468,7 @@ func (f *linkedInRodFiller) NavigateNext(ctx context.Context) (bool, error) {
 	// Poll up to 2 s for positive evidence of a different active step.
 	// Two independent signals are accepted:
 	//   1. linkedInPrepareAtFinalReview — unambiguous transition to the review page.
-	//   2. Progress bar aria-valuenow changed — confirmed intermediate step advance.
+	//   2. Progress bar aria-valuenow increased — confirmed intermediate step advance.
 	// A missing or unreadable progress bar never counts as evidence.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -477,7 +478,7 @@ func (f *linkedInRodFiller) NavigateNext(ctx context.Context) (bool, error) {
 		if f.bot.linkedInPrepareAtFinalReview(page) {
 			return true, nil
 		}
-		if newProgress := linkedInStepProgress(page); newProgress >= 0 && prevProgress >= 0 && newProgress != prevProgress {
+		if newProgress := linkedInStepProgress(page); newProgress >= 0 && prevProgress >= 0 && newProgress > prevProgress {
 			return true, nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -506,7 +507,11 @@ func (f *linkedInRodFiller) IsSubmitReady(ctx context.Context) (bool, error) {
 }
 
 func (f *linkedInRodFiller) ClickSubmit(ctx context.Context) error {
-	return clickLinkedInAdaptiveSubmit(ctx, f.page, func(ctx context.Context) error {
+	return f.ClickSubmitWithIntent(ctx, nil)
+}
+
+func (f *linkedInRodFiller) ClickSubmitWithIntent(ctx context.Context, persistIntent func() error) error {
+	return clickLinkedInAdaptiveSubmitWithIntent(ctx, f.page, func(ctx context.Context) error {
 		if f.beforeClick != nil {
 			if err := f.beforeClick(ctx); err != nil {
 				return err
@@ -529,7 +534,7 @@ func (f *linkedInRodFiller) ClickSubmit(ctx context.Context) error {
 			return errors.New("adaptive: submit control or approved document changed")
 		}
 		return nil
-	})
+	}, persistIntent)
 }
 
 const jsLinkedInAdaptiveSubmit = `(element)=>{` + jsLinkedInApplyContainerFn + `
@@ -736,13 +741,14 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 
 		recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
 		result, err := se.ExecuteStep(ctx, snap, interp, filler)
-		writeVerifiedFilledStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
+		verifiedRefs := writeVerifiedFilledStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		invalidateFailedMappings(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		if err != nil && result.Outcome != StepOutcomeSubmitted {
 			return fmt.Errorf("seek adaptive: execute step %d: %w", stepIdx, err)
 		}
 
-		// Persist verified resolutions only on confirmed transitions.
+		// Learn remaining trusted bindings only on confirmed transitions;
+		// independently grounded fills were already learned above.
 		// For submission, require a positive SEEK post-apply success signal — nil
 		// click error alone is not sufficient evidence the application was sent.
 		var submissionConfirmed bool
@@ -753,7 +759,7 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 					Msg("seek adaptive: submit clicked but no post-apply success signal — skipping mapping write")
 			}
 		}
-		writeConfirmedStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, submissionConfirmed)
+		writeConfirmedRemainingStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result, submissionConfirmed, verifiedRefs)
 
 		switch result.Outcome {
 		case StepOutcomeSubmitted:
@@ -820,7 +826,7 @@ func (f *seekRodFiller) NavigateNext(ctx context.Context) (bool, error) {
 	// Poll up to 2 s for positive evidence of a different active step.
 	// Signals are checked in priority order:
 	//   1. Validation errors — explicit rejection; return false immediately.
-	//   2. Progress bar aria-valuenow changed — confirmed intermediate step advance.
+	//   2. Progress bar aria-valuenow increased — confirmed intermediate step advance.
 	//   3. Scoped application heading changed — current full-page native layout.
 	//   4. Submit button appeared where Continue was — confirmed final-step transition.
 	// A missing or unreadable progress bar never counts as evidence.
@@ -835,7 +841,7 @@ func (f *seekRodFiller) NavigateNext(ctx context.Context) (bool, error) {
 		if hasErrors != nil && hasErrors.Value.Bool() {
 			return false, fmt.Errorf("seek adaptive: continue rejected — validation errors visible after click")
 		}
-		if newProgress := seekStepProgress(page); newProgress >= 0 && prevProgress >= 0 && newProgress != prevProgress {
+		if newProgress := seekStepProgress(page); newProgress >= 0 && prevProgress >= 0 && newProgress > prevProgress {
 			return true, nil
 		}
 		if heading := seekApplicationHeading(page); prevHeading != "" && heading != "" && heading != prevHeading {
@@ -874,6 +880,10 @@ func (f *seekRodFiller) IsSubmitReady(ctx context.Context) (bool, error) {
 }
 
 func (f *seekRodFiller) ClickSubmit(ctx context.Context) error {
+	return f.ClickSubmitWithIntent(ctx, nil)
+}
+
+func (f *seekRodFiller) ClickSubmitWithIntent(ctx context.Context, persistIntent func() error) error {
 	page := f.page.Context(ctx)
 	btn, isSubmit, err := seekAdaptiveActionButton(page)
 	if err != nil {
@@ -893,13 +903,17 @@ func (f *seekRodFiller) ClickSubmit(ctx context.Context) error {
 		}
 		return seekVerifyFinalReviewDocuments(ctx, page, f.lazy)
 	}
-	if err := clickSeekAdaptiveAction(ctx, page, true, beforeClick); err != nil {
+	if err := clickSeekAdaptiveActionWithIntent(ctx, page, true, beforeClick, persistIntent); err != nil {
 		return fmt.Errorf("seek adaptive: click submit: %w", err)
 	}
 	return nil
 }
 
 func clickSeekAdaptiveAction(ctx context.Context, page *rod.Page, submit bool, beforeClick func(context.Context) error) error {
+	return clickSeekAdaptiveActionWithIntent(ctx, page, submit, beforeClick, nil)
+}
+
+func clickSeekAdaptiveActionWithIntent(ctx context.Context, page *rod.Page, submit bool, beforeClick func(context.Context) error, persistIntent func() error) error {
 	clickCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	page = page.Context(clickCtx)
@@ -958,6 +972,39 @@ func clickSeekAdaptiveAction(ctx context.Context, page *rod.Page, submit bool, b
 		}
 		if current == nil || !current.Value.Bool() {
 			continue
+		}
+		if err := clickCtx.Err(); err != nil {
+			return err
+		}
+		if persistIntent != nil {
+			if !submit {
+				return errors.New("seek adaptive: submit intent cannot authorize navigation")
+			}
+			if err := persistIntent(); err != nil {
+				return err
+			}
+			// A contended intent write can outlive the verified DOM. A changed
+			// guard/control now holds as unknown without any dispatch retry.
+			if beforeClick != nil {
+				if err := beforeClick(clickCtx); err != nil {
+					return err
+				}
+			}
+			if !page.IsIframe() {
+				point, err = probeLinkedInNativeClickPoint(clickCtx, button)
+			} else {
+				point, err = adaptiveTypeaheadClickPoint(clickCtx, page, button)
+			}
+			if err != nil {
+				return err
+			}
+			current, err = button.Eval(`(submit)=>{const action=`+jsSeekAdaptiveAction+`;return action(false)===(submit?'submit':'next') && action(true)===this;}`, submit)
+			if err != nil {
+				return err
+			}
+			if current == nil || !current.Value.Bool() {
+				return fmt.Errorf("%w: submit control changed during intent persistence", errAdaptiveQuestionReview)
+			}
 		}
 		return clickBoundedMouse(clickCtx, page, *point)
 	}

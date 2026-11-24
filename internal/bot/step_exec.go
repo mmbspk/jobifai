@@ -74,6 +74,15 @@ type FieldFiller interface {
 	ClickSubmit(ctx context.Context) error
 }
 
+// submitIntentFiller lets native fillers finish hover, identity and document
+// checks before persisting intent, close to their one mouse press. Final guards
+// still recheck after the durable write, which can wait on database contention.
+// Once persistIntent succeeds, errors remain submission_unknown; intent is never
+// cleared based on a browser error.
+type submitIntentFiller interface {
+	ClickSubmitWithIntent(ctx context.Context, persistIntent func() error) error
+}
+
 // ── submit guard ──────────────────────────────────────────────────────────────
 
 // SubmitGuard enforces the crash-safe submission protocol.
@@ -265,21 +274,41 @@ func (se *StepExecutor) ExecuteStep(ctx context.Context, snap StepSnapshot, inte
 			return result, err
 		}
 		if ready {
-			// Persist intent atomically before clicking.
-			if err := se.Guard.PersistIntent(); err != nil {
-				if errors.Is(err, ErrNoActiveAttempt) {
-					result.Outcome = StepOutcomeError
-					result.Err = err
-					return result, err
+			intentPersisted := false
+			persistIntent := func() error {
+				if intentPersisted {
+					return ErrNoActiveAttempt
 				}
-				result.Outcome = StepOutcomeError
-				result.Err = fmt.Errorf("step_exec: failed to persist submit intent: %w", err)
-				return result, result.Err
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if err := se.Guard.PersistIntent(); err != nil {
+					return fmt.Errorf("step_exec: failed to persist submit intent: %w", err)
+				}
+				intentPersisted = true
+				return nil
 			}
-			if err := filler.ClickSubmit(ctx); err != nil {
+			var clickErr error
+			if native, ok := filler.(submitIntentFiller); ok {
+				clickErr = native.ClickSubmitWithIntent(ctx, persistIntent)
+			} else {
+				// Other fillers retain the original persist-before-click contract.
+				clickErr = persistIntent()
+				if clickErr == nil {
+					clickErr = filler.ClickSubmit(ctx)
+				}
+			}
+			if !intentPersisted {
+				if clickErr == nil {
+					clickErr = errors.New("step_exec: submit filler did not persist intent")
+				}
+				result.Outcome, result.Err = StepOutcomeError, clickErr
+				return result, clickErr
+			}
+			if clickErr != nil {
 				// Intent was persisted; outcome is submission_unknown, not failed.
 				result.Outcome = StepOutcomeSubmitted
-				result.Err = fmt.Errorf("step_exec: submit click error (intent persisted, outcome unknown): %w", err)
+				result.Err = fmt.Errorf("step_exec: submit click error (intent persisted, outcome unknown): %w", clickErr)
 				return result, nil
 			}
 			result.Outcome = StepOutcomeSubmitted

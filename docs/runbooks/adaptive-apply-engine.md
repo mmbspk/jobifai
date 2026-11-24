@@ -16,8 +16,13 @@ locally, then looks up verified question mappings. It sends unresolved controls
 to the configured form-answer model in one batch. The model can select a supported
 option or compose a first-person answer from current profile facts. Local code
 checks its cited profile evidence and a separate batched verifier checks question
-meaning, factual support and qualifiers before execution. Verified answers are
-learned automatically. The model cannot grant navigation, upload or submit authority.
+meaning, factual support and qualifiers before execution. An independently
+verified grounded answer is learned after its local fill is verified, even if
+another field fails or Next does not advance. This records answer evidence,
+not proof that the form accepted the step. Trusted profile bindings without that
+independent answer proof are learned only after confirmed advancement or
+submission. Each successfully learned fill is written once per execution.
+The model cannot grant navigation, upload or submit authority.
 
 Mappings retain typed bindings and form conditions. Verified derived answers are
 candidate scoped and carry evidence and a profile digest; profile changes prevent
@@ -68,11 +73,17 @@ previous application paths retain their identity. Applied-document downloads
 also identify the job; original-upload downloads retain their supplied filename.
 Controls are re-read before filling. Navigation requires observable advancement.
 Before each step action the worker checks rollback, available browser quota and
-application identity. Submit intent is durable before the single submit click.
+application identity. Native Submit completes its hover, identity and document
+preflight before persisting durable intent. Dispatch guards recheck afterwards
+because a database write may wait; a change after persistence holds as unknown
+without retrying or clearing intent. Submit still sends one mouse press only
+after the durable write succeeds.
 Only scoped positive confirmation produces a confirmed application. Missing
 confirmation leaves an unknown outcome for manual reconciliation; retrying cannot
 submit the same unresolved application again. Already prepared document
-references remain available when the operator reconciles the outcome. A current
+references remain available when the operator reconciles the outcome. Prepared
+documents from a conflicting nonempty listing URL cannot be copied into that
+confirmed history entry. A current
 SEEK application-sent banner requires the expected native success route and exact
 employer; recommendations and filenames elsewhere cannot prove submission.
 

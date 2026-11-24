@@ -369,12 +369,15 @@ func (h *JobHandlers) markAppliedAndReconcile(ctx context.Context, userID, jobID
 	if fromCannotApply {
 		// A failed application can retain its prepared documents in top matches.
 		// Read them only from the same candidate, platform and listing identity.
+		// Missing legacy links remain compatible; two known conflicting links
+		// cannot establish ownership of another listing's prepared documents.
 		query = `SELECT s.company,s.role,COALESCE(s.location,''),s.platform,COALESCE(s.link,''),
 		 COALESCE(s.suitability_score,0),COALESCE(s.halal_verdict,p.halal_verdict),
 		 COALESCE(p.resume_path,''),COALESCE(p.cover_letter_path,''),COALESCE(p.resume_content_version_id,''),
 		 COALESCE(p.cover_letter_content_version_id,''),COALESCE(p.document_refs_json,'')
 		 FROM jobs_skipped s LEFT JOIN jobs_pending_review p
 		 ON p.job_id=s.id AND p.user_id=s.user_id AND p.platform=s.platform
+		 AND (COALESCE(p.link,'')='' OR COALESCE(s.link,'')='' OR p.link=s.link)
 		 WHERE s.id=? AND s.user_id=? AND
 		 (s.skip_reason LIKE 'easy apply:%' OR s.skip_reason LIKE 'seek apply:%' OR s.skip_reason LIKE 'quick apply:%')`
 	}

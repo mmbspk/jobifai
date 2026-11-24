@@ -77,6 +77,30 @@ These checkpoints precede the final commit and exact-SHA CI qualification:
   Uncertain-result document preservation has cancellation, user, platform and
   listing isolation checks.
 
+## Review follow-up on 24 November 2026
+
+The follow-up preserves automatic learning after an independently grounded,
+verified fill while eliminating repeated writes after confirmed transitions.
+Native progress bars require an increase to prove advancement. Submit completes
+preflight before durable intent; final guards still recheck after the write, and
+post-intent holds never clear intent or retry a mouse press.
+
+Independent gap audits also found and fixed mismatched upload ordinals: the
+Legacy uploader scanned page-wide inputs and Adaptive inputs without IDs counted
+photos excluded by the scanner. Scanning and uploading now share one scoped,
+filtered document-input list. Reconciliation rejects prepared-document joins
+between conflicting nonempty listing URLs, retaining legacy blank-link support.
+Legacy optional text remains blank when no supported answer exists; required
+fields, cancellation and operational failures still hold the form.
+
+The focused native execution/mapping group passed 107 test/subtest checks with
+the race detector. Scoped-upload regressions passed 15 checks, scan/phone
+compatibility passed 47 checks, and reconciliation passed 21 checks. The upload
+and conflicting-URL regressions failed on their previous implementations.
+Optional-text and related quota/declaration guards passed 25 checks.
+Go lint passed. These are focused checks; use the PR's current-head CI for full
+release qualification. No additional live jobsite activity was performed.
+
 ## Controlled paired replay
 
 On 23 November 2026, TestPairedReplay_LegacyColdWarmAndPartiallyChangedForm passed
@@ -95,8 +119,12 @@ engines. Each scenario produced one observed fixture confirmation.
 | Legacy profile change | 2 | 0 |
 
 Adaptive cold and partial attempts include one proposal batch and one independent
-verification batch. Successful grounded fills activate mappings automatically;
-no manual review occurs between replay scenarios. The changed-profile scenario
+verification batch. Successful grounded fills activate mappings automatically,
+including when a later field or navigation fails; this learns independently
+verified answer evidence and does not establish form advancement or submission.
+Non-grounded profile mappings still require a confirmed transition. The same
+grounded fill is not upserted again when a transition is later confirmed.
+No manual review occurs between replay scenarios. The changed-profile scenario
 reuses direct bindings that reread current facts. It does not demonstrate stale
 reuse of derived answers.
 

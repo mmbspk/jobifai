@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+
 	"github.com/go-rod/rod"
 )
 
@@ -16,10 +17,11 @@ func interpretationUploads(interp StepInterpretation) bool {
 
 // Semantic proof plus a verified current fill can be learned even when a later
 // field or navigation needs work. This does not cache unverified proposals or
-// grant any navigation/upload/submit authority.
-func writeVerifiedFilledStep(ctx context.Context, store MappingReadWriter, snap StepSnapshot, interp StepInterpretation, result StepExecResult) {
+// grant any navigation/upload/submit authority. Returned refs were successfully
+// passed to the store and must not be written again at a confirmed transition.
+func writeVerifiedFilledStep(ctx context.Context, store MappingReadWriter, snap StepSnapshot, interp StepInterpretation, result StepExecResult) []string {
 	if store == nil {
-		return
+		return nil
 	}
 	var verified []FieldResolution
 	for _, field := range resolvedFilledRefs(interp.Fields, result.FilledRefs) {
@@ -27,9 +29,33 @@ func writeVerifiedFilledStep(ctx context.Context, store MappingReadWriter, snap 
 			verified = append(verified, field)
 		}
 	}
-	if len(verified) > 0 {
-		_ = store.Write(ctx, snap, verified)
+	if len(verified) == 0 || store.Write(ctx, snap, verified) != nil {
+		return nil
 	}
+	refs := make([]string, len(verified))
+	for i, field := range verified {
+		refs[i] = field.Ref
+	}
+	return refs
+}
+
+// Confirmed transitions may additionally learn trusted profile bindings. Skip
+// grounded fills already written for this execution, while retaining a retry
+// when their earlier cache write failed. The confirmed-transition gate remains
+// in writeConfirmedStep.
+func writeConfirmedRemainingStep(ctx context.Context, store MappingReadWriter, snap StepSnapshot, interp StepInterpretation, result StepExecResult, submissionConfirmed bool, verifiedRefs []string) {
+	alreadyWritten := make(map[string]struct{}, len(verifiedRefs))
+	for _, ref := range verifiedRefs {
+		alreadyWritten[ref] = struct{}{}
+	}
+	remaining := result
+	remaining.FilledRefs = make([]string, 0, len(result.FilledRefs))
+	for _, ref := range result.FilledRefs {
+		if _, written := alreadyWritten[ref]; !written {
+			remaining.FilledRefs = append(remaining.FilledRefs, ref)
+		}
+	}
+	writeConfirmedStep(ctx, store, snap, interp, remaining, submissionConfirmed)
 }
 
 // A failed Next click may reveal a genuinely new conditional control. Only a

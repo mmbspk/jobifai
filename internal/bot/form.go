@@ -101,6 +101,56 @@ func (f formField) optionLabels() []string {
 
 // ── JavaScript constants ───────────────────────────────────────────────────────
 
+// Keep direct uploads and scanning on the same scoped, filtered file-input list.
+// An ordinal among document inputs must never identify an unrelated page upload.
+const jsDocumentUploadInputsFn = `
+function resolveApplyFormContainer() {
+ const anchor = resolveApplyContainer();
+ if (!anchor) return null;
+ const legacySelector = '.jobs-easy-apply-content,.jobs-easy-apply-modal';
+ if (anchor.matches(legacySelector)) {
+  const others = [...document.querySelectorAll(legacySelector)].filter(visibleDocumentUploadElement);
+  if (others.some(el => el !== anchor && !el.contains(anchor) && !anchor.contains(el))) return null;
+ }
+ const isContainer = anchor.tagName === 'DIALOG' || anchor.tagName === 'FORM'
+   || isNativeSeekApplyPage() || anchor.matches('.jobs-easy-apply-content,.jobs-easy-apply-modal,[data-testid],main,[role="main"],[role="dialog"]');
+ return isContainer ? anchor : (anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor);
+}
+function visibleDocumentUploadElement(el) {
+  try {
+   const rect = el.getBoundingClientRect();
+   if (rect.width === 0 && rect.height === 0) return false;
+   if (rect.right <= 0 || rect.left >= window.innerWidth) return false;
+   for (let node = el; node && node !== document.documentElement; node = node.parentElement) {
+    const s = window.getComputedStyle(node);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse' || Number(s.opacity) === 0 || node.hidden || node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true') return false;
+   }
+   return true;
+  } catch (e) { return false; }
+}
+function documentUploadInputs(container) {
+ if (!container) return [];
+ function containerVisible(el) {
+  try {
+   const group = el.closest('fieldset, [role="group"], [data-test-form-element], .artdeco-form-element, .fb-form-element') || el.parentElement?.parentElement;
+   return group ? visibleDocumentUploadElement(group) : visibleDocumentUploadElement(el);
+  } catch (e) { return false; }
+ }
+ return allInDOM(container, 'input[type="file"]').filter(el => {
+  const accept = (el.accept || '').toLowerCase();
+  const typeOK = !accept || accept.includes('pdf') || accept.includes('doc') || accept.includes('txt') || accept.includes('rtf');
+  if (isNativeSeekApplyPage()) {
+   const slot = el.closest('[data-testid="resumeFileInput"],[data-testid="coverLetterFileInput"]');
+   if (slot) return typeOK && (visibleDocumentUploadElement(slot) || allInDOM(slot, 'button,a,[role="button"]').some(visibleDocumentUploadElement));
+   const label = allInDOM(container, 'label[for]').find(l => l.htmlFor === el.id) || el.closest('label');
+   const question = label ? label.textContent : (el.getAttribute('aria-label') || el.name || '');
+   if (!/\b(resume|resum[eé]|cover|cv)\b/i.test(question)) return false;
+  }
+  return typeOK && containerVisible(el);
+ });
+}
+`
+
 // jsScanFields returns an array of unanswered form fields on the current step.
 // Compatible with LinkedIn's Artdeco modal (shadow DOM) and Seek's plain-HTML form.
 const jsScanFieldsInner = `
@@ -150,16 +200,8 @@ const jsScanFieldsInner = `
 	//   2. Legacy LinkedIn class-based modal
 	//   3. Seek form selectors
 	// No semantic fallback: an unresolvable container means no apply form is present.
-	const anchor = resolveApplyContainer();
-	if (!anchor) return JSON.stringify([]);
-
-	// For <dialog open> and .jobs-easy-apply-content: the anchor IS the container.
-	// For older [data-test-form-element] anchors: wrap to nearest form ancestor.
-	const isTopLevelContainer = anchor.tagName === 'DIALOG'
-		|| isNativeSeekApplyPage() || anchor.matches('.jobs-easy-apply-content,.jobs-easy-apply-modal,[data-testid],main,[role="main"]');
-	const container = isTopLevelContainer
-		? anchor
-		: (anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor);
+	const container = resolveApplyFormContainer();
+	if (!container) return JSON.stringify([]);
 
 	const isSeekApply = isNativeSeekApplyPage() || !!(container.closest && container.closest(
 		"[data-testid='quick-apply-form'], [data-automation='apply-form'], form[data-testid*='applicationForm']"
@@ -243,18 +285,7 @@ const jsScanFieldsInner = `
 	// ── File inputs, scan globally via shadow DOM (LinkedIn hides these in shadow roots) ───
 	// Filter to document uploads only (PDF/DOC/TXT), skip image/video/etc.
 	// Use isContainerVisible so we don't pick up file inputs from off-screen steps.
-	allInDOM(container, 'input[type="file"]').filter(el => {
-		const a = (el.accept || '').toLowerCase();
-		const typeOk = !a || a.includes('pdf') || a.includes('doc') || a.includes('txt') || a.includes('rtf');
-		if(isNativeSeekApplyPage()) {
-			const slot=el.closest('[data-testid="resumeFileInput"],[data-testid="coverLetterFileInput"]');
-			if(slot)return typeOk && (isVisible(slot)||allInDOM(slot,'button,a,[role="button"]').some(isVisible));
-			const lbl=labelFor(el.id)||el.closest('label');
-			const question=lbl?lbl.textContent:(el.getAttribute('aria-label')||el.name||'');
-			if(!/\b(resume|resum[eé]|cover|cv)\b/i.test(question))return false;
-		}
-		return typeOk && isContainerVisible(el);
-	}).forEach((el, i) => {
+	documentUploadInputs(container).forEach((el, i) => {
 		function classifyDocumentKind(text) {
 			const q = (text || '').toLowerCase();
 			if (q.includes('cover')) return 'cover_letter';
@@ -653,7 +684,7 @@ var jsFindCheckedRadioLabel string
 //
 // Embedded before jsScanFieldsInner, jsLinkedInAtFinalReviewFunction, and jsClickApplyNavigation
 // so resolveApplyContainer() is in scope wherever those functions run.
-const jsLinkedInApplyContainerFn = jsGreenhouseFormScopeFn + `
+const jsLinkedInApplyContainerFn = jsGreenhouseFormScopeFn + jsDocumentUploadInputsFn + `
 function isNativeSeekApplyPage() {
  return location.protocol==='https:' && /(^|\.)seek\.(com|com\.au|co\.nz)$/.test(location.hostname)
    && /^\/job\/\d{6,}\/apply(?:\/|$)/.test(location.pathname);
@@ -1525,31 +1556,15 @@ const jsFillText = `(id, nthMatch, value) => {
 	return true;
 }`
 
-// jsFillFileNth marks the nth document-upload file input for rod to locate.
-// Uses the same accept filter as jsScanFields so indices stay consistent.
-const jsFillFileNth = `(index) => {
-	function allInDOM(root, selector) {
-		const r = [];
-		try {
-			r.push(...root.querySelectorAll(selector));
-			for (const el of root.querySelectorAll('*')) {
-				if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
-				if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-					try {
-						const d = el.contentDocument;
-						if (d) r.push(...allInDOM(d, selector));
-					} catch (e) {}
-				}
-			}
-		} catch(e) {}
-		return r;
-	}
-	const inputs = allInDOM(document, 'input[type="file"]').filter(el => {
-		const a = (el.accept || '').toLowerCase();
-		return !a || a.includes('pdf') || a.includes('doc') || a.includes('txt') || a.includes('rtf');
-	});
-	if (index >= inputs.length) return null;
-	inputs[index].setAttribute('data-rod-upload-target', String(index));
+// jsFillFileNth marks a current document input inside the active application.
+// Prefer a unique scanned ID; the no-ID ordinal uses exactly the scanner's list.
+const jsFillFileNth = `(index, id) => {
+` + jsLinkedInApplyContainerFn + `
+	allInDOM(document, 'input[data-rod-upload-target]').forEach(el => el.removeAttribute('data-rod-upload-target'));
+	const inputs = documentUploadInputs(resolveApplyFormContainer());
+	const matches = id ? inputs.filter(el => el.id === id) : inputs.filter((_, i) => i === index);
+	if (matches.length !== 1) return false;
+	matches[0].setAttribute('data-rod-upload-target', String(index));
 	return true;
 }`
 
@@ -1640,6 +1655,27 @@ func resolveFormFieldAnswer(answer string, err error, _ string) (string, error) 
 		return answer, nil
 	}
 	return "", errAdaptiveQuestionReview
+}
+
+// A missing optional answer may stay empty. A joined operational failure must
+// still stop the form, even when it also carries the question-review sentinel.
+func onlyFormQuestionReview(err error) bool {
+	if err == errAdaptiveQuestionReview {
+		return true
+	}
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		causes := wrapped.Unwrap()
+		for _, cause := range causes {
+			if !onlyFormQuestionReview(cause) {
+				return false
+			}
+		}
+		return len(causes) > 0
+	case interface{ Unwrap() error }:
+		return onlyFormQuestionReview(wrapped.Unwrap())
+	}
+	return false
 }
 
 // fillFormStep scans the current form page/modal step for unanswered fields and
@@ -1987,7 +2023,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			} else if f.UploadViaButton {
 				uploadErr = b.formUploadViaButton(ctx, page, path)
 			} else {
-				uploadErr = b.formUploadFile(page, path, f.Index)
+				uploadErr = b.formUploadFile(page, path, f.Index, f.ID)
 			}
 			if errors.Is(uploadErr, errUploadIdentityUnverifiable) {
 				lazy.holdReason = uploadErr.Error()
@@ -2184,26 +2220,34 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 
 		case "text":
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return filled, true, ctxErr
+			}
 			answer := ""
+			var answerErr error
 			if isSalaryFormQuestion(f.Question) {
-				var salaryErr error
-				answer, salaryErr = b.answerSalaryFormField(ctx, lazy, f)
-				if salaryErr != nil {
-					return filled, true, salaryErr
-				}
+				answer, answerErr = b.answerSalaryFormField(ctx, lazy, f)
 			} else if profile := b.currentProfile(); profile != nil {
 				answer = profileContactAnswer(f.Question, f.InputType, &profile.PersonalInformation)
 			}
-			if answer == "" {
-				var qErr error
-				answer, qErr = b.answerFormQuestionWithLimit(ctx, lazy, f.Question, nil, f.MaxChars)
-				if qErr != nil {
-					return filled, true, qErr
-				}
-			} else if f.MaxChars > 0 && !isSalaryFormQuestion(f.Question) {
+			if answerErr == nil && answer == "" {
+				answer, answerErr = b.answerFormQuestionWithLimit(ctx, lazy, f.Question, nil, f.MaxChars)
+			} else if answerErr == nil && f.MaxChars > 0 && !isSalaryFormQuestion(f.Question) {
 				answer = truncateRunes(answer, f.MaxChars)
 			}
-			if answer == "" {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return filled, true, ctxErr
+			}
+			if answerErr != nil {
+				if !f.Required && onlyFormQuestionReview(answerErr) {
+					continue
+				}
+				return filled, true, answerErr
+			}
+			if strings.TrimSpace(answer) == "" {
+				if !f.Required {
+					continue
+				}
 				return filled, true, errAdaptiveQuestionReview
 			}
 			answer = sanitizeContactFieldAnswer(answer, f.Question, f.InputType)
@@ -2308,32 +2352,22 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 	return filled, true, nil
 }
 
-// formUploadFile uploads filePath into the nth file input, walking shadow DOM to find it.
-func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int) error {
+// formUploadFile uses a unique scanned ID or the current document-input ordinal
+// inside the active application, including shadow DOM.
+func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int, scannedIDs ...string) error {
+	id := ""
+	if len(scannedIDs) > 0 {
+		id = scannedIDs[0]
+	}
 	// Mark the target file input via JS (handles shadow DOM).
-	res, err := page.Eval(jsFillFileNth, index)
-	if err != nil || res.Value.Nil() {
+	res, err := page.Eval(jsFillFileNth, index, id)
+	if err != nil || res == nil || !res.Value.Bool() {
 		return fmt.Errorf("file input at index %d not found in shadow DOM", index)
 	}
 	// Now find it via the marker attribute rod can locate.
-	el, err := page.ElementByJS(rod.Eval(`() => {
-		function allInDOM(root, selector) {
-			const r = [];
-			try {
-				r.push(...root.querySelectorAll(selector));
-				for (const el of root.querySelectorAll('*')) {
-					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
-					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-						try {
-							const d = el.contentDocument;
-							if (d) r.push(...allInDOM(d, selector));
-						} catch (e) {}
-					}
-				}
-			} catch(e) {}
-			return r;
-		}
-		return allInDOM(document, 'input[type="file"][data-rod-upload-target]')[0] || null;
+	el, err := page.ElementByJS(rod.Eval(`() => {` + jsLinkedInApplyContainerFn + `
+		const matches = documentUploadInputs(resolveApplyFormContainer()).filter(el => el.hasAttribute('data-rod-upload-target'));
+		return matches.length === 1 ? matches[0] : null;
 	}`))
 	if err != nil {
 		return fmt.Errorf("locate marked file input: %w", err)
