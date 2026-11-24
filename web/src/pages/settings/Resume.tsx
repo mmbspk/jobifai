@@ -7,6 +7,9 @@ import { Button } from '../../components/Button'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { TagInput } from '../../components/TagInput'
 import { OpenProfileLink } from '../../components/profile/OpenProfileLink'
+import { FormMappingReview } from '../../components/settings/FormMappingReview'
+import { ApplicationDefaultsEditor } from '../../components/settings/ApplicationDefaultsEditor'
+import { mergeApplicationDefaults, validateApplicationDefaults } from '../../lib/applicationDefaults'
 import type {
   ResumeProfile, EducationDetail, ExperienceDetail, Language,
   Project, Certification, Publication, Presentation, Grant,
@@ -37,9 +40,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-function Input({ value, onChange, placeholder, type = 'text' }: { value: string; onChange: (v: string) => void; placeholder?: string; type?: string }) {
+function Input({ value, onChange, placeholder, type = 'text', ariaLabel }: { value: string; onChange: (v: string) => void; placeholder?: string; type?: string; ariaLabel?: string }) {
   return (
-    <input type={type} value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+    <input type={type} aria-label={ariaLabel} value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder}
       className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded-lg px-3 py-1.5 text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-dim)] outline-none focus:border-[var(--color-accent)] focus:ring-1 focus:ring-[var(--color-accent)]/20 transition-colors w-full"
     />
   )
@@ -81,6 +84,7 @@ export function Resume() {
   const { data } = useQuery({ queryKey: ['settings-resume'], queryFn: settingsApi.resume.get })
   const [form, setForm] = useState<ResumeProfile>({})
   const [saved, setSaved] = useState(false)
+  const applicationErrors = validateApplicationDefaults(form.application_defaults)
 
   // Stable keys for list sections — prevents React from misaligning input state on delete/reorder
   const [eduKeys, setEduKeys] = useState<string[]>([])
@@ -276,16 +280,20 @@ export function Resume() {
     stepTimerRef.current = setInterval(() => { setExtractStep(s => Math.min(s + 1, EXTRACT_STEPS.length - 1)) }, 1200)
     try {
       const profile = await settingsApi.resume.upload(selectedFile)
-      setForm(profile)
-      setEduKeys(genKeys((profile.education_details ?? []).length))
-      setExpKeys(genKeys((profile.experience_details ?? []).length))
-      setProjectKeys(genKeys((profile.projects ?? []).length))
-      setCertKeys(genKeys((profile.certifications ?? []).length))
-      setPubKeys(genKeys((profile.publications ?? []).length))
-      setPresKeys(genKeys((profile.presentations ?? []).length))
-      setGrantKeys(genKeys((profile.grants ?? []).length))
-      setLangKeys(genKeys((profile.languages ?? []).length))
-      setSkillKeys(genKeys((profile.skills ?? []).length))
+      setForm(current => ({
+        ...current, ...profile,
+        personal_information: { ...current.personal_information, ...profile.personal_information },
+        application_defaults: mergeApplicationDefaults(current.application_defaults, profile.application_defaults),
+      }))
+      if (profile.education_details) setEduKeys(genKeys(profile.education_details.length))
+      if (profile.experience_details) setExpKeys(genKeys(profile.experience_details.length))
+      if (profile.projects) setProjectKeys(genKeys(profile.projects.length))
+      if (profile.certifications) setCertKeys(genKeys(profile.certifications.length))
+      if (profile.publications) setPubKeys(genKeys(profile.publications.length))
+      if (profile.presentations) setPresKeys(genKeys(profile.presentations.length))
+      if (profile.grants) setGrantKeys(genKeys(profile.grants.length))
+      if (profile.languages) setLangKeys(genKeys(profile.languages.length))
+      if (profile.skills) setSkillKeys(genKeys(profile.skills.length))
       setExtractSuccess(true); setSelectedFile(null)
       if (fileRef.current) fileRef.current.value = ''
     } catch (err: unknown) {
@@ -371,11 +379,22 @@ export function Resume() {
           </div>
           <Field label="Email"><Input value={p.email ?? ''} onChange={v => pi('email', v)} type="email" /></Field>
           <Field label="Phone"><Input value={p.phone ?? ''} onChange={v => pi('phone', v)} /></Field>
+          <Field label="Phone calling code"><Input ariaLabel="Phone calling code" value={p.phone_prefix ?? ''} onChange={v => pi('phone_prefix', v)} placeholder="For example, +61" /></Field>
           <Field label="City"><Input value={p.city ?? ''} onChange={v => pi('city', v)} /></Field>
           <Field label="Country"><Input value={p.country ?? ''} onChange={v => pi('country', v)} /></Field>
+          <Field label="Postal code"><Input ariaLabel="Postal code" value={p.zip_code ?? ''} onChange={v => pi('zip_code', v)} /></Field>
+          <Field label="Street address"><Input ariaLabel="Street address" value={p.address ?? ''} onChange={v => pi('address', v)} /></Field>
           <Field label="LinkedIn URL"><Input value={p.linkedin ?? ''} onChange={v => pi('linkedin', v)} /><OpenProfileLink value={p.linkedin} /></Field>
           <Field label="GitHub URL"><Input value={p.github ?? ''} onChange={v => pi('github', v)} /><OpenProfileLink value={p.github} /></Field>
         </div>
+      </Section>
+
+      <Section title="Application answers">
+        <ApplicationDefaultsEditor
+          value={form.application_defaults}
+          onChange={application_defaults => setForm(current => ({ ...current, application_defaults }))}
+          errors={applicationErrors}
+        />
       </Section>
 
       {/* Professional Summary */}
@@ -600,15 +619,19 @@ export function Resume() {
         </div>
       </Section>
 
+      {applicationErrors.length > 0 && <p role="alert" className="text-sm text-red-400">Check Application answers before saving: {applicationErrors.join(' ')}</p>}
+      {save.isError && <p role="alert" className="text-sm text-red-400">{save.error instanceof Error ? save.error.message : 'Could not save profile.'}</p>}
       <Button
         variant="primary"
         fullWidth
         loading={save.isPending}
+        disabled={applicationErrors.length > 0}
         leftIcon={saved ? <Check size={14} /> : undefined}
-        onClick={() => save.mutate()}
+        onClick={() => { if (applicationErrors.length === 0) save.mutate() }}
       >
         {saved ? 'Saved' : 'Save changes'}
       </Button>
+      <FormMappingReview />
     </div>
   )
 }

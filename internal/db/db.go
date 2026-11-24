@@ -5,7 +5,6 @@ import (
 	"embed"
 	"fmt"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -32,7 +31,7 @@ func Open(path string) (*sql.DB, error) {
 	if err := initGoose(); err != nil {
 		return nil, fmt.Errorf("goose init: %w", err)
 	}
-	if err := goose.Up(db, "migrations"); err != nil {
+	if err := applyMigrations(db); err != nil {
 		return nil, fmt.Errorf("goose up: %w", err)
 	}
 	return db, nil

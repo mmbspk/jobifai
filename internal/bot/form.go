@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -44,6 +43,7 @@ const (
 	uploadStageNotVersionScoped    = "pre_existing_filename_not_version_scoped"
 	uploadStageNoResumeGroup       = "upload_no_resume_group"
 	uploadStagePostUploadMismatch  = "post_upload_label_mismatch"
+	uploadStageAcceptanceTimeout   = "upload_acceptance_timeout"
 	uploadStageFinalReviewMismatch = "final_review_filename_mismatch"
 )
 
@@ -66,20 +66,29 @@ type formFieldOption struct {
 }
 
 type formField struct {
-	Type            string            `json:"type"`            // file | radio | select | text
-	Index           int               `json:"index"`           // ordinal among same type
-	Name            string            `json:"name"`            // radio group name
-	ID              string            `json:"id"`              // select / text element id
-	Question        string            `json:"question"`        // visible label text
-	Options         []formFieldOption `json:"options"`         // radio / select choices
-	HasFile         bool              `json:"hasFile"`         // file already attached
-	DocumentKind    string            `json:"documentKind"`    // resume | cover_letter | unknown
-	Required        bool              `json:"required"`        // file field marked required on form
-	InputType       string            `json:"inputType"`       // text | number | textarea
-	Typeahead       bool              `json:"isTypeahead"`     // combobox requiring dropdown selection
-	UploadViaButton bool              `json:"uploadViaButton"` // slot has no visible input; upload via button click + HandleFileDialog
-	ResumeGroupName string            `json:"resumeGroupName"` // radio group name inside the same section (empty if ambiguous or absent)
-	MaxChars        int               `json:"maxChars"`        // LinkedIn SDUI character cap (maxlength or "N of M characters")
+	Type              string            `json:"type"`     // file | radio | select | text
+	Index             int               `json:"index"`    // ordinal among same type
+	Name              string            `json:"name"`     // radio group name
+	ID                string            `json:"id"`       // select / text element id
+	Question          string            `json:"question"` // visible label text
+	Group             string            `json:"group"`    // section heading (fieldset legend, h2/h3)
+	ProfileRecordPath string            `json:"profileRecordPath,omitempty"`
+	HelpText          string            `json:"helpText"`        // hint / description text visible below label
+	Options           []formFieldOption `json:"options"`         // radio / select choices
+	HasFile           bool              `json:"hasFile"`         // file already attached
+	DocumentKind      string            `json:"documentKind"`    // resume | cover_letter | unknown
+	Required          bool              `json:"required"`        // file field marked required on form
+	InputType         string            `json:"inputType"`       // text | number | textarea
+	Typeahead         bool              `json:"isTypeahead"`     // combobox requiring dropdown selection
+	UploadViaButton   bool              `json:"uploadViaButton"` // slot has no visible input; upload via button click + HandleFileDialog
+	ResumeGroupName   string            `json:"resumeGroupName"` // radio group name inside the same section (empty if ambiguous or absent)
+	MaxChars          int               `json:"maxChars"`        // LinkedIn SDUI character cap (maxlength or "N of M characters")
+	MinValue          string            `json:"minValue,omitempty"`
+	MaxValue          string            `json:"maxValue,omitempty"`
+	StepValue         string            `json:"stepValue,omitempty"`
+	Pattern           string            `json:"pattern,omitempty"`
+	Locale            string            `json:"locale,omitempty"`
+	NativeType        string            `json:"nativeType,omitempty"`
 }
 
 func (f formField) optionLabels() []string {
@@ -91,6 +100,56 @@ func (f formField) optionLabels() []string {
 }
 
 // ── JavaScript constants ───────────────────────────────────────────────────────
+
+// Keep direct uploads and scanning on the same scoped, filtered file-input list.
+// An ordinal among document inputs must never identify an unrelated page upload.
+const jsDocumentUploadInputsFn = `
+function resolveApplyFormContainer() {
+ const anchor = resolveApplyContainer();
+ if (!anchor) return null;
+ const legacySelector = '.jobs-easy-apply-content,.jobs-easy-apply-modal';
+ if (anchor.matches(legacySelector)) {
+  const others = [...document.querySelectorAll(legacySelector)].filter(visibleDocumentUploadElement);
+  if (others.some(el => el !== anchor && !el.contains(anchor) && !anchor.contains(el))) return null;
+ }
+ const isContainer = anchor.tagName === 'DIALOG' || anchor.tagName === 'FORM'
+   || isNativeSeekApplyPage() || anchor.matches('.jobs-easy-apply-content,.jobs-easy-apply-modal,[data-testid],main,[role="main"],[role="dialog"]');
+ return isContainer ? anchor : (anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor);
+}
+function visibleDocumentUploadElement(el) {
+  try {
+   const rect = el.getBoundingClientRect();
+   if (rect.width === 0 && rect.height === 0) return false;
+   if (rect.right <= 0 || rect.left >= window.innerWidth) return false;
+   for (let node = el; node && node !== document.documentElement; node = node.parentElement) {
+    const s = window.getComputedStyle(node);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse' || Number(s.opacity) === 0 || node.hidden || node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true') return false;
+   }
+   return true;
+  } catch (e) { return false; }
+}
+function documentUploadInputs(container) {
+ if (!container) return [];
+ function containerVisible(el) {
+  try {
+   const group = el.closest('fieldset, [role="group"], [data-test-form-element], .artdeco-form-element, .fb-form-element') || el.parentElement?.parentElement;
+   return group ? visibleDocumentUploadElement(group) : visibleDocumentUploadElement(el);
+  } catch (e) { return false; }
+ }
+ return allInDOM(container, 'input[type="file"]').filter(el => {
+  const accept = (el.accept || '').toLowerCase();
+  const typeOK = !accept || accept.includes('pdf') || accept.includes('doc') || accept.includes('txt') || accept.includes('rtf');
+  if (isNativeSeekApplyPage()) {
+   const slot = el.closest('[data-testid="resumeFileInput"],[data-testid="coverLetterFileInput"]');
+   if (slot) return typeOK && (visibleDocumentUploadElement(slot) || allInDOM(slot, 'button,a,[role="button"]').some(visibleDocumentUploadElement));
+   const label = allInDOM(container, 'label[for]').find(l => l.htmlFor === el.id) || el.closest('label');
+   const question = label ? label.textContent : (el.getAttribute('aria-label') || el.name || '');
+   if (!/\b(resume|resum[eé]|cover|cv)\b/i.test(question)) return false;
+  }
+  return typeOK && containerVisible(el);
+ });
+}
+`
 
 // jsScanFields returns an array of unanswered form fields on the current step.
 // Compatible with LinkedIn's Artdeco modal (shadow DOM) and Seek's plain-HTML form.
@@ -128,7 +187,7 @@ const jsScanFieldsInner = `
 			let node = el;
 			while (node && node !== document.documentElement) {
 				const s = window.getComputedStyle(node);
-				if (s.display === 'none' || s.visibility === 'hidden') return false;
+				if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse' || Number(s.opacity) === 0 || node.hidden || node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true') return false;
 				node = node.parentElement;
 			}
 			return true;
@@ -141,44 +200,73 @@ const jsScanFieldsInner = `
 	//   2. Legacy LinkedIn class-based modal
 	//   3. Seek form selectors
 	// No semantic fallback: an unresolvable container means no apply form is present.
-	const anchor = resolveApplyContainer();
-	if (!anchor) return JSON.stringify([]);
+	const container = resolveApplyFormContainer();
+	if (!container) return JSON.stringify([]);
 
-	// For <dialog open> and .jobs-easy-apply-content: the anchor IS the container.
-	// For older [data-test-form-element] anchors: wrap to nearest form ancestor.
-	const isTopLevelContainer = anchor.tagName === 'DIALOG'
-		|| anchor.matches('.jobs-easy-apply-content,.jobs-easy-apply-modal,[data-testid]');
-	const container = isTopLevelContainer
-		? anchor
-		: (anchor.closest('form') || anchor.closest('.jobs-easy-apply-content') || anchor.parentElement || anchor);
-
-	const isSeekApply = !!(container.closest && container.closest(
+	const isSeekApply = isNativeSeekApplyPage() || !!(container.closest && container.closest(
 		"[data-testid='quick-apply-form'], [data-automation='apply-form'], form[data-testid*='applicationForm']"
 	));
 
 	// Use htmlFor property to handle IDs with special characters like ":" (LinkedIn React IDs)
 	function labelFor(id) {
 		if (!id) return null;
-		return [...document.querySelectorAll('label[for]')].find(l => l.htmlFor === id) || null;
+		return allInDOM(container, 'label[for]').find(l => l.htmlFor === id) || null;
 	}
 
-	function charLimitForField(el) {
-		if (el.maxLength > 0) return el.maxLength;
-		const fromAttr = parseInt(el.getAttribute('maxlength'), 10);
-		if (fromAttr > 0) return fromAttr;
-		let node = el.parentElement;
-		for (let i = 0; i < 10 && node && node !== container; i++, node = node.parentElement) {
-			const t = (node.textContent || '');
-			const ofM = t.match(/(\d+)\s+of\s+(\d+)\s+character/i);
-			if (ofM) return parseInt(ofM[2], 10);
-			const slashM = t.match(/(\d+)\s*\/\s*(\d+)/);
-			if (slashM) {
-				const cap = parseInt(slashM[2], 10);
-				if (cap > 0 && cap < 5000) return cap;
+` + jsFormCharacterLimitFn + `
+
+	function sectionGroupFor(el) {
+		let node = el;
+		for (let depth = 0; depth < 12 && node && node !== document.body; depth++, node = node.parentElement) {
+			if (node !== el && node.tagName === 'FIELDSET') {
+				const legends = [...node.children].filter(child => child.tagName === 'LEGEND');
+				if (legends.length === 1) {
+					const text = legends[0].textContent.trim().replace(/\s+/g, ' ');
+					if (text) return text;
+				}
 			}
+			// role=group with aria-labelledby is authoritative.
+			if (node !== el && node.getAttribute('role') === 'group') {
+				const lid = node.getAttribute('aria-labelledby');
+				if (lid) {
+					const lbl = document.getElementById(lid);
+					if (lbl) return lbl.textContent.trim().replace(/\s+/g, ' ');
+				}
+			}
+			const parent = node.parentElement;
+			if (!parent) break;
+			// Collect the LAST heading sibling before this node — the closest section.
+			// Two fields under different headings that are flat siblings under one parent
+			// each inherit their own closest (last) heading, not the first one.
+			let lastH = '';
+			for (const c of parent.children) {
+				if (c === node) break;
+				if (/^H[1-6]$/.test(c.tagName)) {
+					const t = c.textContent.trim().replace(/\s+/g, ' ');
+					if (t) lastH = t;
+				}
+			}
+			if (lastH) return lastH;
 		}
-		return 0;
+		return '';
 	}
+
+	// helpTextFor returns descriptive hint text visible below a form field label.
+	function helpTextFor(el) {
+		const formEl = el.closest(
+			'[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset'
+		);
+		if (formEl) {
+			const hint = formEl.querySelector(
+				'.fb-form-element__help-text, [data-test-form-element-description], ' +
+				'.artdeco-form-element__helper-text, [class*="helper-text"], ' +
+				'[class*="hint-text"], [class*="help-text"], small'
+			);
+			if (hint) return hint.textContent.trim().replace(/\s+/g, ' ');
+		}
+		return '';
+	}
+
 
 	// ── Review-only steps (Work Experience / Education cards), no inputs, skip immediately ──
 	// These steps show read-only cards with Edit/Remove buttons. There are no form fields
@@ -192,15 +280,12 @@ const jsScanFieldsInner = `
 	}
 
 	const fields = [];
+	const includeAllCurrentValues = !!(typeof opts !== 'undefined' && opts && opts.includeAnsweredFields);
 
 	// ── File inputs, scan globally via shadow DOM (LinkedIn hides these in shadow roots) ───
 	// Filter to document uploads only (PDF/DOC/TXT), skip image/video/etc.
 	// Use isContainerVisible so we don't pick up file inputs from off-screen steps.
-	allInDOM(document, 'input[type="file"]').filter(el => {
-		const a = (el.accept || '').toLowerCase();
-		const typeOk = !a || a.includes('pdf') || a.includes('doc') || a.includes('txt') || a.includes('rtf');
-		return typeOk && isContainerVisible(el);
-	}).forEach((el, i) => {
+	documentUploadInputs(container).forEach((el, i) => {
 		function classifyDocumentKind(text) {
 			const q = (text || '').toLowerCase();
 			if (q.includes('cover')) return 'cover_letter';
@@ -211,12 +296,14 @@ const jsScanFieldsInner = `
 		const lbl = labelFor(el.id)
 			|| (formEl && formEl.querySelector('label, legend, .fb-form-element-label, span[data-test-form-element-label]'))
 			|| el.closest('label');
-		const question = lbl
+		const slot=isNativeSeekApplyPage()?el.closest('[data-testid="resumeFileInput"],[data-testid="coverLetterFileInput"]'):null;
+		const question = slot?(slot.getAttribute('data-testid')==='coverLetterFileInput'?'Cover letter':'Resume'):lbl
 			? lbl.textContent.trim().replace(/\s+/g, ' ')
 			: (el.getAttribute('aria-label') || el.getAttribute('name') || '');
 		const required = el.required || el.getAttribute('aria-required') === 'true';
+		const siteSelected=slot&&slot.getAttribute('data-testid')==='resumeFileInput'&&allInDOM(container,'input[type="radio"]').some(r=>r.checked&&/^(document-select-|resume-method)/.test(r.name||'')&&!!linkedInResumeFilename(linkedInRadioText(container,r)));
 		fields.push({
-			type: 'file', index: i, hasFile: !!(el.files && el.files.length > 0),
+			type: 'file', id: el.id, index: i, hasFile: !!(el.files && el.files.length > 0)||!!siteSelected,
 			question, documentKind: classifyDocumentKind(question), required,
 		});
 	});
@@ -338,7 +425,8 @@ const jsScanFieldsInner = `
 
 	const seenRadio = new Set();
 	allInDOM(container, 'input[type="radio"]').filter(isContainerVisible).forEach(r => {
-		const groupKey = r.name || r.id;
+		if(isNativeSeekApplyPage()&&/^(document-select-|resume-method|coverLetter-method)/.test(r.name||''))return;
+		const groupKey = (r.name || r.id) + '|' + sectionGroupFor(r);
 		if (!groupKey || seenRadio.has(groupKey)) return;
 		seenRadio.add(groupKey);
 
@@ -346,7 +434,7 @@ const jsScanFieldsInner = `
 		if (r.name) {
 			// Use JS property comparison, CSS selectors break on URN-style names
 			// containing colons and parentheses (LinkedIn's form element names).
-			all = allInDOM(container, 'input[type="radio"]').filter(x => x.name === r.name);
+			all = allInDOM(container, 'input[type="radio"]').filter(x => x.name === r.name && sectionGroupFor(x) === sectionGroupFor(r));
 		} else {
 			const parent = r.closest('[data-test-form-element], .artdeco-form-element, fieldset, [role="group"]') || r.parentElement?.parentElement;
 			all = parent ? allInDOM(parent, 'input[type="radio"]') : [r];
@@ -386,14 +474,19 @@ const jsScanFieldsInner = `
 		const options = all.map(x => {
 			return { id: x.id, value: x.value, label: linkedInRadioOptionLabel(container, x) };
 		});
-		fields.push({ type: 'radio', name: r.name || groupKey, question, options });
+		fields.push({ type: 'radio', name: r.name || groupKey, question, options,
+		              required: all.some(x => x.required || x.getAttribute('aria-required') === 'true') || (grp && grp.getAttribute('aria-required') === 'true'),
+		              group: sectionGroupFor(r), helpText: helpTextFor(r) });
 	});
 
 	// ── Checkbox groups (Lever ATS / LinkedIn consent questions) ─────────────
 	// Group by shared fieldset. Skip LinkedIn's "follow company" checkbox.
 	const seenCb = new Set();
 	allInDOM(container, 'input[type="checkbox"]').filter(isContainerVisible).forEach(cb => {
-		const cbLabel = (labelFor(cb.id) || (cb.closest('label') && cb.closest('label').textContent) || cb.getAttribute('aria-label') || '').toLowerCase().replace(/\s+/g, ' ').trim();
+		const associatedLabel=labelFor(cb.id);
+		const cbLabel = ((associatedLabel&&associatedLabel.textContent) || (cb.closest('label') && cb.closest('label').textContent) || cb.getAttribute('aria-label') || '').toLowerCase().replace(/\s+/g, ' ').trim();
+		// A vacancy-tailored upload must not change the candidate's jobsite default.
+		if(isSeekApply && /^make this my default (resume|resumé|résumé|cv)$/.test(cbLabel))return;
 		if (cb.id === 'follow-company-checkbox' || (cb.name || '').includes('follow-company')) return;
 		if (/follow/.test(cbLabel) && (/compan|hiring|recruiter|poster|posting/.test(cbLabel) || cbLabel.includes('follow '))) return;
 		const groupEl = cb.closest('fieldset, [role="group"], [data-test-form-element], .artdeco-form-element, .fb-form-element')
@@ -410,7 +503,7 @@ const jsScanFieldsInner = `
 		} else {
 			all = [cb];
 		}
-		if (all.length === 0 || all.every(x => x.checked)) return;
+		if (all.length === 0 || (!includeAllCurrentValues && all.every(x => x.checked))) return;
 
 		let question = '';
 		{
@@ -430,7 +523,9 @@ const jsScanFieldsInner = `
 			return { id: x.id, value: x.value || x.id,
 			         label: (lbl ? lbl.textContent : (x.value || x.id)).replace(/\s+/g, ' ').trim() };
 		});
-		fields.push({ type: 'checkbox', name: cb.name || groupKey, question, options });
+		if(options.length===1&&(!question||question===cb.id||question===cb.name))question=options[0].label;
+		if(options.length===1&&/^i currently attend this institution$/i.test(options[0].label.trim()))question=options[0].label;
+		fields.push({ type: 'checkbox', name: cb.name || groupKey, question, options, group: sectionGroupFor(cb), helpText: helpTextFor(cb), required: all.some(x => x.required || x.getAttribute('aria-required') === 'true') });
 	});
 
 	// Seek review step: custom checkbox widgets (role=checkbox) without native inputs.
@@ -459,15 +554,18 @@ const jsScanFieldsInner = `
 		const blank = !sel.value || sel.selectedIndex <= 0
 		              || (sel.options[sel.selectedIndex] && sel.options[sel.selectedIndex].disabled)
 		              || sel.getAttribute('aria-invalid') === 'true';
-		if (!blank && sel.getAttribute('aria-invalid') !== 'true') return;
+		if (!includeAllCurrentValues && !blank && sel.getAttribute('aria-invalid') !== 'true') return;
 		const lbl = labelFor(sel.id)
 		            || (formEl && formEl.querySelector('label, legend, .fb-form-element-label, span[aria-hidden="true"]'));
 		const opts = [...sel.options]
 			.filter(o => !o.disabled && o.value !== '')
 			.map(o => ({ value: o.value, label: o.text.trim() }));
 		if (opts.length === 0) return;
+		if ((!lbl || !lbl.textContent.trim()) && !sel.required && sel.getAttribute('aria-required') !== 'true') return;
 		fields.push({ type: 'select', id: sel.id,
-		              question: lbl ? lbl.textContent.trim().replace(/\s+/g, ' ') : '', options: opts });
+		              required: sel.required || sel.getAttribute('aria-required') === 'true',
+		              question: lbl ? lbl.textContent.trim().replace(/\s+/g, ' ') : '', options: opts,
+		              group: sectionGroupFor(sel), helpText: helpTextFor(sel) });
 	});
 
 	// ── Text / number / tel / email / textarea that are empty ─────────────────
@@ -492,7 +590,7 @@ const jsScanFieldsInner = `
 		                 || el.getAttribute('aria-autocomplete') === 'list'
 		                 || el.getAttribute('aria-autocomplete') === 'both'
 		                 || (el.closest('.search-basic-typeahead, [data-test-single-typeahead-entity-form-component]') != null);
-		if (el.value.trim() && !isTypeahead && el.getAttribute('aria-invalid') !== 'true') { textIdx++; return; }
+		if (!includeAllCurrentValues && el.value.trim() && !isTypeahead && el.getAttribute('aria-invalid') !== 'true') { textIdx++; return; }
 		const isRequired = el.required || el.getAttribute('aria-required') === 'true'
 		                || el.getAttribute('aria-invalid') === 'true';
 		const formEl = el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset');
@@ -521,7 +619,12 @@ const jsScanFieldsInner = `
 		fields.push({ type: 'text', id: el.id, index: textIdx,
 		              question: question || el.placeholder || 'Additional details',
 		              isTypeahead,
-		              maxChars,
+		              maxChars, required: isRequired,
+		              minValue: el.getAttribute('min') || '', maxValue: el.getAttribute('max') || '',
+		              stepValue: el.getAttribute('step') || '', pattern: el.getAttribute('pattern') || '',
+		              locale: el.closest('[lang]')?.getAttribute('lang') || document.documentElement.lang || '',
+		              nativeType: el.tagName === 'TEXTAREA' ? 'textarea' : el.type,
+		              group: sectionGroupFor(el), helpText: helpTextFor(el),
 		              inputType: (el.id.endsWith('-numeric') || el.type === 'number' || el.getAttribute('inputmode') === 'numeric')
 		                         ? 'numeric'
 		                         : (el.tagName === 'TEXTAREA' ? 'textarea' : (el.type || 'text')) });
@@ -581,8 +684,15 @@ var jsFindCheckedRadioLabel string
 //
 // Embedded before jsScanFieldsInner, jsLinkedInAtFinalReviewFunction, and jsClickApplyNavigation
 // so resolveApplyContainer() is in scope wherever those functions run.
-const jsLinkedInApplyContainerFn = `
+const jsLinkedInApplyContainerFn = jsGreenhouseFormScopeFn + jsDocumentUploadInputsFn + `
+function isNativeSeekApplyPage() {
+ return location.protocol==='https:' && /(^|\.)seek\.(com|com\.au|co\.nz)$/.test(location.hostname)
+   && /^\/job\/\d{6,}\/apply(?:\/|$)/.test(location.pathname);
+}
 function resolveApplyContainer() {
+	if (/^(boards|job-boards)\.greenhouse\.io$/.test(window.location.hostname)) {
+		return resolveGreenhouseApplicationForm();
+	}
 	function rectVisible(el) {
 		try { const r = el.getBoundingClientRect(); return r.width > 2 && r.height > 2; }
 		catch(e) { return false; }
@@ -617,6 +727,27 @@ function resolveApplyContainer() {
 	]) {
 		const el = document.querySelector(sel);
 		if (el && rectVisible(el)) return el;
+	}
+	// Current SEEK uses a full-page application main without a <form>. Require
+	// its native apply route, one main landmark and a known native navigation
+	// marker; never expand a missing scope to the whole document.
+	if (isNativeSeekApplyPage()) {
+		const mains=[...document.querySelectorAll('main,[role="main"]')].filter(rectVisible);
+		if(mains.length>1)return null;
+		const root=mains[0]||document;
+		const controls=[...root.querySelectorAll('button[data-testid="continue-button"],button[data-testid="review-submit-application"],[data-automation="review-submit-button"],button[data-testid="review-submit-button"],button[data-testid="submit-application"]')].filter(rectVisible);
+		if(controls.length!==1)return null;
+		if(mains.length===1)return mains[0];
+		// Some native releases use only divs. Bind the unique native action to
+		// the unique page heading through their smallest common container.
+		let headings=[...document.querySelectorAll('h1')].filter(rectVisible);
+		if(!headings.length)headings=[...document.querySelectorAll('h2')].filter(rectVisible);
+		if(headings.length!==1)return null;
+		for(let p=controls[0].parentElement;p&&p!==document.body&&p!==document.documentElement;p=p.parentElement) {
+			if(!p.contains(headings[0]))continue;
+			if([...p.querySelectorAll('header,nav,[role="banner"],[role="navigation"]')].some(el=>el.querySelector('input,select,textarea,[contenteditable="true"]')))return null;
+			return p;
+		}
 	}
 	return null;
 }
@@ -682,6 +813,16 @@ function linkedInResumeUploadButtons(scope) {
   return /\bupload\b/i.test(t) && /\b(resume|cv|résumé)\b/i.test(t)
    && linkedInResumeButtonVisible(b);
  });
+}
+function linkedInResumeUploadInProgress(container) {
+ // SDUI replaces Upload resume with Uploading while the old library entry
+ // remains checked. That selection says nothing about the in-flight upload.
+ const controls = [...container.querySelectorAll('button,[role="button"]')];
+ if (controls.some(button => linkedInResumeButtonVisible(button) &&
+  /\buploading\b/i.test((button.getAttribute('aria-label') || '') + ' ' + (button.textContent || '')))) return true;
+ const uploads = linkedInResumeUploadButtons(container);
+ return uploads.some(button => button.getAttribute('aria-busy') === 'true' ||
+  !!button.querySelector('[role="progressbar"],[aria-busy="true"]'));
 }
 function linkedInResumeAcceptedFallback(container, base) {
  if (!base) return null;
@@ -809,6 +950,9 @@ function linkedInVisibleResumeRadios(container) {
 function linkedInResumeAcceptanceState(container, radios, base) {
  const labels = radios.map(r => linkedInResumeFilename(linkedInRadioText(container, r)));
  const inList = labels.some(f => f === base);
+ if (labels.filter(filename => filename === base).length > 1) {
+  return { accepted: false, error: false, filenameVisible: false, inList: false, ambiguous: true };
+ }
  const resolved = resolveLinkedInResumeSection(container);
  if (!resolved) {
   return { accepted: false, error: false, filenameVisible: false, inList: labels.some(f => f === base) };
@@ -892,6 +1036,7 @@ func init() {
 	if (!container) return { accepted: false, error: false, filenameVisible: false };
 	const hasError = !!container.querySelector('[aria-invalid="true"],.artdeco-inline-feedback--error');
 	if (hasError) return { accepted: false, error: true, filenameVisible: false };
+	if (linkedInResumeUploadInProgress(container)) return { uploading: true, accepted: false, error: false, filenameVisible: false };
 
 	const base = (expectedFilename || '').toLowerCase();
 
@@ -929,20 +1074,11 @@ func init() {
 	if (container.querySelector('[aria-invalid="true"]')) {
 		return { error: true, accepted: false, filenameVisible: false };
 	}
-	for (const r of container.querySelectorAll('input[type="radio"]')) {
-		if (!(r.checked || r.getAttribute('aria-checked') === 'true')) continue;
-		const fn = linkedInResumeFilename(linkedInRadioText(container, r));
-		if (fn && fn !== base) {
-			return { accepted: false, error: false, filenameVisible: false, inList: true, identityMismatch: true };
-		}
-		if (fn === base) return { accepted: true, error: false, filenameVisible: true, inList: true };
-	}
-	for (const sp of container.querySelectorAll('span')) {
-		if ((sp.textContent || '').trim().toLowerCase() === base) {
-			return { accepted: false, error: false, filenameVisible: false, inList: true };
-		}
-	}
-	return { accepted: false, error: false, filenameVisible: false, inList: false };
+	if (linkedInResumeUploadInProgress(container)) return { uploading: true, accepted: false, error: false, filenameVisible: false };
+	const resolved = resolveLinkedInResumeSection(container);
+	if (!resolved) return { accepted: false, error: false, filenameVisible: false, inList: false };
+	const state = linkedInResumeAcceptanceState(container, resolved.radios, base);
+	return Object.assign({}, state, { accepted: state.accepted && state.filenameVisible, identityMismatch: state.ambiguous || (state.accepted && !state.filenameVisible) });
 }`
 
 	// Post-upload: read the sole resume-library radio group after lazy-column injection.
@@ -969,10 +1105,12 @@ func init() {
 	const base = (expectedFilename || '').toLowerCase();
 	const container = resolveApplyContainer();
 	if (!container || !base) return false;
-	const radios = linkedInVisibleResumeRadios(container);
-	for (const r of radios) {
-		const label = linkedInResumeFilename(linkedInRadioText(container, r));
-		if (label !== base) continue;
+	if (linkedInResumeUploadInProgress(container)) return false;
+	const resolved = resolveLinkedInResumeSection(container);
+	if (!resolved) return false;
+	const matches = resolved.radios.filter(r => linkedInResumeFilename(linkedInRadioText(resolved.section, r)) === base);
+	if (matches.length !== 1) return false;
+	for (const r of matches) {
 		if (r.checked || r.getAttribute('aria-checked') === 'true') return true;
 		const lbl = r.id ? container.querySelector('label[for="' + CSS.escape(r.id) + '"]') : null;
 		if (lbl) { lbl.click(); } else { r.click(); }
@@ -1418,31 +1556,15 @@ const jsFillText = `(id, nthMatch, value) => {
 	return true;
 }`
 
-// jsFillFileNth marks the nth document-upload file input for rod to locate.
-// Uses the same accept filter as jsScanFields so indices stay consistent.
-const jsFillFileNth = `(index) => {
-	function allInDOM(root, selector) {
-		const r = [];
-		try {
-			r.push(...root.querySelectorAll(selector));
-			for (const el of root.querySelectorAll('*')) {
-				if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
-				if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-					try {
-						const d = el.contentDocument;
-						if (d) r.push(...allInDOM(d, selector));
-					} catch (e) {}
-				}
-			}
-		} catch(e) {}
-		return r;
-	}
-	const inputs = allInDOM(document, 'input[type="file"]').filter(el => {
-		const a = (el.accept || '').toLowerCase();
-		return !a || a.includes('pdf') || a.includes('doc') || a.includes('txt') || a.includes('rtf');
-	});
-	if (index >= inputs.length) return null;
-	inputs[index].setAttribute('data-rod-upload-target', String(index));
+// jsFillFileNth marks a current document input inside the active application.
+// Prefer a unique scanned ID; the no-ID ordinal uses exactly the scanner's list.
+const jsFillFileNth = `(index, id) => {
+` + jsLinkedInApplyContainerFn + `
+	allInDOM(document, 'input[data-rod-upload-target]').forEach(el => el.removeAttribute('data-rod-upload-target'));
+	const inputs = documentUploadInputs(resolveApplyFormContainer());
+	const matches = id ? inputs.filter(el => el.id === id) : inputs.filter((_, i) => i === index);
+	if (matches.length !== 1) return false;
+	matches[0].setAttribute('data-rod-upload-target', String(index));
 	return true;
 }`
 
@@ -1519,23 +1641,41 @@ func clampNumericString(n string, max int) string {
 }
 
 // shouldAdvanceApplyForm reports whether Continue/Submit is allowed after fillFormStep.
-// LinkedIn Easy Apply and Seek Quick Apply must not advance after fatal LLM errors.
+// LinkedIn Easy Apply and Seek Quick Apply must not advance after a fill error.
 func shouldAdvanceApplyForm(fillErr error) bool {
-	return !isFormFillFatalLLM(fillErr)
+	return fillErr == nil
 }
 
-// resolveFormFieldAnswer applies a fallback only when err is nil (never after fatal LLM errors).
-func resolveFormFieldAnswer(answer string, err error, fallback string) (string, error) {
+// An unanswered recruiter question cannot authorize a guessed option.
+func resolveFormFieldAnswer(answer string, err error, _ string) (string, error) {
 	if err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(answer) != "" {
 		return answer, nil
 	}
-	if fallback != "" {
-		return fallback, nil
+	return "", errAdaptiveQuestionReview
+}
+
+// A missing optional answer may stay empty. A joined operational failure must
+// still stop the form, even when it also carries the question-review sentinel.
+func onlyFormQuestionReview(err error) bool {
+	if err == errAdaptiveQuestionReview {
+		return true
 	}
-	return "", nil
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		causes := wrapped.Unwrap()
+		for _, cause := range causes {
+			if !onlyFormQuestionReview(cause) {
+				return false
+			}
+		}
+		return len(causes) > 0
+	case interface{ Unwrap() error }:
+		return onlyFormQuestionReview(wrapped.Unwrap())
+	}
+	return false
 }
 
 // fillFormStep scans the current form page/modal step for unanswered fields and
@@ -1545,13 +1685,21 @@ func resolveFormFieldAnswer(answer string, err error, fallback string) (string, 
 //   - filled=true  when at least one field was successfully written
 //   - hasFields=true when the scan found at least one field (even if none could be filled)
 //   - err non-nil on fatal LLM failures (Jobifai quota or provider usage limits) — callers must not click Continue/Submit
+//
 // jsFillByQuestionAnswer finds a visible field by question substring and sets/selects the answer.
-const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType) => {
+// Optional 4th argument sectionHint (string): when non-empty, restricts the search to form
+// elements whose nearest enclosing section heading contains the hint. Enables filling two
+// fields with identical labels that belong to different form sections.
+// Optional 5th argument controlID (string): when non-empty and fieldType is not radio/select,
+// targets the element by DOM id directly — bypassing label search and section filtering.
+const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType, sectionHint, controlID) => {
 ` + jsLinkedInApplyContainerFn + `
 	const container = resolveApplyContainer() || document.body;
 	const needle = (questionNeedle || '').toLowerCase().trim();
 	const ans = (answer || '').trim();
 	if (!needle || !ans) return false;
+	const hint = (sectionHint || '').toLowerCase().trim();
+
 	function allInDOM(root, sel) {
 		const r = [];
 		try {
@@ -1562,9 +1710,67 @@ const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType) => {
 		} catch (e) {}
 		return r;
 	}
-	if (fieldType === 'radio' || fieldType === 'select') {
+
+	// When sectionHint is set, only consider elements whose ancestor heading
+	// text contains the hint (case-insensitive). Skips elements not in a matching
+	// section so identical labels in different sections are filled independently.
+	function inSection(el) {
+		if (!hint) return true;
+		let node = el;
+		for (let d = 0; d < 12 && node && node !== document.body; d++, node = node.parentElement) {
+			if (node.getAttribute && node.getAttribute('role') === 'group') {
+				const lid = node.getAttribute('aria-labelledby');
+				if (lid) {
+					const lbl = document.getElementById(lid);
+					// A role=group boundary is authoritative: match or exclude.
+					if (lbl) return (lbl.textContent || '').toLowerCase().includes(hint);
+				}
+			}
+			const parent = node.parentElement;
+			if (!parent) break;
+			// Find the LAST heading sibling before this node — that is the section it belongs to.
+			// Using first-found would cause fields in later sections to inherit an earlier heading.
+			let lastH = null;
+			for (const c of parent.children) {
+				if (c === node) break;
+				if (/^H[1-6]$/.test(c.tagName)) lastH = c;
+			}
+			if (lastH !== null) {
+				// A heading boundary was found — this element belongs to that section only.
+				return (lastH.textContent || '').toLowerCase().includes(hint);
+			}
+		}
+		return false;
+	}
+
+	// Direct targeting by DOM id: skip label search for text inputs when controlID is known.
+	// This handles the case where two fields share an identical label (e.g. "Years of experience"
+	// in two separate sections) — the scanned element id routes the fill to the exact control.
+	if (fieldType !== 'radio' && fieldType !== 'select') {
+		const cid = (controlID || '').trim();
+		if (cid) {
+			const target = document.getElementById(cid);
+			if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+				const ty = target.tagName === 'INPUT' ? (target.getAttribute('type') || 'text').toLowerCase() : 'textarea';
+				if (!['hidden', 'file', 'radio', 'checkbox', 'submit', 'button'].includes(ty)) {
+					try {
+						const proto = target.tagName === 'TEXTAREA' ?
+							window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+						const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+						setter.call(target, ans);
+					} catch (e) { target.value = ans; }
+					target.dispatchEvent(new Event('input', { bubbles: true }));
+					target.dispatchEvent(new Event('change', { bubbles: true }));
+					return true;
+				}
+			}
+		}
+	}
+
+	if (fieldType === 'radio') {
 		const lower = ans.toLowerCase();
 		for (const r of allInDOM(container, 'input[type="radio"]')) {
+			if (!inSection(r)) continue;
 			const aria = (r.getAttribute('aria-label') || '').toLowerCase();
 			if (!aria.includes(needle) && needle.length > 10 && !aria.includes(needle.slice(0, 40))) continue;
 			const lbl = [...document.querySelectorAll('label[for]')].find(l => l.htmlFor === r.id);
@@ -1580,11 +1786,45 @@ const jsFillByQuestionAnswer = `(questionNeedle, answer, fieldType) => {
 		}
 		return false;
 	}
+	if (fieldType === 'select') {
+		const lower = ans.toLowerCase();
+		// Try direct control-id targeting first; fall back to aria-label search.
+		let sel = null;
+		const cid = (controlID || '').trim();
+		if (cid) {
+			const t = document.getElementById(cid);
+			if (t && t.tagName === 'SELECT') sel = t;
+		}
+		if (!sel) {
+			for (const s of allInDOM(container, 'select')) {
+				if (!inSection(s)) continue;
+				const aria = (s.getAttribute('aria-label') || '').toLowerCase();
+				if (aria.includes(needle) || (needle.length > 10 && aria.includes(needle.slice(0, 40)))) {
+					sel = s;
+					break;
+				}
+			}
+		}
+		if (!sel) return false;
+		for (const opt of sel.options) {
+			if ((opt.text || '').toLowerCase() === lower || (opt.value || '').toLowerCase() === lower) {
+				try {
+					const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+					setter.call(sel, opt.value);
+				} catch (e) { sel.value = opt.value; }
+				sel.dispatchEvent(new Event('input', { bubbles: true }));
+				sel.dispatchEvent(new Event('change', { bubbles: true }));
+				return true;
+			}
+		}
+		return false;
+	}
 	for (const el of allInDOM(container, 'input, textarea')) {
 		if (el.tagName === 'INPUT') {
 			const ty = (el.getAttribute('type') || 'text').toLowerCase();
 			if (['hidden', 'file', 'radio', 'checkbox', 'submit', 'button'].includes(ty)) continue;
 		}
+		if (!inSection(el)) continue;
 		const aria = (el.getAttribute('aria-label') || '').toLowerCase();
 		const labelled = aria.includes(needle) || (needle.length > 10 && aria.includes(needle.slice(0, 40)));
 		if (!labelled) continue;
@@ -1626,7 +1866,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		if fillOpts.IncludeAnsweredRadios {
 			scanArgs["includeAnsweredRadios"] = true
 		}
-		res, err := p.Timeout(10 * time.Second).Eval(jsScanFields, scanArgs)
+		res, err := p.Timeout(10*time.Second).Eval(jsScanFields, scanArgs)
 		if err != nil {
 			continue
 		}
@@ -1648,9 +1888,8 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			if probe, err := p.Timeout(10 * time.Second).Eval(jsHasVisibleFormContent); err == nil {
 				if n := probe.Value.Int(); n > 0 {
 					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Int("visible_inputs", n).Msg("form: jsScanFields returned 0 fields but DOM has visible inputs, possible selector break")
-					if shot, err := page.Screenshot(false, nil); err == nil {
-						_ = os.WriteFile("debug_zero_fields.png", shot, 0o644)
-						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Msg("form: screenshot saved for selector-break diagnosis")
+					if dir := saveAdaptiveDiagnostic(p, "legacy-selector-break"); dir != "" {
+						log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("diagnostic_dir", dir).Msg("form: private application diagnostic saved")
 					}
 					hasVisibleButUnscanned = true
 					break
@@ -1659,21 +1898,35 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 		}
 		if hasVisibleButUnscanned && fillOpts.VisionFallback {
 			if vf, vErr := b.fillFormStepFromVision(ctx, page, lazy); vErr != nil {
-				if isFormFillFatalLLM(vErr) {
-					return false, true, vErr
-				}
-				log.Warn().Err(vErr).Msg("form: vision fallback failed")
+				return false, true, vErr
 			} else if vf {
 				return true, true, nil
 			}
 		}
-		return false, hasVisibleButUnscanned, nil
+		if hasVisibleButUnscanned {
+			return false, true, fmt.Errorf("%w: visible form controls were not resolved", errAdaptiveQuestionReview)
+		}
+		return false, false, nil
 	}
 	// Log each found field so we can debug what's being detected.
 	for _, f := range fields {
 		log.Debug().Msgf("form: field found type=%s q=%q inputType=%s", f.Type, f.Question, f.InputType)
 	}
 	log.Info().Int("count", len(fields)).Msg("form: fields to fill")
+
+	// Shadow observation: snapshot the step and run the interpreter in read-only
+	// mode so the adaptive engine can record proposals for comparison analysis.
+	// Must come before any filling so the snapshot reflects the unmodified page state.
+	if b.cfg.ShadowStepFn != nil {
+		platform := string(b.cfg.Platform)
+		if platform == "" {
+			platform = "unknown"
+		}
+		snap := captureStepSnapshot(fields, nil, platform, 0, "shadow-step")
+		scopeJobDependentFields(&snap, lazy.job)
+		snap.EmployerKey = lazy.job.Company
+		b.cfg.ShadowStepFn(ctx, snap)
+	}
 
 	lazy.applyCaps(capsFromFormFields(fields))
 	siteMode := b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted
@@ -1770,7 +2023,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			} else if f.UploadViaButton {
 				uploadErr = b.formUploadViaButton(ctx, page, path)
 			} else {
-				uploadErr = b.formUploadFile(page, path, f.Index)
+				uploadErr = b.formUploadFile(page, path, f.Index, f.ID)
 			}
 			if errors.Is(uploadErr, errUploadIdentityUnverifiable) {
 				lazy.holdReason = uploadErr.Error()
@@ -1781,7 +2034,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 				if lazy.reviewPrepareOnly {
 					filled = true
-					continue
+					return filled, true, uploadErr
 				}
 				return filled, true, uploadErr
 			}
@@ -1805,7 +2058,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				want := strings.ToLower(filepath.Base(path))
 				group := f.ResumeGroupName
 				if group == "" {
-					if res, evalErr := page.Timeout(3 * time.Second).Eval(jsLinkedInResumeRadioGroupName, want); evalErr == nil {
+					if res, evalErr := page.Timeout(3*time.Second).Eval(jsLinkedInResumeRadioGroupName, want); evalErr == nil {
 						group = res.Value.String()
 					}
 				}
@@ -1831,7 +2084,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 
 		case "radio":
-			if b.cfg.Platform == domain.PlatformLinkedIn {
+			if b.cfg.Platform == domain.PlatformLinkedIn && f.Name != uploadedResumeGroup {
 				if resumePath, _ := lazy.peek(); resumePath != "" && linkedInResumeLibraryRadioField(f) {
 					want := strings.ToLower(filepath.Base(resumePath))
 					if ok := b.fillLinkedInResumeLibraryRadio(page, f, want, fillOpts.IncludeAnsweredRadios); ok {
@@ -1873,17 +2126,10 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				filled = true
 				continue
 			}
-			fallback := ""
-			if len(f.Options) > 0 {
-				fallback = f.Options[0].Label
-			}
 			raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())
-			answer, qErr := resolveFormFieldAnswer(raw, qErr, fallback)
+			answer, qErr := resolveFormFieldAnswer(raw, qErr, "")
 			if qErr != nil {
 				return filled, true, qErr
-			}
-			if answer == fallback && raw == "" && fallback != "" {
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("fallback", fallback).Msg("form: radio fallback to first option")
 			}
 			if answer == "" {
 				continue
@@ -1895,9 +2141,6 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					optionID = opt.ID
 					break
 				}
-			}
-			if optionID == "" && len(f.Options) > 0 {
-				optionID = f.Options[0].ID
 			}
 			radioOK := false
 			forceRadio := fillOpts.IncludeAnsweredRadios
@@ -1913,44 +2156,33 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 			}
 			if !radioOK {
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("answer", answer).Str("optionID", optionID).Msg("form: radio fill failed")
-				continue
+				return filled, true, fmt.Errorf("%w: radio selection failed", errAdaptiveQuestionReview)
 			}
 			log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: radio answered")
 			filled = true
 
 		case "checkbox":
-			fallback := ""
-			if len(f.Options) > 0 {
-				fallback = f.Options[0].Label
-			}
 			raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())
-			answer, qErr := resolveFormFieldAnswer(raw, qErr, fallback)
+			answer, qErr := resolveFormFieldAnswer(raw, qErr, "")
 			if qErr != nil {
 				return filled, true, qErr
-			}
-			if answer == fallback && raw == "" && fallback != "" {
-				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("fallback", fallback).Msg("form: checkbox fallback to first option")
 			}
 			var targetID string
 			for _, opt := range f.Options {
 				if strings.EqualFold(strings.TrimSpace(opt.Label), strings.TrimSpace(answer)) ||
-					strings.Contains(strings.ToLower(opt.Label), strings.ToLower(strings.TrimSpace(answer))) {
+					strings.EqualFold(strings.TrimSpace(opt.Value), strings.TrimSpace(answer)) {
 					targetID = opt.ID
 					break
 				}
 			}
-			if targetID == "" && len(f.Options) > 0 {
-				targetID = f.Options[0].ID
+			if targetID == "" {
+				return filled, true, fmt.Errorf("%w: checkbox answer has no matching control", errAdaptiveQuestionReview)
 			}
-			if targetID != "" {
-				if _, err := page.Eval(jsFillCheckbox, targetID); err == nil {
-					log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: checkbox answered")
-					filled = true
-				} else {
-					log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Msg("form: checkbox fill failed")
-				}
+			if result, err := page.Eval(jsFillCheckbox, targetID); err != nil || result == nil || !result.Value.Bool() {
+				return filled, true, fmt.Errorf("%w: checkbox selection failed", errAdaptiveQuestionReview)
 			}
+			log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: checkbox answered")
+			filled = true
 
 		case "select":
 			labels := f.optionLabels()
@@ -1967,50 +2199,56 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Msg("form: open-ended question has no textarea to fill")
 			}
-			fallback := ""
-			if len(f.Options) > 0 {
-				fallback = f.Options[0].Label
-			}
 			raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, labels)
-			answer, qErr := resolveFormFieldAnswer(raw, qErr, fallback)
+			answer, qErr := resolveFormFieldAnswer(raw, qErr, "")
 			if qErr != nil {
 				return filled, true, qErr
 			}
 			if answer != "" {
 				if chosen, ok := matchSelectOption(f, answer); ok {
-					_, _ = page.Eval(jsFillSelect, f.ID, chosen)
+					if result, err := page.Eval(jsFillSelect, f.ID, chosen); err != nil || result == nil || !result.Value.Bool() {
+						return filled, true, fmt.Errorf("%w: select assignment failed", errAdaptiveQuestionReview)
+					}
 					log.Info().Str("question", f.Question).Str("answer", chosen).Msg("form: select filled")
 					filled = true
 				} else if ok := b.fillOpenEndedNearSelect(page, f, answer); ok {
 					// LLM returned prose that doesn't match dropdown options — try textarea.
 					filled = true
 				} else {
-					log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Str("answer", answer).
-						Strs("options", labels).Msg("form: select answer did not match any option")
+					return filled, true, fmt.Errorf("%w: select answer has no matching control", errAdaptiveQuestionReview)
 				}
 			}
 
 		case "text":
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return filled, true, ctxErr
+			}
 			answer := ""
-			if profile := b.currentProfile(); profile != nil {
+			var answerErr error
+			if isSalaryFormQuestion(f.Question) {
+				answer, answerErr = b.answerSalaryFormField(ctx, lazy, f)
+			} else if profile := b.currentProfile(); profile != nil {
 				answer = profileContactAnswer(f.Question, f.InputType, &profile.PersonalInformation)
 			}
-			if answer == "" {
-				if ad := b.profileDefaults(); ad.SalaryExpectation != "" && isSalaryFormQuestion(f.Question) {
-					answer = sanitizeSalaryFieldAnswer(ad.SalaryExpectation, f.MaxChars)
-				}
-			}
-			if answer == "" {
-				var qErr error
-				answer, qErr = b.answerFormQuestionWithLimit(ctx, lazy, f.Question, nil, f.MaxChars)
-				if qErr != nil {
-					return filled, true, qErr
-				}
-			} else if f.MaxChars > 0 {
+			if answerErr == nil && answer == "" {
+				answer, answerErr = b.answerFormQuestionWithLimit(ctx, lazy, f.Question, nil, f.MaxChars)
+			} else if answerErr == nil && f.MaxChars > 0 && !isSalaryFormQuestion(f.Question) {
 				answer = truncateRunes(answer, f.MaxChars)
 			}
-			if answer == "" {
-				continue
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return filled, true, ctxErr
+			}
+			if answerErr != nil {
+				if !f.Required && onlyFormQuestionReview(answerErr) {
+					continue
+				}
+				return filled, true, answerErr
+			}
+			if strings.TrimSpace(answer) == "" {
+				if !f.Required {
+					continue
+				}
+				return filled, true, errAdaptiveQuestionReview
 			}
 			answer = sanitizeContactFieldAnswer(answer, f.Question, f.InputType)
 			if isSalaryFormQuestion(f.Question) {
@@ -2018,7 +2256,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			} else if f.MaxChars > 0 {
 				answer = truncateRunes(answer, f.MaxChars)
 			}
-			if f.InputType == "numeric" {
+			if f.InputType == "numeric" && !isSalaryFormQuestion(f.Question) {
 				answer = sanitizeNumericFieldAnswer(answer, f.Question)
 			}
 
@@ -2091,17 +2329,19 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 
 			// Plain text field, React value setter is fine.
-			_, _ = page.Eval(jsFillText, f.ID, f.Index, answer)
+			if result, err := page.Eval(jsFillText, f.ID, f.Index, answer); err != nil || result == nil || !result.Value.Bool() {
+				return filled, true, fmt.Errorf("%w: text assignment failed", errAdaptiveQuestionReview)
+			}
+			if isSalaryFormQuestion(f.Question) && !verifySalaryAssignment(page, f.ID, answer) {
+				return filled, true, fmt.Errorf("%w: salary was not accepted intact", errAdaptiveQuestionReview)
+			}
 			log.Info().Str("question", f.Question).Str("answer", answer).Str("inputType", f.InputType).Msg("form: text filled")
 			filled = true
 		}
 	}
 
 	if refilled, rErr := b.refillLinkedInOverLimitFields(ctx, page, lazy); rErr != nil {
-		if isFormFillFatalLLM(rErr) {
-			return filled, true, rErr
-		}
-		log.Warn().Err(rErr).Msg("form: over-limit refill failed")
+		return filled, true, rErr
 	} else if refilled {
 		filled = true
 	}
@@ -2112,32 +2352,22 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 	return filled, true, nil
 }
 
-// formUploadFile uploads filePath into the nth file input, walking shadow DOM to find it.
-func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int) error {
+// formUploadFile uses a unique scanned ID or the current document-input ordinal
+// inside the active application, including shadow DOM.
+func (b *Bot) formUploadFile(page *rod.Page, filePath string, index int, scannedIDs ...string) error {
+	id := ""
+	if len(scannedIDs) > 0 {
+		id = scannedIDs[0]
+	}
 	// Mark the target file input via JS (handles shadow DOM).
-	res, err := page.Eval(jsFillFileNth, index)
-	if err != nil || res.Value.Nil() {
+	res, err := page.Eval(jsFillFileNth, index, id)
+	if err != nil || res == nil || !res.Value.Bool() {
 		return fmt.Errorf("file input at index %d not found in shadow DOM", index)
 	}
 	// Now find it via the marker attribute rod can locate.
-	el, err := page.ElementByJS(rod.Eval(`() => {
-		function allInDOM(root, selector) {
-			const r = [];
-			try {
-				r.push(...root.querySelectorAll(selector));
-				for (const el of root.querySelectorAll('*')) {
-					if (el.shadowRoot) r.push(...allInDOM(el.shadowRoot, selector));
-					if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
-						try {
-							const d = el.contentDocument;
-							if (d) r.push(...allInDOM(d, selector));
-						} catch (e) {}
-					}
-				}
-			} catch(e) {}
-			return r;
-		}
-		return allInDOM(document, 'input[type="file"][data-rod-upload-target]')[0] || null;
+	el, err := page.ElementByJS(rod.Eval(`() => {` + jsLinkedInApplyContainerFn + `
+		const matches = documentUploadInputs(resolveApplyFormContainer()).filter(el => el.hasAttribute('data-rod-upload-target'));
+		return matches.length === 1 ? matches[0] : null;
 	}`))
 	if err != nil {
 		return fmt.Errorf("locate marked file input: %w", err)
@@ -2212,9 +2442,9 @@ const jsUploadButtonDiag = `() => {
 		scrollAncestors });
 }`
 
-// instrumentedUploadClick performs Rod's click sub-stages (scroll+stability, interactability+
+// instrumentedUploadClick performs bounded click sub-stages (scroll, interactability+
 // move, enabled, mouse-click) individually, logging each stage's outcome and elapsed time so
-// the failing stage is visible in bot_run_logs. Behaviour matches Element.Click; each stage gets
+// the failing stage is visible in bot_run_logs. Each stage gets
 // a fresh child of the live preparation ctx. On failure the returned error names the stage.
 func (b *Bot) instrumentedUploadClick(ctx context.Context, page *rod.Page, btn *rod.Element, filename string) error {
 	// Safe diagnostics: geometry, clipping ancestors, computed visibility/pointer-events, and the
@@ -2230,12 +2460,13 @@ func (b *Bot) instrumentedUploadClick(ctx context.Context, page *rod.Page, btn *
 	diag("pre_scroll")
 
 	// Scroll stage: center the button in its scroll container (LinkedIn renders the Upload button at
-	// the bottom of a clipped scroll area). ScrollIntoView adds the stability wait.
+	// the bottom of a clipped scroll area). CDP scrolling does not depend on
+	// animation frames, which browsers can suspend for background pages.
 	scrollCtx, scrollCancel := context.WithTimeout(ctx, 5*time.Second)
 	t0 := time.Now()
 	_, scrollErr := btn.Context(scrollCtx).Eval(`() => { this.scrollIntoView({block:'center', inline:'center'}); return true; }`)
 	if scrollErr == nil {
-		scrollErr = btn.Context(scrollCtx).ScrollIntoView()
+		scrollErr = proto.DOMScrollIntoViewIfNeeded{ObjectID: btn.Object.ObjectID}.Call(page.Context(scrollCtx))
 	}
 	scrollCancel()
 	b.log.Info().Str("filename", filename).Str("click_stage", "scroll").Dur("elapsed_ms", time.Since(t0)).Err(scrollErr).Msg("prepare: upload click stage")
@@ -2282,10 +2513,10 @@ func (b *Bot) instrumentedUploadClick(ctx context.Context, page *rod.Page, btn *
 			continue
 		}
 		cctx, ccancel := context.WithTimeout(ctx, 3*time.Second)
-		mErr := page.Context(cctx).Mouse.MoveTo(*pt)
+		mErr := moveBoundedMouse(cctx, page, *pt)
 		var clkErr error
 		if mErr == nil {
-			clkErr = page.Context(cctx).Mouse.Click(proto.InputMouseButtonLeft, 1)
+			clkErr = clickBoundedMouse(cctx, page, *pt)
 		}
 		ccancel()
 		if mErr == nil && clkErr == nil {
@@ -2490,7 +2721,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 			"upload mechanism may differ from CDP file-chooser; inspect live DOM")
 	}
 
-	if err := linkedInWaitForResumeAccepted(ctx, page, filePath); err != nil {
+	if err := linkedInWaitForResumeAccepted(ctx, page, filePath, !preFilenameExisted); err != nil {
 		var h *uploadIdentityHold
 		if errors.As(err, &h) {
 			return b.holdUpload(h.stage, h.filename)
@@ -2505,7 +2736,7 @@ func (b *Bot) formUploadViaButton(ctx context.Context, page *rod.Page, filePath 
 		if isVersionScopedFilename(base) {
 			res2, evalErr2 := page.Timeout(3*time.Second).Eval(jsLinkedInCheckResumeAccepted, base)
 			if evalErr2 == nil && res2.Value.Get("accepted").Bool() && res2.Value.Get("filenameVisible").Bool() {
-				log.Info().Str("filename", base).Msg("linkedin: version already in library and selected â reusing without re-upload")
+				log.Info().Str("filename", base).Msg("linkedin: version already in library and selected; reusing without re-upload")
 				return nil
 			}
 			return b.holdUpload(uploadStageVersionScopedNotSel, base)
@@ -2546,31 +2777,24 @@ func linkedInPageEval(page *rod.Page, timeout time.Duration, js string, args ...
 // that LinkedIn accepted the uploaded resume. Verifies the accepted entry matches
 // filePath by checking the checked radio label. Returns errUploadIdentityUnverifiable
 // (a HOLD sentinel) when the file was accepted but identity cannot be confirmed.
-func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page, filePath string) error {
-	type waitResult struct {
-		err error
+func linkedInWaitForResumeAccepted(ctx context.Context, page *rod.Page, filePath string, selectionAllowed ...bool) error {
+	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	err := linkedInWaitForResumeAcceptedPoll(bounded, page.Context(bounded), filePath, selectionAllowed...)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return &uploadIdentityHold{stage: uploadStageAcceptanceTimeout, filename: strings.ToLower(filepath.Base(filePath))}
 	}
-	done := make(chan waitResult, 1)
-	go func() {
-		done <- waitResult{err: linkedInWaitForResumeAcceptedPoll(ctx, page, filePath)}
-	}()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(50 * time.Second):
-		log.Warn().Msg("linkedin: waitForResumeAccepted hard timeout (50s)")
-		return fmt.Errorf("linkedin: resume acceptance not confirmed within 30 s")
-	case r := <-done:
-		return r.err
-	}
+	return err
 }
 
-func linkedInWaitForResumeAcceptedPoll(ctx context.Context, page *rod.Page, filePath string) error {
+func linkedInWaitForResumeAcceptedPoll(ctx context.Context, page *rod.Page, filePath string, selectionAllowed ...bool) error {
+	allowSelection := len(selectionAllowed) == 0 || selectionAllowed[0]
 	base := filePath
 	if i := strings.LastIndexAny(filePath, "/\\"); i >= 0 {
 		base = filePath[i+1:]
 	}
 	deadline := time.Now().Add(30 * time.Second)
+	var mismatchSince time.Time
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -2591,27 +2815,45 @@ func linkedInWaitForResumeAcceptedPoll(ctx context.Context, page *rod.Page, file
 				saveApplyDebug(page, "resume_upload_rejected")
 				return fmt.Errorf("linkedin: %s", msg)
 			}
+			if res.Value.Get("uploading").Bool() {
+				mismatchSince = time.Time{}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(500 * time.Millisecond):
+				}
+				continue
+			}
 			if res.Value.Get("accepted").Bool() && res.Value.Get("filenameVisible").Bool() {
 				log.Info().Str("filename", base).Msg("linkedin: resume upload accepted and identity verified")
 				return nil
 			}
-			if res.Value.Get("identityMismatch").Bool() {
-				return &uploadIdentityHold{stage: uploadStagePostUploadMismatch, filename: base}
-			}
-			if full, fullErr := linkedInPageEval(page, 2*time.Second, jsLinkedInCheckResumeAccepted, base); fullErr == nil && full != nil {
-				if full.Value.Get("accepted").Bool() && !full.Value.Get("filenameVisible").Bool() {
-					return &uploadIdentityHold{stage: uploadStagePostUploadMismatch, filename: base}
-				}
-			}
-			if res.Value.Get("inList").Bool() {
+			// A newly observed exact entry may be selected after upload completes.
+			// Selecting a pre-existing entry would manufacture acceptance evidence.
+			if allowSelection && res.Value.Get("inList").Bool() {
 				if _, selErr := linkedInPageEval(page, 2*time.Second, jsLinkedInSelectResumeRadioByFilename, base); selErr == nil {
-					time.Sleep(300 * time.Millisecond)
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(300 * time.Millisecond):
+					}
 					res2, err2 := linkedInPageEval(page, 2*time.Second, jsLinkedInCheckResumeAcceptedLite, base)
 					if err2 == nil && res2 != nil && res2.Value.Get("accepted").Bool() && res2.Value.Get("filenameVisible").Bool() {
 						log.Info().Str("filename", base).Msg("linkedin: resume selected after upload appeared in library")
 						return nil
 					}
 				}
+			}
+			if res.Value.Get("identityMismatch").Bool() {
+				// Upload completion and the selected library entry may hydrate in
+				// separate renders. Require a stable completed mismatch before hold.
+				if mismatchSince.IsZero() {
+					mismatchSince = time.Now()
+				} else if time.Since(mismatchSince) >= time.Second {
+					return &uploadIdentityHold{stage: uploadStagePostUploadMismatch, filename: base}
+				}
+			} else {
+				mismatchSince = time.Time{}
 			}
 		}
 		if msgs := pageValidationErrors(page); len(msgs) > 0 {
@@ -2623,11 +2865,15 @@ func linkedInWaitForResumeAcceptedPoll(ctx context.Context, page *rod.Page, file
 				}
 			}
 		}
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 	log.Warn().Str("filename", base).Msg("linkedin: resume acceptance not confirmed after polling")
 	saveApplyDebug(page, "resume_not_accepted")
-	return fmt.Errorf("linkedin: resume acceptance not confirmed within 30 s")
+	return &uploadIdentityHold{stage: uploadStageAcceptanceTimeout, filename: base}
 }
 
 func (b *Bot) fillFormStepFromVision(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (filled bool, err error) {
@@ -2677,14 +2923,13 @@ func (b *Bot) fillFormStepFromVision(ctx context.Context, page *rod.Page, lazy *
 // options is non-nil for radio/select, the returned string should match one
 // of the option labels.  For free-text fields options is nil.
 //
-// Strategy: heuristics only for the two clear binary cases (visa/sponsorship and
-// work-authorisation) where the profile has a definitive yes/no.  Everything else
-// goes straight to the LLM so it can reason over the full profile context and
-// handle any question dynamically.
+// Contact facts and simple sponsorship questions can resolve directly. Legal
+// work rights and experience durations need independently grounded answers;
+// sponsorship and career totals cannot establish those facts.
 func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question string, options []string) (string, error) {
-	lower := strings.ToLower(question)
-	ad := b.profileDefaults()
-
+	if manualDeclaration(SnapField{Label: question}) {
+		return "", errAdaptiveQuestionReview
+	}
 	// Contact-info fields (phone, email, name, city) — use profile, never LLM prose.
 	if len(options) == 0 {
 		if profile := b.currentProfile(); profile != nil {
@@ -2695,58 +2940,28 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 		}
 	}
 
-	// ── Fast heuristics, binary yes/no only ──────────────────────────────────
-
-	// Sponsorship / visa
-	if containsAny(lower, "sponsor", "visa status", "work permit", "require.*visa", "need.*sponsor") {
-		if ad.RequiresSponsorship {
-			ans := pickFormOption(options, "yes")
-			if ans == "" {
-				ans = "yes"
-			}
-			log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (sponsorship)")
-			return ans, nil
+	sensitive := legacySensitiveQuestion(question)
+	if sensitive {
+		field := SnapField{Ref: "f0", Label: question, Type: SnapTypeText, Required: true, Options: options}
+		if len(options) > 0 {
+			field.Type = SnapTypeSelect
+		} else if matchesAny(strings.ToLower(question), "how many years", "years of", "years experience") {
+			field.Type = SnapTypeNumber
 		}
-		ans := pickFormOption(options, "no")
-		if ans == "" {
-			ans = "no"
+		if lazy != nil {
+			field.JobLocation, field.JobTitle = lazy.job.Location, lazy.job.Title
 		}
-		log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (sponsorship)")
-		return ans, nil
-	}
-
-	// Years-of-experience numeric fields (LinkedIn "Additional Questions").
-	if len(options) == 0 && containsAny(lower, "how many years", "years of experience", "years experience", "years of work experience") {
-		if profile := b.currentProfile(); profile != nil {
-			years := totalExperienceYears(profile)
-			if years > maxExperienceYears {
-				years = maxExperienceYears
-			}
-			ans := strconv.Itoa(years)
-			log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (years of experience)")
-			return ans, nil
+		profile := b.currentProfile()
+		if local, ok := deterministicResolve(field, profile); ok && local.Action == ActionFill && !local.Pending {
+			return validatedLegacyAnswer(local.Value, options)
+		}
+		if b.cfg.AdaptiveLLM != nil {
+			return b.groundedLegacyAnswer(ctx, lazy, field, profile)
 		}
 	}
 
-	// Work authorisation
-	if containsAny(lower, "authoris", "authoriz", "legally permitted", "eligible to work", "right to work", "legally able", "work without") {
-		if ad.RequiresSponsorship {
-			ans := pickFormOption(options, "no")
-			if ans == "" {
-				ans = "no"
-			}
-			log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (work auth)")
-			return ans, nil
-		}
-		ans := pickFormOption(options, "yes")
-		if ans == "" {
-			ans = "yes"
-		}
-		log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (work auth)")
-		return ans, nil
-	}
-
-	// ── LLM, handles all other questions dynamically ─────────────────────────
+	// Ordinary wording still uses the Legacy provider. Sensitive positive
+	// answers from a provider without a grounding verifier cannot be trusted.
 	if b.cfg.Tailor == nil || lazy == nil {
 		log.Debug().Bool("tailor_nil", b.cfg.Tailor == nil).Bool("lazy_nil", lazy == nil).
 			Str("question", question).Msg("form: LLM skipped (not configured)")
@@ -2754,45 +2969,58 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 		llmCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		answer, err := b.cfg.Tailor.AnswerFormQuestion(b.llmCtx(llmCtx, "form question", lazy.job.ID), lazy.formProfileJSON(), question, options)
-		if err == nil && answer != "" {
-			log.Info().Str("question", question).Str("answer", answer).Msg("form: answered via LLM")
-			return answer, nil
-		}
 		if err != nil {
-			if isFormFillFatalLLM(err) {
-				return "", fmt.Errorf("form question: %w", err)
-			}
-			log.Warn().Err(err).Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Msg("form: LLM answer failed")
-		} else {
-			log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Msg("form: LLM returned empty answer")
+			return "", fmt.Errorf("form question: %w", err)
+		}
+		if !sensitive {
+			return validatedLegacyAnswer(answer, options)
 		}
 	}
-
-	// ── Last resort: first option or empty ────────────────────────────────────
-	if len(options) > 0 {
-		log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", question).Str("fallback", options[0]).Msg("form: answered via last-resort fallback")
-		return options[0], nil
-	}
-	return "", nil
+	return "", errAdaptiveQuestionReview
 }
 
-// profileDefaults extracts the application-defaults section from the bot's profile.
-type applDefaults struct {
-	RequiresSponsorship bool
-	NoticePeriod        string
-	SalaryExpectation   string
+func legacySensitiveQuestion(question string) bool {
+	return isSalaryFormQuestion(question) || matchesAny(strings.ToLower(question), "sponsor", "visa", "authoris", "authoriz", "legally permitted", "eligible to work", "right to work", "legally able", "work without", "working rights", "work permit", "how many years", "years of", "years experience")
 }
 
-func (b *Bot) profileDefaults() applDefaults {
-	if b.cfg.Profile == nil {
-		return applDefaults{}
+func validatedLegacyAnswer(answer string, options []string) (string, error) {
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return "", errAdaptiveQuestionReview
 	}
-	ad := b.cfg.Profile.ApplicationDefaults
-	return applDefaults{
-		RequiresSponsorship: ad.RequiresSponsorship,
-		NoticePeriod:        ad.NoticePeriod,
-		SalaryExpectation:   ad.SalaryExpectation,
+	if len(options) == 0 {
+		return answer, nil
 	}
+	matched, matches := "", 0
+	for _, option := range options {
+		if strings.EqualFold(strings.TrimSpace(option), answer) {
+			matched, matches = option, matches+1
+		}
+	}
+	if matches != 1 {
+		return "", fmt.Errorf("%w: answer does not identify one supplied option", errAdaptiveQuestionReview)
+	}
+	return matched, nil
+}
+
+func (b *Bot) groundedLegacyAnswer(ctx context.Context, lazy *lazyDocGen, field SnapField, profile *domain.ResumeProfile) (string, error) {
+	snap := StepSnapshot{V: SnapshotSchemaV1, Platform: string(b.cfg.Platform), Fields: []SnapField{field}}
+	jobID := ""
+	if lazy != nil {
+		jobID, snap.EmployerKey = lazy.job.ID, "legacy-question:"+lazy.job.Company
+	}
+	llmCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	proposals, err := boundFormLLM(b.cfg.AdaptiveLLM).InterpretFields(b.llmCtx(llmCtx, "form question", jobID), profile, snap, []string{field.Ref})
+	if err != nil {
+		return "", fmt.Errorf("form question: %w", err)
+	}
+	for _, resolution := range validateLLMProposals(proposals, []string{field.Ref}, snap, profile) {
+		if resolution.Action == ActionFill && !resolution.Pending && validGroundedProof(resolution.grounded, profile, snap, field, resolution.IntentType, resolution.BindingKey, resolution.Value) {
+			return validatedLegacyAnswer(resolution.Value, field.Options)
+		}
+	}
+	return "", errAdaptiveQuestionReview
 }
 
 // totalExperienceYears sums experience from the profile's ExperienceDetails.
@@ -2870,6 +3098,12 @@ func profileContactAnswer(question, inputType string, pi *domain.PersonalInforma
 	if lower == "" && inputType == "" {
 		return ""
 	}
+	switch countryWords(lower) {
+	case "city", "town", "city town", "location city":
+		return strings.TrimSpace(pi.City)
+	case "country", "country of residence":
+		return strings.TrimSpace(pi.Country)
+	}
 
 	if isPhoneField(question, inputType) {
 		phone := strings.TrimSpace(pi.Phone)
@@ -2892,6 +3126,9 @@ func profileContactAnswer(question, inputType string, pi *domain.PersonalInforma
 	}
 	if containsAny(lower, "last name", "family name", "surname") {
 		return strings.TrimSpace(pi.Surname)
+	}
+	if matches := countryWords(lower); matches == "city" || matches == "town" || matches == "city town" || matches == "location city" {
+		return strings.TrimSpace(pi.City)
 	}
 
 	if isLocationField(lower) {
@@ -2916,15 +3153,15 @@ func isLocationField(lower string) bool {
 }
 
 func profileLocation(pi *domain.PersonalInformation) string {
-	if a := strings.TrimSpace(pi.Address); a != "" {
-		return a
-	}
 	city := strings.TrimSpace(pi.City)
 	country := strings.TrimSpace(pi.Country)
 	if city != "" && country != "" {
 		return city + ", " + country
 	}
-	return city
+	if city != "" {
+		return city
+	}
+	return strings.TrimSpace(pi.Address)
 }
 
 func inferContactInputType(question string) string {
@@ -3016,32 +3253,10 @@ func matchSelectOption(f formField, answer string) (value string, ok bool) {
 	if answer == "" || len(f.Options) == 0 {
 		return "", false
 	}
-	lower := strings.ToLower(answer)
 	for _, o := range f.Options {
 		if strings.EqualFold(strings.TrimSpace(o.Label), answer) || strings.EqualFold(strings.TrimSpace(o.Value), answer) {
 			return o.Value, true
 		}
-	}
-	// Numeric year answers: "8" matches "8 years" / "8+".
-	num := extractFirstNumber(answer)
-	if num != "" {
-		for _, o := range f.Options {
-			ol := strings.ToLower(o.Label)
-			if ol == num || strings.HasPrefix(ol, num+" ") || strings.HasPrefix(ol, num+"+") ||
-				strings.Contains(ol, " "+num+" ") || strings.HasPrefix(strings.TrimSpace(o.Value), num) {
-				return o.Value, true
-			}
-		}
-	}
-	for _, o := range f.Options {
-		ol := strings.ToLower(o.Label)
-		if strings.Contains(ol, lower) || strings.Contains(lower, ol) {
-			return o.Value, true
-		}
-	}
-	// Essays never match a short dropdown — reject so we don't pretend success.
-	if len(answer) > 40 {
-		return "", false
 	}
 	return "", false
 }
@@ -3121,21 +3336,22 @@ func containsAny(s string, subs ...string) bool {
 
 // pickFormOption returns the first option whose lowercase label contains needle,
 // or returns needle itself when options is nil (free-text field).
-// Falls back to the first option when no match is found.
+// Ambiguous or missing matches remain unanswered.
 func pickFormOption(options []string, needle string) string {
 	if options == nil {
 		return needle
 	}
 	lowerNeedle := strings.ToLower(needle)
+	answer, matches := "", 0
 	for _, o := range options {
 		if strings.Contains(strings.ToLower(o), lowerNeedle) {
-			return o
+			answer, matches = o, matches+1
 		}
 	}
-	if len(options) > 0 {
-		return options[0]
+	if matches == 1 {
+		return answer
 	}
-	return needle
+	return ""
 }
 
 // isVersionScopedFilename reports whether name matches the version-scoped upload format:
@@ -3152,7 +3368,7 @@ func isVersionScopedFilename(name string) bool {
 		return false
 	}
 	for _, c := range suffix {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

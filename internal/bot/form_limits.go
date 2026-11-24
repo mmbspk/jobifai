@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,12 +15,17 @@ import (
 
 // linkedInTextLimitViolation is a text/textarea field over its visible character cap.
 type linkedInTextLimitViolation struct {
-	ID       string `json:"id"`
-	Index    int    `json:"index"`
-	Question string `json:"question"`
-	MaxChars int    `json:"maxChars"`
-	ValueLen int    `json:"valueLen"`
-	Invalid  bool   `json:"invalid"`
+	ID         string `json:"id"`
+	Index      int    `json:"index"`
+	Question   string `json:"question"`
+	MaxChars   int    `json:"maxChars"`
+	ValueLen   int    `json:"valueLen"`
+	Invalid    bool   `json:"invalid"`
+	NativeType string `json:"nativeType"`
+	InputType  string `json:"inputType"`
+	MinValue   string `json:"minValue"`
+	MaxValue   string `json:"maxValue"`
+	StepValue  string `json:"stepValue"`
 }
 
 const jsLinkedInTextFieldLimits = `(opts) => {
@@ -37,27 +43,8 @@ const jsLinkedInTextFieldLimits = `(opts) => {
 		} catch (e) {}
 		return r;
 	}
-	function charLimitForField(el) {
-		if (el.maxLength > 0) return el.maxLength;
-		const fromAttr = parseInt(el.getAttribute('maxlength'), 10);
-		if (fromAttr > 0) return fromAttr;
-		let node = el.parentElement;
-		for (let i = 0; i < 5 && node && node !== container; i++, node = node.parentElement) {
-			const kids = node.children ? [...node.children] : [];
-			for (const ch of kids) {
-				const t = (ch.textContent || '').trim();
-				if (!t || t.length > 80) continue;
-				const ofM = t.match(/^(\d+)\s+of\s+(\d+)\s+character/i);
-				if (ofM) return parseInt(ofM[2], 10);
-				const slashM = t.match(/^(\d+)\s*\/\s*(\d+)$/);
-				if (slashM) {
-					const cap = parseInt(slashM[2], 10);
-					if (cap > 0 && cap <= 5000) return cap;
-				}
-			}
-		}
-		return 0;
-	}
+` + jsFormCharacterLimitFn + `
+
 	function questionFor(el) {
 		const aria = (el.getAttribute('aria-label') || '').trim();
 		if (aria) return aria;
@@ -108,6 +95,9 @@ const jsLinkedInTextFieldLimits = `(opts) => {
 			maxChars: max,
 			valueLen: val.length,
 			invalid: fieldInvalid || over,
+			nativeType: el.tagName === 'TEXTAREA' ? 'textarea' : el.type,
+			inputType: el.type === 'number' || el.getAttribute('inputmode') === 'numeric' ? 'numeric' : (el.tagName === 'TEXTAREA' ? 'textarea' : el.type),
+			minValue: el.getAttribute('min') || '', maxValue: el.getAttribute('max') || '', stepValue: el.getAttribute('step') || '',
 		});
 		textIdx++;
 	}
@@ -136,31 +126,78 @@ func isSalaryFormQuestion(question string) bool {
 		strings.Contains(l, "pay rate") || strings.Contains(l, "remuneration")
 }
 
-// sanitizeSalaryFieldAnswer keeps a compact numeric salary (LinkedIn SDUI rejects prose).
+var salarySingleNumber = regexp.MustCompile(`^(?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?$`)
+
+// Normalize grouping in a single number only. Ranges, currencies, periods and
+// compensation qualifiers remain intact; an overlong answer cannot be shortened
+// by cutting digits or dropping conditions.
 func sanitizeSalaryFieldAnswer(answer string, maxChars int) string {
-	if answer == "" {
+	answer = strings.TrimSpace(answer)
+	if salarySingleNumber.MatchString(answer) {
+		answer = strings.ReplaceAll(answer, ",", "")
+	}
+	if maxChars > 0 && utf8.RuneCountInString(answer) > maxChars {
 		return ""
 	}
-	var digits strings.Builder
-	for _, r := range answer {
-		if r >= '0' && r <= '9' {
-			digits.WriteRune(r)
+	return answer
+}
+
+func salaryAnswerForControl(field SnapField, answer string) (string, error) {
+	answer = sanitizeSalaryFieldAnswer(answer, field.MaxChars)
+	if answer == "" || (field.Type == SnapTypeNumber && !salarySingleNumber.MatchString(answer)) ||
+		!bindingValueCompatible(field, "application_defaults.salary_expectation", answer) {
+		return "", fmt.Errorf("%w: salary facts do not fit the declared control", errAdaptiveQuestionReview)
+	}
+	return answer, nil
+}
+
+func verifySalaryAssignment(page *rod.Page, id, answer string) bool {
+	result, err := page.Timeout(5*time.Second).Eval(`(id, expected) => {
+		const matches = [...document.querySelectorAll('input, textarea')].filter(el => el.id === id);
+		if (matches.length !== 1) return false;
+		const el = matches[0];
+		return el.value === expected && (typeof el.checkValidity !== 'function' || el.checkValidity());
+	}`, id, answer)
+	return err == nil && result != nil && result.Value.Bool()
+}
+
+func (b *Bot) answerSalaryFormField(ctx context.Context, lazy *lazyDocGen, control formField) (string, error) {
+	snap := captureStepSnapshot([]formField{control}, nil, string(b.cfg.Platform), 0, "")
+	if lazy != nil {
+		scopeJobDependentFields(&snap, lazy.job)
+	}
+	field := snap.Fields[0]
+	profile := b.currentProfile()
+	// Structured salary facts can qualify or conflict with older free text.
+	// Interpret the complete current profile instead of bypassing those facts.
+	if (profile == nil || profile.ApplicationDefaults.SalaryRange == nil) && field.Group == "" && field.HelpText == "" {
+		if local, ok := deterministicResolve(field, profile); ok && local.Action == ActionFill && !local.Pending {
+			if answer, err := salaryAnswerForControl(field, local.Value); err == nil {
+				return answer, nil
+			}
 		}
 	}
-	if digits.Len() == 0 {
-		return ""
+	if b.cfg.AdaptiveLLM == nil {
+		return "", errAdaptiveQuestionReview
 	}
-	return truncateRunes(digits.String(), maxChars)
+	answer, err := b.groundedLegacyAnswer(ctx, lazy, field, profile)
+	if err != nil {
+		return "", err
+	}
+	return salaryAnswerForControl(field, answer)
 }
 
 func (b *Bot) answerFormQuestionWithLimit(ctx context.Context, lazy *lazyDocGen, question string, options []string, maxChars int) (string, error) {
 	q := question
 	if isSalaryFormQuestion(question) {
-		limitNote := ""
-		if maxChars > 0 {
-			limitNote = fmt.Sprintf(" At most %d characters.", maxChars)
+		control := formField{Type: "text", InputType: "text", Question: question, Required: true, MaxChars: maxChars}
+		if len(options) > 0 {
+			control.Type = "select"
+			for _, option := range options {
+				control.Options = append(control.Options, formFieldOption{Label: option, Value: option})
+			}
 		}
-		q = fmt.Sprintf("%s\n\nReply with a numeric base salary only (digits, optional commas). No words like negotiable.%s", question, limitNote)
+		return b.answerSalaryFormField(ctx, lazy, control)
 	} else if maxChars > 0 {
 		q = fmt.Sprintf("%s\n\nReply with at most %d characters total (including spaces). Use plain text only.", question, maxChars)
 	}
@@ -168,9 +205,7 @@ func (b *Bot) answerFormQuestionWithLimit(ctx context.Context, lazy *lazyDocGen,
 	if err != nil {
 		return "", err
 	}
-	if isSalaryFormQuestion(question) {
-		answer = sanitizeSalaryFieldAnswer(answer, maxChars)
-	} else if maxChars > 0 {
+	if maxChars > 0 {
 		answer = truncateRunes(answer, maxChars)
 	}
 	return answer, nil
@@ -181,7 +216,7 @@ func (b *Bot) linkedInTextLimitViolations(page *rod.Page, onlyInvalid bool) ([]l
 	if onlyInvalid {
 		args["onlyInvalid"] = true
 	}
-	res, err := page.Timeout(5 * time.Second).Eval(jsLinkedInTextFieldLimits, args)
+	res, err := page.Timeout(5*time.Second).Eval(jsLinkedInTextFieldLimits, args)
 	if err != nil || res.Value.Nil() {
 		return nil, err
 	}
@@ -201,18 +236,25 @@ func (b *Bot) refillLinkedInOverLimitFields(ctx context.Context, page *rod.Page,
 	var filled bool
 	for _, v := range violations {
 		max := v.MaxChars
-		if max <= 0 && v.ValueLen > 0 {
+		salaryQuestion := isSalaryFormQuestion(v.Question)
+		if !salaryQuestion && max <= 0 && v.ValueLen > 0 {
 			max = v.ValueLen - 1
 		}
 		if max <= 0 && !v.Invalid {
 			continue
 		}
-		if max <= 0 {
+		if !salaryQuestion && max <= 0 {
 			max = 127
 		}
 		log.Warn().Str("question", v.Question).Int("max_chars", max).Int("value_len", v.ValueLen).Bool("invalid", v.Invalid).
 			Msg("form: refilling field over character limit")
-		answer, qErr := b.answerFormQuestionWithLimit(ctx, lazy, v.Question, nil, max)
+		var answer string
+		var qErr error
+		if salaryQuestion {
+			answer, qErr = b.answerSalaryFormField(ctx, lazy, formField{Type: "text", Question: v.Question, InputType: v.InputType, NativeType: v.NativeType, Required: true, MaxChars: max, MinValue: v.MinValue, MaxValue: v.MaxValue, StepValue: v.StepValue})
+		} else {
+			answer, qErr = b.answerFormQuestionWithLimit(ctx, lazy, v.Question, nil, max)
+		}
 		if qErr != nil {
 			return filled, qErr
 		}
@@ -220,10 +262,13 @@ func (b *Bot) refillLinkedInOverLimitFields(ctx context.Context, page *rod.Page,
 			continue
 		}
 		answer = sanitizeContactFieldAnswer(answer, v.Question, "text")
-		if isSalaryFormQuestion(v.Question) {
+		if salaryQuestion {
 			answer = sanitizeSalaryFieldAnswer(answer, max)
 		}
-		if _, err := page.Eval(jsFillText, v.ID, v.Index, answer); err == nil {
+		if result, err := page.Eval(jsFillText, v.ID, v.Index, answer); err != nil || result == nil || !result.Value.Bool() ||
+			(salaryQuestion && !verifySalaryAssignment(page, v.ID, answer)) {
+			return filled, fmt.Errorf("%w: repaired field was not accepted intact", errAdaptiveQuestionReview)
+		} else {
 			log.Info().Str("question", v.Question).Int("max_chars", max).Str("answer", answer).Msg("form: refilled within character limit")
 			filled = true
 		}

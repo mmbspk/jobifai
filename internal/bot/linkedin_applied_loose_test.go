@@ -16,7 +16,7 @@ func TestLinkedInAppliedLoose_RequiresVerifiedJobIdentity(t *testing.T) {
 	// Collection URL with no path job id; a visible Applied control for job 999 must not match job 111.
 	mux.HandleFunc("/jobs/collections/recommended/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+		_, _ = fmt.Fprint(w, `<!DOCTYPE html><html><body>
 <main data-job-id="999">
   <button aria-label="Applied">Applied</button>
   <p>You applied to this role 2 days ago</p>
@@ -37,7 +37,7 @@ func TestLinkedInSubmitReconciled_AcceptsVerifiedAlreadyApplied(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jobs/view/111", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+		_, _ = fmt.Fprint(w, `<!DOCTYPE html><html><body>
 <main data-job-id="111">
   <h1><a href="/jobs/view/111">Analyst</a></h1>
   <span aria-label="Company, Example Co">Example Co</span>
@@ -58,7 +58,7 @@ func TestLinkedInAppliedLoose_MatchesVerifiedAlreadyApplied(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jobs/view/111", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!DOCTYPE html><html><body>
+		_, _ = fmt.Fprint(w, `<!DOCTYPE html><html><body>
 <main data-job-id="111">
   <h1><a href="/jobs/view/111">Analyst</a></h1>
   <span aria-label="Company, Example Co">Example Co</span>

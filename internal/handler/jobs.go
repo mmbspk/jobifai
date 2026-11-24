@@ -182,7 +182,7 @@ func (h *JobHandlers) DownloadAppliedPDF(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		w.Header().Set("Content-Type", "application/pdf")
-		w.Header().Set("Content-Disposition", disp+`; filename="document.pdf"`)
+		w.Header().Set("Content-Disposition", disp+`; filename="`+documents.ApplicationUploadFilename(jobID, kind+".pdf")+`"`)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(data)
 		return
@@ -219,7 +219,7 @@ func (h *JobHandlers) DownloadAppliedPDF(w http.ResponseWriter, r *http.Request)
 		if reconstructed {
 			w.Header().Set("X-Jobifai-Reconstructed", "true")
 		}
-		w.Header().Set("Content-Disposition", disp+`; filename="document.pdf"`)
+		w.Header().Set("Content-Disposition", disp+`; filename="`+documents.ApplicationUploadFilename(jobID, kind+".pdf")+`"`)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(data)
 	}
@@ -339,49 +339,115 @@ func (h *JobHandlers) CannotApply(w http.ResponseWriter, r *http.Request) {
 func (h *JobHandlers) MarkAppliedFromCannotApply(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	jobID := chi.URLParam(r, "job_id")
+	writeMarkedAppliedResponse(w, h.markAppliedAndReconcile(r.Context(), userID, jobID, true), "job not found in cannot-apply list")
+}
 
-	tx, err := h.svc.DB.BeginTx(r.Context(), nil)
+var errMarkAppliedNotFound = errors.New("job not found")
+var errMarkAppliedHistoryConflict = errors.New("application history conflicts with this user or platform")
+
+type markedAppliedJob struct {
+	company, role, location, platform, link                          string
+	resumePath, coverPath, resumeVersion, coverVersion, documentRefs string
+	score                                                            int
+	halalVerdict                                                     *string
+}
+
+// Mark Applied is explicit operator confirmation. Applied history, matching
+// uncertain attempts and removal from the selected review list commit together.
+// It never authorizes another browser Submit or changes an active attempt.
+func (h *JobHandlers) markAppliedAndReconcile(ctx context.Context, userID, jobID string, fromCannotApply bool) error {
+	tx, err := h.svc.DB.BeginTx(ctx, nil)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
+		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	var company, role, location, platform, link string
-	var score int
-	var halalVerdict *string
-	err = tx.QueryRowContext(r.Context(),
-		`SELECT company, role, COALESCE(location,''), platform, link,
-		        COALESCE(suitability_score,0), halal_verdict
-		 FROM jobs_skipped
-		 WHERE id = ? AND user_id = ?
-		   AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`,
-		jobID, userID).Scan(&company, &role, &location, &platform, &link, &score, &halalVerdict)
+	query := `SELECT company,role,COALESCE(location,''),platform,COALESCE(link,''),
+	 COALESCE(suitability_score,0),halal_verdict,COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
+	 COALESCE(resume_content_version_id,''),COALESCE(cover_letter_content_version_id,''),COALESCE(document_refs_json,'')
+	 FROM jobs_pending_review WHERE job_id=? AND user_id=?`
+	if fromCannotApply {
+		// A failed application can retain its prepared documents in top matches.
+		// Read them only from the same candidate, platform and listing identity.
+		// Missing legacy links remain compatible; two known conflicting links
+		// cannot establish ownership of another listing's prepared documents.
+		query = `SELECT s.company,s.role,COALESCE(s.location,''),s.platform,COALESCE(s.link,''),
+		 COALESCE(s.suitability_score,0),COALESCE(s.halal_verdict,p.halal_verdict),
+		 COALESCE(p.resume_path,''),COALESCE(p.cover_letter_path,''),COALESCE(p.resume_content_version_id,''),
+		 COALESCE(p.cover_letter_content_version_id,''),COALESCE(p.document_refs_json,'')
+		 FROM jobs_skipped s LEFT JOIN jobs_pending_review p
+		 ON p.job_id=s.id AND p.user_id=s.user_id AND p.platform=s.platform
+		 AND (COALESCE(p.link,'')='' OR COALESCE(s.link,'')='' OR p.link=s.link)
+		 WHERE s.id=? AND s.user_id=? AND
+		 (s.skip_reason LIKE 'easy apply:%' OR s.skip_reason LIKE 'seek apply:%' OR s.skip_reason LIKE 'quick apply:%')`
+	}
+	job := markedAppliedJob{}
+	scan := func(row *sql.Row) error {
+		return row.Scan(&job.company, &job.role, &job.location, &job.platform, &job.link, &job.score, &job.halalVerdict,
+			&job.resumePath, &job.coverPath, &job.resumeVersion, &job.coverVersion, &job.documentRefs)
+	}
+	err = scan(tx.QueryRowContext(ctx, query, jobID, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		// A repeated confirmation remains idempotent after its review row is gone.
+		err = scan(tx.QueryRowContext(ctx, `SELECT company,role,COALESCE(location,''),platform,link,
+		 COALESCE(suitability_score,0),halal_verdict,COALESCE(resume_path,''),COALESCE(cover_letter_path,''),
+		 COALESCE(resume_content_version_id,''),COALESCE(cover_letter_content_version_id,''),COALESCE(document_refs_json,'')
+		 FROM jobs_applied WHERE id=? AND user_id=?`, jobID, userID))
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return errMarkAppliedNotFound
+	}
 	if err != nil {
-		notFound(w, "job not found in cannot-apply list")
-		return
+		return err
 	}
 
-	if _, err = tx.ExecContext(r.Context(),
-		`INSERT OR IGNORE INTO jobs_applied
-		     (id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
-		 VALUES (?,?,?,?,?,?,?,'','',?,?,datetime('now'))`,
-		jobID, userID, platform, company, role, location, link, score, halalVerdict); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO jobs_applied
+	 (id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,
+	 resume_content_version_id,cover_letter_content_version_id,document_refs_json,suitability_score,halal_verdict,applied_at)
+	 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`, jobID, userID, job.platform, job.company, job.role, job.location, job.link,
+		job.resumePath, job.coverPath, job.resumeVersion, job.coverVersion, job.documentRefs, job.score, job.halalVerdict); err != nil {
+		return err
 	}
+	var appliedPlatform string
+	err = tx.QueryRowContext(ctx, `SELECT platform FROM jobs_applied WHERE id=? AND user_id=?`, jobID, userID).Scan(&appliedPlatform)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && appliedPlatform != job.platform) {
+		// Legacy history has a global ID key. An ignored insertion must not
+		// turn another candidate/platform's row into confirmation authority.
+		return errMarkAppliedHistoryConflict
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE apply_attempts SET
+	 outcome='submitted_confirmed',stage='confirmation',reason_code='operator_reconciled_confirmation',
+	 reason_text='Application confirmed by the operator through Mark Applied.',finished_at=COALESCE(finished_at,datetime('now'))
+	 WHERE user_id=? AND platform=? AND outcome='submission_unknown'
+	 AND ((?<>'' AND job_id=?) OR (?<>'' AND url=?))`,
+		userID, job.platform, jobID, jobID, job.link, job.link); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM jobs_pending_review WHERE job_id=? AND user_id=? AND platform=?`, jobID, userID, job.platform); err != nil {
+		return err
+	}
+	// A cannot-apply diagnostic may coexist with its prepared top-match row.
+	// Remove both review entries, retaining ordinary skipped-history records.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM jobs_skipped WHERE id=? AND user_id=? AND platform=?
+	 AND (skip_reason LIKE 'easy apply:%' OR skip_reason LIKE 'seek apply:%' OR skip_reason LIKE 'quick apply:%')`, jobID, userID, job.platform); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
-	if _, err = tx.ExecContext(r.Context(),
-		`DELETE FROM jobs_skipped WHERE id = ? AND user_id = ?`, jobID, userID); err != nil {
+func writeMarkedAppliedResponse(w http.ResponseWriter, err error, notFoundMessage string) {
+	if errors.Is(err, errMarkAppliedNotFound) {
+		notFound(w, notFoundMessage)
+	} else if errors.Is(err, errMarkAppliedHistoryConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{"message": err.Error()})
+	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
+	} else {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 	}
-
-	if err = tx.Commit(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
 
 // POST /api/jobs/cannot-apply/{job_id}/requeue
@@ -747,45 +813,7 @@ func (h *JobHandlers) DeletePendingReview(w http.ResponseWriter, r *http.Request
 func (h *JobHandlers) MarkApplied(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
 	jobID := chi.URLParam(r, "job_id")
-
-	tx, err := h.svc.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	defer tx.Rollback() //nolint:errcheck
-
-	var company, role, location, platform, link string
-	var score int
-	err = tx.QueryRowContext(r.Context(),
-		`SELECT company, role, COALESCE(location,''), platform, COALESCE(link,''), suitability_score
-		 FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID).
-		Scan(&company, &role, &location, &platform, &link, &score)
-	if err != nil {
-		notFound(w, "job not found in top matches")
-		return
-	}
-
-	if _, err = tx.ExecContext(r.Context(),
-		`INSERT OR IGNORE INTO jobs_applied
-		     (id, user_id, platform, company, role, location, link, resume_path, cover_letter_path, suitability_score, applied_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, datetime('now'))`,
-		jobID, userID, platform, company, role, location, link, score); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-
-	if _, err = tx.ExecContext(r.Context(),
-		`DELETE FROM jobs_pending_review WHERE job_id = ? AND user_id = ?`, jobID, userID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-
-	if err = tx.Commit(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "applied"})
+	writeMarkedAppliedResponse(w, h.markAppliedAndReconcile(r.Context(), userID, jobID, false), "job not found in top matches")
 }
 
 // POST /api/jobs/pending-review/{job_id}/blacklist

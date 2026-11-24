@@ -152,6 +152,9 @@ func (l *Ledger) Record(ctx context.Context, in RecordInput) error {
 		PricingSource:       pricingSource,
 		PricingVersion:      pricingVersion,
 		PersonalProvider:    in.PersonalProvider,
+		Engine:              string(in.Call.Engine),
+		ApplyAttemptID:      in.Call.ApplyAttemptID,
+		Platform:            in.Call.Platform,
 	}
 
 	var burnPrep quota.BurnPrepare

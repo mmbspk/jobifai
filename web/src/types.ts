@@ -4,6 +4,26 @@ export type Platform = 'linkedin' | 'seek'
 export type BotState = 'idle' | 'running' | 'paused' | 'pending_review' | 'stopped' | 'error' | 'user_action_required'
 export type LoginMethod = 'email_password' | 'google_oauth' | 'profile_reuse' | 'manual'
 
+// Apply engine mode (epic #127 / story #129)
+export type ApplyEngineMode = 'legacy' | 'shadow' | 'adaptive'
+
+export interface ApplyEngineConfig {
+  mode: ApplyEngineMode
+  platform_overrides?: Record<string, ApplyEngineMode>
+  pilot_user_ids?: string[]
+  external_ats_enabled: boolean
+}
+
+export interface ApplyEngineAuditEntry {
+  id: string
+  admin_id: string
+  old_mode: ApplyEngineMode
+  new_mode: ApplyEngineMode
+  reason?: string
+  config: ApplyEngineConfig
+  created_at: string
+}
+
 export interface PlatformSession {
   platform: string
   has_session: boolean
@@ -193,9 +213,50 @@ export interface Language {
 }
 
 export interface ApplicationDefaults {
-  requires_sponsorship?: boolean
+  form_answers?: Record<string, string>
+  requires_sponsorship?: boolean | null
   notice_period?: string
   salary_expectation?: string
+  availability?: string
+  earliest_start_date?: string
+  salary_range?: ApplicationSalaryRange | null
+  work_rights?: ApplicationWorkRight[]
+  relocation?: ApplicationRelocation | null
+  additional_details?: string
+  custom_answers?: ApplicationAnswer[]
+}
+
+export interface ApplicationSalaryRange {
+  minimum?: number | null
+  maximum?: number | null
+  currency?: string
+  pay_period?: string
+  basis?: string
+  includes_benefits?: boolean | null
+  benefits_details?: string
+  details?: string
+}
+
+export interface ApplicationWorkRight {
+  country?: string
+  status?: string
+  requires_sponsorship?: boolean | null
+  visa_type?: string
+  visa_expiry_date?: string
+  work_restrictions?: string
+  details?: string
+}
+
+export interface ApplicationRelocation {
+  willing?: boolean | null
+  locations?: string[]
+  details?: string
+}
+
+export interface ApplicationAnswer {
+  question?: string
+  answer?: string
+  country?: string
 }
 
 export interface ResumeProfile {

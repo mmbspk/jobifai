@@ -43,6 +43,7 @@ func TestDocuments_DeleteUpdatesListDefaultsAndPreservesApplicationDownload(t *t
 	history := authGet(t, router, "/api/jobs/applied/delete-history/pdf/resume", token)
 	require.Equal(t, http.StatusOK, history.Code, history.Body.String())
 	require.Equal(t, generated.Body.Bytes(), history.Body.Bytes())
+	require.Equal(t, `attachment; filename="resume_job_delete-history.pdf"`, history.Header().Get("Content-Disposition"))
 	// Removed versions are still readable for history, but cannot be chosen again.
 	defaultResp = authPut(t, router, "/api/documents/defaults", token, map[string]string{"kind": "resume", "content_version_id": versionID})
 	require.NotEqual(t, http.StatusOK, defaultResp.Code)

@@ -183,7 +183,10 @@ func (t *Tailor) WriteCoverLetter(ctx context.Context, profile *domain.ResumePro
 // profileJSON is a pre-serialized trimmed profile (caller caches this once per job session).
 // options is non-nil for radio/select questions; nil for free-text fields.
 func (t *Tailor) AnswerFormQuestion(ctx context.Context, profileJSON []byte, question string, options []string) (string, error) {
-	in, _ := json.Marshal(map[string]any{"profile_json": profileJSON, "question": question, "options": options})
+	in, marshalErr := json.Marshal(map[string]any{"profile_json": json.RawMessage(profileJSON), "question": question, "options": options})
+	if marshalErr != nil {
+		return "", fmt.Errorf("form answer: invalid profile JSON: %w", marshalErr)
+	}
 	msgs, err := ProviderMessages(domain.TaskFormAnswer, in)
 	if err != nil {
 		return "", fmt.Errorf("form answer: %w", err)

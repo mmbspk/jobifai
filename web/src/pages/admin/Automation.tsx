@@ -8,6 +8,7 @@ import { SettingsField, SettingsNumberInput, SettingsSection } from '../../compo
 import { Switch } from '../../components/ui/switch'
 import { inputClassName } from '../../components/ui/input'
 import type { BrowserConfig, HumanBehaviorConfig } from '../../types'
+import { ApplyEngineSettings } from '../../components/admin/ApplyEngineSettings'
 
 export function AdminAutomationPage() {
   const qc = useQueryClient()
@@ -38,6 +39,8 @@ export function AdminAutomationPage() {
         title="Automation"
         description="Browser visibility and pacing defaults for every account on this deployment."
       />
+
+      <ApplyEngineSettings />
 
       <SettingsSection title="Browser">
         <Switch

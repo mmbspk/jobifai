@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"github.com/user/jobifai/internal/domain"
 )
 
 // Persist intent before dispatch: losing the browser response must never turn
@@ -40,7 +41,7 @@ func unresolvedSubmission(db *sql.DB, userID, jobID, jobURL, currentAttempt stri
 	if err != nil {
 		return fmt.Errorf("check previous submission: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var priorID, priorURL string
 		if err := rows.Scan(&priorID, &priorURL); err != nil {
@@ -57,13 +58,13 @@ func markAttemptSubmitDispatch(db *sql.DB, attemptID, userID string) error {
 	if db == nil || attemptID == "" {
 		return nil
 	}
-	r, err := db.Exec(`UPDATE apply_attempts SET stage='submit_dispatch',reason_code='submit_dispatch' WHERE id=? AND user_id=? AND outcome='in_progress'`, attemptID, userID)
+	r, err := db.Exec(`UPDATE apply_attempts SET stage='submit_dispatch',reason_code='submit_dispatch' WHERE id=? AND user_id=? AND outcome='in_progress' AND stage <> 'submit_dispatch'`, attemptID, userID)
 	if err != nil {
 		return fmt.Errorf("persist submit intent: %w", err)
 	}
 	n, err := r.RowsAffected()
 	if err != nil || n != 1 {
-		return fmt.Errorf("persist submit intent: active attempt missing")
+		return fmt.Errorf("%w: submit already dispatched or active attempt missing", ErrNoActiveAttempt)
 	}
 	return nil
 }
@@ -97,6 +98,9 @@ type AttemptContext struct {
 	EntryPoint      string // "runSubmit", "applyFromURL", "automated_linkedin", "automated_seek", "automated_queue"
 	AutomationRunID string
 	StartedAt       time.Time
+	// Engine is the mode pinned at dispatch time. Must not change mid-flight.
+	Engine      domain.ApplyEngineMode
+	ExternalATS ATSKind
 }
 
 // newAttemptContext returns an AttemptContext with a fresh v4 UUID.
@@ -169,10 +173,10 @@ func beginAttempt(db *sql.DB, ac *AttemptContext) {
 	defer cancel()
 	_, err := db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO apply_attempts
-		 (id,user_id,platform,job_id,url,role,company,entry_point,outcome,started_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		 (id,user_id,platform,job_id,url,role,company,entry_point,engine,outcome,started_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		ac.AttemptID, ac.UserID, ac.Platform, ac.JobID, ac.URL,
-		ac.Role, ac.Company, ac.EntryPoint, string(OutcomeInProgress),
+		ac.Role, ac.Company, ac.EntryPoint, string(ac.Engine), string(OutcomeInProgress),
 		ac.StartedAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -185,6 +189,10 @@ func beginAttempt(db *sql.DB, ac *AttemptContext) {
 // for context.DeadlineExceeded, and failed for everything else.
 func classifyApplyOutcome(err error) AttemptOutcome {
 	switch {
+	case errors.Is(err, errLinkedInSubmissionUnknown), errors.Is(err, errSeekSubmitUnconfirmed), errors.Is(err, errATSAmbiguous):
+		return OutcomeSubmissionUnknown
+	case errors.Is(err, errAdaptiveQuestionReview):
+		return OutcomeBlocked
 	case errors.Is(err, context.Canceled):
 		return OutcomeCancelled
 	case errors.Is(err, context.DeadlineExceeded):
@@ -215,6 +223,7 @@ func finishAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage
 		Str("url", redactURL(ac.URL)).
 		Str("platform", ac.Platform).
 		Str("entry_point", ac.EntryPoint).
+		Str("engine", string(ac.Engine)).
 		Str("outcome", string(outcome)).
 		Str("stage", stage).
 		Str("failure_code", reasonCode).
@@ -246,10 +255,10 @@ func finishAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage
 	defer cancel2()
 	_, err = db.ExecContext(ctx2,
 		`INSERT OR IGNORE INTO apply_attempts
-		 (id,user_id,platform,job_id,url,role,company,entry_point,outcome,stage,reason_code,reason_text,started_at,finished_at,elapsed_ms)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 (id,user_id,platform,job_id,url,role,company,entry_point,engine,outcome,stage,reason_code,reason_text,started_at,finished_at,elapsed_ms)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		ac.AttemptID, ac.UserID, ac.Platform, ac.JobID, ac.URL,
-		ac.Role, ac.Company, ac.EntryPoint,
+		ac.Role, ac.Company, ac.EntryPoint, string(ac.Engine),
 		string(outcome), stage, reasonCode, reasonText,
 		ac.StartedAt.UTC().Format(time.RFC3339), now, elapsedMS,
 	)

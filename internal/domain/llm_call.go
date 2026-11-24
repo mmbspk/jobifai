@@ -12,6 +12,13 @@ type LLMCallContext struct {
 	Attempt          int
 	// BypassReuse skips generation cache lookup (explicit fresh provider call).
 	BypassReuse bool
+	// Engine identifies the apply engine mode active when this call was made.
+	// Empty string means legacy (pre-engine-aware caller).
+	Engine ApplyEngineMode
+	// ApplyAttemptID links to the apply_attempts row (distinct from Attempt which is retry count).
+	ApplyAttemptID string
+	// Platform is the job board platform (e.g. "linkedin", "seek").
+	Platform string
 }
 
 // TaskModelPolicyState for production model workflow.

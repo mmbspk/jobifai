@@ -418,7 +418,7 @@ func TestLinkedInFinalReviewResumeCheck_Match(t *testing.T) {
 </body></html>`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, html)
+		_, _ = fmt.Fprint(w, html)
 	}))
 	t.Cleanup(srv.Close)
 	page := navigateAndWait(t, br, srv.URL)
@@ -447,7 +447,7 @@ func TestLinkedInFinalReviewResumeCheck_Mismatch(t *testing.T) {
 </body></html>`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, html)
+		_, _ = fmt.Fprint(w, html)
 	}))
 	t.Cleanup(srv.Close)
 	page := navigateAndWait(t, br, srv.URL)
@@ -704,7 +704,7 @@ document.getElementById('next-2').addEventListener('click', function() {
 			tmpFile := filepath.Join(t.TempDir(), "my_tailored_resume.pdf")
 			require.NoError(t, os.WriteFile(tmpFile, []byte("%PDF-1.4"), 0644))
 
-			b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+			b := &Bot{cfg: Config{Profile: basicProfile(), Platform: domain.PlatformLinkedIn}, seenCache: newJobSeenCache()}
 			b.cfg.Settings.GenerateNewResumeDocs = true
 			lazy := &lazyDocGen{
 				b:                 b,
@@ -725,6 +725,9 @@ document.getElementById('next-2').addEventListener('click', function() {
 				require.NoError(t, err, "correct upload must complete without error")
 				require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true on success")
 				require.Empty(t, lazy.holdReason, "holdReason must be empty on success")
+				city, cityErr := page.Eval(`() => document.getElementById('city').value`)
+				require.NoError(t, cityErr)
+				require.Equal(t, b.cfg.Profile.PersonalInformation.City, city.Value.String(), "preparation uses an explicit current profile fact")
 
 				// The upload step is now hidden. Its acceptance probe must not treat
 				// hidden controls as an active upload page. Check the retained selection
@@ -774,7 +777,7 @@ document.getElementById('next-2').addEventListener('click', function() {
 //   - Resume fieldset with library_resume.pdf (unchecked) + upload button + radio group "resume-select"
 //
 // After fillFormStep:
-//   - "work-auth" is answered via normal (LLM-less fallback) path — option "Yes" selected
+//   - "work-auth" stays unanswered because work rights are absent
 //   - "resume-select" is confirmed via jsFindCheckedRadioLabel (my_tailored_resume.pdf)
 //   - library_resume.pdf is NOT re-selected and still exists in the DOM
 func TestFillFormStep_UnrelatedRadioBeforeResumeGroup(t *testing.T) {
@@ -848,18 +851,18 @@ document.getElementById('upload-btn').addEventListener('click', function() {
 	lazy.once.Do(func() { lazy.resume = tmpFile })
 
 	filled, _, err := b.fillFormStep(context.Background(), page, lazy)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, errAdaptiveQuestionReview)
 	require.True(t, filled)
-	require.Empty(t, lazy.holdReason, "holdReason must be empty: both groups should resolve cleanly")
+	require.Empty(t, lazy.holdReason, "the resume group must resolve independently of the missing work-rights fact")
 
-	// The work-auth radio must have been answered via the normal (fallback) path.
-	// Without LLM, the fallback picks the first scanned option: "Yes".
+	// Missing work rights must remain unanswered; a successful resume upload
+	// must not authorize the unrelated first radio option.
 	waRes, waErr := page.Eval(`() => {
 		const checked = [...document.querySelectorAll('input[name="work-auth"]')].find(r => r.checked);
 		return checked ? checked.value : '';
 	}`)
 	require.NoError(t, waErr)
-	require.Equal(t, "Yes", waRes.Value.String(), "work-auth radio must be answered via normal fallback (first option)")
+	require.Empty(t, waRes.Value.String(), "work rights must not be guessed from the first option")
 
 	// my_tailored_resume.pdf must be selected in the resume group.
 	acceptRes, aErr := page.Eval(jsLinkedInCheckResumeAccepted, "my_tailored_resume.pdf")
@@ -1100,8 +1103,9 @@ func TestJsScanFields_TextInput_AriaLabelledBy_EmptyTarget_FallsBackToAriaLabel(
 //	site_resume_no_file               resumeUseSiteOverride, HTML has NO Change resume → blocks
 //	cover_skip                        coverSkipOverride, HTML adds optional cover field
 func TestScanApplyStepsForPrepare_PrepareUploadPolicy(t *testing.T) {
-	// job_applications/ is written by ExportApplicationUploadFile using os.Getwd().
-	t.Cleanup(func() { _ = os.RemoveAll("job_applications") })
+	// Keep materialized uploads private to this test process. Concurrent
+	// qualification runs must not share or remove each other's artifacts.
+	t.Chdir(t.TempDir())
 
 	br := launchTestBrowser(t)
 	const jobID = "prep-upload-policy-job"
@@ -1114,9 +1118,11 @@ func TestScanApplyStepsForPrepare_PrepareUploadPolicy(t *testing.T) {
 	// DOM radio label does not match the actual uploaded file — triggers upload-identity hold.
 	buildHTML := func(hasChangeResumeBtn, hasCoverField, wrongUploadInDOM bool) string {
 		changeResumeBtn := ""
+		selectedSiteResume := ""
 		if hasChangeResumeBtn {
 			changeResumeBtn = `
         <button type="button" class="change-resume-btn">Change resume</button>`
+			selectedSiteResume = " checked"
 		}
 		coverField := ""
 		if hasCoverField {
@@ -1143,7 +1149,7 @@ func TestScanApplyStepsForPrepare_PrepareUploadPolicy(t *testing.T) {
       <fieldset id="resume-section">
         <legend>Resume</legend>
         <div>
-          <input type="radio" name="resume-select" id="r-lib1">
+          <input type="radio" name="resume-select" id="r-lib1"` + selectedSiteResume + `>
           <label for="r-lib1">library_resume.pdf</label>
         </div>` + changeResumeBtn + `
         <button type="button" id="upload-btn">
@@ -1366,7 +1372,8 @@ document.getElementById('next-2').addEventListener('click', function() {
 			srv := fixtureServer(t, jobID, "", html, "")
 			page := navigateAndWait(t, br, srv.URL+"/jobs/view/"+jobID)
 
-			b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+			profile := basicProfile()
+			b := &Bot{cfg: Config{Profile: profile, Platform: domain.PlatformLinkedIn}, seenCache: newJobSeenCache()}
 			b.cfg.Settings.GenerateNewResumeDocs = true
 			b.cfg.UserID = "user-" + tc.name
 
@@ -1398,6 +1405,9 @@ document.getElementById('next-2').addEventListener('click', function() {
 			require.NoError(t, err, "prepare must complete without error for %s", tc.name)
 			require.True(t, lazy.prepareScanComplete, "prepareScanComplete must be true for %s", tc.name)
 			require.Empty(t, lazy.holdReason, "holdReason must be empty on success for %s", tc.name)
+			location, locationErr := page.Eval(`() => document.getElementById('location').value`)
+			require.NoError(t, locationErr)
+			require.Equal(t, "Sydney, Australia", location.Value.String(), "current location comes from the declared profile")
 
 			if tc.name == "site_resume_skip" {
 				// No new upload: window._uploadedResumeName must be empty.
@@ -1441,4 +1451,350 @@ document.getElementById('next-2').addEventListener('click', function() {
 			require.True(t, frRes.Value.Bool(), "page must be at final review after preparation scan for %s", tc.name)
 		})
 	}
+}
+
+// ── Finding 1 DOM regression: duplicate labels in different sections ──────────
+
+// htmlDuplicateLabelSections is a minimal LinkedIn-shaped dialog with two
+// visually-separate sections ("Software Skills" and "Medical Skills"), each
+// containing a text input whose visible question label is identical:
+// "Years of experience". The sections are FLAT siblings under the dialog —
+// no wrapper divs — so both inputs are siblings of the section headings.
+//
+// This exercises the last-heading semantics of sectionGroupFor: with first-heading
+// logic both inputs would inherit the outer h2 "Screening Questions"; with
+// last-heading each input inherits its own closest h3.
+const htmlDuplicateLabelSections = `<!DOCTYPE html><html><body>
+<div role="dialog" class="jobs-easy-apply-modal" style="padding:16px">
+  <h2>Screening Questions</h2>
+
+  <h3>Software Skills</h3>
+  <div data-test-form-element="">
+    <label for="exp-software">Years of experience</label>
+    <input id="exp-software" type="text" aria-label="Years of experience" />
+  </div>
+
+  <h3>Medical Skills</h3>
+  <div data-test-form-element="">
+    <label for="exp-medical">Years of experience</label>
+    <input id="exp-medical" type="text" aria-label="Years of experience" />
+  </div>
+</div>
+</body></html>`
+
+// TestScan_DuplicateLabel_DifferentSection_CaptureAndFill proves the full
+// Finding 1 pipeline end-to-end using a live browser:
+//
+//  1. jsScanFields returns two separate fields with matching labels but
+//     different Group values ("Software Skills" and "Medical Skills").
+//  2. captureStepSnapshot produces SnapFields with different FieldSignatures.
+//  3. DBMappingStore resolves the two fields independently.
+//  4. jsFillByQuestionAnswer, given the section hint, fills the correct
+//     <input> without touching the other section.
+//
+// The test is skipped when Chrome is not available (CI without headless Chrome).
+func TestScan_DuplicateLabel_DifferentSection_CaptureAndFill(t *testing.T) {
+	page := rodTestPage(t, htmlDuplicateLabelSections)
+
+	// 1. Scan: verify two fields with the same label but different groups.
+	fields := evalScanFields(t, page)
+	var softwareField, medicalField formField
+	for _, f := range fields {
+		switch f.Group {
+		case "Software Skills":
+			softwareField = f
+		case "Medical Skills":
+			medicalField = f
+		}
+	}
+	require.NotEmpty(t, softwareField.Question, "Software Skills section must yield a field")
+	require.NotEmpty(t, medicalField.Question, "Medical Skills section must yield a field")
+	require.Equal(t, "Years of experience", softwareField.Question)
+	require.Equal(t, "Years of experience", medicalField.Question)
+	require.NotEqual(t, softwareField.Group, medicalField.Group, "groups must differ")
+	t.Logf("EVIDENCE dom-scan | software_group=%q | medical_group=%q", softwareField.Group, medicalField.Group)
+
+	// 2. Snapshot: verify different FieldSignatures.
+	snap := captureStepSnapshot(fields, nil, "linkedin", 0, "Screening Questions")
+	var sigSoftware, sigMedical string
+	for _, sf := range snap.Fields {
+		switch sf.Group {
+		case "Software Skills":
+			sigSoftware = sf.FieldSignature("linkedin")
+		case "Medical Skills":
+			sigMedical = sf.FieldSignature("linkedin")
+		}
+	}
+	require.NotEmpty(t, sigSoftware, "snapshot must have Software Skills field")
+	require.NotEmpty(t, sigMedical, "snapshot must have Medical Skills field")
+	require.NotEqual(t, sigSoftware, sigMedical, "different groups must yield different FieldSignatures")
+	t.Logf("EVIDENCE dom-sig | sig_software=%s | sig_medical=%s", sigSoftware, sigMedical)
+
+	// 3. Explicit semantic review, then replay through the production interpreter and filler.
+	store := &DBMappingStore{DB: openMappingDB(t), UserID: "user-dom-test"}
+	resolutions := []FieldResolution{}
+	for _, field := range snap.Fields {
+		key := "application_defaults.form_answers.software_years"
+		if field.Group == "Medical Skills" {
+			key = "application_defaults.form_answers.medical_years"
+		}
+		resolutions = append(resolutions, FieldResolution{Ref: field.Ref, Source: SourceLLM, Action: ActionFill, IntentType: FieldIntentProfile, BindingKey: key})
+	}
+	require.NoError(t, reviewFixtureMappings(t, store, snap, resolutions))
+	interpreter := &StepInterpreter{Mapping: store}
+	interp, err := interpreter.InterpretStep(context.Background(), snap, basicProfile())
+	require.NoError(t, err)
+	require.False(t, interp.Paused)
+	filler := &linkedInRodFiller{page: page, bot: newTestBot(t)}
+	for _, res := range interp.Fields {
+		field, ok := snap.FieldByRef(res.Ref)
+		require.True(t, ok)
+		result := filler.Fill(context.Background(), field, res)
+		require.NoError(t, result.Err)
+		require.True(t, result.Filled)
+	}
+	softwareVal, err := page.Eval("() => document.getElementById('exp-software').value")
+	require.NoError(t, err)
+	medicalVal, err := page.Eval("() => document.getElementById('exp-medical').value")
+	require.NoError(t, err)
+	require.Equal(t, "5", softwareVal.Value.String())
+	require.Equal(t, "3", medicalVal.Value.String())
+	t.Logf("EVIDENCE dom-cache-fill | software=5 medical=3 | interpretation_calls=0")
+
+}
+
+// htmlNativeSelectForm is a minimal form with a native <select> for a country selector.
+// Used to verify that jsScanFields captures it as type=select and that
+// jsFillByQuestionAnswer fills it correctly when fieldType is "select".
+const htmlNativeSelectForm = `<!DOCTYPE html><html><body>
+<div role="dialog" class="jobs-easy-apply-modal" style="padding:16px">
+  <label for="country-sel">Country of residence</label>
+  <select id="country-sel" aria-label="Country of residence">
+    <option value="">Select...</option>
+    <option value="AU">Australia</option>
+    <option value="NZ">New Zealand</option>
+    <option value="GB">United Kingdom</option>
+  </select>
+</div>
+</body></html>`
+
+// TestScan_NativeSelect_CaptureAndFill proves the native-select path end-to-end:
+//
+//  1. jsScanFields detects the <select> as type=select with the correct ControlID.
+//  2. jsFillByQuestionAnswer with fieldType="select" selects the target option.
+//  3. The DOM value reflects the chosen option after the fill.
+//
+// The test is skipped when Chrome is not available (CI without headless Chrome).
+func TestScan_NativeSelect_CaptureAndFill(t *testing.T) {
+	page := rodTestPage(t, htmlNativeSelectForm)
+
+	// 1. Scan: select must be captured with type=select and the element id.
+	fields := evalScanFields(t, page)
+	require.Len(t, fields, 1, "expect exactly one field")
+	sel := fields[0]
+	require.Equal(t, "select", sel.Type, "field type must be 'select'")
+	require.Equal(t, "country-sel", sel.ID, "control ID must match element id")
+	require.NotEmpty(t, sel.Options, "options must be captured")
+	t.Logf("EVIDENCE native-select scan | question=%q type=%q id=%q options=%v",
+		sel.Question, sel.Type, sel.ID, sel.Options)
+
+	// 2. Fill: direct id targeting must set the correct option.
+	fillResult, err := page.Eval(jsFillByQuestionAnswer,
+		sel.Question, "Australia", "select", "", sel.ID)
+	require.NoError(t, err)
+	require.True(t, fillResult.Value.Bool(), "fill must return true")
+
+	// 3. Verify: the native select value must reflect the chosen option.
+	val, err := page.Eval(`() => document.getElementById('country-sel').value`)
+	require.NoError(t, err)
+	require.Equal(t, "AU", val.Value.String(), "native select value must be the option value for 'Australia'")
+	t.Logf("EVIDENCE native-select fill | selected_value=%q", val.Value.String())
+}
+
+// htmlSeekFormNoAdvance simulates a SEEK Quick Apply step whose Continue button
+// does nothing — no DOM change, no validation errors — when clicked.
+// No progress bar → NavigateNext has no advancement signal → must timeout and return false.
+const htmlSeekFormNoAdvance = `<!DOCTYPE html><html><body style="margin:0;padding:16px">
+  <form data-testid="quick-apply-form">
+  <h2 id="step-title" style="margin-top:0">Work experience</h2>
+  <input id="job-title" aria-label="Most recent job title" value=""
+         style="display:block;width:200px;height:32px;margin-bottom:8px">
+  <button type="button" data-testid="continue-button"
+          style="padding:8px 16px;width:120px;height:40px">Continue</button>
+</form></body></html>`
+
+// htmlSeekFormWithProgress simulates a SEEK Quick Apply step with a progress bar.
+// When the Continue button is clicked, JavaScript advances aria-valuenow from 1 to 2,
+// giving NavigateNext the positive evidence it needs to confirm step advancement.
+const htmlSeekFormWithProgress = `<!DOCTYPE html><html><body style="margin:0;padding:16px">
+  <form data-testid="quick-apply-form">
+  <progress id="step-bar" role="progressbar" aria-valuenow="1" aria-valuemax="3" value="0.33"></progress>
+  <h2>Work experience</h2>
+  <input id="job-title" aria-label="Most recent job title" value=""
+         style="display:block;width:200px;height:32px;margin-bottom:8px">
+  <button type="button" data-testid="continue-button" id="continue-btn"
+          style="padding:8px 16px;width:120px;height:40px">Continue</button>
+  <script>
+    document.getElementById('continue-btn').addEventListener('click', function() {
+      document.getElementById('step-bar').setAttribute('aria-valuenow','2');
+    });
+  </script>
+</form></body></html>`
+
+// ── writeConfirmedStep unit tests (no browser needed) ─────────────────────────
+
+// writeGateFixture builds a minimal snap, interp, and mapping store for write-gate tests.
+func writeGateFixture(t *testing.T, dbUserID string) (StepSnapshot, StepInterpretation, *DBMappingStore) {
+	t.Helper()
+	db := openProviderTestDB(t)
+	store := &DBMappingStore{DB: db, UserID: dbUserID}
+	snap := captureStepSnapshot([]formField{
+		{Type: "text", Question: "Most recent job title", Group: "Work experience", ID: "job-title", InputType: "text"},
+	}, nil, "seek", 0, "Work experience")
+	interp := StepInterpretation{
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceProfile, Value: "Nurse", IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.current_title"}},
+	}
+	return snap, interp, store
+}
+
+// writeGateHasField returns true when f0's field signature is present in the store.
+func writeGateHasField(store *DBMappingStore, snap StepSnapshot) bool {
+	_, found := store.LookupField(snap.Fields[0].FieldSignature(snap.Platform), snap.EmployerKey)
+	return found
+}
+
+// filledStepResult returns a StepExecResult that claims ref f0 was filled.
+func filledStepResult(outcome StepExecOutcome) StepExecResult {
+	return StepExecResult{Outcome: outcome, FieldsFilled: 1, FilledRefs: []string{"f0"}}
+}
+
+// TestWriteGate_Advanced_WritesFilledRefs proves that StepOutcomeAdvanced persists
+// field mappings via writeConfirmedStep (the production gate).
+func TestWriteGate_Advanced_WritesFilledRefs(t *testing.T) {
+	snap, interp, store := writeGateFixture(t, "gate-advanced")
+	result := filledStepResult(StepOutcomeAdvanced)
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+	require.True(t, writeGateHasField(store, snap), "StepOutcomeAdvanced must write filled ref to store")
+	t.Logf("EVIDENCE write-gate-advanced | outcome=%s filledRefs=%v wrote=true", result.Outcome, result.FilledRefs)
+}
+
+// TestWriteGate_ErrorOutcome_ZeroWrites proves that a non-advancing step
+// (NavigateNext returned false → StepOutcomeError) writes zero mappings.
+func TestWriteGate_ErrorOutcome_ZeroWrites(t *testing.T) {
+	snap, interp, store := writeGateFixture(t, "gate-error")
+	result := filledStepResult(StepOutcomeError)
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+	require.False(t, writeGateHasField(store, snap), "StepOutcomeError must write zero mappings")
+	t.Logf("EVIDENCE write-gate-error | outcome=%s wrote=false", result.Outcome)
+}
+
+// TestWriteGate_SubmitWithoutConfirmation_ZeroWrites proves that a submitted step
+// whose platform confirmation check returned false writes zero mappings.
+// Covers: LinkedIn submission with no confirmation signal; SEEK with no post-apply page.
+func TestWriteGate_SubmitWithoutConfirmation_ZeroWrites(t *testing.T) {
+	snap, interp, store := writeGateFixture(t, "gate-submit-unconfirmed")
+	result := filledStepResult(StepOutcomeSubmitted)
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false /* submissionConfirmed=false */)
+	require.False(t, writeGateHasField(store, snap), "unconfirmed submission must write zero mappings")
+	t.Logf("EVIDENCE write-gate-submit-unconfirmed | outcome=%s wrote=false", result.Outcome)
+}
+
+// TestWriteGate_SubmitWithConfirmation_WritesOnce proves that a submitted step
+// whose platform confirmation check returned true writes the filled ref exactly once.
+func TestWriteGate_SubmitWithConfirmation_WritesOnce(t *testing.T) {
+	snap, interp, store := writeGateFixture(t, "gate-submit-confirmed")
+	result := filledStepResult(StepOutcomeSubmitted)
+	writeConfirmedStep(context.Background(), store, snap, interp, result, true /* submissionConfirmed=true */)
+	require.True(t, writeGateHasField(store, snap), "confirmed submission must write filled ref to store")
+	res, found := store.LookupField(snap.Fields[0].FieldSignature(snap.Platform), snap.EmployerKey)
+	require.True(t, found, "field must be in store after confirmed submission")
+	require.Empty(t, res.Value, "mapping storage must not retain a candidate answer")
+	require.Equal(t, "application_defaults.form_answers.current_title", res.BindingKey)
+	t.Logf("EVIDENCE write-gate-submit-confirmed | outcome=%s value=%q", result.Outcome, res.Value)
+}
+
+// TestWriteGate_NilStore_NoPanic proves that writeConfirmedStep is safe with a nil store.
+func TestWriteGate_NilStore_NoPanic(t *testing.T) {
+	snap := captureStepSnapshot([]formField{
+		{Type: "text", Question: "Job title", InputType: "text"},
+	}, nil, "seek", 0, "step")
+	interp := StepInterpretation{
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceLLM, Value: "x"}},
+	}
+	result := filledStepResult(StepOutcomeAdvanced)
+	require.NotPanics(t, func() {
+		writeConfirmedStep(context.Background(), nil, snap, interp, result, false)
+	})
+}
+
+// ── browser-level NavigateNext + writeConfirmedStep tests ─────────────────────
+
+// TestSeekFiller_SameStepClick_ZeroMappings proves that when a SEEK Continue click
+// does not advance the form (no progress-bar signal, no submit-button appears),
+// the production writeConfirmedStep gate writes zero mappings.
+//
+// This is the regression for the bug where a click returning nil was trusted as
+// evidence of advancement even when the form stayed on the same step.
+func TestSeekFiller_SameStepClick_ZeroMappings(t *testing.T) {
+	page := rodTestPage(t, htmlSeekFormNoAdvance)
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	filler := &seekRodFiller{page: page, bot: b}
+
+	// 1. Verify NavigateNext requires positive evidence and correctly detects non-advancement.
+	advanced, navErr := filler.NavigateNext(context.Background())
+	require.False(t, advanced, "NavigateNext must not report advancement when form did not advance")
+	require.Error(t, navErr, "NavigateNext must return an error when the step does not advance")
+	require.Contains(t, navErr.Error(), "did not advance", "error must describe the non-advancement")
+
+	// 2. Run the full StepExecutor pipeline through the production write gate.
+	db := openProviderTestDB(t)
+	store := &DBMappingStore{DB: db, UserID: "no-advance-test"}
+	snap := captureStepSnapshot([]formField{
+		{Type: "text", Question: "Most recent job title", Group: "Work experience", ID: "job-title", InputType: "text"},
+	}, nil, "seek", 0, "Work experience")
+	interp := StepInterpretation{
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceProfile, Value: "Nurse", IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.current_title"}},
+	}
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	result, _ := se.ExecuteStep(context.Background(), snap, interp, filler)
+
+	// Call the same production gate the runner calls — not a reproduced if-condition.
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+
+	require.False(t, writeGateHasField(store, snap),
+		"non-advancing step must write zero mappings via production gate")
+	require.NotEqual(t, StepOutcomeAdvanced, result.Outcome,
+		"step outcome must not be Advanced when navigation was rejected")
+	t.Logf("EVIDENCE same-step-click | advanced=%v err=%q outcome=%s",
+		advanced, navErr.Error(), result.Outcome)
+}
+
+// TestSeekFiller_RealAdvance_WritesFilledRefs proves that when a SEEK Continue click
+// advances the form (progress bar aria-valuenow changes), NavigateNext returns true
+// and the production writeConfirmedStep gate persists the filled ref.
+func TestSeekFiller_RealAdvance_WritesFilledRefs(t *testing.T) {
+	page := rodTestPage(t, htmlSeekFormWithProgress)
+	b := &Bot{cfg: Config{}, seenCache: newJobSeenCache()}
+	filler := &seekRodFiller{page: page, bot: b}
+
+	db := openProviderTestDB(t)
+	store := &DBMappingStore{DB: db, UserID: "real-advance-test"}
+	snap := captureStepSnapshot([]formField{
+		{Type: "text", Question: "Most recent job title", Group: "Work experience", ID: "job-title", InputType: "text"},
+	}, nil, "seek", 0, "Work experience")
+	interp := StepInterpretation{
+		Fields: []FieldResolution{{Ref: "f0", Action: ActionFill, Source: SourceProfile, Value: "Nurse", IntentType: FieldIntentProfile, BindingKey: "application_defaults.form_answers.current_title"}},
+	}
+	se := NewStepExecutor(DefaultStepExecBounds(), nil)
+	result, execErr := se.ExecuteStep(context.Background(), snap, interp, filler)
+
+	// Call the production write gate.
+	writeConfirmedStep(context.Background(), store, snap, interp, result, false)
+
+	require.NoError(t, execErr, "execution must not error on successful advance")
+	require.Equal(t, StepOutcomeAdvanced, result.Outcome,
+		"step must advance when progress bar signals step transition")
+	require.True(t, writeGateHasField(store, snap),
+		"real advance must write filled ref via production gate")
+	t.Logf("EVIDENCE real-advance | outcome=%s filledRefs=%v wrote=true", result.Outcome, result.FilledRefs)
 }

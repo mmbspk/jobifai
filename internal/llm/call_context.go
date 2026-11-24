@@ -50,6 +50,15 @@ func AttachAttribution(ctx context.Context, attr domain.LLMCallContext) context.
 	if attr.OperationID != "" {
 		c.OperationID = attr.OperationID
 	}
+	if attr.Engine != "" {
+		c.Engine = attr.Engine
+	}
+	if attr.ApplyAttemptID != "" {
+		c.ApplyAttemptID = attr.ApplyAttemptID
+	}
+	if attr.Platform != "" {
+		c.Platform = attr.Platform
+	}
 	return WithCallContext(ctx, c)
 }
 

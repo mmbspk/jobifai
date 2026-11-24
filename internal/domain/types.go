@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // Platform represents a supported job board.
 type Platform string
@@ -13,6 +16,83 @@ const (
 // SupportedPlatforms lists every platform the bot can run against.
 // Add new platforms here, the rest of the system picks them up automatically.
 var SupportedPlatforms = []Platform{PlatformLinkedIn, PlatformSeek}
+
+// ─── Apply Engine ──────────────────────────────────────────────────────────
+
+// ApplyEngineMode controls which application engine processes a queued attempt.
+// Legacy is the production default; Shadow and Adaptive are gated by admin config.
+type ApplyEngineMode string
+
+const (
+	// ApplyEngineLegacy runs the existing form-fill engine unchanged.
+	// All fresh installs and existing installs start here.
+	ApplyEngineLegacy ApplyEngineMode = "legacy"
+	// ApplyEngineShadow runs Legacy and additionally captures a sanitized
+	// application snapshot for offline analysis. No adaptive browser actions.
+	ApplyEngineShadow ApplyEngineMode = "shadow"
+	// ApplyEngineAdaptive replaces the legacy form-fill with the new adaptive
+	// engine. Requires explicit admin opt-in; never the default.
+	ApplyEngineAdaptive ApplyEngineMode = "adaptive"
+)
+
+// ApplyEngineConfig is the deployment-wide engine routing configuration stored
+// under config key "apply_engine_config" for the system user.
+type ApplyEngineConfig struct {
+	// Mode is the global default for all users and platforms.
+	// Zero value and unknown values are treated as Legacy.
+	Mode ApplyEngineMode `json:"mode"`
+	// PlatformOverrides narrows or overrides Mode for a specific platform.
+	PlatformOverrides map[string]ApplyEngineMode `json:"platform_overrides,omitempty"`
+	// PilotUserIDs is an allow-list of user IDs that receive Adaptive routing
+	// when the global Mode or platform override is Adaptive. When empty, Adaptive
+	// mode applies to all users.
+	PilotUserIDs []string `json:"pilot_user_ids,omitempty"`
+	// ExternalATSEnabled enables the external ATS (Greenhouse etc.) apply path.
+	// Off by default; kept separate so it can be toggled independently.
+	ExternalATSEnabled bool `json:"external_ats_enabled"`
+}
+
+// EffectiveModeFor returns the pinned engine mode for the given user and platform,
+// resolving platform overrides and pilot user restrictions. The result must be
+// stored with the attempt and must not change mid-flight.
+func (c ApplyEngineConfig) EffectiveModeFor(userID string, platform Platform) ApplyEngineMode {
+	mode := c.modeForPlatform(platform)
+	if (mode == ApplyEngineAdaptive || mode == ApplyEngineShadow) && !c.inPilot(userID) {
+		return ApplyEngineLegacy
+	}
+	return mode
+}
+
+func (c ApplyEngineConfig) modeForPlatform(platform Platform) ApplyEngineMode {
+	if over, ok := c.PlatformOverrides[string(platform)]; ok && over != "" {
+		if over == ApplyEngineLegacy || over == ApplyEngineShadow || over == ApplyEngineAdaptive {
+			return over
+		}
+		return ApplyEngineLegacy
+	}
+	if c.Mode != ApplyEngineShadow && c.Mode != ApplyEngineAdaptive {
+		return ApplyEngineLegacy
+	}
+	return c.Mode
+}
+
+func (c ApplyEngineConfig) inPilot(userID string) bool {
+	if len(c.PilotUserIDs) == 0 {
+		return true
+	}
+	return slices.Contains(c.PilotUserIDs, userID)
+}
+
+// ApplyEngineAuditEntry records a change to the engine configuration.
+type ApplyEngineAuditEntry struct {
+	ID        string            `json:"id"`
+	AdminID   string            `json:"admin_id"`
+	OldMode   ApplyEngineMode   `json:"old_mode"`
+	NewMode   ApplyEngineMode   `json:"new_mode"`
+	Reason    string            `json:"reason,omitempty"`
+	Config    ApplyEngineConfig `json:"config"`
+	CreatedAt time.Time         `json:"created_at"`
+}
 
 // BotState represents the current state of the automation bot.
 type BotState string
@@ -251,9 +331,57 @@ type Language struct {
 // (visa sponsorship, work authorisation, notice period, etc.).
 // These are used by the form-filler before falling back to LLM.
 type ApplicationDefaults struct {
-	RequiresSponsorship bool   `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
-	NoticePeriod        string `json:"notice_period,omitempty" yaml:"notice_period,omitempty"`           // e.g. "2 weeks", "1 month", "Immediately"
-	SalaryExpectation   string `json:"salary_expectation,omitempty" yaml:"salary_expectation,omitempty"` // e.g. "90000" or "90,000 AUD"
+	// FormAnswers are explicitly reviewed candidate facts, kept with the profile
+	// rather than copied into the reusable form mapping cache.
+	FormAnswers         map[string]string       `json:"form_answers,omitempty" yaml:"form_answers,omitempty"`
+	RequiresSponsorship *bool                   `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
+	NoticePeriod        string                  `json:"notice_period,omitempty" yaml:"notice_period,omitempty"`           // e.g. "2 weeks", "1 month", "Immediately"
+	SalaryExpectation   string                  `json:"salary_expectation,omitempty" yaml:"salary_expectation,omitempty"` // e.g. "90000" or "90,000 AUD"
+	Availability        string                  `json:"availability,omitempty" yaml:"availability,omitempty"`
+	EarliestStartDate   string                  `json:"earliest_start_date,omitempty" yaml:"earliest_start_date,omitempty"`
+	SalaryRange         *ApplicationSalaryRange `json:"salary_range,omitempty" yaml:"salary_range,omitempty"`
+	WorkRights          []ApplicationWorkRight  `json:"work_rights,omitempty" yaml:"work_rights,omitempty"`
+	Relocation          *ApplicationRelocation  `json:"relocation,omitempty" yaml:"relocation,omitempty"`
+	AdditionalDetails   string                  `json:"additional_details,omitempty" yaml:"additional_details,omitempty"`
+	CustomAnswers       []ApplicationAnswer     `json:"custom_answers,omitempty" yaml:"custom_answers,omitempty"`
+}
+
+// ApplicationSalaryRange keeps pay units and benefits explicit; absent metadata
+// must not be inferred from a candidate's location or converted between periods.
+type ApplicationSalaryRange struct {
+	Minimum          *float64 `json:"minimum,omitempty" yaml:"minimum,omitempty"`
+	Maximum          *float64 `json:"maximum,omitempty" yaml:"maximum,omitempty"`
+	Currency         string   `json:"currency,omitempty" yaml:"currency,omitempty"`
+	PayPeriod        string   `json:"pay_period,omitempty" yaml:"pay_period,omitempty"`
+	Basis            string   `json:"basis,omitempty" yaml:"basis,omitempty"`
+	IncludesBenefits *bool    `json:"includes_benefits,omitempty" yaml:"includes_benefits,omitempty"`
+	BenefitsDetails  string   `json:"benefits_details,omitempty" yaml:"benefits_details,omitempty"`
+	Details          string   `json:"details,omitempty" yaml:"details,omitempty"`
+}
+
+// ApplicationWorkRight belongs only to its named country. A missing sponsorship
+// answer remains unknown, independently of the legacy general sponsorship fact.
+type ApplicationWorkRight struct {
+	Country             string `json:"country,omitempty" yaml:"country,omitempty"`
+	Status              string `json:"status,omitempty" yaml:"status,omitempty"`
+	RequiresSponsorship *bool  `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
+	VisaType            string `json:"visa_type,omitempty" yaml:"visa_type,omitempty"`
+	VisaExpiryDate      string `json:"visa_expiry_date,omitempty" yaml:"visa_expiry_date,omitempty"`
+	WorkRestrictions    string `json:"work_restrictions,omitempty" yaml:"work_restrictions,omitempty"`
+	Details             string `json:"details,omitempty" yaml:"details,omitempty"`
+}
+
+type ApplicationRelocation struct {
+	Willing   *bool    `json:"willing,omitempty" yaml:"willing,omitempty"`
+	Locations []string `json:"locations,omitempty" yaml:"locations,omitempty"`
+	Details   string   `json:"details,omitempty" yaml:"details,omitempty"`
+}
+
+// ApplicationAnswer is a candidate-authored fact, not an approved browser mapping.
+type ApplicationAnswer struct {
+	Question string `json:"question,omitempty" yaml:"question,omitempty"`
+	Answer   string `json:"answer,omitempty" yaml:"answer,omitempty"`
+	Country  string `json:"country,omitempty" yaml:"country,omitempty"`
 }
 
 type ResumeProfile struct {

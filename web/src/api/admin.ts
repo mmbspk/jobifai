@@ -1,5 +1,5 @@
 import { apiDelete, apiGet, apiPatch, apiPost, apiPut } from './client'
-import type { AdminUserDetail, AdminUserRow, AppSettings, EconomicsOverview, GeneralSettings, LLMConfig, BrowserConfig, HumanBehaviorConfig, LLMOverrides, QuotaUserOverrides, ResourceMeteringDefaults, ResourceUsageEventsResponse, ResourceUsageSummaryResponse } from '../types'
+import type { AdminUserDetail, AdminUserRow, AppSettings, ApplyEngineAuditEntry, ApplyEngineConfig, EconomicsOverview, GeneralSettings, LLMConfig, BrowserConfig, HumanBehaviorConfig, LLMOverrides, QuotaUserOverrides, ResourceMeteringDefaults, ResourceUsageEventsResponse, ResourceUsageSummaryResponse } from '../types'
 import type { AdminPeriod } from '../lib/adminFormat'
 
 export interface SystemSecretsStatus {
@@ -109,6 +109,14 @@ export const adminApi = {
   economics: {
     overview: (period: AdminPeriod) =>
       apiGet<EconomicsOverview>(`/admin/economics/overview?period=${period}`),
+  },
+  applyEngine: {
+    get: () => apiGet<ApplyEngineConfig>('/admin/apply-engine'),
+    set: (body: ApplyEngineConfig, reason?: string) => {
+      const qs = reason ? `?reason=${encodeURIComponent(reason)}` : ''
+      return apiPut<{ message: string; mode: string }>(`/admin/apply-engine${qs}`, body)
+    },
+    audit: () => apiGet<{ entries: ApplyEngineAuditEntry[] }>('/admin/apply-engine/audit'),
   },
 }
 

@@ -126,7 +126,7 @@ func profileWithEmploymentPeriod(sponsor bool, notice, salary, period string) do
 	return domain.ResumeProfile{
 		PersonalInformation: domain.PersonalInformation{Name: "Casey", Surname: "Nguyen"},
 		ApplicationDefaults: domain.ApplicationDefaults{
-			RequiresSponsorship: sponsor,
+			RequiresSponsorship: &sponsor,
 			NoticePeriod:        notice,
 			SalaryExpectation:   salary,
 		},

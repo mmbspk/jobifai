@@ -21,6 +21,20 @@ type Store struct {
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
+// GetTx reads a setting using the transaction that will update it. This keeps
+// profile answers and their reviewed form bindings consistent on partial failure.
+func (s *Store) GetTx(ctx context.Context, tx *sql.Tx, userID, key string, dst any) error {
+	var raw string
+	err := tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE user_id = ? AND key = ?", userID, key).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("config get %q: %w", key, err)
+	}
+	return json.Unmarshal([]byte(raw), dst)
+}
+
 var ErrNotFound = fmt.Errorf("config: key not found: %w", domain.ErrNotFound)
 
 // Get decodes the value stored at (userID, key) into dst (must be a pointer).

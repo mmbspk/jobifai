@@ -26,7 +26,11 @@ jobs:
         run: cd web && npm ci
 
       - name: Install Chromium for Go browser regressions
-        run: cd web && npx playwright install --with-deps chromium
+        timeout-minutes: 10
+        run: |
+          python3 -m unittest discover -s scripts -p test_configure_ci_apt_mirrors.py
+          sudo python3 scripts/configure_ci_apt_mirrors.py
+          cd web && npx playwright install --with-deps chromium
 
       - name: Configure Rod browser
         run: echo "ROD_BROWSER_BIN=$(cd web && node -e "console.log(require('playwright').chromium.executablePath())")" >> "$GITHUB_ENV"
@@ -80,7 +84,10 @@ jobs:
         run: cd web && npm ci
 
       - name: Install Playwright browser
-        run: cd web && npx playwright install --with-deps chromium
+        timeout-minutes: 10
+        run: |
+          sudo python3 scripts/configure_ci_apt_mirrors.py
+          cd web && npx playwright install --with-deps chromium
 
       - name: Expose Playwright Chromium as ROD_BROWSER_BIN
         run: echo "ROD_BROWSER_BIN=$(cd web && node -e "console.log(require('playwright').chromium.executablePath())")" >> "$GITHUB_ENV"

@@ -10,9 +10,10 @@ import (
 
 func TestBuildApplicationQuestionsPrompt_IncludesApplicationDefaults(t *testing.T) {
 	t.Parallel()
+	sponsorship := true
 	prof := domain.ResumeProfile{
 		ApplicationDefaults: domain.ApplicationDefaults{
-			NoticePeriod: "8 weeks", SalaryExpectation: "88000", RequiresSponsorship: true,
+			NoticePeriod: "8 weeks", SalaryExpectation: "88000", RequiresSponsorship: &sponsorship,
 		},
 		ExperienceDetails: []domain.ExperienceDetail{{
 			Position: "Registered Nurse", EmploymentPeriod: "2019 – Present",
@@ -28,10 +29,19 @@ func TestBuildApplicationQuestionsPrompt_IncludesApplicationDefaults(t *testing.
 
 func TestBuildApplicationQuestionsPrompt_SponsorshipFalseExplicit(t *testing.T) {
 	t.Parallel()
+	sponsorship := false
 	prof := domain.ResumeProfile{
-		ApplicationDefaults: domain.ApplicationDefaults{RequiresSponsorship: false},
+		ApplicationDefaults: domain.ApplicationDefaults{RequiresSponsorship: &sponsorship},
 	}
 	_, user, err := BuildApplicationQuestionsPrompt(&prof, "Hospital", []string{"Sponsorship?"})
 	require.NoError(t, err)
 	require.Contains(t, strings.ToLower(user), "requires employer sponsorship: no")
+}
+
+func TestBuildApplicationQuestionsPrompt_SponsorshipMissingIsNotNo(t *testing.T) {
+	t.Parallel()
+	_, user, err := BuildApplicationQuestionsPrompt(&domain.ResumeProfile{}, "Company", []string{"Sponsorship?"})
+	require.NoError(t, err)
+	require.Contains(t, strings.ToLower(user), "requires employer sponsorship: not provided")
+	require.NotContains(t, strings.ToLower(user), "requires employer sponsorship: no\n")
 }

@@ -52,12 +52,12 @@ func TestProcessJob_ListingResolution(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "text/html")
-				fmt.Fprint(w, tc.html)
+				_, _ = fmt.Fprint(w, tc.html)
 			}))
 			defer srv.Close()
 			db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 			require.NoError(t, err)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			scorer := &capturingScorer{}
 			b := &Bot{cfg: Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer}, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
 			job := linkedInJob{ID: "4479748087", URL: srv.URL + "/jobs/view/4479748087", Title: "Principal Developer", Company: "MYOB"}
@@ -99,7 +99,7 @@ func TestProcessJob_UnrecognizedControlStillRejectsLowScore(t *testing.T) {
 	srv := fixtureServer(t, "4479748087", "", `<main data-job-id="4479748087"><h1>Role</h1><div data-job-description>`+strings.Repeat("Actual job responsibilities and requirements. ", 5)+`</div><button>Continue to employer</button></main>`, "")
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	scorer := &capturingScorer{score: 3}
 	b := &Bot{cfg: Config{DB: db, UserID: "u1", Scorer: scorer}, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
 	job := linkedInJob{ID: "4479748087", URL: srv.URL + "/jobs/view/4479748087", Title: "Role", Company: "Company"}
@@ -117,7 +117,7 @@ func TestProcessJob_BrowserFailurePreservesReview(t *testing.T) {
 	require.NoError(t, br.Close())
 	db, err := appdb.Open(filepath.Join(t.TempDir(), "test.db"))
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	b := &Bot{cfg: Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn}, seenCache: newJobSeenCache()}
 	require.False(t, b.processJob(context.Background(), br, linkedInJob{ID: "4479748087", URL: "https://www.linkedin.com/jobs/view/4479748087", Title: "Role", Company: "Company"}))
 	var count int

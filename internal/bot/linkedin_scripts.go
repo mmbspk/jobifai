@@ -1,13 +1,13 @@
 package bot
 
-// One resolver owns both classification and clicking. It is given the intended
+// One resolver owns classification and live control lookup. It is given the intended
 // job ID, never inferred from whichever recommendation is currently selected.
 // No whole-document label, SDUI flag, or success-text fallback is authoritative.
-const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false, expectedTitle = '', expectedCompany = '') => {
+const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false, expectedTitle = '', expectedCompany = '', controlOnly = false) => {
  const out = {kind:'unknown', reason:'identity_unverified', expected_id:expectedID,
    observed_id:'', identity_verified:false, label:'', destination:'', url:location.origin+location.pathname,
-   description:'', header_text:'', action:''};
- const finish = () => JSON.stringify(out);
+   description:'', header_text:'', company:'', action:''};
+ const finish = () => controlOnly ? null : JSON.stringify(out);
  const pathID = u => { const m = u.pathname.match(/^\/jobs\/view\/([^/]+)/); return m ? m[1] : ''; };
  const current = new URL(location.href);
  if(!/(^|\.)linkedin\.com$/i.test(current.hostname) && !['localhost','127.0.0.1','[::1]'].includes(current.hostname)) {out.reason='unexpected_origin';return finish();}
@@ -48,6 +48,17 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  };
  const descriptions=all(document,'[id^="JobDetails_AboutTheJob_"]').filter(el=>el.id==='JobDetails_AboutTheJob_'+expectedID && !excluded(el) && visible(el));
  const applyControl = el => /\beasy apply\b|\blinkedin apply\b|^apply\b/i.test(((el.getAttribute('aria-label')||'')+' '+(el.innerText||el.textContent||'')).trim());
+ const submittedStatusCard=(owner,description)=>{
+   const statusExcluded=el=>excluded(el)||description.contains(el)||!!el.closest('.jobs-description,.jobs-description-content__text,[data-job-description]');
+   const headings=all(owner,'h2,h3,[role=heading]').filter(el=>!statusExcluded(el)&&visible(el)&&/^(your )?application status$/i.test((el.textContent||'').trim()));
+   const cards=new Set();
+   for(const heading of headings)for(let block=parent(heading);block&&owner.contains(block);block=parent(block)){
+     if(headings.filter(el=>block.contains(el)).length!==1)break;
+     const messages=all(block,'p,[role=status]').filter(el=>!statusExcluded(el)&&visible(el)&&/^application submitted$/i.test((el.textContent||'').trim()));
+     if(messages.length===1){cards.add(block);break;}
+   }
+   return cards.size===1?[...cards][0]:null;
+ };
  const hasApplyControl=all(document,'button, a[href], [role="button"]').some(el=>!excluded(el) && visible(el) && applyControl(el));
  if(descriptions.length===1) for(const link of all(document,'a[href]')) {
    if(jobLinkID(link)!==expectedID || excluded(link) || !visible(link)) continue;
@@ -63,6 +74,55 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
      if(hasApplyControl && !all(header,'button, a[href], [role="button"]').some(el=>!excluded(el) && visible(el) && applyControl(el))) continue;
      sduiPanes.set(header,{id:expectedID,description:descriptions[0]});
      break;
+   }
+ }
+ // Standalone SDUI titles may be plain paragraphs without a job link. In that
+ // layout, require unique explicit banner/description IDs and a local header
+ // inside their smallest shared owner. The URL alone is never sufficient.
+ if(descriptions.length===1 && sduiPanes.size===0) {
+   const banners=all(document,'[id^="JobDetails_ManageJobBanner_"]').filter(el=>el.id==='JobDetails_ManageJobBanner_'+expectedID && !excluded(el));
+   if(banners.length===1) {
+     let owner=parent(banners[0]);
+     while(owner && !owner.contains(descriptions[0])) owner=parent(owner);
+     const explicitID=el=>{
+       const value=el.getAttribute('data-job-id') || el.getAttribute('data-job-detail-id') || '';
+       const urn=(el.getAttribute('data-entity-urn') || '').match(/^urn:li:(?:fsd_)?jobPosting:(\d+)$/);
+       const marker=(el.id || '').match(/^JobDetails_[A-Za-z]+_(\d+)$/);
+       return value.replace(/^urn:li:(?:fsd_)?jobPosting:/,'') || (urn&&urn[1]) || (marker&&marker[1]) || '';
+     };
+     const norm=s=>(s||'').toLowerCase().replace(/(?:\.{3}|…)$/,'').replace(/\s+/g,' ').trim();
+     if(owner && owner!==document.body && owner!==document.documentElement && !excluded(owner) && visible(owner)) {
+       const owned=[owner,...all(owner,'[id], [data-job-id], [data-job-detail-id], [data-entity-urn], a[href]')].filter(el=>!excluded(el));
+       const conflict=owned.some(el=>{const id=explicitID(el);return (id && id!==expectedID) || (el.matches('a[href]') && jobLinkID(el) && jobLinkID(el)!==expectedID);});
+     // Submission removes the Apply action. A read-only status can still own
+     // this listing when its explicit markers, declared metadata and one local
+     // status card agree. Description text and recommendations are excluded.
+     let submittedCard=null;
+     if(!conflict && expectedTitle && expectedCompany) {
+       submittedCard=submittedStatusCard(owner,descriptions[0]);
+     }
+       const headers=new Map();
+       if(!conflict) for(const company of all(owner,'[aria-label^="Company,"]').filter(el=>!descriptions[0].contains(el) && !excluded(el) && visible(el))) {
+         for(let header=parent(company);header && header!==owner;header=parent(header)) {
+           if(excluded(header) || header.contains(descriptions[0]) || header.contains(banners[0])) break;
+           const actions=all(header,'button, a[href], [role="button"]').filter(el=>!excluded(el) && visible(el) && applyControl(el) && !el.querySelector('button, a[href], [role="button"]'));
+           if(!visible(header)) continue;
+           const titles=all(header,'h1, h2, p').filter(el=>!excluded(el) && visible(el) && (el.matches('h1,h2') || (expectedTitle && norm(el.innerText || el.textContent)===norm(expectedTitle))));
+           if(!actions.length) {
+             const matches=titles.filter(el=>norm(el.innerText||el.textContent)===norm(expectedTitle));
+             const declaredCompany=norm((company.getAttribute('aria-label')||'').replace(/^Company,\s*/i,'').replace(/[.,]\s*$/,''));
+             if(!submittedCard || matches.length!==1 || declaredCompany!==norm(expectedCompany).replace(/[.,]\s*$/,''))continue;
+             headers.set(header,{title:matches[0],submittedCard});
+             break;
+           }
+           headers.set(header,!expectedTitle || titles.length===1 ? {title:titles.length===1?titles[0]:null} : null);
+           break;
+         }
+       }
+       // Duplicate logo/company anchors share one header; independent headers
+       // or a header with no verifiable title cannot borrow the same description.
+       if(headers.size===1) for(const [header,entry] of headers) if(entry) sduiPanes.set(header,{id:expectedID,description:descriptions[0],title:entry.title?(entry.title.innerText || entry.title.textContent || ''):'',submittedCard:entry.submittedCard||null});
+     }
    }
  }
  const ownID = el => {
@@ -122,13 +182,19 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  out.header_text=(headerCopy.textContent || '').replace(/\s+/g,' ').trim().slice(0,4000);
  const normalized=s=>(s||'').toLowerCase().replace(/(?:\.{3}|…)$/,'').replace(/\s+/g,' ').trim();
  const companyName=s=>normalized(s).replace(/\b(pty|ltd|limited|inc|llc)\b\.?/g,'').replace(/\s+/g,' ').trim();
- const companyEl=root.querySelector('[aria-label^="Company,"]');
- const company=companyEl ? companyEl.getAttribute('aria-label').replace(/^Company,\s*/i,'').replace(/[.,]\s*$/,'') : '';
- if((expectedTitle && (root.querySelector('h1') || sduiPanes.has(root)) && !normalized(out.header_text).includes(normalized(expectedTitle))) ||
+ const companyNames=[...new Set(all(root,'[aria-label^="Company,"], .job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, [data-testid="job-detail-company-name"]').filter(el=>visible(el)&&belongs(el)).map(el=>{
+   const label=el.getAttribute('aria-label')||'';
+   return (/^Company,/i.test(label)?label.replace(/^Company,\s*/i,''):el.textContent||'').replace(/\s+/g,' ').replace(/[.,]\s*$/,'').trim();
+ }).filter(Boolean))];
+ if(companyNames.length>1) {out.reason='company_not_unique';return finish();}
+ const company=companyNames[0]||'';
+ out.company=company;
+ if((expectedTitle && sduiPanes.get(root)?.title && normalized(sduiPanes.get(root).title)!==normalized(expectedTitle)) ||
+    (expectedTitle && (root.querySelector('h1') || sduiPanes.has(root)) && !normalized(out.header_text).includes(normalized(expectedTitle))) ||
     (expectedCompany && company && !companyName(company).includes(companyName(expectedCompany)))) {
    out.reason='listing_metadata_mismatch';return finish();
  }
- const belongs = el => {
+ function belongs(el) {
    if(excluded(el)) return false;
    for(let n=el;n && n!==root;n=parent(n)) {
      const id=ownID(n); if(id && id!==expectedID) return false;
@@ -148,9 +214,12 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  const desc=sdui ? sdui.description : descriptionRoot.querySelector(descriptionSelector);
  if(desc && (sdui || belongs(desc))) {
    if(expandDescription) {
+     // Native SDUI descriptions can remain lazy placeholders until their
+     // verified component enters the viewport. Scroll only this owned block.
+     desc.scrollIntoView({block:'center',behavior:'instant'});
      const more=all(desc,'button, [role="button"]').find(el=>visible(el) && !el.disabled &&
        (el.getAttribute('data-testid')==='expandable-text-button' || /^(show|see|read) more|^…?\s*more$/i.test((el.innerText||el.textContent||'').trim())));
-     if(more) more.click();
+     if(more) {more.click();out.description_expanded=true;}
    }
    const text=desc.cloneNode(true);
    text.querySelectorAll('button, [role="button"], svg, script, style').forEach(el=>el.remove());
@@ -159,8 +228,32 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
    out.description=(text.textContent||'').replace(/[ \t]+/g,' ').replace(/\n\s*\n/g,'\n\n').trim();
  }
  // Prior application evidence must belong to the verified job pane.
+ const inDescription=el=>!!(el.closest('.jobs-description, .jobs-description-content__text, [data-job-description]') || (sdui&&sdui.description&&sdui.description.contains(el)));
+ let nativeSubmittedCard=sdui&&sdui.submittedCard;
+ if(!nativeSubmittedCard && sdui && expectedTitle && expectedCompany && companyName(company)===companyName(expectedCompany)) {
+   const titles=all(root,'h1,h2,p').filter(el=>visible(el)&&!excluded(el)&&normalized(el.innerText||el.textContent)===normalized(expectedTitle));
+   let owner=parent(root);
+   while(owner&&!owner.contains(sdui.description))owner=parent(owner);
+   if(titles.length===1&&owner&&owner!==document.body&&owner!==document.documentElement&&!excluded(owner)&&visible(owner)) {
+     const banners=all(owner,'[id^=JobDetails_ManageJobBanner_]').filter(el=>el.id==='JobDetails_ManageJobBanner_'+expectedID&&!excluded(el));
+     const nodes=[owner,...all(owner,'[id],[data-job-id],[data-job-detail-id],[data-entity-urn],a[href]')].filter(el=>!excluded(el));
+     const conflict=nodes.some(el=>{const marker=(el.id||'').match(/^JobDetails_[A-Za-z]+_(\d+)$/);const id=ownID(el)||(marker&&marker[1])||'';return (id&&id!==expectedID)||(el.matches('a[href]')&&jobLinkID(el)&&jobLinkID(el)!==expectedID);});
+     if(banners.length===1&&!conflict) {
+       nativeSubmittedCard=submittedStatusCard(owner,sdui.description);
+     }
+   }
+ }
+ if(nativeSubmittedCard&&visible(nativeSubmittedCard)){out.kind='already_applied';out.reason='verified_application_status';return finish();}
+ const statusHeadings=all(root,'h2,h3,[role=heading]').filter(el=>visible(el)&&belongs(el)&&!inDescription(el)&&/^(your )?application status$/i.test((el.textContent||'').trim()));
+ for(const heading of statusHeadings){
+   for(let block=heading.parentElement,depth=0;block&&root.contains(block)&&depth<5;block=block.parentElement,depth++){
+     if(statusHeadings.filter(el=>block.contains(el)).length!==1)break;
+     const submitted=all(block,'p,[role=status]').filter(el=>visible(el)&&belongs(el)&&!inDescription(el)&&/^application submitted$/i.test((el.textContent||'').trim()));
+     if(submitted.length===1){out.kind='already_applied';out.reason='verified_application_status';return finish();}
+   }
+ }
  const statuses=all(root,'[data-test-job-apply-button-applied], [aria-label="Applied"], [class*="application-status"], [role="status"]');
- if(statuses.some(el=>visible(el) && belongs(el) && (el.hasAttribute('data-test-job-apply-button-applied') || el.getAttribute('aria-label')==='Applied' || /application submitted|application was sent|applied successfully/i.test(el.innerText || el.textContent || '')))) {
+ if(statuses.some(el=>visible(el) && belongs(el) && !inDescription(el) && (el.hasAttribute('data-test-job-apply-button-applied') || el.getAttribute('aria-label')==='Applied' || /application submitted|application was sent|applied successfully/i.test(el.innerText || el.textContent || '')))) {
    out.kind='already_applied'; out.reason='verified_job_status'; return finish();
  }
  const candidates=[];
@@ -190,6 +283,7 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  const kinds=new Set(candidates.map(c=>c.kind));
  if(kinds.size!==1 || candidates.length!==1) {out.reason=candidates.length?'ambiguous_controls':'control_not_found'; return finish();}
  const c=candidates[0];
+ if(controlOnly) return c.kind==='native' ? c.el : null;
  out.kind=c.kind; out.reason='verified_primary_control'; out.label=c.label.slice(0,160); out.destination=c.dest;
  if(click && c.kind==='native') {
    c.el.scrollIntoView({block:'center'});
@@ -204,8 +298,8 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
 // when the confirmation names a recipient. Generic success copy is accepted only
 // with verified job identity and job-scoped UI (path or data-job-id owner).
 // Callers must not use this to infer a prior application before submission.
-const jsLinkedInSubmissionConfirmed = `(expectedID, company) => {
- const evidence=JSON.parse((` + jsLinkedInResolve + `)(expectedID,false));
+const jsLinkedInSubmissionConfirmed = `(expectedID, company, expectedTitle='') => {
+ const evidence=JSON.parse((` + jsLinkedInResolve + `)(expectedID,false,false,expectedTitle,company));
  const u=new URL(location.href), pathID=(u.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1] || '';
  if(!/(^|\.)linkedin\.com$/i.test(u.hostname) && !['localhost','127.0.0.1','[::1]'].includes(u.hostname)) return false;
  if(pathID && pathID!==expectedID) return false;
@@ -221,7 +315,7 @@ const jsLinkedInSubmissionConfirmed = `(expectedID, company) => {
    if(!o) return '';
    return (o.getAttribute('data-job-id')||o.getAttribute('data-job-detail-id')||'').replace(/^urn:li:(?:fsd_)?jobPosting:/,'');
  };
- const dialogs=[...document.querySelectorAll('[role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-artdeco-toast-item], .artdeco-toast-item')];
+ const dialogs=[...document.querySelectorAll('dialog[open], [role="dialog"], .jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-artdeco-toast-item], .artdeco-toast-item')];
  for(const el of dialogs){
    if(el.closest('[class*="msg-overlay"], aside, [class*="similar-job"]')) continue;
    const ownerID=ownerJobID(el);
@@ -287,12 +381,12 @@ const jsLinkedInUncheckFollowCompany = `() => {
 
 // Post-submit reconciliation only: verified intended job identity plus resolver-reported
 // already-applied status. Never treat whole-page copy or unscoped controls as evidence.
-const jsLinkedInAppliedLoose = `(expectedID) => {
+const jsLinkedInAppliedLoose = `(expectedID,expectedTitle='',expectedCompany='') => {
  if(!expectedID) return false;
  const u=new URL(location.href);
  const pathID=(u.pathname.match(/^\/jobs\/view\/([^/]+)/)||[])[1]||u.searchParams.get('currentJobId')||'';
  if(!pathID || pathID!==expectedID) return false;
- const evidence=JSON.parse((` + jsLinkedInResolve + `)(expectedID,false));
+ const evidence=JSON.parse((` + jsLinkedInResolve + `)(expectedID,false,false,expectedTitle,expectedCompany));
  return !!(evidence.identity_verified && evidence.kind==='already_applied');
 }`
 
@@ -387,8 +481,11 @@ const jsLinkedInSearchJobs = `() => {
  };
  const linesFromJobCard = root => {
    if (!root) return [];
+   const rendered=(root.innerText||'').split('\n').map(norm).filter(Boolean);
+   if(rendered.length>1) return rendered;
    const spanLines = [];
-   root.querySelectorAll('span').forEach(s => {
+   root.querySelectorAll('p, span').forEach(s => {
+     if(s.querySelector('p, span')) return;
      const t = norm(s.textContent);
      if (t) spanLines.push(t);
    });
@@ -403,10 +500,12 @@ const jsLinkedInSearchJobs = `() => {
      /^be an early applicant$/i.test(l) ||
      /school alumni/i.test(l) ||
      /company alumni/i.test(l) ||
+     /^\d+\s+connections?\s+works?\s+here\b/i.test(l) ||
      /^actively\s+(reviewing|hiring)\b/i.test(l) ||
      /^posted /i.test(l) ||
      /^\d+ (hour|day|week|month)s? ago$/i.test(l) ||
      /\b(AUD|USD|GBP|EUR|CAD|NZD)\s*\/\s*yr\b/i.test(l) ||
+     /(?:AU|US|CA|NZ|A)?[$£€]\s*\d[\d,.]*[KkMm]?\s*\/\s*(?:yr|year|mo|month|wk|week|hr|hour)\b/i.test(l) ||
      /^(?:(?:AUD|USD|GBP|EUR|CAD|NZD)\s*|(?:AU|US|CA|NZ|A)?[\$£€]\s*)?\d[\d,.]*[KkMm]?\s*[-–—]\s*(?:(?:AUD|USD|GBP|EUR|CAD|NZD)\s*|(?:AU|US|CA|NZ|A)?[\$£€]\s*)?\d[\d,.]*[KkMm]?\b/i.test(l);
    const clean = lines.map(peelSelected).filter(l => l && !skip(l));
    let title = '';
@@ -420,6 +519,10 @@ const jsLinkedInSearchJobs = `() => {
        continue;
      }
      if (line.toLowerCase() === title.toLowerCase()) continue;
+     if(!location && /\((?:hybrid|on-site|remote|work from home)\)/i.test(line)) {
+       location=line.replace(/\s+·\s+.*$/i,'').trim();
+       continue;
+     }
      if (!company) {
        company = line;
        continue;
@@ -460,6 +563,8 @@ const jsLinkedInSearchJobs = `() => {
        ? el
        : el.querySelector('[role="button"][componentkey^="job-card-component-ref-"]') || el.querySelector('[role="button"]');
    const meta = parseJobButtonLines(linesFromJobCard(btn || el));
+   const namedCompanies=[...new Set([...el.querySelectorAll('[aria-label^="Company,"]')].map(node=>norm(node.getAttribute('aria-label').replace(/^Company,\s*/i,'')).replace(/[.,]\s*$/,'')).filter(Boolean))];
+   if(namedCompanies.length===1) meta.company=namedCompanies[0];
    const row = aiRowMeta(btn || el);
    const link = document.querySelector('a[href*="/jobs/view/' + id + '"]');
    add(id, meta.title, meta.company, meta.location, link && link.href, row.easy, row.applied);
