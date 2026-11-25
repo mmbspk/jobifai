@@ -5,6 +5,7 @@ your profile. These facts help Jobifai answer recurring recruiter questions
 automatically. You can leave unknown information blank and add details later.
 The Common answers panel shows five core topics with one editor open at a time.
 Five optional topics and candidate-authored extra answers have separate disclosures.
+Additional answers are searchable and paginated, so large collections stay compact.
 Onboarding uses the same editable panel and can save the reviewed profile and
 answers together. Unanswered recommendations do not prevent starting a bot.
 

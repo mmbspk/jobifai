@@ -33,6 +33,29 @@ func TestSponsorshipObjectAndLegacyPayloadKeepCurrentFutureDistinct(t *testing.T
 	require.Equal(t, "Preserve this", view.ApplicationDefaults.FormAnswers["mapping_existing"])
 }
 
+func TestNullTopicSaveClearsSuppliedDatesAndTextWithoutChangingOtherFacts(t *testing.T) {
+	svc, cfg, _ := setup(t)
+	ctx := context.Background()
+	p := domain.ResumeProfile{ApplicationDefaults: domain.ApplicationDefaults{EarliestStartDate: "2027-01-18", TravelConditions: "Weekday travel", WorkingHours: "Full time", NoticePeriod: "Two weeks", FormAnswers: map[string]string{"legacy": "Keep this"}}}
+	require.NoError(t, cfg.Set("candidate", "resume_profile", p))
+	view, err := svc.Get(ctx, "candidate")
+	require.NoError(t, err)
+	topics := patch(t, "earliest_start_date", nil)
+	for key, raw := range patch(t, "travel", nil) {
+		topics[key] = raw
+	}
+	for key, raw := range patch(t, "working_hours", nil) {
+		topics[key] = raw
+	}
+	view, err = svc.Patch(ctx, "candidate", domain.ApplicationAnswersPatch{Revision: view.Revision, Topics: topics})
+	require.NoError(t, err)
+	require.Empty(t, view.ApplicationDefaults.EarliestStartDate)
+	require.Empty(t, view.ApplicationDefaults.TravelConditions)
+	require.Empty(t, view.ApplicationDefaults.WorkingHours)
+	require.Equal(t, "Two weeks", view.ApplicationDefaults.NoticePeriod)
+	require.Equal(t, p.ApplicationDefaults.FormAnswers, view.ApplicationDefaults.FormAnswers)
+}
+
 func TestChangedFieldUseKeepsReplacedTextOutOfSubmittedHistory(t *testing.T) {
 	svc, cfg, database := setup(t)
 	ctx := context.Background()

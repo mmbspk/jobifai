@@ -50,6 +50,9 @@ export function CommonApplicationAnswers({ value, onChange, onTopicChange, sourc
   const [active, setActive] = useState<string | null>(null)
   const [more, setMore] = useState(false)
   const [custom, setCustom] = useState(false)
+  const [customSearch, setCustomSearch] = useState('')
+  const [customPage, setCustomPage] = useState(0)
+  const [editingCustom, setEditingCustom] = useState<number | null>(null)
   useEffect(() => {
     if (!openTopic) return
     if (openTopic.id === 'additional_answers') setCustom(true)
@@ -107,6 +110,10 @@ export function CommonApplicationAnswers({ value, onChange, onTopicChange, sourc
     return <Row key={topic.id} {...topic} summary={filledSummary(topic.id, value, catalog)} source={sources[topic.id]} open={active === topic.id} onOpen={() => setActive(current => current === topic.id ? null : topic.id)}>{editors[topic.id]}</Row>
   }
   const filled = core.filter(t => filledSummary(t.id, value, catalog)).length
+  const customQuery = customSearch.trim().toLocaleLowerCase()
+  const customMatches = (value.custom_answers ?? []).map((answer, index) => ({ answer, index })).filter(({ answer, index }) => index === editingCustom || !customQuery || [answer.question, answer.answer, answer.country, answer.employer].some(text => text?.toLocaleLowerCase().includes(customQuery)))
+  const customPages = Math.max(1, Math.ceil(customMatches.length / 20))
+  const visibleCustomPage = Math.min(customPage, customPages - 1)
   return <div className="space-y-4">
     <section aria-label="Common answers" className="overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]">
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-4 sm:px-5"><h3 className="text-sm font-semibold">Common answers</h3><span className="text-xs text-[var(--color-text-dim)]">{filled} of 5 filled</span></div>
@@ -119,9 +126,14 @@ export function CommonApplicationAnswers({ value, onChange, onTopicChange, sourc
     <section>
       <button type="button" aria-expanded={custom} aria-controls="custom-answers" onClick={() => setCustom(v => !v)} className="flex min-h-11 w-full items-center justify-between gap-2 border-t border-[var(--color-border)] text-left text-sm font-medium focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]"><span>My additional answers {value.custom_answers?.length ? <span className="ml-2 text-xs font-normal text-[var(--color-text-dim)]">{value.custom_answers.length} saved</span> : null}</span><ChevronDown size={16} aria-hidden className={cn(custom && 'rotate-180')} /></button>
       <div id="custom-answers" hidden={!custom} className="space-y-4 pt-3">
-        {(value.custom_answers ?? []).map((answer, i) => <fieldset key={i} className="space-y-3 border-t border-[var(--color-border)] pt-3"><legend className="text-xs">Custom answer {i + 1}</legend><div className="flex justify-end"><button type="button" className={action} aria-label={`Remove custom answer ${i + 1}`} onClick={() => change('additional_answers', { custom_answers: value.custom_answers?.filter((_, j) => i !== j) })}><Trash2 size={16} aria-hidden /></button></div>{(['question', 'answer', 'country'] as const).map(key => <TextField key={key} label={{ question: 'Question', answer: 'Answer', country: 'Country scope (optional)' }[key]} multiline={key === 'answer'} value={answer[key]} onChange={v => change('additional_answers', { custom_answers: value.custom_answers?.map((a, j) => i === j ? { ...a, [key]: v } : a) })} />)}</fieldset>)}
-        <button type="button" className={cn(action, 'inline-flex items-center gap-1')} onClick={() => change('additional_answers', { custom_answers: [...(value.custom_answers ?? []), {}] })}><Plus size={14} aria-hidden />Add custom question</button>
+        {custom && <>
+        <TextField label="Search additional answers" value={customSearch} onChange={query => { setCustomSearch(query); setCustomPage(0); setEditingCustom(null) }} />
+        {customMatches.slice(visibleCustomPage * 20, (visibleCustomPage + 1) * 20).map(({ answer, index: i }) => <fieldset key={i} className="space-y-3 border-t border-[var(--color-border)] pt-3"><legend className="text-xs">Custom answer {i + 1}</legend><div className="flex justify-end"><button type="button" className={action} aria-label={`Remove custom answer ${i + 1}`} onClick={() => { setEditingCustom(null); change('additional_answers', { custom_answers: value.custom_answers?.filter((_, j) => i !== j) }) }}><Trash2 size={16} aria-hidden /></button></div>{answer.employer && <p className="text-xs text-[var(--color-text-dim)]">Saved for {answer.employer}{answer.job_id ? ' and a specific job' : ''}</p>}{(['question', 'answer', 'country'] as const).map(key => <TextField key={key} label={{ question: 'Question', answer: 'Answer', country: 'Country scope (optional)' }[key]} multiline={key === 'answer'} value={answer[key]} onChange={v => { setEditingCustom(i); change('additional_answers', { custom_answers: value.custom_answers?.map((a, j) => i === j ? { ...a, [key]: v } : a) }) }} />)}</fieldset>)}
+        {customQuery && customMatches.length === 0 && <p className="text-sm text-[var(--color-text-dim)]">No additional answers match your search.</p>}
+        {customPages > 1 && <div className="flex flex-wrap items-center justify-between gap-2 text-xs"><button type="button" className={action} disabled={visibleCustomPage === 0} onClick={() => { setEditingCustom(null); setCustomPage(visibleCustomPage - 1) }}>Previous answers</button><span>Page {visibleCustomPage + 1} of {customPages}</span><button type="button" className={action} disabled={visibleCustomPage + 1 >= customPages} onClick={() => { setEditingCustom(null); setCustomPage(visibleCustomPage + 1) }}>Next answers</button></div>}
+        <button type="button" className={cn(action, 'inline-flex items-center gap-1')} onClick={() => { setCustomSearch(''); setCustomPage(Math.floor((value.custom_answers?.length ?? 0) / 20)); setEditingCustom(value.custom_answers?.length ?? 0); change('additional_answers', { custom_answers: [...(value.custom_answers ?? []), {}] }) }}><Plus size={14} aria-hidden />Add custom question</button>
         <TextField label="Additional application details" multiline value={value.additional_details} onChange={v => change('additional_answers', { additional_details: v })} />
+        </>}
       </div>
     </section>
   </div>

@@ -73,3 +73,32 @@ test('fits narrow dark screens and keeps malformed pay drafts when another row o
   expect(overflow, JSON.stringify(overflow)).toMatchObject({ scroll: overflow.width })
   await page.screenshot({ path: testInfo.outputPath('application-answers-mobile-dark.png'), fullPage: true })
 })
+
+test('searches and pages additional answers without losing hidden records', async ({ page }) => {
+  const initial = Array.from({ length: 45 }, (_, index) => ({ question: `Question number ${index}`, answer: `Saved answer ${index}`, country: 'Australia', employer: 'Fixture', job_id: `job-${index}` }))
+  let saved: { custom_answers: typeof initial; additional_details: string } | undefined
+  await page.route('**/api/settings/application-answers', async route => {
+    if (route.request().method() === 'PATCH') saved = route.request().postDataJSON().topics.additional_answers
+    return route.fulfill({ json: { revision: saved ? 'r2' : 'r1', application_defaults: { custom_answers: saved?.custom_answers ?? initial, additional_details: '' }, sources: {}, catalog: [] } })
+  })
+  await page.reload()
+  await page.getByRole('tab', { name: 'Application answers', exact: true }).click()
+  await page.getByRole('button', { name: /My additional answers 45 saved/ }).click()
+  await expect(page.getByLabel('Question', { exact: true })).toHaveCount(20)
+  await page.getByRole('button', { name: 'Next answers' }).click()
+  await expect(page.getByText('Page 2 of 3')).toBeVisible()
+  await page.getByLabel('Search additional answers').fill('number 42')
+  await expect(page.getByLabel('Question', { exact: true })).toHaveCount(1)
+  await page.getByLabel('Question', { exact: true }).fill('My revised question')
+  await expect(page.getByLabel('Question', { exact: true })).toHaveValue('My revised question')
+  await page.getByRole('button', { name: 'Add custom question' }).click()
+  await expect(page.getByText('Page 3 of 3')).toBeVisible()
+  await page.getByLabel('Question', { exact: true }).last().fill('My new question')
+  await page.getByLabel('Answer', { exact: true }).last().fill('My supplied answer')
+  await page.getByRole('button', { name: 'Save common answers' }).click()
+  await expect(page.getByText('Common answers saved.')).toBeVisible()
+  expect(saved?.custom_answers).toHaveLength(46)
+  expect(saved?.custom_answers[0]).toEqual(initial[0])
+  expect(saved?.custom_answers[42]).toEqual({ ...initial[42], question: 'My revised question' })
+  expect(saved?.custom_answers[45]).toEqual({ question: 'My new question', answer: 'My supplied answer' })
+})

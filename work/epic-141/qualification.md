@@ -4,8 +4,8 @@ Scope: guided Profile onboarding, background confirmation and preserved PR #138 
 
 ## Behavior covered
 
-- Five core topics by default; five optional topics and custom answers remain collapsed. Imported clear facts are editable before an explicit combined profile-and-answers save. Initial profile loading, tab switching, refetches, concurrent saves, pending saves and invalid pay drafts preserve edits.
-- Legacy values, false/null, country/pay qualifiers, custom scopes and learned cache rows survive migration 061 and partial saves. Current/future sponsorship remains separate. Metadata does not affect factual hashes or warm reuse.
+- Five core topics by default; five optional topics and custom answers remain collapsed. Additional answers support search and pages of 20, preserving hidden edits and employer/job scope. Imported clear facts are editable before an explicit combined profile-and-answers save. Initial profile loading, tab switching, refetches, concurrent saves, pending saves and invalid pay drafts preserve edits.
+- Legacy values, false/null, country/pay qualifiers, custom scopes and learned cache rows survive migration 061 and partial saves. Current/future sponsorship remains separate. Explicit null clears supplied date/text topics without erasing other facts. Metadata does not affect factual hashes or warm reuse.
 - Clear quoted CV facts prefill drafts through the existing single extraction call; ambiguous, stale and absent facts do not become assertions. Owned import tokens attach minimized source evidence only on matching explicit saves; canonical YAML stays zero-call.
 - Durably recorded supported descriptive composition can proceed. Missing required facts defer one application while the next eligible job continues. Provider, quota, browser, identity, profile-read and persistence failures remain operational. Fact deferrals preserve the operational retry count.
 - Repeated/dismissed questions stay quiet when facts and proposals are unchanged. Warm derived reuse records separate immutable attempt-use history with zero additional provider requests.
@@ -16,8 +16,8 @@ Scope: guided Profile onboarding, background confirmation and preserved PR #138 
 
 ## Validation evidence
 
-- Frontend: 404 unit tests passed; TypeScript/Vite production build and ESLint passed.
-- Browser: all 90 tests passed against the isolated backend. The final mobile row adjustment passed all four isolated Application answers fixtures, including 320px imported onboarding, keyboard tabs, grouped notifications, preserved drafts and malformed pay. Screenshots were inspected visually.
+- Frontend: 405 unit tests passed; TypeScript/Vite production build and ESLint passed.
+- Browser: all 91 tests passed against the isolated backend. All five isolated Application answers fixtures also passed, including 320px imported onboarding, keyboard tabs, grouped notifications, preserved drafts, malformed pay and paginated additional-answer edits. Screenshots were inspected visually.
 - Storage/domain/migrations: race suites passed. Final application-answer service race suite includes the 2,000-mapping and immutable-identity regressions.
 - CV extraction: complete race suite passed using local provider fixtures.
 - Runtime: focused race suites passed for current-fact guards, later-review use, warm reuse, dismissed repeats, retry accounting, preparation/recovery and changed-limit history.

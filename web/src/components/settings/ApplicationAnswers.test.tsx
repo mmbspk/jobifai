@@ -23,6 +23,28 @@ function mount() {
 async function openNotice(user: ReturnType<typeof userEvent.setup>) { await screen.findByRole('button', { name: /Notice period.*3 weeks/ }); await user.click(screen.getByRole('button', { name: /Notice period.*3 weeks/ })) }
 
 describe('Application answers', () => {
+  it('pages and searches additional answers while preserving off-screen edits and scope', async () => {
+    const user = userEvent.setup()
+    const answers = Array.from({ length: 45 }, (_, index) => ({ question: `Question number ${index}`, answer: `Saved answer ${index}`, country: 'Australia', employer: 'Fixture', job_id: `job-${index}` }))
+    vi.mocked(settingsApi.applicationAnswers.get).mockResolvedValue({ ...saved, application_defaults: { ...saved.application_defaults, custom_answers: answers } })
+    mount()
+    await screen.findByRole('button', { name: /My additional answers 45 saved/ })
+    expect(screen.queryByLabelText('Question')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /My additional answers 45 saved/ }))
+    expect(screen.getAllByLabelText('Question')).toHaveLength(20)
+    await user.click(screen.getByRole('button', { name: 'Next answers' }))
+    expect(screen.getByText('Page 2 of 3')).toBeVisible()
+    await user.type(screen.getByLabelText('Search additional answers'), 'number 42')
+    expect(screen.getAllByLabelText('Question')).toHaveLength(1)
+    await user.clear(screen.getByLabelText('Question'))
+    await user.type(screen.getByLabelText('Question'), 'My revised question')
+    expect(screen.getByLabelText('Question')).toHaveValue('My revised question')
+    await user.clear(screen.getByLabelText('Search additional answers'))
+    await user.click(screen.getByRole('button', { name: /My additional answers/ }))
+    await user.click(screen.getByRole('button', { name: /My additional answers/ }))
+    await user.click(screen.getByRole('button', { name: 'Save common answers' }))
+    await waitFor(() => expect(settingsApi.applicationAnswers.set).toHaveBeenCalledWith({ revision: 'r1', topics: { additional_answers: { custom_answers: answers.map((answer, index) => index === 42 ? { ...answer, question: 'My revised question' } : answer), additional_details: '' } } }))
+  })
   it('shows five compact core rows and preserves false versus unspecified sponsorship', async () => {
     const user = userEvent.setup()
     mount()

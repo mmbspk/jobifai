@@ -273,6 +273,7 @@ func applyTopics(p *domain.ResumeProfile, topics map[string]json.RawMessage) err
 			p.ApplicationDefaults.NoticePeriod = v.Notice
 			p.ApplicationDefaults.Availability = v.Availability
 		case "earliest_start_date":
+			p.ApplicationDefaults.EarliestStartDate = ""
 			err = json.Unmarshal(raw, &p.ApplicationDefaults.EarliestStartDate)
 		case "salary":
 			var v struct {
@@ -285,8 +286,10 @@ func applyTopics(p *domain.ResumeProfile, topics map[string]json.RawMessage) err
 		case "relocation":
 			err = json.Unmarshal(raw, &p.ApplicationDefaults.Relocation)
 		case "travel":
+			p.ApplicationDefaults.TravelConditions = ""
 			err = json.Unmarshal(raw, &p.ApplicationDefaults.TravelConditions)
 		case "working_hours":
+			p.ApplicationDefaults.WorkingHours = ""
 			err = json.Unmarshal(raw, &p.ApplicationDefaults.WorkingHours)
 		case "work_arrangement":
 			var v struct {
