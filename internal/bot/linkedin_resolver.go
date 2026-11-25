@@ -21,6 +21,7 @@ var errLinkedInExternal = errors.New("LinkedIn listing requires external applica
 var errLinkedInUnknown = errors.New("LinkedIn application control could not be verified")
 
 type linkedInResolution struct {
+	Title                 string `json:"title"`
 	Kind                  string `json:"kind"`
 	Reason                string `json:"reason"`
 	ExpectedID            string `json:"expected_id"`
@@ -421,7 +422,7 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 // Expanding the description may replace the header. Manual URL application
 // must use that refreshed classification, never interpret unknown as external.
 func (b *Bot) readLinkedInURLListing(ctx context.Context, page *rod.Page, job linkedInJob, ac *AttemptContext) (linkedInResolution, error) {
-	r, err := readLinkedInDescription(ctx, page, job)
+	r, err := b.readAdaptiveLinkedInDescription(ctx, page, job)
 	if err == nil && r.IdentityVerified && r.Kind == "unknown" {
 		// Allow an ordinary header rerender to settle before declaring that the
 		// application control cannot be recognized.

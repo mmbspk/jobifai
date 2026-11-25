@@ -81,6 +81,18 @@ func (m *Manager) openReviewJobPage(ctx context.Context, b *Bot, gs domain.Gener
 
 func managerLazyForSubmit(b *Bot, ctx context.Context, req SubmitRequest, jobPage *rod.Page) *lazyDocGen {
 	jobDesc := req.Role + " at " + req.Company
+	if b.cfg.JobPageReader != nil {
+		result, err := b.readJobPage(ctx, jobPage, domain.Platform(req.Platform), linkedInJob{ID: req.JobID, URL: req.Link, Title: req.Role, Company: req.Company})
+		lazy := newManagerLazy(b, ctx, req)
+		if err != nil {
+			lazy.jobDesc = ""
+			lazy.holdReason = err.Error()
+			lazy.holdStage = "listing_read"
+			return lazy
+		}
+		lazy.jobDesc = result.Description
+		return lazy
+	}
 	if req.Platform == "seek" {
 		if rawHTML, err := jobPage.HTML(); err == nil {
 			if d := scraper.ParseHTML(rawHTML); len(strings.TrimSpace(d.Description)) >= 100 {

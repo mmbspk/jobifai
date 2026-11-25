@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/jobpage"
 	"strings"
 )
 
@@ -15,6 +16,18 @@ var errJobScorerUnavailable = errors.New("suitability evaluation is unavailable"
 var errJobEvaluationFailed = errors.New("suitability evaluation could not be completed")
 
 func listingFailureMessage(err error) (code, message string) {
+	if c := jobpage.ErrorCode(err); c != "" {
+		switch c {
+		case jobpage.FailureAuth:
+			return string(c), "The jobsite session needs refreshing. Suitability has not been evaluated."
+		case jobpage.FailureExpired:
+			return string(c), "The listing has expired. Suitability has not been evaluated."
+		case jobpage.FailureIdentity, jobpage.FailureDrift, jobpage.FailureOrigin:
+			return string(c), "The displayed listing could not be verified. Suitability has not been evaluated."
+		default:
+			return string(c), "The full description could not be verified. Suitability has not been evaluated."
+		}
+	}
 	switch {
 	case errors.Is(err, errLinkedInSubmissionUnknown):
 		return "submission_unknown", "Submission status is unknown. Check the original listing before retrying."

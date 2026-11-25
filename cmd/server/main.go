@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -20,21 +20,22 @@ import (
 	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/db"
+	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
+	"github.com/user/jobifai/internal/jobpage"
 	"github.com/user/jobifai/internal/llm"
-	"github.com/user/jobifai/internal/llmreuse"
 	"github.com/user/jobifai/internal/llmpolicy"
-	"github.com/user/jobifai/internal/retention"
+	"github.com/user/jobifai/internal/llmreuse"
 	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
-	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/resource"
 	"github.com/user/jobifai/internal/resume"
+	"github.com/user/jobifai/internal/retention"
+	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/version"
 	jobws "github.com/user/jobifai/internal/ws"
-	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
 )
 
 func main() {
@@ -192,6 +193,8 @@ func main() {
 	botMgr.SetSessionQuota(quotaSvc)
 	botMgr.SetLLMQuota(quotaSvc)
 	botMgr.SetLLMBilling(policyStore, catalog, usageLedger)
+	pageStore := jobpage.NewSQLStore(database)
+	botMgr.SetJobPageReading(pageStore)
 
 	const marketDir = "resume_markets"
 	if n := countYAMLFiles(marketDir); n == 0 {
@@ -267,21 +270,24 @@ func main() {
 	}
 	handler.BootstrapPublicAppURL(cfgStore, appBaseURL)
 	svc := &handler.Services{
-		StartedAt:    time.Now(),
-		DB:           database,
-		Config:       cfgStore,
-		Secrets:      secretsStore,
-		Extractor:    extractor,
-		Tailor:       tailor,
-		Renderer:     renderer,
-		BrowserMgr:   browserMgr,
-		SessionStore: sessionStore,
-		Logs:         logBroadcaster,
-		Bot:          botMgr,
-		MarketDir:    marketDir,
-		StylesDir:    documents.StylesDirRelative,
-		FileToText:   resume.TextFromReader,
-		FetchJobPage: resume.FetchJobPage,
+		StartedAt:            time.Now(),
+		DB:                   database,
+		Config:               cfgStore,
+		Secrets:              secretsStore,
+		Extractor:            extractor,
+		Tailor:               tailor,
+		Renderer:             renderer,
+		BrowserMgr:           browserMgr,
+		SessionStore:         sessionStore,
+		Logs:                 logBroadcaster,
+		Bot:                  botMgr,
+		MarketDir:            marketDir,
+		StylesDir:            documents.StylesDirRelative,
+		FileToText:           resume.TextFromReader,
+		FetchJobPage:         resume.FetchJobPage,
+		JobPages:             pageStore,
+		FetchVerifiedJobPage: botMgr.FetchJobPage,
+		ReadJobPage:          botMgr.ReadJobPage,
 		MarketLoader: func(path, yamlFile string) (*domain.ResumeMarket, error) {
 			m, err := resume.LoadMarket(path)
 			if err != nil {
@@ -351,12 +357,12 @@ func main() {
 			}
 			return resume.NewHalalChecker(halalC)
 		},
-		Documents:  docSvc,
-		Retention:  retentionSvc,
-		BotRunLogs: runLogSink,
+		Documents:       docSvc,
+		Retention:       retentionSvc,
+		BotRunLogs:      runLogSink,
 		LLMReuseMetrics: llmReuseStore,
-		Resource: resourceSvc,
-		AppBaseURL:  appBaseURL,
+		Resource:        resourceSvc,
+		AppBaseURL:      appBaseURL,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
 			_, _, _, client, _ := buildLLMDeps(userID, userTypeChecker, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {
@@ -391,11 +397,17 @@ func main() {
 
 	// ── Background: sweep expired verification tokens daily ─────────────
 	go func() {
+		if err := pageStore.PurgePrivateCaptures(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("purge expired page captures")
+		}
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
+				if err := pageStore.PurgePrivateCaptures(shutdownCtx); err != nil {
+					log.Error().Err(err).Msg("purge expired page captures")
+				}
 				if _, err := auth.SweepExpiredVerificationTokens(database); err != nil {
 					log.Error().Err(err).Msg("sweep verification tokens")
 				}

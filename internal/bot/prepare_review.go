@@ -204,6 +204,13 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 		Str("job_id", jobID).Str("prep_id", prepID).Logger().
 		Hook(logIDHook{})
 	b.log.Info().Msg("prepare: run started")
+	if b.cfg.BrowserMeter != nil {
+		defer b.cfg.BrowserMeter.Stop()
+		ctx, err = activateReadMeter(ctx, b.cfg.BrowserMeter, jobID)
+		if err != nil {
+			return err
+		}
+	}
 
 	jobPage, ownsBr, err := m.openReviewJobPage(ctx, b, gs, userID, req)
 	if err != nil {
@@ -218,7 +225,7 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 		}()
 	}
 
-	lazy := managerLazyForSubmit(b, m.ctx, req, jobPage)
+	lazy, readErr := managerLazyWithReadError(b, ctx, req, jobPage)
 	lazy.reviewPrepareOnly = true
 	defer func() { lazy.reviewPrepareOnly = false }()
 
@@ -237,7 +244,9 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 	}()
 
 	var prepErr error
-	if req.Platform == "seek" {
+	if readErr != nil {
+		prepErr = readErr
+	} else if req.Platform == "seek" {
 		prepErr = m.prepareSeekReviewDocuments(ctx, b, jobPage, lazy, req.Link)
 	} else {
 		prepErr = b.easyApply(ctx, jobPage, lazy)

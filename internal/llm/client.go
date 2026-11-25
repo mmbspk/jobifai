@@ -581,6 +581,16 @@ func (c *Client) claudeChat(ctx context.Context, msgs []Message) (_ string, retE
 // prompt to Claude and returns the assistant reply. Only supported for the
 // Claude provider; all others return an error.
 func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt string) (_ string, retErr error) {
+	return c.chatWithImage(ctx, imageBytes, "", prompt)
+}
+
+// ChatWithImageSystem keeps trusted instructions separate from untrusted image
+// and prompt data, preserving the configured provider and billing behavior.
+func (c *Client) ChatWithImageSystem(ctx context.Context, imageBytes []byte, system, prompt string) (string, error) {
+	return c.chatWithImage(ctx, imageBytes, system, prompt)
+}
+
+func (c *Client) chatWithImage(ctx context.Context, imageBytes []byte, system, prompt string) (_ string, retErr error) {
 	start := time.Now()
 	var buPtr *billingUsage
 	defer func() { c.logLLMResult(ctx, start, retErr, buPtr) }()
@@ -593,14 +603,21 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 	if c.cfg.Provider != "claude" {
 		return "", fmt.Errorf("ChatWithImage: unsupported provider %q (claude only)", c.cfg.Provider)
 	}
+	if requestBudgetFrom(ctx) != nil {
+		var err error
+		ctx, err = withRequestImageBound(ctx, imageBytes)
+		if err != nil {
+			return "", err
+		}
+	}
 	maxOut := c.cfg.MaxTokens
 	if maxOut <= 0 {
 		maxOut = 8192
 	}
-	if err := c.checkVisionCostCeiling(imageBytes, len(prompt), maxOut); err != nil {
+	if err := c.checkVisionCostCeiling(imageBytes, len(system)+len(prompt), maxOut); err != nil {
 		return "", err
 	}
-	if err := c.checkQuota(ctx, len(imageBytes)+len(prompt), c.cfg.MaxTokens); err != nil {
+	if err := c.checkQuota(ctx, len(imageBytes)+len(system)+len(prompt), c.cfg.MaxTokens); err != nil {
 		return "", err
 	}
 	ctx = c.prepareCallContext(ctx)
@@ -634,6 +651,7 @@ func (c *Client) ChatWithImage(ctx context.Context, imageBytes []byte, prompt st
 	body := visionRequest{
 		Model:     c.cfg.Model,
 		MaxTokens: maxTokens,
+		System:    system,
 		Messages: []visionMessage{{
 			Role: "user",
 			Content: []contentBlock{
@@ -770,6 +788,7 @@ type ollamaRequest struct {
 	Model    string          `json:"model"`
 	Messages []openaiMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
+	Options  map[string]int  `json:"options,omitempty"`
 }
 
 type ollamaResponse struct {
@@ -801,6 +820,9 @@ func (c *Client) ollamaChat(ctx context.Context, msgs []Message) (_ string, retE
 	}
 
 	body := ollamaRequest{Model: c.cfg.Model, Messages: turns, Stream: false}
+	if requestBudgetFrom(ctx) != nil {
+		body.Options = map[string]int{"num_predict": c.effectiveOutputLimit()}
+	}
 	resp, err := c.post(ctx, baseURL+"/api/chat", map[string]string{
 		"Content-Type": contentTypeJSON,
 	}, body)
@@ -846,6 +868,27 @@ func (c *Client) post(ctx context.Context, url string, headers map[string]string
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
+	}
+	if budget := requestBudgetFrom(ctx); budget != nil {
+		call := CallContextFrom(ctx)
+		inputBound := requestInputTokenBound(ctx, len(b))
+		maxOut := c.effectiveOutputLimit()
+		// Guarded readers enforce the configured policy and customer quota
+		// against the same conservative input bound on every real retry.
+		if err := c.checkCostCeilingTokens(inputBound, int64(maxOut)); err != nil {
+			return nil, &nonRetryableError{err: err}
+		}
+		if c.guard != nil && c.userID != "" && c.cfg.Provider != "ollama" {
+			if err := c.guard.BeforeLLM(ctx, c.userID, c.cfg.Model, int(inputBound), maxOut); err != nil {
+				return nil, &nonRetryableError{err: err}
+			}
+		}
+		if err := budget.BeforeRequest(ctx, RequestObservation{
+			Provider: c.cfg.Provider, Model: c.cfg.Model, OperationID: call.OperationID,
+			Attempt: call.Attempt, PayloadBytes: len(b), InputTokenUpperBound: inputBound, MaxOutputTokens: maxOut,
+		}); err != nil {
+			return nil, &nonRetryableError{err: err}
+		}
 	}
 	resp, err := c.httpCli.Do(req)
 	if err != nil {

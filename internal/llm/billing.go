@@ -11,31 +11,32 @@ import (
 	"github.com/user/jobifai/internal/usage"
 )
 
-// UsageObservation is emitted for eval/admin calls that must not hit customer billing.
+// UsageObservation reports provider usage to optional budget and eval observers.
+// Observation does not replace synchronous customer billing persistence.
 type UsageObservation struct {
-	Call                domain.LLMCallContext
-	Provider            string
-	RequestedModel      string
-	ActualModel         string
-	ActualModelVerified bool
-	ActualModelRaw      string
+	Call                  domain.LLMCallContext
+	Provider              string
+	RequestedModel        string
+	ActualModel           string
+	ActualModelVerified   bool
+	ActualModelRaw        string
 	CanonicalPricingModel string
-	PricingSource       string
-	PricingKind         pricing.LookupKind
-	PricingResolved     bool
-	PricingError        string
-	Tokens              pricing.TokenUsage
-	LatencyMS           int64
-	Success             bool
-	ErrorCode           string
-	RawCostMicro        int64
-	BudgetChargeMicro   int64
+	PricingSource         string
+	PricingKind           pricing.LookupKind
+	PricingResolved       bool
+	PricingError          string
+	Tokens                pricing.TokenUsage
+	LatencyMS             int64
+	Success               bool
+	ErrorCode             string
+	RawCostMicro          int64
+	BudgetChargeMicro     int64
 }
 
 // BillingHooks configures synchronous billing persistence for a client.
 type BillingHooks struct {
 	Ledger       *usage.Ledger
-	Catalog      *pricing.Catalog         // optional; used for eval cost when Ledger is nil
+	Catalog      *pricing.Catalog // optional; used for eval cost when Ledger is nil
 	EvalPrice    func(ctx context.Context, provider, requested, actual string) (pricing.LookupResult, pricing.EvalPricingMeta, error)
 	EvalObserver func(UsageObservation) // optional; never writes llm_usage_events
 }
@@ -51,10 +52,27 @@ type billingUsage struct {
 	ActualModelVerified bool
 }
 
-func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int64, success bool, errCode string, logicalOp bool) error {
+func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int64, success bool, errCode string, logicalOp bool) (retErr error) {
 	call := CallContextFrom(ctx)
 	if call.UserID == "" {
 		call.UserID = c.userID
+	}
+	// Even a budget rejection after a response must retain actual billing. The
+	// observation runs after the ledger and also runs if persistence fails.
+	if budget := requestBudgetFrom(ctx); budget != nil && success {
+		defer func() {
+			err := budget.ObserveUsage(ctx, UsageObservation{
+				Call: call, Provider: c.cfg.Provider, RequestedModel: c.cfg.Model,
+				ActualModel: bu.ActualModel, ActualModelVerified: bu.ActualModelVerified,
+				Tokens: bu.TokenUsage, LatencyMS: latencyMS, Success: success, ErrorCode: errCode,
+			})
+			if err != nil {
+				if retErr != nil {
+					retErr = billingPersistErr(retErr)
+				}
+				retErr = errors.Join(retErr, &nonRetryableError{err: err})
+			}
+		}()
 	}
 	if c.tracker != nil && success {
 		c.tracker.AddSync(&Usage{
@@ -109,7 +127,7 @@ func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int
 			ActualModelRaw: bu.ActualModel, CanonicalPricingModel: meta.CanonicalPricingModel,
 			PricingSource: meta.Source, PricingKind: meta.Kind, PricingResolved: meta.Resolved,
 			PricingError: meta.ResolveError,
-			Tokens: bu.TokenUsage, LatencyMS: latencyMS, Success: success, ErrorCode: errCode,
+			Tokens:       bu.TokenUsage, LatencyMS: latencyMS, Success: success, ErrorCode: errCode,
 			RawCostMicro: rawMicro, BudgetChargeMicro: budgetMicro,
 		})
 	}
@@ -145,6 +163,10 @@ func (c *Client) recordUsage(ctx context.Context, bu billingUsage, latencyMS int
 func billingPersistErr(err error) error {
 	if err == nil {
 		return nil
+	}
+	var nre *nonRetryableError
+	if errors.As(err, &nre) {
+		return err
 	}
 	return &nonRetryableError{err: errors.Join(ErrBillingPersistFailed, err)}
 }
