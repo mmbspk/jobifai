@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/user/jobifai/internal/config"
-	"github.com/user/jobifai/internal/domain"
 	appdb "github.com/user/jobifai/internal/db"
+	"github.com/user/jobifai/internal/domain"
 	"path/filepath"
 )
 
@@ -21,7 +21,7 @@ func TestResolveOperationalSettings_SystemDefaultAPIKeyScope(t *testing.T) {
 	secrets := config.NewSecretsStore(db, "test-passphrase")
 
 	sys := domain.GeneralSettings{
-		LLM: domain.LLMConfig{Provider: "claude", Model: "system-model"},
+		LLM:           domain.LLMConfig{Provider: "claude", Model: "system-model"},
 		HumanBehavior: domain.HumanBehaviorConfig{DailyApplicationLimit: 25},
 	}
 	require.NoError(t, store.Set(domain.SystemUserID, config.KeyGeneralSettings, sys))
@@ -97,7 +97,7 @@ func TestResolveOperationalSettings_RegularUserIgnoresLLMOverrides(t *testing.T)
 	userID := "user-regular"
 	// Legacy LLM on general_settings (pre-migration data).
 	require.NoError(t, store.Set(userID, config.KeyGeneralSettings, domain.GeneralSettings{
-		LLM: domain.LLMConfig{Provider: "openai", Model: "gpt-4o"},
+		LLM:            domain.LLMConfig{Provider: "openai", Model: "gpt-4o"},
 		HalalJobFilter: true,
 	}))
 	// Explicit override key.
@@ -373,14 +373,9 @@ func TestEnforceLLMCredentialConsistency_IncompatibleProviderKeyKept(t *testing.
 	assert.Equal(t, "gpt-4o", gs.LLM.Model)
 }
 
-// TestResolveEffectiveLLMKey_ProxyModeSwitchEdgeCase is the regression test for the
-// double-resolution bug: when the tester enables UseProxy=true but has no personal proxy key,
-// the system proxy credential is selected and gs.LLM reverts to system (UseProxy=false).
-// A subsequent re-resolution with the reverted UseProxy=false would have found the tester's
-// personal direct API key — producing a credential that differs from the one the consistency
-// check based its decision on. ResolveEffectiveLLMKey must return the system direct key in
-// this scenario, not the tester's personal key.
-func TestResolveEffectiveLLMKey_ProxyModeSwitchEdgeCase(t *testing.T) {
+// A stale proxy override must not cause a deployment with proxy routing disabled
+// to select a saved proxy credential or discard a valid personal direct API key.
+func TestResolveEffectiveLLMKey_StaleProxyOverrideUsesPersonalDirectKey(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := appdb.Open(dbPath)
 	require.NoError(t, err)
@@ -407,18 +402,15 @@ func TestResolveEffectiveLLMKey_ProxyModeSwitchEdgeCase(t *testing.T) {
 	}))
 
 	gs := config.ResolveOperationalSettings(store, userID, true)
-	// Tester's UseProxy=true and provider override are applied.
-	assert.True(t, gs.LLM.UseProxy, "tester override must set UseProxy=true")
+	// Provider/model overrides remain personal; routing follows the deployment.
+	assert.False(t, gs.LLM.UseProxy)
 	assert.Equal(t, "openai", gs.LLM.Provider)
 
-	// ResolveEffectiveLLMKey probes with UseProxy=true → finds system proxy key (no personal
-	// proxy key) → isPersonal=false → reverts gs.LLM to system (UseProxy=false) → resolves
-	// system direct key with allowPersonalKey=false. The tester's sk-personal must NOT appear.
 	key, isPersonal, err := config.ResolveEffectiveLLMKey(store, secrets, userID, true, &gs)
 	require.NoError(t, err)
-	assert.Equal(t, "sk-system", key, "system direct key must be selected, not tester's personal key")
-	assert.False(t, isPersonal, "system credential must not be flagged as personal")
-	// gs.LLM must have been reverted to the system default.
-	assert.Equal(t, "claude", gs.LLM.Provider, "gs.LLM must be reverted to system provider")
-	assert.False(t, gs.LLM.UseProxy, "gs.LLM.UseProxy must be reverted to system default (false)")
+	assert.Equal(t, "sk-personal", key)
+	assert.True(t, isPersonal)
+	assert.Equal(t, "openai", gs.LLM.Provider)
+	assert.Equal(t, "gpt-4o", gs.LLM.Model)
+	assert.False(t, gs.LLM.UseProxy)
 }

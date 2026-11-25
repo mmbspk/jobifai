@@ -212,7 +212,7 @@ For the Questions tab, type each question into a field (add more with the **+** 
 |---|---|
 | Provider | `Claude (Anthropic)`, `OpenAI`, or `Ollama (local)` |
 | Model | Model name, e.g. `claude-sonnet-4-6` |
-| Use Proxy | Route LLM calls through a proxy URL |
+| Use Proxy | Deployment setting under Admin → AI provider. Controls routing for all accounts; enable it locally for Hyperspace and leave it off in production for direct API calls. |
 | Max Tokens | Maximum output tokens per call (0 = model default) |
 
 **Per-Task Model Overrides** — assign a different model to individual tasks (suitability scoring, halal filter, resume tailoring, cover letter, form Q&A, interview questions). Useful for cost optimisation: lightweight models for scoring, more capable models for writing.
