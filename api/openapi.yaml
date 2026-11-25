@@ -334,6 +334,145 @@ paths:
           description: No resume profile found and no file uploaded
 
   # ── Resume profile settings ────────────────────────────────────────────
+  /api/settings/application-answers:
+    get:
+      operationId: applicationAnswersGet
+      summary: Get curated common answers without model inference
+      tags: [settings]
+      responses:
+        "200":
+          description: Authoritative facts with separate source metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApplicationAnswersView" }
+    patch:
+      operationId: applicationAnswersPatch
+      summary: Update only supplied answer topics with optimistic concurrency
+      tags: [settings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, topics]
+              properties:
+                revision: { type: string }
+                import_id: { type: string, description: Owned upload token for explicit reviewed CV-origin saves }
+                topics:
+                  type: object
+                  minProperties: 1
+                  maxProperties: 11
+                  description: Only changed topic IDs; omitted facts remain unchanged.
+                  additionalProperties: true
+      responses:
+        "200":
+          description: Updated authoritative facts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApplicationAnswersView" }
+        "400": { description: Invalid topic or fact }
+        "409": { description: Facts changed since this revision }
+
+  /api/settings/application-answers/reviews:
+    get:
+      operationId: applicationAnswerReviewsList
+      summary: List grouped answer decisions with separate read and unresolved counts
+      tags: [settings]
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string, enum: [active, history], default: active } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Bounded grouped review page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, unresolved_count, unread_count]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ApplicationAnswerReview" } }
+                  unresolved_count: { type: integer }
+                  unread_count: { type: integer, description: Zero or one grouped notification }
+                  next_cursor: { type: string }
+
+  /api/settings/application-answers/reviews/read:
+    post:
+      operationId: applicationAnswerReviewsRead
+      summary: Read the grouped notification without resolving answers
+      tags: [settings]
+      responses:
+        "204": { description: Current notification generation read }
+
+  /api/settings/application-answers/reviews/{id}:
+    get:
+      operationId: applicationAnswerReviewGet
+      summary: Get an owned review and its latest 50 immutable encounters
+      tags: [settings]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Owned review detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApplicationAnswerReview" }
+        "404": { description: Review does not belong to this user }
+
+  /api/settings/application-answers/reviews/{id}/confirm:
+    post:
+      operationId: applicationAnswerReviewConfirm
+      summary: Confirm an answer for future use without starting or retrying applications
+      tags: [settings]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer, revision]
+              properties:
+                answer: { type: string, minLength: 1, maxLength: 2000 }
+                revision: { type: integer, minimum: 1 }
+                profile_revision: { type: string }
+                topics: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Facts changed atomically and scoped mappings validated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value: { $ref: "#/components/schemas/ApplicationDefaults" }
+                  revision: { type: string }
+        "400": { description: Answer or mapping is incompatible }
+        "404": { description: Review does not belong to this user }
+        "409": { description: Review or candidate facts changed }
+
+  /api/settings/application-answers/reviews/{id}/dismiss:
+    post:
+      operationId: applicationAnswerReviewDismiss
+      summary: Dismiss a decision without changing facts or cache trust
+      tags: [settings]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision]
+              properties:
+                revision: { type: integer, minimum: 1 }
+      responses:
+        "204": { description: Decision dismissed }
+        "409": { description: Decision changed since this revision }
+
   /api/settings/resume:
     get:
       operationId: settingsResumeGet
@@ -351,6 +490,8 @@ paths:
       operationId: settingsResumeSet
       summary: Save (or update) resume profile
       tags: [settings]
+      parameters:
+        - { name: If-Match, in: header, schema: { type: string }, description: Optional factual profile revision; profile_revision body field is also accepted }
       requestBody:
         required: true
         content:
@@ -360,6 +501,8 @@ paths:
       responses:
         "200":
           $ref: "#/components/responses/OkResponse"
+        "409":
+          description: Profile revision changed or upload-origin token is unavailable
 
   /api/settings/resume/upload:
     post:
@@ -897,6 +1040,36 @@ components:
     ResumeProfile:
       type: object
       properties:
+        profile_revision:
+          type: string
+          description: API-only optimistic revision, omitted from stored/exported profiles
+        import_id:
+          type: string
+          description: API-only owned upload token for explicit reviewed CV-origin saves
+        application_answer_prefill:
+          type: array
+          description: API-only unconfirmed upload suggestions, absent from canonical exports
+          items:
+            type: object
+            properties:
+              topic_id: { type: string }
+              binding: { type: string }
+              value: {}
+              source: { type: string, enum: [cv_evidence, model_suggestion] }
+              review_state: { type: string }
+              needs_confirmation: { type: boolean }
+              warning: { type: string }
+              evidence:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    quote: { type: string }
+                    start: { type: integer }
+                    end: { type: integer }
+                    page: { type: integer }
+        application_defaults:
+          $ref: "#/components/schemas/ApplicationDefaults"
         personal_information:
           $ref: "#/components/schemas/PersonalInformation"
         education:
@@ -929,6 +1102,80 @@ components:
             type: string
         summary:
           type: string
+
+    ApplicationDefaults:
+      type: object
+      properties:
+        requires_sponsorship: { type: [boolean, "null"] }
+        future_requires_sponsorship: { type: [boolean, "null"] }
+        notice_period: { type: string }
+        availability: { type: string }
+        earliest_start_date: { type: string, format: date }
+        salary_expectation: { type: string }
+        salary_range: { type: [object, "null"], additionalProperties: true }
+        work_rights: { type: array, items: { type: object, additionalProperties: true } }
+        relocation: { type: [object, "null"], additionalProperties: true }
+        travel_conditions: { type: string }
+        working_hours: { type: string }
+        commute_conditions: { type: string }
+        additional_details: { type: string }
+        custom_answers: { type: array, items: { type: object, additionalProperties: true } }
+        form_answers: { type: object, additionalProperties: { type: string } }
+
+    ApplicationAnswersView:
+      type: object
+      required: [application_defaults, revision, profile_revision, sources, catalog]
+      properties:
+        application_defaults: { $ref: "#/components/schemas/ApplicationDefaults" }
+        revision: { type: string }
+        profile_revision: { type: string }
+        profile: { $ref: "#/components/schemas/ResumeProfile" }
+        preferences: { $ref: "#/components/schemas/WorkPreferences" }
+        sources:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              source: { type: string, enum: [cv, profile, preferences, candidate, confirmed] }
+              label: { type: string }
+              evidence: { type: array, items: { type: string } }
+              state: { type: string, enum: [unknown, confirmed, not_applicable] }
+        catalog:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              label: { type: string }
+              core: { type: boolean }
+
+    ApplicationAnswerReview:
+      type: object
+      required: [id, question, status, revision, profile_revision, lifecycle, use_status, occurrence_count]
+      properties:
+        id: { type: string }
+        question: { type: string }
+        status: { type: string, enum: [used, suggested, required] }
+        revision: { type: integer }
+        profile_revision: { type: string }
+        topic_id: { type: string }
+        country: { type: string }
+        employer: { type: string }
+        platform: { type: string }
+        job_id: { type: string }
+        job_title: { type: string }
+        answer_used: { type: string }
+        suggested_answer: { type: string }
+        source: { type: string }
+        reason: { type: string }
+        evidence: { type: array, items: { type: string } }
+        occurrence_count: { type: integer }
+        lifecycle: { type: string, enum: [active, resolved, dismissed, outdated, superseded] }
+        use_status: { type: string, enum: [not_used, filled, replaced, submitted, submission_unknown] }
+        created_at: { type: string }
+        updated_at: { type: string }
+        encounters: { type: array, maxItems: 50, items: { type: object, additionalProperties: true } }
 
     # ── Settings ───────────────────────────────────────────────────────
     LLMConfig:

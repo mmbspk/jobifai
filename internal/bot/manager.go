@@ -50,37 +50,38 @@ type botEntry struct {
 // Manager is the long-lived bot controller exposed to HTTP handlers.
 // It supports concurrent bots, one per user, and satisfies handler.BotController.
 type Manager struct {
-	mu               sync.Mutex
-	bots             map[string]*botEntry // key = userID
-	db               *sql.DB
-	cfgStore         ConfigReader
-	secrets          SecretsReader
-	sessions         *browser.SessionStore
-	tailor           ResumeTailor
-	scorer           JobScorer
-	halal            JobHalalChecker
-	renderer         ResumeRenderer
-	marketDir        string
-	ctx              context.Context         // lifetime context; cancelled on server shutdown
-	seekBrowsers     map[string]*rod.Browser // persistent Seek browser per user
-	linkedInBrowsers map[string]*rod.Browser // persistent LinkedIn browser per user
-	browserMu        sync.Mutex              // protects seekBrowsers + linkedInBrowsers
-	applyMu          sync.Mutex              // protects applyInProgress
-	applyInProgress  map[string]bool         // userID → AI Apply call in flight
-	quotaSessions    SessionQuota            // optional grace sessions for subscribers
-	llmQuota         quota.LLMGuard          // optional cost enforcement on bot LLM calls
-	llmPolicy        *llmpolicy.Store
-	llmCatalog       *pricing.Catalog
-	documents        *documents.Service
-	usageLedger      *usage.Ledger
-	retention        retentionAfterSubmit
-	llmReuse         *llmreuse.Store
-	formLearning     *FormLearningCoordinator
-	submitWorkGuard  documents.UserWorkGuard
-	userTypeChecker  func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
-	browserMeterSvc  MeterService                                 // optional browser automation billing service
-	runLogSink       *RunLogSink                                  // optional; persists dashboard-visible log lines
-	activePrepares   sync.Map                                     // userID+jobID -> prepID; in-process prepare exclusivity
+	mu                 sync.Mutex
+	bots               map[string]*botEntry // key = userID
+	db                 *sql.DB
+	cfgStore           ConfigReader
+	secrets            SecretsReader
+	sessions           *browser.SessionStore
+	tailor             ResumeTailor
+	scorer             JobScorer
+	halal              JobHalalChecker
+	renderer           ResumeRenderer
+	marketDir          string
+	ctx                context.Context         // lifetime context; cancelled on server shutdown
+	seekBrowsers       map[string]*rod.Browser // persistent Seek browser per user
+	linkedInBrowsers   map[string]*rod.Browser // persistent LinkedIn browser per user
+	browserMu          sync.Mutex              // protects seekBrowsers + linkedInBrowsers
+	applyMu            sync.Mutex              // protects applyInProgress
+	applyInProgress    map[string]bool         // userID → AI Apply call in flight
+	quotaSessions      SessionQuota            // optional grace sessions for subscribers
+	llmQuota           quota.LLMGuard          // optional cost enforcement on bot LLM calls
+	llmPolicy          *llmpolicy.Store
+	llmCatalog         *pricing.Catalog
+	documents          *documents.Service
+	usageLedger        *usage.Ledger
+	retention          retentionAfterSubmit
+	llmReuse           *llmreuse.Store
+	formLearning       *FormLearningCoordinator
+	applicationAnswers ApplicationAnswerRecorder
+	submitWorkGuard    documents.UserWorkGuard
+	userTypeChecker    func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
+	browserMeterSvc    MeterService                                 // optional browser automation billing service
+	runLogSink         *RunLogSink                                  // optional; persists dashboard-visible log lines
+	activePrepares     sync.Map                                     // userID+jobID -> prepID; in-process prepare exclusivity
 }
 
 type retentionAfterSubmit interface {
@@ -737,14 +738,14 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 			}
 			_, _ = m.db.Exec(
 				`UPDATE jobs_pending_review
-				 SET attempt_count = attempt_count + 1,
+				 SET attempt_count = attempt_count + CASE WHEN ? THEN 0 ELSE 1 END,
 				     resume_path = CASE WHEN ? != '' THEN ? ELSE resume_path END,
 				     cover_letter_path = CASE WHEN ? != '' THEN ? ELSE cover_letter_path END,
 				     resume_content_version_id = CASE WHEN ? != '' THEN ? ELSE resume_content_version_id END,
 				     cover_letter_content_version_id = CASE WHEN ? != '' THEN ? ELSE cover_letter_content_version_id END,
 				     document_refs_json = CASE WHEN ? != '' THEN ? ELSE document_refs_json END
 				 WHERE job_id = ? AND user_id = ?`,
-				savedResume, savedResume, savedCover, savedCover,
+				isCandidateDeferral(applyErr), savedResume, savedResume, savedCover, savedCover,
 				managerLazy.resumeVersionID, managerLazy.resumeVersionID,
 				managerLazy.coverVersionID, managerLazy.coverVersionID,
 				packJSON, packJSON,
@@ -1290,11 +1291,18 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		HalalChecker:    halal,
 		Renderer:        m.renderer,
 		Profile:         &profile,
-		MarketDir:       m.marketDir,
-		LLMTracker:      tracker,
-		Sessions:        m.sessions,
-		Documents:       m.documents,
-		Logger:          &runLogger,
+		ProfileLoader: func() *domain.ResumeProfile {
+			var latest domain.ResumeProfile
+			if err := m.cfgStore.Get(userID, "resume_profile", &latest); err != nil {
+				return nil
+			}
+			return &latest
+		},
+		MarketDir:  m.marketDir,
+		LLMTracker: tracker,
+		Sessions:   m.sessions,
+		Documents:  m.documents,
+		Logger:     &runLogger,
 	}
 
 	m.configureApplyEngine(&cfg, formAnswerC)

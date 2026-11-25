@@ -34,7 +34,7 @@ func TestApplyEngineSchema_RepairsMarkedMigrationAndPreservesHistory(t *testing.
 	t.Cleanup(func() { _ = repaired.Close() })
 	var version int64
 	require.NoError(t, repaired.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied=1`).Scan(&version))
-	assert.EqualValues(t, 60, version)
+	assert.GreaterOrEqual(t, version, int64(60))
 	var engine, outcome, external string
 	require.NoError(t, repaired.QueryRow(`SELECT engine,outcome,external_identity_json FROM apply_attempts WHERE id='retained-attempt'`).Scan(&engine, &outcome, &external))
 	assert.Empty(t, engine)

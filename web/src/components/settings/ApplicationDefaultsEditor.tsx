@@ -2,27 +2,27 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import type { ApplicationAnswer, ApplicationDefaults, ApplicationSalaryRange, ApplicationWorkRight } from '../../types'
 
-const controlClass = 'w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3 py-2 text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]'
+const controlClass = 'w-full min-h-11 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-2)] px-3 py-2 text-base sm:text-sm text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] focus:ring-2 focus:ring-[var(--color-accent)]/20'
 const gridClass = 'grid grid-cols-1 gap-3 sm:grid-cols-2'
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label className="flex flex-col gap-1 text-xs text-[var(--color-text-dim)]"><span>{label}</span>{children}</label>
 }
 
-function TextField({ label, value, onChange, multiline = false, type = 'text', placeholder }: { label: string; value?: string; onChange: (value: string) => void; multiline?: boolean; type?: string; placeholder?: string }) {
+export function TextField({ label, value, onChange, multiline = false, type = 'text', placeholder }: { label: string; value?: string; onChange: (value: string) => void; multiline?: boolean; type?: string; placeholder?: string }) {
   return <Field label={label}>{multiline
     ? <textarea className={controlClass} rows={3} value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} />
     : <input className={controlClass} type={type} value={value ?? ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} />
   }</Field>
 }
 
-function BoolField({ label, value, onChange, yes = 'Yes', no = 'No' }: { label: string; value?: boolean | null; onChange: (value: boolean | null) => void; yes?: string; no?: string }) {
+export function BoolField({ label, value, onChange, yes = 'Yes', no = 'No' }: { label: string; value?: boolean | null; onChange: (value: boolean | null) => void; yes?: string; no?: string }) {
   return <Field label={label}><select className={controlClass} value={value == null ? '' : value ? 'yes' : 'no'} onChange={e => onChange(e.target.value === '' ? null : e.target.value === 'yes')}>
     <option value="">Not specified</option><option value="yes">{yes}</option><option value="no">{no}</option>
   </select></Field>
 }
 
-function AmountField({ label, value, onChange }: { label: string; value?: number | null; onChange: (value: number | null) => void }) {
+export function AmountField({ label, value, onChange }: { label: string; value?: number | null; onChange: (value: number | null) => void }) {
   const [draft, setDraft] = useState(value == null ? '' : String(value))
   useEffect(() => {
     if (value == null || Number.isFinite(value)) setDraft(value == null ? '' : String(value))

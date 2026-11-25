@@ -19,9 +19,8 @@ func TestAdaptiveBudget_BatchesStopAtAttemptCapAndCancellation(t *testing.T) {
 		require.False(t, result.Paused)
 	}
 	result, err := interpreter.InterpretStep(ctx, snap, basicProfile())
-	require.NoError(t, err)
-	assert.True(t, result.Paused)
-	assert.Equal(t, PendingLimitExceeded, result.PauseReason)
+	require.ErrorIs(t, err, ErrLLMLimitExceeded)
+	assert.False(t, result.Paused, "attempt budget failures remain operational")
 	assert.Equal(t, 2, delegate.calls)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()

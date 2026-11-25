@@ -39,6 +39,12 @@ type lazyDocGen struct {
 	job                   linkedInJob
 	jobDesc               string
 	attemptID             string // set by each entry point; empty in processApprovedQueue path
+	answerPlan            map[string]FieldResolution
+	answerReviewIDs       map[string]string
+	answerSnapshot        StepSnapshot
+	answerProfileDigest   string
+	answerActiveKey       string
+	answerStepIndex       int
 	once                  sync.Once
 	resume                string
 	cover                 string
@@ -204,7 +210,8 @@ type Config struct {
 	AdaptiveLLM StepInterpreterLLM
 	// AdaptiveMapping is the read/write mapping store used by the adaptive engine to
 	// reuse verified form field resolutions across runs. Nil disables caching.
-	AdaptiveMapping MappingReadWriter
+	AdaptiveMapping    MappingReadWriter
+	ApplicationAnswers ApplicationAnswerRecorder
 	// EnableExternalATS enables the adaptive engine to follow external ATS links
 	// (currently Greenhouse) instead of queuing them for manual review.
 	// When false (the default), external listings use the existing manual-routing path.
@@ -2385,6 +2392,8 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		if noAdvanceCount > 0 {
 			fillOpts = FillFormStepOpts{IncludeAnsweredRadios: true, VisionFallback: true}
 		}
+		// Separate controls reused by different form steps in the use history.
+		lazy.answerStepIndex = i
 		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy, fillOpts)
 		if fillErr != nil {
 			if isFormFillFatalLLM(fillErr) {
@@ -2415,6 +2424,9 @@ func (b *Bot) easyApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		}
 
 		// Final pre-click guard: reject if quota expired during form-fill phase.
+		if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+			return err
+		}
 		if b.cfg.BrowserMeter != nil {
 			if !DestructiveActionAllowed(b.cfg.BrowserMeter) {
 				return fmt.Errorf("easy apply: %w", b.cfg.BrowserMeter.Err())

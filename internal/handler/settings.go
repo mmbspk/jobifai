@@ -44,23 +44,47 @@ func (h *SettingsHandlers) ResumeGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, p)
+	revision := documents.ProfileSnapshotHash(&p)
+	w.Header().Set("ETag", `"`+revision+`"`)
+	writeJSON(w, http.StatusOK, struct {
+		domain.ResumeProfile
+		ProfileRevision string `json:"profile_revision"`
+	}{p, revision})
 }
 
 // POST /api/settings/resume
 func (h *SettingsHandlers) ResumeSet(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
-	var p domain.ResumeProfile
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	var request struct {
+		domain.ResumeProfile
+		ProfileRevision string `json:"profile_revision"`
+		ImportID        string `json:"import_id,omitempty"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
+	p := request.ResumeProfile
 	if err := p.ApplicationDefaults.Validate(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
-	if err := h.svc.Config.Set(userID, keyResumeProfile, p); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": err.Error()})
+	var saveErr error
+	if h.svc.ApplicationAnswers != nil {
+		expected := strings.Trim(r.Header.Get("If-Match"), `"`)
+		if expected == "" {
+			expected = request.ProfileRevision
+		}
+		saveErr = h.svc.ApplicationAnswers.SaveProfileWithImport(r.Context(), userID, &p, expected, request.ImportID)
+	} else {
+		saveErr = h.svc.Config.Set(userID, keyResumeProfile, p)
+	}
+	if errors.Is(saveErr, domain.ErrApplicationAnswerConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{"message": saveErr.Error()})
+		return
+	}
+	if saveErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": saveErr.Error()})
 		return
 	}
 	if h.svc.Documents != nil {
@@ -111,7 +135,7 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 	if ext == ".yaml" || ext == ".yml" {
 		var p domain.ResumeProfile
 		if yamlErr := yaml.Unmarshal(raw, &p); yamlErr == nil && p.PersonalInformation.Name != "" {
-			writeJSON(w, http.StatusOK, &p)
+			h.writeProfileUpload(w, r, userID, &p, nil)
 			return
 		}
 	}
@@ -129,12 +153,43 @@ func (h *SettingsHandlers) ResumeUpload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	profile, err := extractor.ExtractFromText(r.Context(), text)
+	var profile *domain.ResumeProfile
+	var prefill []domain.CVAnswerPrefill
+	if evidenceExtractor, ok := extractor.(ResumeEvidenceExtractor); ok {
+		profile, prefill, err = evidenceExtractor.ExtractWithEvidence(r.Context(), text)
+	} else {
+		profile, err = extractor.ExtractFromText(r.Context(), text)
+	}
 	if err != nil {
 		unprocessable(w, "LLM extraction failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, profile)
+	h.writeProfileUpload(w, r, userID, profile, prefill)
+}
+
+func (h *SettingsHandlers) writeProfileUpload(w http.ResponseWriter, r *http.Request, userID string, profile *domain.ResumeProfile, prefill []domain.CVAnswerPrefill) {
+	var importID string
+	if h.svc.ApplicationAnswers != nil {
+		var err error
+		if importID, err = h.svc.ApplicationAnswers.CaptureImport(r.Context(), userID, profile, prefill); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not retain extracted answer evidence"})
+			return
+		}
+	}
+	var current domain.ResumeProfile
+	if err := h.svc.Config.Get(userID, keyResumeProfile, &current); err != nil && !errors.Is(err, domain.ErrNotFound) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not read current profile revision"})
+		return
+	}
+	if prefill == nil {
+		prefill = []domain.CVAnswerPrefill{}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		*domain.ResumeProfile
+		Prefill         []domain.CVAnswerPrefill `json:"application_answer_prefill"`
+		ProfileRevision string                   `json:"profile_revision"`
+		ImportID        string                   `json:"import_id,omitempty"`
+	}{profile, prefill, documents.ProfileSnapshotHash(&current), importID})
 }
 
 // GET /api/settings/resume/download

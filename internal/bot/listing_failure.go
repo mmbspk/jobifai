@@ -16,6 +16,8 @@ var errJobEvaluationFailed = errors.New("suitability evaluation could not be com
 
 func listingFailureMessage(err error) (code, message string) {
 	switch {
+	case isCandidateDeferral(err):
+		return "answer_confirmation", "This application needs a supplied fact. Other eligible jobs can continue; review Application answers in Profile."
 	case errors.Is(err, errLinkedInSubmissionUnknown):
 		return "submission_unknown", "Submission status is unknown. Check the original listing before retrying."
 	case errors.Is(err, errLinkedInIdentity):
@@ -56,7 +58,7 @@ func (b *Bot) recordListingFailure(ctx context.Context, platform domain.Platform
 		b.seenCache.mark(job.ID, seenSkipped)
 	}
 	log.Warn().Err(err).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("platform", string(platform)).Str("reason_code", code).Msg(message)
-	if code != "submission_unknown" && code != "evaluation_failed" {
+	if code != "submission_unknown" && code != "evaluation_failed" && code != "answer_confirmation" {
 		b.noteListingFailure(job.ID, code)
 	}
 }

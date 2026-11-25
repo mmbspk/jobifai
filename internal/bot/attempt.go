@@ -191,12 +191,12 @@ func classifyApplyOutcome(err error) AttemptOutcome {
 	switch {
 	case errors.Is(err, errLinkedInSubmissionUnknown), errors.Is(err, errSeekSubmitUnconfirmed), errors.Is(err, errATSAmbiguous):
 		return OutcomeSubmissionUnknown
-	case errors.Is(err, errAdaptiveQuestionReview):
-		return OutcomeBlocked
 	case errors.Is(err, context.Canceled):
 		return OutcomeCancelled
 	case errors.Is(err, context.DeadlineExceeded):
 		return OutcomeTimedOut
+	case isCandidateDeferral(err):
+		return OutcomeBlocked
 	default:
 		return OutcomeFailed
 	}
@@ -210,6 +210,9 @@ func classifyApplyOutcome(err error) AttemptOutcome {
 func finishAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage, reasonCode, reasonText string) {
 	if db == nil || ac == nil {
 		return
+	}
+	if outcome == OutcomeBlocked && stage == "apply" && reasonCode == "apply_error" && strings.Contains(reasonText, errAdaptiveQuestionReview.Error()) {
+		reasonCode = "answer_confirmation"
 	}
 	elapsedMS := time.Since(ac.StartedAt).Milliseconds()
 
@@ -247,6 +250,12 @@ func finishAttempt(db *sql.DB, ac *AttemptContext, outcome AttemptOutcome, stage
 		return
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
+		if reasonCode == "answer_confirmation" {
+			_, markErr := db.ExecContext(ctx, `UPDATE jobs_skipped SET failure_code='answer_confirmation' WHERE user_id=? AND id=?`, ac.UserID, ac.JobID)
+			if markErr != nil {
+				log.Warn().Err(markErr).Str("attempt_id", ac.AttemptID).Msg("attempt: could not mark answer deferral")
+			}
+		}
 		return
 	}
 	log.Warn().Str("attempt_id", ac.AttemptID).Str("outcome", string(outcome)).

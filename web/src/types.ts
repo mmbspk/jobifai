@@ -215,6 +215,7 @@ export interface Language {
 export interface ApplicationDefaults {
   form_answers?: Record<string, string>
   requires_sponsorship?: boolean | null
+  future_requires_sponsorship?: boolean | null
   notice_period?: string
   salary_expectation?: string
   availability?: string
@@ -223,6 +224,9 @@ export interface ApplicationDefaults {
   work_rights?: ApplicationWorkRight[]
   relocation?: ApplicationRelocation | null
   additional_details?: string
+  travel_conditions?: string
+  working_hours?: string
+  commute_conditions?: string
   custom_answers?: ApplicationAnswer[]
 }
 
@@ -241,6 +245,7 @@ export interface ApplicationWorkRight {
   country?: string
   status?: string
   requires_sponsorship?: boolean | null
+  future_requires_sponsorship?: boolean | null
   visa_type?: string
   visa_expiry_date?: string
   work_restrictions?: string
@@ -257,6 +262,8 @@ export interface ApplicationAnswer {
   question?: string
   answer?: string
   country?: string
+  employer?: string
+  job_id?: string
 }
 
 export interface ResumeProfile {

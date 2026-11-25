@@ -7,34 +7,35 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/user/jobifai/internal/applicationanswers"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/billing"
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/db"
+	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/handler"
 	"github.com/user/jobifai/internal/llm"
-	"github.com/user/jobifai/internal/llmreuse"
 	"github.com/user/jobifai/internal/llmpolicy"
-	"github.com/user/jobifai/internal/retention"
+	"github.com/user/jobifai/internal/llmreuse"
 	"github.com/user/jobifai/internal/pricing"
 	"github.com/user/jobifai/internal/quota"
-	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/resource"
 	"github.com/user/jobifai/internal/resume"
+	"github.com/user/jobifai/internal/retention"
+	"github.com/user/jobifai/internal/usage"
 	"github.com/user/jobifai/internal/version"
 	jobws "github.com/user/jobifai/internal/ws"
-	_ "github.com/user/jobifai/internal/db" // imported for IncrementUsage via alias below
 )
 
 func main() {
@@ -188,6 +189,9 @@ func main() {
 	}
 	botMgr := bot.NewManager(shutdownCtx, database, cfgStore, secretsStore, sessionStore, botTailor, botScorer, botHalalChecker, botRenderer, "resume_markets")
 	botMgr.SetRunLogSink(runLogSink)
+	answerSvc := applicationanswers.NewService(database, cfgStore)
+	answerSvc.ConfirmMapping = bot.ConfirmFormMappingTx
+	botMgr.SetApplicationAnswers(answerSvc)
 
 	botMgr.SetSessionQuota(quotaSvc)
 	botMgr.SetLLMQuota(quotaSvc)
@@ -267,21 +271,22 @@ func main() {
 	}
 	handler.BootstrapPublicAppURL(cfgStore, appBaseURL)
 	svc := &handler.Services{
-		StartedAt:    time.Now(),
-		DB:           database,
-		Config:       cfgStore,
-		Secrets:      secretsStore,
-		Extractor:    extractor,
-		Tailor:       tailor,
-		Renderer:     renderer,
-		BrowserMgr:   browserMgr,
-		SessionStore: sessionStore,
-		Logs:         logBroadcaster,
-		Bot:          botMgr,
-		MarketDir:    marketDir,
-		StylesDir:    documents.StylesDirRelative,
-		FileToText:   resume.TextFromReader,
-		FetchJobPage: resume.FetchJobPage,
+		StartedAt:          time.Now(),
+		DB:                 database,
+		Config:             cfgStore,
+		ApplicationAnswers: answerSvc,
+		Secrets:            secretsStore,
+		Extractor:          extractor,
+		Tailor:             tailor,
+		Renderer:           renderer,
+		BrowserMgr:         browserMgr,
+		SessionStore:       sessionStore,
+		Logs:               logBroadcaster,
+		Bot:                botMgr,
+		MarketDir:          marketDir,
+		StylesDir:          documents.StylesDirRelative,
+		FileToText:         resume.TextFromReader,
+		FetchJobPage:       resume.FetchJobPage,
 		MarketLoader: func(path, yamlFile string) (*domain.ResumeMarket, error) {
 			m, err := resume.LoadMarket(path)
 			if err != nil {
@@ -351,12 +356,12 @@ func main() {
 			}
 			return resume.NewHalalChecker(halalC)
 		},
-		Documents:  docSvc,
-		Retention:  retentionSvc,
-		BotRunLogs: runLogSink,
+		Documents:       docSvc,
+		Retention:       retentionSvc,
+		BotRunLogs:      runLogSink,
 		LLMReuseMetrics: llmReuseStore,
-		Resource: resourceSvc,
-		AppBaseURL:  appBaseURL,
+		Resource:        resourceSvc,
+		AppBaseURL:      appBaseURL,
 		QuestionAnswererFactory: func(userID string) handler.JobQuestionAnswerer {
 			_, _, _, client, _ := buildLLMDeps(userID, userTypeChecker, cfgStore, secretsStore, usageStore.For(userID), quotaSvc, usageLedger, policyStore, catalog, llmReuseStore)
 			if client == nil {

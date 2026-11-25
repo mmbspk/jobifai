@@ -86,3 +86,24 @@ describe('settingsApi.markets.list', () => {
     expect(spy.mock.calls[0][0]).toBe('/api/settings/markets')
   })
 })
+
+describe('settingsApi.applicationAnswers', () => {
+  test('patches only supplied topics with the fact revision', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) } as Response)
+    await settingsApi.applicationAnswers.set({ revision: 'fact-r3', topics: { sponsorship: { requires_sponsorship: false, future_requires_sponsorship: null } } })
+    expect(fetch).toHaveBeenCalledWith('/api/settings/application-answers', expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ revision: 'fact-r3', topics: { sponsorship: { requires_sponsorship: false, future_requires_sponsorship: null } } }) }))
+  })
+  test('encodes review cursors and owned review IDs and sends integer revisions', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => ({ ok: true, status: 200, json: async () => ({}) } as Response))
+    await settingsApi.applicationAnswers.reviews('older/page&2')
+    expect(fetch.mock.calls[0][0]).toBe('/api/settings/application-answers/reviews?cursor=older%2Fpage%262')
+    await settingsApi.applicationAnswers.confirm('owned/item', { answer: 'No', revision: 7 })
+    expect(fetch.mock.calls[1][0]).toBe('/api/settings/application-answers/reviews/owned%2Fitem/confirm')
+    expect(fetch.mock.calls[1][1]?.body).toBe(JSON.stringify({ answer: 'No', revision: 7 }))
+  })
+  test('marks notifications read separately from confirmation', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({ ok: true, status: 204 } as Response)
+    await settingsApi.applicationAnswers.markRead()
+    expect(fetch).toHaveBeenCalledWith('/api/settings/application-answers/reviews/read', expect.objectContaining({ method: 'POST', body: '{}' }))
+  })
+})
