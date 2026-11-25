@@ -137,7 +137,11 @@ func reviewEncounterIdentity(lazy *lazyDocGen, snap StepSnapshot, f SnapField, p
 	encounter := domain.ApplicationAnswerEncounter{FieldSignature: f.FieldSignature(snap.Platform), Question: f.Label, TopicID: answerTopic(f), Platform: snap.Platform, Employer: snap.EmployerKey, JobScope: f.JobContext, ProfileRevision: profileDigest(profile), UseStatus: "not_used"}
 	identity := f.ControlID
 	if identity == "" {
-		raw, _ := json.Marshal([]string{f.Group, f.Label, string(f.Type)})
+		ordinal := f.Ref
+		if f.BrowserField != nil {
+			ordinal = fmt.Sprint(f.BrowserField.Index)
+		}
+		raw, _ := json.Marshal([]string{f.Group, f.Label, string(f.Type), ordinal})
 		identity = string(raw)
 	}
 	instance, _ := json.Marshal(struct {
