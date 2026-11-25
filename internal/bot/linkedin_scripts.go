@@ -6,7 +6,7 @@ package bot
 const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false, expectedTitle = '', expectedCompany = '', controlOnly = false) => {
  const out = {kind:'unknown', reason:'identity_unverified', expected_id:expectedID,
    observed_id:'', identity_verified:false, label:'', destination:'', url:location.origin+location.pathname,
-   description:'', header_text:'', company:'', action:''};
+   description:'', description_source:'', description_candidates:0, header_text:'', company:'', action:''};
  const finish = () => controlOnly ? null : JSON.stringify(out);
  const pathID = u => { const m = u.pathname.match(/^\/jobs\/view\/([^/]+)/); return m ? m[1] : ''; };
  const current = new URL(location.href);
@@ -14,14 +14,16 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  const currentID = pathID(current);
  out.observed_id = currentID;
  if (!expectedID || currentID !== expectedID) return finish();
- const visible = el => {
-   const r = el.getBoundingClientRect();
-   if (r.width < 2 || r.height < 2) return false;
+ const displayed = el => {
    for(let n=el;n; n=n.parentElement || (n.getRootNode && n.getRootNode().host)) {
      const s = getComputedStyle(n);
      if(s.display==='none' || s.visibility==='hidden' || s.visibility==='collapse' || s.opacity==='0') return false;
    }
    return true;
+ };
+ const visible = el => {
+   const r = el.getBoundingClientRect();
+   return r.width >= 2 && r.height >= 2 && displayed(el);
  };
  const all = (root, selector) => {
    const found = [...root.querySelectorAll(selector)];
@@ -46,7 +48,10 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
      return pathID(u);
    } catch {return '';}
  };
- const descriptions=all(document,'[id^="JobDetails_AboutTheJob_"]').filter(el=>el.id==='JobDetails_AboutTheJob_'+expectedID && !excluded(el) && visible(el));
+ // A lazy section can have zero height until it is scrolled into view. Its
+ // explicit ID and rendered ancestry establish candidacy; hidden sections do not.
+ const descriptions=all(document,'[id^="JobDetails_AboutTheJob_"]').filter(el=>el.id==='JobDetails_AboutTheJob_'+expectedID && !excluded(el) && displayed(el));
+ out.description_candidates=descriptions.length;
  const applyControl = el => /\beasy apply\b|\blinkedin apply\b|^apply\b/i.test(((el.getAttribute('aria-label')||'')+' '+(el.innerText||el.textContent||'')).trim());
  const submittedStatusCard=(owner,description)=>{
    const statusExcluded=el=>excluded(el)||description.contains(el)||!!el.closest('.jobs-description,.jobs-description-content__text,[data-job-description]');
@@ -147,6 +152,24 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
    }).filter(Boolean);
    return ids.length > 0 && ids.every(id=>id===expectedID);
  });
+ // Explicitly verified headers need not contain job links or a manage banner.
+ // Associate their matching SDUI section only within a bounded shared owner,
+ // with no competing job/header evidence. Keep control lookup inside the header.
+ if(descriptions.length===1) for(const pane of verified) {
+   if(sduiPanes.has(pane)) continue;
+   const description=descriptions[0];
+   let owner=pane;
+   while(owner && !owner.contains(description)) owner=parent(owner);
+   if(!owner || owner===document.body || owner===document.documentElement || excluded(owner) || !displayed(owner)) continue;
+   if(verified.some(other=>other!==pane && owner.contains(other) && !pane.contains(other) && !other.contains(pane))) continue;
+   const evidence=[owner,...all(owner,'[id], [data-job-id], [data-job-detail-id], [data-entity-urn], a[href]')].filter(el=>!excluded(el) && (el===description || !description.contains(el)));
+   const conflict=evidence.some(el=>{
+     const marker=(el.id || '').match(/^JobDetails_[A-Za-z]+_(\d+)$/);
+     const id=ownID(el) || (marker && marker[1]) || '';
+     return (id && id!==expectedID) || (el.matches('a[href]') && jobLinkID(el) && jobLinkID(el)!==expectedID);
+   });
+   if(!conflict) sduiPanes.set(pane,{id:expectedID,description,source:'verified_job_section'});
+ }
  // Prefer the smallest verified top-card/pane, never a broad parent containing
  // multiple independent job panes.
  const scopes = verified.filter(root=>!verified.some(other=>other!==root && root.contains(other)));
@@ -213,6 +236,7 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  const sdui=sduiPanes.get(root);
  const desc=sdui ? sdui.description : descriptionRoot.querySelector(descriptionSelector);
  if(desc && (sdui || belongs(desc))) {
+   out.description_source=sdui ? (sdui.source || 'sdui') : 'scoped_legacy';
    if(expandDescription) {
      // Native SDUI descriptions can remain lazy placeholders until their
      // verified component enters the viewport. Scroll only this owned block.

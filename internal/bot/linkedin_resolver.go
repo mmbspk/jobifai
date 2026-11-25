@@ -21,19 +21,21 @@ var errLinkedInExternal = errors.New("LinkedIn listing requires external applica
 var errLinkedInUnknown = errors.New("LinkedIn application control could not be verified")
 
 type linkedInResolution struct {
-	Kind                string `json:"kind"`
-	Reason              string `json:"reason"`
-	ExpectedID          string `json:"expected_id"`
-	ObservedID          string `json:"observed_id"`
-	IdentityVerified    bool   `json:"identity_verified"`
-	Label               string `json:"label"`
-	Destination         string `json:"destination"`
-	URL                 string `json:"url"`
-	Description         string `json:"description"`
-	DescriptionExpanded bool   `json:"description_expanded"`
-	HeaderText          string `json:"header_text"`
-	Company             string `json:"company"`
-	Action              string `json:"action"`
+	Kind                  string `json:"kind"`
+	Reason                string `json:"reason"`
+	ExpectedID            string `json:"expected_id"`
+	ObservedID            string `json:"observed_id"`
+	IdentityVerified      bool   `json:"identity_verified"`
+	Label                 string `json:"label"`
+	Destination           string `json:"destination"`
+	URL                   string `json:"url"`
+	Description           string `json:"description"`
+	DescriptionSource     string `json:"description_source"`
+	DescriptionCandidates int    `json:"description_candidates"`
+	DescriptionExpanded   bool   `json:"description_expanded"`
+	HeaderText            string `json:"header_text"`
+	Company               string `json:"company"`
+	Action                string `json:"action"`
 }
 
 func linkedInExpectedID(raw string) string {
@@ -325,6 +327,7 @@ func waitLinkedInJob(ctx context.Context, page *rod.Page, expectedID string, job
 
 func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJob) (linkedInResolution, error) {
 	const minDescLen = 100
+	page = page.Context(ctx)
 	expectedID := linkedInExpectedID(job.URL)
 	r, err := evalLinkedInJob(page, expectedID, false, true, job)
 	if err != nil {
@@ -344,7 +347,9 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 	// to settle before we select the final description.
 	bestDesc := r.Description
 	expanded := r.DescriptionExpanded
-	deadline := time.NewTimer(2 * time.Second)
+	// Missing SDUI content may hydrate after several seconds in production.
+	// Usable, stable content still returns early; cancellation remains immediate.
+	deadline := time.NewTimer(8 * time.Second)
 	defer deadline.Stop()
 	wait := 400 * time.Millisecond
 	lastDescLen := -1
@@ -362,6 +367,8 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 				Str("job_id", job.ID).
 				Str("url", job.URL).
 				Int("best_desc_len", len([]rune(bestDesc))).
+				Int("description_candidates", r.DescriptionCandidates).
+				Str("description_source", r.DescriptionSource).
 				Bool("last_identity_verified", r.IdentityVerified).
 				Str("last_reason", r.Reason).
 				Str("last_observed_id", r.ObservedID).
