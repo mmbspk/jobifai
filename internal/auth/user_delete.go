@@ -19,6 +19,7 @@ var userDataTables = []string{
 	"jobs_skipped",
 	"jobs_pending_review",
 	"jobs_approved_queue",
+	"apply_url_tasks",
 	"usage_totals",
 	// LLM cache: must come before document tables so pending goroutines fail fast.
 	"llm_generation_cache",

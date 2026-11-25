@@ -33,6 +33,7 @@ func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "platform is required"})
 		return
 	}
+	defer h.svc.lockBrowserWork(userID)()
 
 	// Always use a persistent Chrome profile for Connect browser so Auth0 SPA
 	// localStorage survives. Prefer General settings path; otherwise ProfileDir default.
@@ -47,6 +48,17 @@ func (h *AuthHandlers) LaunchBrowser(w http.ResponseWriter, r *http.Request) {
 
 	// Free the platform profile: stop automation and close any cached headless
 	// browser still holding SingletonLock on this user-data-dir.
+	if h.svc.DB != nil {
+		var active int
+		if err := h.svc.DB.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM apply_url_tasks WHERE user_id=? AND state='running'", userID).Scan(&active); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "could not check active AI Apply work"})
+			return
+		}
+		if active > 0 {
+			conflict(w, "AI Apply is running. Wait for it to finish, or cancel it before reconnecting a job-site browser.")
+			return
+		}
+	}
 	if h.svc.Bot != nil {
 		h.svc.Bot.Stop(userID)
 		h.invalidatePlatformBrowser(userID, req.Platform)
@@ -93,6 +105,7 @@ func (h *AuthHandlers) BrowserPending(w http.ResponseWriter, r *http.Request) {
 // POST /api/auth/save-session
 func (h *AuthHandlers) SaveSession(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromCtx(r.Context())
+	defer h.svc.lockBrowserWork(userID)()
 	var req struct {
 		SessionID string `json:"session_id"`
 		Platform  string `json:"platform"`
