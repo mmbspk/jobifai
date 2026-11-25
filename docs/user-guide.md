@@ -188,6 +188,8 @@ For any tab that takes a job as input, you can provide:
 
 **Optional overrides** (collapsed by default): upload a different resume file, add LinkedIn/GitHub URLs, or add free-text instructions to steer the LLM (e.g. "emphasise project management experience").
 
+The LinkedIn and GitHub icons beside the Generate heading copy the links saved in your Profile. Hover over an icon for "Click to copy the link". A greyed-out icon means the link is missing; its tooltip explains that you can set it up in Profile. These shortcuts are available on every Generate tab.
+
 **Target Market**: select a market preset (e.g. Australia) to apply region-specific resume formatting and prompting rules.
 
 Successful resume and cover-letter generation automatically saves the content and PDF as a version in **Documents**. Click **Saved to Documents** to find it again, preview or download it, or explicitly choose it as a default. Saving does not run AI a second time. The Generate page's Download button remains available.

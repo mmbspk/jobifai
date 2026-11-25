@@ -16,6 +16,7 @@ import { Button } from '../components/ui/button'
 import { generationStore, useGenerationState, STEPS, type GenTab } from '../state/generationStore'
 import { useQuota } from '../hooks/useQuota'
 import { QuotaLimitNotice } from '../components/quota/QuotaLimitNotice'
+import { CopyProfileLinks } from '../components/profile/CopyProfileLinks'
 
 type Tab = GenTab | 'apply'
 
@@ -117,6 +118,7 @@ export function Generate() {
 
   const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
   const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
+  const { data: profile } = useQuery({ queryKey: ['settings-resume'], queryFn: settingsApi.resume.get })
   const { aiDisabled } = useQuota()
 
   const [marketTouched, setMarketTouched] = useState(false)
@@ -280,6 +282,7 @@ export function Generate() {
       <PageHeader
         title="Generate"
         description="Evaluate fit, tailor documents, answer questions, or apply from a job URL."
+        actions={<CopyProfileLinks linkedin={profile?.personal_information?.linkedin} github={profile?.personal_information?.github} />}
       />
 
       <QuotaLimitNotice />
