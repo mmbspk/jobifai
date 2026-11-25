@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/user/jobifai/internal/applicationanswers"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/domain"
 )
@@ -23,8 +24,10 @@ func answerError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, map[string]string{"message": err.Error()})
 	case errors.Is(err, domain.ErrNotFound):
 		notFound(w, "answer review not found")
-	default:
+	case errors.Is(err, applicationanswers.ErrInvalidInput):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "Could not complete the application answer request."})
 	}
 }
 

@@ -107,14 +107,27 @@ func cvCountryPattern(country string) string {
 func cvAliasPattern(aliases []string) string {
 	parts := make([]string, 0, len(aliases))
 	for _, alias := range aliases {
-		parts = append(parts, regexp.QuoteMeta(alias))
+		part := regexp.QuoteMeta(alias)
+		if len(alias) <= 3 || strings.Contains(alias, ".") {
+			part = `(?:^|[^\pL\pN-])` + part + `(?:$|[^\pL\pN-])`
+		} else {
+			part = `(?:^|[^\pL\pN])` + part + `(?:$|[^\pL\pN])`
+		}
+		parts = append(parts, part)
 	}
 	sort.Slice(parts, func(i, j int) bool { return len(parts[i]) > len(parts[j]) })
-	return `(?:^|[^\pL\pN])(?:` + strings.Join(parts, "|") + `)(?:$|[^\pL\pN])`
+	return `(?:` + strings.Join(parts, "|") + `)`
 }
 
 func cvCountryIn(text, country string) bool {
-	return strings.TrimSpace(country) != "" && regexp.MustCompile(`(?i)`+cvCountryPattern(country)).MatchString(text)
+	canonical := cvCanonicalCountry(country)
+	if canonical == "" {
+		return false
+	}
+	if matcher := cvCountryMatchers[canonical]; matcher != nil {
+		return matcher.MatchString(text)
+	}
+	return regexp.MustCompile("(?i)" + cvCountryPattern(canonical)).MatchString(text)
 }
 
 func cvCountryMatcher() *regexp.Regexp {
@@ -139,20 +152,14 @@ func cvCountryCount(text string) int {
 // directly. A separate address or another country's citizen clause cannot be
 // used to manufacture a claim for the requested jurisdiction.
 func cvCitizenshipClaim(text, country string) (negative, known bool) {
-	aliases, knownCountry := cvJurisdictions[cvCanonicalCountry(country)]
+	_, knownCountry := cvJurisdictions[cvCanonicalCountry(country)]
 	if !knownCountry {
 		return false, false
 	}
 	if cvCompoundCitizenshipFor(text, country, cvMixedCitizenship) {
 		return false, false
 	}
-	var parts []string
-	for _, alias := range aliases {
-		parts = append(parts, regexp.QuoteMeta(alias))
-	}
-	sort.Slice(parts, func(i, j int) bool { return len(parts[i]) > len(parts[j]) })
-	alias := `(?:` + strings.Join(parts, "|") + `)`
-	claim := regexp.MustCompile(`(?i)(?:^|[^\pL\pN])(?:` + alias + `\s+(?:citizen|permanent[- ]resident)|citizen\s+of\s+(?:the\s+)?` + alias + `|permanent[- ]resident\s+(?:of|in)\s+(?:the\s+)?` + alias + `)(?:$|[^\pL\pN])`)
+	claim := cvClaimMatchers[cvCanonicalCountry(country)]
 	bounds := claim.FindAllStringIndex(text, -1)
 	if len(bounds) != 1 {
 		return false, false
@@ -161,15 +168,15 @@ func cvCitizenshipClaim(text, country string) (negative, known bool) {
 	// Germany does not negate a separate Australian citizen declaration.
 	prefix := text[:bounds[0][0]]
 	clauseStart := strings.LastIndexAny(prefix, ";,.") + 1
-	joins := regexp.MustCompile(`(?i)\b(?:and|but)\b`).FindAllStringIndex(prefix, -1)
+	joins := cvClauseJoins.FindAllStringIndex(prefix, -1)
 	if len(joins) > 0 && joins[len(joins)-1][1] > clauseStart {
 		clauseStart = joins[len(joins)-1][1]
 	}
 	clause := text[clauseStart:bounds[0][1]]
-	if regexp.MustCompile(`(?i)\b(?:spouse|partner|parent|mother|father|wife|husband|family|child|children|clients?)\b`).MatchString(clause) {
+	if cvThirdParty.MatchString(clause) {
 		return false, false
 	}
-	negative = cvNegated.MatchString(clause) || regexp.MustCompile(`(?i)\b(?:neither|nor|non[- ])`).MatchString(clause)
+	negative = cvNegated.MatchString(clause) || cvClaimNegative.MatchString(clause)
 	return negative, true
 }
 
@@ -183,3 +190,34 @@ func cvExplicitRightStatus(statement, status, country string) bool {
 	}
 	return cvWorkRights.MatchString(status) && cvNegated.MatchString(statement) == cvNegated.MatchString(status)
 }
+
+func cvClaimMatcher(aliases []string) *regexp.Regexp {
+	var parts []string
+	for _, alias := range aliases {
+		parts = append(parts, regexp.QuoteMeta(alias))
+	}
+	sort.Slice(parts, func(i, j int) bool { return len(parts[i]) > len(parts[j]) })
+	alias := `(?:` + strings.Join(parts, "|") + `)`
+	return regexp.MustCompile(`(?i)(?:^|[^\pL\pN])(?:` + alias + `\s+(?:citizen|permanent[- ]resident)|citizen\s+of\s+(?:the\s+)?` + alias + `|permanent[- ]resident\s+(?:of|in)\s+(?:the\s+)?` + alias + `)(?:$|[^\pL\pN])`)
+}
+
+var cvCountryMatchers = func() map[string]*regexp.Regexp {
+	out := map[string]*regexp.Regexp{}
+	for country, aliases := range cvJurisdictions {
+		out[country] = regexp.MustCompile("(?i)" + cvAliasPattern(aliases))
+	}
+	return out
+}()
+var cvClaimMatchers = func() map[string]*regexp.Regexp {
+	out := map[string]*regexp.Regexp{}
+	for country, aliases := range cvJurisdictions {
+		out[country] = cvClaimMatcher(aliases)
+	}
+	return out
+}()
+
+var cvClauseJoins = regexp.MustCompile(`(?i)\b(?:and|but)\b`)
+
+var cvThirdParty = regexp.MustCompile(`(?i)\b(?:spouse|partner|parent|mother|father|wife|husband|family|child|children|clients?)\b`)
+
+var cvClaimNegative = regexp.MustCompile(`(?i)\b(?:neither|nor|non[- ])`)

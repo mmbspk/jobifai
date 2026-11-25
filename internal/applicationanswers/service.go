@@ -18,6 +18,17 @@ import (
 )
 
 var ErrConflict = domain.ErrApplicationAnswerConflict
+var ErrInvalidInput = errors.New("invalid application answer input")
+
+func invalidInput(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidInput, fmt.Sprintf(format, args...))
+}
+func validationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return invalidInput("%s", err)
+}
 
 type ConfigStore interface {
 	GetTx(context.Context, *sql.Tx, string, string, any) error
@@ -199,7 +210,7 @@ func (s *Service) view(ctx context.Context, tx *sql.Tx, userID string, p *domain
 func (s *Service) Patch(ctx context.Context, userID string, patch domain.ApplicationAnswersPatch) (domain.ApplicationAnswersView, error) {
 	var out domain.ApplicationAnswersView
 	if patch.Revision == "" || len(patch.Topics) == 0 || len(patch.Topics) > 11 {
-		return out, fmt.Errorf("provide a current revision and changed answer topics")
+		return out, invalidInput("provide a current revision and changed answer topics")
 	}
 	err := s.transaction(ctx, userID, func(tx *sql.Tx) error {
 		p, prefs, err := s.readFacts(ctx, tx, userID)
@@ -238,7 +249,7 @@ func (s *Service) Patch(ctx context.Context, userID string, patch domain.Applica
 func applyTopics(p *domain.ResumeProfile, topics map[string]json.RawMessage) error {
 	for id, raw := range topics {
 		if len(raw) > 32000 {
-			return fmt.Errorf("answer topic is too large")
+			return invalidInput("answer topic is too large")
 		}
 		var err error
 		switch id {
@@ -258,7 +269,7 @@ func applyTopics(p *domain.ResumeProfile, topics map[string]json.RawMessage) err
 					case "future_requires_sponsorship":
 						err = json.Unmarshal(value, &p.ApplicationDefaults.FutureRequiresSponsorship)
 					default:
-						err = fmt.Errorf("unknown sponsorship qualifier")
+						err = invalidInput("unknown sponsorship qualifier")
 					}
 				}
 			} else {
@@ -295,7 +306,9 @@ func applyTopics(p *domain.ResumeProfile, topics map[string]json.RawMessage) err
 			var v struct {
 				Conditions string `json:"commute_conditions"`
 			}
-			err = json.Unmarshal(raw, &v)
+			decoder := json.NewDecoder(strings.NewReader(string(raw)))
+			decoder.DisallowUnknownFields()
+			err = decoder.Decode(&v)
 			p.ApplicationDefaults.CommuteConditions = v.Conditions
 		case "credentials":
 			err = json.Unmarshal(raw, &p.Certifications)
@@ -308,13 +321,13 @@ func applyTopics(p *domain.ResumeProfile, topics map[string]json.RawMessage) err
 			p.ApplicationDefaults.CustomAnswers = v.Custom
 			p.ApplicationDefaults.AdditionalDetails = v.Details
 		default:
-			return fmt.Errorf("unknown answer topic %q", id)
+			return invalidInput("unknown answer topic %q", id)
 		}
 		if err != nil {
-			return fmt.Errorf("invalid %s answer", id)
+			return invalidInput("invalid %s answer", id)
 		}
 	}
-	return p.ApplicationDefaults.Validate()
+	return validationError(p.ApplicationDefaults.Validate())
 }
 
 func (s *Service) sourceTx(ctx context.Context, tx *sql.Tx, userID, id, source string, evidence []string, p *domain.ResumeProfile, prefs domain.WorkPreferences) error {
@@ -342,7 +355,7 @@ func (s *Service) SaveProfileWithImport(ctx context.Context, userID string, p *d
 			return ErrConflict
 		}
 		if err := p.ApplicationDefaults.Validate(); err != nil {
-			return err
+			return validationError(err)
 		}
 		if err := s.Config.SetTx(ctx, tx, userID, "resume_profile", p); err != nil {
 			return err
@@ -361,7 +374,7 @@ func (s *Service) SaveProfileWithImport(ctx context.Context, userID string, p *d
 	})
 }
 
-func (s *Service) syncReviewsTx(ctx context.Context, tx *sql.Tx, userID string, old, p *domain.ResumeProfile, prefs domain.WorkPreferences) error {
+func (s *Service) syncReviewsTx(ctx context.Context, tx *sql.Tx, userID string, old, p *domain.ResumeProfile, prefs domain.WorkPreferences, confirming ...string) error {
 	oldRevision, newRevision := ProfileRevision(old), ProfileRevision(p)
 	if oldRevision == newRevision {
 		return nil
@@ -385,6 +398,9 @@ func (s *Service) syncReviewsTx(ctx context.Context, tx *sql.Tx, userID string, 
 		if err := rows.Scan(&id, &topic, &proposal); err != nil {
 			_ = rows.Close()
 			return err
+		}
+		if len(confirming) > 0 && id == confirming[0] {
+			continue
 		}
 		if changed[topic] || changed["additional_answers"] || cvChanged && proposal != "" {
 			stale = append(stale, id)
@@ -431,7 +447,7 @@ func (s *Service) RecordSources(ctx context.Context, userID string, sources map[
 				continue
 			}
 			if topicValue(&p, prefs, id) == nil {
-				return fmt.Errorf("unknown source topic")
+				return invalidInput("unknown source topic")
 			}
 			if err := s.sourceTx(ctx, tx, userID, id, "cv", info.Evidence, &p, prefs); err != nil {
 				return err

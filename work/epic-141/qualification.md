@@ -28,3 +28,16 @@ Scope: guided Profile onboarding, background confirmation and preserved PR #138 
 Fixture success does not establish that every future jobsite form works or validate the separate production LinkedIn description-reading issue. That investigation remains in another chat. Native identity, approved-document, one-time Submit and unknown-outcome safeguards stay active.
 
 For UI rollback, retain the compatible backend/schema and candidate/history records. An older backend serializer can omit newly introduced fields on save; protect edits or preserve that serialization support before rolling it back. Do not use a destructive schema downgrade to undo the UI.
+
+### Claude review follow-up
+
+- Added regression coverage for topic-bearing confirmations, affected-review
+  invalidation, unrelated sequential confirmation, and immutable encounter revisions.
+- Resolved reviews stay quiet only for the confirmed scoped answer at the saved
+  factual revision. Changed proposals/facts reopen and notify; actual-use history remains.
+- Added malformed/null CV pointer defenses, present-tense rights hydration,
+  compensation-specific conflict detection, precompiled jurisdiction/claim matching,
+  and short-country alias boundary regressions.
+- Input errors are distinct from internal errors; encounter ID collision handling
+  is user scoped and rolls back without creating another user's review.
+- UI conflicts retain drafts and require refresh; transient failures remain retryable.

@@ -31,15 +31,17 @@ var cvTopicBindings = map[string][]string{
 }
 
 var (
-	cvHostileText = regexp.MustCompile(`(?i)ignore\s+(all|any|the|previous|prior)|system\s+prompt|(?:return|output|emit|generate)\s+(?:only\s+)?(?:json|true|false)|(?:invent|fabricate|pretend)|(?:set|populate|override)\s+(?:application|requires|work_rights)|(?:claim|declare|assume|answer|write|say|mark|fill)\s+(?:that\s+|yes|no|true|false|["']|I\s+)|instructions?\s*:`)
-	cvUncertain   = regexp.MustCompile(`(?i)\b(may|might|possibly|perhaps|depending|subject to|if|conditional|pending|formerly|previously|expired|historical|until|currently|at present|for now|in future|future|only|unless|or|maximum|minimum|up to|at least)\b`)
-	cvNegated     = regexp.MustCompile(`(?i)\b(no|not|never|cannot|can't|unable|without|don't|doesn't|do not)\b`)
-	cvDate        = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}\b`)
-	cvNotice      = regexp.MustCompile(`(?i)\bnotice\s+(?:period|requirement)|\b(?:weeks?|months?|days?)['’]?\s+notice\b`)
-	cvWorkRights  = regexp.MustCompile(`(?i)\b(?:authori[sz]ed|eligible|entitled|permission|right)\s+(?:legally\s+)?(?:to\s+)?work\b|\bwork\s+(?:authori[sz]ation|rights?|permit|visa)\b`)
-	cvSalary      = regexp.MustCompile(`(?i)\b(?:salary|pay|compensation|remuneration|rate)\b`)
-	cvStart       = regexp.MustCompile(`(?i)\b(?:available|availability)(?:\s+to\s+(?:start|work)|\s+from|\s+immediately|\s*:)|\b(?:start date|start from|can start|able to start)\b`)
-	cvCountry     = cvCountryMatcher()
+	cvHostileText  = regexp.MustCompile(`(?i)ignore\s+(all|any|the|previous|prior)|system\s+prompt|(?:return|output|emit|generate)\s+(?:only\s+)?(?:json|true|false)|(?:invent|fabricate|pretend)|(?:set|populate|override)\s+(?:application|requires|work_rights)|(?:claim|declare|assume|answer|write|say|mark|fill)\s+(?:that\s+|yes|no|true|false|["']|I\s+)|instructions?\s*:`)
+	cvUncertain    = regexp.MustCompile(`(?i)\b(may|might|possibly|perhaps|depending|subject to|if|conditional|pending|formerly|previously|expired|historical|until|for now|in future|future|only|unless|or|maximum|minimum|up to|at least)\b`)
+	cvNegated      = regexp.MustCompile(`(?i)\b(no|not|never|cannot|can't|unable|without|don't|doesn't|do not)\b`)
+	cvDate         = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}\b`)
+	cvNotice       = regexp.MustCompile(`(?i)\bnotice\s+(?:period|requirement)|\b(?:weeks?|months?|days?)['’]?\s+notice\b`)
+	cvWorkRights   = regexp.MustCompile(`(?i)\b(?:authori[sz]ed|eligible|entitled|permission|right)\s+(?:legally\s+)?(?:to\s+)?work\b|\bwork\s+(?:authori[sz]ation|rights?|permit|visa)\b`)
+	cvPresent      = regexp.MustCompile(`(?i)\b(?:currently|at present)\b`)
+	cvCompensation = regexp.MustCompile(`(?i)\b(?:salary|pay|compensation|remuneration|(?:hourly|daily|contract|day|hour|pay)\s+rate)\b|(?:[$€£]|\b(?:AUD|USD|GBP|EUR|NZD)\b)\s*[0-9]|\brate\b.{0,80}\bper\s+(?:hour|day|week|month|year)\b`)
+	cvSalary       = regexp.MustCompile(`(?i)\b(?:salary|pay|compensation|remuneration|rate)\b`)
+	cvStart        = regexp.MustCompile(`(?i)\b(?:available|availability)(?:\s+to\s+(?:start|work)|\s+from|\s+immediately|\s*:)|\b(?:start date|start from|can start|able to start)\b`)
+	cvCountry      = cvCountryMatcher()
 )
 
 // validateCVAnswers treats both the model's value and its citation as untrusted.
@@ -139,6 +141,10 @@ func cvEvidence(text string, supplied []domain.CVAnswerEvidence) ([]domain.CVAns
 
 func validateCVValue(item domain.CVAnswerPrefill, statement string) (clear, valid bool) {
 	clear = !cvUncertain.MatchString(statement)
+	// Present-tense rights establish current eligibility. Other temporal facts need review.
+	if strings.TrimPrefix(item.Binding, cvBindingPrefix) != "work_rights" && cvPresent.MatchString(statement) {
+		clear = false
+	}
 	suffix := strings.TrimPrefix(item.Binding, cvBindingPrefix)
 	switch suffix {
 	case "requires_sponsorship":
@@ -420,7 +426,7 @@ func cvHasConflict(text string, item domain.CVAnswerPrefill, statement string) b
 				return true
 			}
 		case "salary":
-			if cvSalary.MatchString(line) {
+			if cvCompensation.MatchString(line) {
 				return true
 			}
 		case "relocation":
@@ -446,6 +452,9 @@ func cvHasConflict(text string, item domain.CVAnswerPrefill, statement string) b
 }
 
 func applyCVValue(defaults *domain.ApplicationDefaults, item domain.CVAnswerPrefill) {
+	if defaults == nil || len(item.Evidence) == 0 || !json.Valid(item.Value) || strings.TrimSpace(string(item.Value)) == "null" {
+		return
+	}
 	suffix := strings.TrimPrefix(item.Binding, cvBindingPrefix)
 	switch suffix {
 	case "requires_sponsorship":
@@ -465,13 +474,28 @@ func applyCVValue(defaults *domain.ApplicationDefaults, item domain.CVAnswerPref
 	case "salary_expectation":
 		_ = json.Unmarshal(item.Value, &defaults.SalaryExpectation)
 	case "salary_range":
-		_ = json.Unmarshal(item.Value, &defaults.SalaryRange)
-		defaults.SalaryRange.Details = item.Evidence[0].Quote
+		var value *domain.ApplicationSalaryRange
+		decoder := json.NewDecoder(strings.NewReader(string(item.Value)))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&value) != nil || value == nil {
+			return
+		}
+		value.Details = item.Evidence[0].Quote
+		defaults.SalaryRange = value
 	case "relocation":
-		_ = json.Unmarshal(item.Value, &defaults.Relocation)
-		defaults.Relocation.Details = item.Evidence[0].Quote
+		var value *domain.ApplicationRelocation
+		decoder := json.NewDecoder(strings.NewReader(string(item.Value)))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&value) != nil || value == nil {
+			return
+		}
+		value.Details = item.Evidence[0].Quote
+		defaults.Relocation = value
 	case "work_rights":
-		right, _ := cvSingleWorkRight(item.Value)
+		right, ok := cvSingleWorkRight(item.Value)
+		if !ok {
+			return
+		}
 		right.Details = item.Evidence[0].Quote
 		for i := range defaults.WorkRights {
 			current := &defaults.WorkRights[i]

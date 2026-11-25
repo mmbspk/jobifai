@@ -6,8 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -19,16 +17,16 @@ import (
 func (s *Service) RecordEncounter(ctx context.Context, userID string, e domain.ApplicationAnswerEncounter) (string, error) {
 	var reviewID string
 	if e.ID == "" || e.Question == "" || (e.Status != "required" && e.Status != "suggested") || e.ProfileRevision == "" {
-		return "", fmt.Errorf("invalid answer encounter")
+		return "", invalidInput("invalid answer encounter")
 	}
 	if e.AnswerUsed != "" || e.UseStatus != "" && e.UseStatus != "not_used" {
-		return "", fmt.Errorf("record answer use only after verified filling")
+		return "", invalidInput("record answer use only after verified filling")
 	}
 	if e.FieldSignature == "" && e.GroupKey == "" {
-		return "", fmt.Errorf("answer encounter requires a scoped field signature")
+		return "", invalidInput("answer encounter requires a scoped field signature")
 	}
 	if len(e.ProposedAnswer) > 8000 || len(e.Evidence) > 20 {
-		return "", fmt.Errorf("answer evidence is too large")
+		return "", invalidInput("answer evidence is too large")
 	}
 	e.Evidence = append([]string(nil), e.Evidence...)
 	for i := range e.Evidence {
@@ -37,7 +35,7 @@ func (s *Service) RecordEncounter(ctx context.Context, userID string, e domain.A
 	group := encounterGroup(e)
 	err := s.transaction(ctx, userID, func(tx *sql.Tx) error {
 		var owner string
-		err := tx.QueryRowContext(ctx, `SELECT user_id,review_id FROM application_answer_encounters WHERE id=?`, e.ID).Scan(&owner, &reviewID)
+		err := tx.QueryRowContext(ctx, `SELECT user_id,review_id FROM application_answer_encounters WHERE id=? AND user_id=?`, e.ID, userID).Scan(&owner, &reviewID)
 		if err == nil {
 			if owner != userID {
 				return domain.ErrNotFound
@@ -58,14 +56,15 @@ func (s *Service) RecordEncounter(ctx context.Context, userID string, e domain.A
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		var previousLifecycle, previousFact, previousProposal string
-		groupErr := tx.QueryRowContext(ctx, `SELECT r.lifecycle,COALESCE(e.profile_revision,''),COALESCE(e.proposed_answer,'') FROM application_answer_reviews r LEFT JOIN application_answer_encounters e ON e.seq=(SELECT MAX(latest.seq) FROM application_answer_encounters latest WHERE latest.user_id=r.user_id AND latest.review_id=r.id) WHERE r.user_id=? AND r.group_key=?`, userID, group).Scan(&previousLifecycle, &previousFact, &previousProposal)
+		var previousLifecycle, previousFact, previousProposal, confirmedAnswer string
+		groupErr := tx.QueryRowContext(ctx, `SELECT r.lifecycle,CASE WHEN r.lifecycle='resolved' THEN r.profile_revision ELSE COALESCE(e.profile_revision,'') END,COALESCE(e.proposed_answer,''),r.confirmed_answer FROM application_answer_reviews r LEFT JOIN application_answer_encounters e ON e.seq=(SELECT MAX(latest.seq) FROM application_answer_encounters latest WHERE latest.user_id=r.user_id AND latest.review_id=r.id) WHERE r.user_id=? AND r.group_key=?`, userID, group).Scan(&previousLifecycle, &previousFact, &previousProposal, &confirmedAnswer)
 		if groupErr != nil && !errors.Is(groupErr, sql.ErrNoRows) {
 			return groupErr
 		}
 		keepDismissed := previousLifecycle == "dismissed" && previousFact == e.ProfileRevision && previousProposal == e.ProposedAnswer
-		notify := !keepDismissed && (errors.Is(groupErr, sql.ErrNoRows) || previousLifecycle != "active")
-		_, err = tx.ExecContext(ctx, `INSERT INTO application_answer_reviews(id,user_id,group_key,question,status,topic_id,country,employer,platform,context_key,job_scope,profile_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,group_key) DO UPDATE SET question=excluded.question,status=excluded.status,profile_revision=excluded.profile_revision,lifecycle=CASE WHEN ? THEN 'dismissed' ELSE 'active' END,revision=application_answer_reviews.revision+1,updated_at=CURRENT_TIMESTAMP,resolved_at=CASE WHEN ? THEN application_answer_reviews.resolved_at ELSE NULL END`, uuid.NewString(), userID, group, cleanText(e.Question, 2000), e.Status, e.TopicID, cleanText(e.Country, 120), cleanText(e.Employer, 240), cleanText(e.Platform, 40), e.ContextKey, e.JobScope, e.ProfileRevision, keepDismissed, keepDismissed)
+		keepResolved := previousLifecycle == "resolved" && previousFact == e.ProfileRevision && confirmedAnswer == e.ProposedAnswer
+		notify := !keepDismissed && !keepResolved && (errors.Is(groupErr, sql.ErrNoRows) || previousLifecycle != "active")
+		_, err = tx.ExecContext(ctx, `INSERT INTO application_answer_reviews(id,user_id,group_key,question,status,topic_id,country,employer,platform,context_key,job_scope,profile_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,group_key) DO UPDATE SET question=excluded.question,status=excluded.status,profile_revision=excluded.profile_revision,lifecycle=CASE WHEN ? THEN 'dismissed' WHEN ? THEN 'resolved' ELSE 'active' END,revision=application_answer_reviews.revision+1,updated_at=CURRENT_TIMESTAMP,resolved_at=CASE WHEN ? THEN application_answer_reviews.resolved_at ELSE NULL END`, uuid.NewString(), userID, group, cleanText(e.Question, 2000), e.Status, e.TopicID, cleanText(e.Country, 120), cleanText(e.Employer, 240), cleanText(e.Platform, 40), e.ContextKey, e.JobScope, e.ProfileRevision, keepDismissed, keepResolved, keepDismissed || keepResolved)
 		if err != nil {
 			return err
 		}
@@ -76,9 +75,16 @@ func (s *Service) RecordEncounter(ctx context.Context, userID string, e domain.A
 		if e.Evidence == nil {
 			raw = []byte("[]")
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO application_answer_encounters(id,review_id,user_id,mapping_id,field_signature,field_instance_key,attempt_id,job_id,job_title,question,proposed_answer,evidence_json,reason,source,profile_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, e.ID, reviewID, userID, e.MappingID, e.FieldSignature, e.FieldInstanceKey, e.AttemptID, e.JobID, cleanText(e.JobTitle, 240), cleanText(e.Question, 2000), e.ProposedAnswer, string(raw), cleanText(e.Reason, 1000), e.Source, e.ProfileRevision)
+		result, err := tx.ExecContext(ctx, `INSERT INTO application_answer_encounters(id,review_id,user_id,mapping_id,field_signature,field_instance_key,attempt_id,job_id,job_title,question,proposed_answer,evidence_json,reason,source,profile_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`, e.ID, reviewID, userID, e.MappingID, e.FieldSignature, e.FieldInstanceKey, e.AttemptID, e.JobID, cleanText(e.JobTitle, 240), cleanText(e.Question, 2000), e.ProposedAnswer, string(raw), cleanText(e.Reason, 1000), e.Source, e.ProfileRevision)
 		if err != nil {
 			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrConflict
 		}
 		if notify {
 			_, err = tx.ExecContext(ctx, `UPDATE application_answer_notifications SET generation=generation+1 WHERE user_id=?`, userID)
@@ -92,7 +98,7 @@ func (s *Service) RecordEncounter(ctx context.Context, userID string, e domain.A
 // Submission status is derived from the owned apply_attempts record separately.
 func (s *Service) MarkFilled(ctx context.Context, userID, encounterID, answer string) error {
 	if strings.TrimSpace(answer) == "" || len(answer) > 8000 {
-		return fmt.Errorf("provide the exact filled answer")
+		return invalidInput("provide the exact filled answer")
 	}
 	return s.transaction(ctx, userID, func(tx *sql.Tx) error {
 		var old, state, reviewID, attemptID, instance string
@@ -174,17 +180,17 @@ func (s *Service) ListReviews(ctx context.Context, userID, cursor, state string,
 	if state == "history" {
 		condition = "r.lifecycle<>'active'"
 	} else if state != "" && state != "active" {
-		return p, fmt.Errorf("invalid review state")
+		return p, invalidInput("invalid review state")
 	}
 	args := []any{userID}
 	if cursor != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(cursor)
 		if err != nil || len(raw) > 300 {
-			return p, fmt.Errorf("invalid review cursor")
+			return p, invalidInput("invalid review cursor")
 		}
 		parts := strings.SplitN(string(raw), "|", 2)
 		if len(parts) != 2 {
-			return p, fmt.Errorf("invalid review cursor")
+			return p, invalidInput("invalid review cursor")
 		}
 		condition += " AND (r.updated_at<? OR (r.updated_at=? AND r.id<?))"
 		args = append(args, parts[0], parts[0], parts[1])
@@ -255,7 +261,7 @@ func (s *Service) Confirm(ctx context.Context, userID, id string, request domain
 	var out domain.ApplicationAnswersView
 	answer := strings.TrimSpace(request.Answer)
 	if request.Revision < 1 || answer == "" || len(answer) > 2000 {
-		return out, fmt.Errorf("provide a reviewed answer of 1–2000 characters and current revision")
+		return out, invalidInput("provide a reviewed answer of 1–2000 characters and current revision")
 	}
 	err := s.transaction(ctx, userID, func(tx *sql.Tx) error {
 		var revision int64
@@ -278,10 +284,23 @@ func (s *Service) Confirm(ctx context.Context, userID, id string, request domain
 		if observed != current || request.ProfileRevision != "" && request.ProfileRevision != current {
 			return ErrConflict
 		}
+		rebaseFrom := current
 		if len(request.Topics) > 0 {
+			var old domain.ResumeProfile
+			raw, err := json.Marshal(p)
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(raw, &old); err != nil {
+				return err
+			}
 			if err := applyTopics(&p, request.Topics); err != nil {
 				return err
 			}
+			if err := s.syncReviewsTx(ctx, tx, userID, &old, &p, prefs, id); err != nil {
+				return err
+			}
+			rebaseFrom = ProfileRevision(&p)
 			for topic := range request.Topics {
 				if err := s.sourceTx(ctx, tx, userID, topic, "confirmed", nil, &p, prefs); err != nil {
 					return err
@@ -326,7 +345,7 @@ func (s *Service) Confirm(ctx context.Context, userID, id string, request domain
 					return err
 				}
 				if jobID == "" {
-					return fmt.Errorf("job-specific answer requires its application identity")
+					return invalidInput("job-specific answer requires its application identity")
 				}
 			}
 			// Candidate-authored answer remains scoped to its question and country. It
@@ -345,23 +364,23 @@ func (s *Service) Confirm(ctx context.Context, userID, id string, request domain
 			}
 		}
 		if err := p.ApplicationDefaults.Validate(); err != nil {
-			return err
+			return validationError(err)
 		}
 		if err := s.Config.SetTx(ctx, tx, userID, "resume_profile", &p); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE application_answer_reviews SET lifecycle='resolved',revision=revision+1,resolved_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND revision=?`, id, userID, revision); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE application_answer_reviews SET profile_revision=?,confirmed_answer=?,lifecycle='resolved',revision=revision+1,resolved_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND revision=?`, ProfileRevision(&p), answer, id, userID, revision); err != nil {
 			return err
 		}
 		if err := s.releaseAnswerDeferralsTx(ctx, tx, userID, id); err != nil {
 			return err
 		}
-		if len(request.Topics) == 0 {
+		{
 			// Independent confirmations append/update only this group's owned
 			// mapping facts. Rebase other unchanged decisions so a candidate can
 			// review several items without a refresh/conflict after every click.
 			// Encounter evidence keeps its original observed revision forever.
-			_, err := tx.ExecContext(ctx, `UPDATE application_answer_reviews SET profile_revision=? WHERE user_id=? AND lifecycle='active' AND profile_revision=? AND id<>? AND id NOT IN (SELECT other.review_id FROM application_answer_encounters other JOIN application_answer_encounters current ON current.mapping_id=other.mapping_id AND current.user_id=other.user_id WHERE current.review_id=? AND current.user_id=? AND current.mapping_id<>'')`, ProfileRevision(&p), userID, current, id, id, userID)
+			_, err := tx.ExecContext(ctx, `UPDATE application_answer_reviews SET profile_revision=? WHERE user_id=? AND lifecycle='active' AND profile_revision=? AND id<>? AND id NOT IN (SELECT other.review_id FROM application_answer_encounters other JOIN application_answer_encounters current ON current.mapping_id=other.mapping_id AND current.user_id=other.user_id WHERE current.review_id=? AND current.user_id=? AND current.mapping_id<>'')`, ProfileRevision(&p), userID, rebaseFrom, id, id, userID)
 			if err != nil {
 				return err
 			}
@@ -395,9 +414,6 @@ func (s *Service) MarkRead(ctx context.Context, userID string) error {
 		return err
 	})
 }
-
-// ParseLimit bounds work and payload size even for accounts with many variants.
-func ParseLimit(raw string) int { n, _ := strconv.Atoi(raw); return n }
 
 func encounterGroup(e domain.ApplicationAnswerEncounter) string {
 	key := e.GroupKey

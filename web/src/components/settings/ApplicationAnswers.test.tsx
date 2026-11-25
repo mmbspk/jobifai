@@ -1,3 +1,4 @@
+import { ApiError } from '../../api/client'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -121,7 +122,7 @@ describe('Application answers', () => {
     const user = userEvent.setup()
     const item = { id: 'review', question: 'Can you travel?', status: 'used' as const, answer_used: 'Occasionally', revision: 1, use_status: 'submission_unknown' as const }
     vi.mocked(settingsApi.applicationAnswers.reviews).mockResolvedValue({ items: [item], unresolved_count: 1, unread_count: 0 })
-    vi.mocked(settingsApi.applicationAnswers.confirm).mockRejectedValue(new Error('Review changed; reload'))
+    vi.mocked(settingsApi.applicationAnswers.confirm).mockRejectedValue(new ApiError(409, 'Review changed; reload'))
     const client = mount()
     await user.click(screen.getByRole('tab', { name: /Needs confirmation/ }))
     await screen.findByText('Answer filled — submission outcome unknown')
@@ -134,5 +135,25 @@ describe('Application answers', () => {
     await waitFor(() => expect(settingsApi.applicationAnswers.confirm).toHaveBeenCalledWith('review', { answer: 'With two weeks notice', revision: 1 }))
     await screen.findByText(/Review changed; reload/)
     expect(screen.getByLabelText('Answer for future use')).toHaveValue('With two weeks notice')
+    expect(screen.getByRole('button', { name: 'Save and confirm for future use' })).toBeDisabled()
+    vi.mocked(settingsApi.applicationAnswers.review).mockResolvedValue({ ...item, revision: 2, profile_revision: 'fresh' })
+    await user.click(screen.getByRole('button', { name: 'Refresh review before retrying' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save and confirm for future use' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Save and confirm for future use' }))
+    await waitFor(() => expect(settingsApi.applicationAnswers.confirm).toHaveBeenLastCalledWith('review', { answer: 'With two weeks notice', revision: 2, profile_revision: 'fresh' }))
   })
+  it('allows retry after a transient confirmation failure', async () => {
+    const user = userEvent.setup()
+    const item = { id: 'transient', question: 'Travel?', status: 'suggested' as const, suggested_answer: 'Occasionally', revision: 1 }
+    vi.mocked(settingsApi.applicationAnswers.reviews).mockResolvedValue({ items: [item], unresolved_count: 1, unread_count: 0 })
+    vi.mocked(settingsApi.applicationAnswers.confirm).mockRejectedValueOnce(new ApiError(500, 'Temporary outage')).mockResolvedValue({ value: saved.application_defaults, revision: 'r2' })
+    mount()
+    await user.click(screen.getByRole('tab', { name: /Needs confirmation/ }))
+    await user.click(await screen.findByRole('button', { name: 'Confirm for future use' }))
+    await screen.findByText(/Temporary outage/)
+    expect(screen.getByRole('button', { name: 'Confirm for future use' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Confirm for future use' }))
+    await waitFor(() => expect(settingsApi.applicationAnswers.confirm).toHaveBeenCalledTimes(2))
+  })
+
 })

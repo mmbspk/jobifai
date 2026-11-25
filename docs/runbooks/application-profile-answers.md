@@ -87,3 +87,19 @@ rollback must protect these edits or retain their serialization support. Preserv
 candidate facts, review evidence and application histories, and do not downgrade
 the schema to undo UI behavior. Engine defaults, document approval and submission
 policies remain as configured.
+
+Review follow-up: topic edits during confirmation invalidate affected reviews and
+rebase unrelated active items without rewriting encounter evidence. The review
+being explicitly confirmed is exempt from this invalidation. Shared mapping
+reviews retain their conflict guard. Migration 062 records the exact confirmed
+answer and post-confirmation factual revision; an identical scoped re-encounter
+at that revision stays resolved, while a changed answer or facts reopens review.
+Legacy resolved rows with no stored confirmation are conservatively reviewed again.
+
+Work-arrangement topic writes accept commute conditions only. Remote/hybrid/onsite
+search flags belong to WorkPreferences and unsupported topic keys return a
+validation error. Preferences participate in the common editor revision but not
+in the candidate-fact revision used to confirm employer answers. Search context
+cannot establish willingness for an employer. Validation failures return 400;
+internal failures return 500 without exposing database details. After a 409 the
+review editor retains the draft and requires an explicit refresh before retrying.
