@@ -42,8 +42,8 @@ var defaultOperationalSettings = domain.GeneralSettings{
 		PauseBetweenJobsMin:   5,
 		PauseBetweenJobsMax:   15,
 	},
-	JobSuitabilityScore:       7,
-	MaxJobsPerKeyword: 25,
+	JobSuitabilityScore: 7,
+	MaxJobsPerKeyword:   25,
 }
 
 func getGeneral(store ConfigGetter, userID string) (domain.GeneralSettings, error) {
@@ -134,6 +134,7 @@ func MergeLLM(base domain.LLMConfig, o domain.LLMOverrides) domain.LLMConfig {
 // preferences, and — when allowLLMOverrides is true — optional per-user LLM overrides.
 // Pass allowLLMOverrides=true only for admin and tester users; regular users must always
 // use the system LLM configuration (provider, model, task models, proxy).
+// Proxy routing is deployment-wide for every user, including admins and testers.
 func ResolveOperationalSettings(store ConfigGetter, userID string, allowLLMOverrides bool) domain.GeneralSettings {
 	sys := SystemGeneralKV(store)
 	user, err := getGeneral(store, userID)
@@ -171,6 +172,10 @@ func ResolveOperationalSettings(store ConfigGetter, userID string, allowLLMOverr
 	if err := store.Get(userID, KeyLLMOverrides, &overrides); err == nil {
 		out.LLM = MergeLLM(out.LLM, overrides)
 	}
+	// Local proxy addresses can remain in legacy account settings. The deployment's
+	// proxy switch and URL must win before selecting either a proxy or direct key.
+	out.LLM.UseProxy = sys.LLM.UseProxy
+	out.LLM.ProxyURL = sys.LLM.ProxyURL
 	EnsureDocumentPolicies(&out)
 	return out
 }

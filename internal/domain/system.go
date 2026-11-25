@@ -7,8 +7,8 @@ const SystemUserID = "__system__"
 type LLMOverrides struct {
 	Provider   string               `json:"provider,omitempty"`
 	Model      string               `json:"model,omitempty"`
-	UseProxy   *bool                `json:"use_proxy,omitempty"`
-	ProxyURL   string               `json:"proxy_url,omitempty"`
+	UseProxy   *bool                `json:"use_proxy,omitempty"` // legacy; operational routing uses deployment settings
+	ProxyURL   string               `json:"proxy_url,omitempty"` // legacy; operational routing uses deployment settings
 	MaxTokens  *int                 `json:"max_tokens,omitempty"`
 	TaskModels map[string]TaskModel `json:"task_models,omitempty"`
 }
