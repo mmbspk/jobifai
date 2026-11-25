@@ -165,7 +165,7 @@ func (h *BotHandlers) runApplyTask(ctx context.Context, userID string, t ApplyTa
 		log.Error().Err(saveErr).Str("task_id", t.ID).Msg("AI Apply result transaction failed")
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	updated, saveErr := tx.Exec("UPDATE apply_url_tasks SET state=?,response_json=?,error=?,finished_at=? WHERE user_id=? AND id=? AND state='running'",
 		state, string(encoded), message, time.Now().UTC().Format(time.RFC3339Nano), userID, t.ID)
 	if saveErr != nil {
