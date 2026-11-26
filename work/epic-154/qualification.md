@@ -1,6 +1,13 @@
 # Epic 154 qualification
 
-Current checkpoint: PR 163 merged and its final CI passed on 05d23ca (417 frontend
+Latest qualification: the clean PR 167 merge (ee81432) is deployed. The actual
+worker canary and the full shared-reader suite in its runtime passed qualification
+with the bounded operator pilot. See [production qualification](production-qualification-2026-11-26.md)
+for successful reads, the two native-only dentsu failures, actual rescan recovery,
+controlled cold/warm/changed-layout measurements, rollout and remaining limits.
+The entries below preserve earlier investigation checkpoints.
+
+Historical checkpoint: PR 163 merged and its final CI passed on 05d23ca (417 frontend
 tests, 92 browser tests, Go race/coverage and lint). The deployed 2dc48e8 reader
 has now undergone a real read-only worker canary. It exposed production gaps;
 see production-canary.md for observations, fixes and the remaining release gate.
