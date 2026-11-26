@@ -1,0 +1,11 @@
+.git
+.env
+.env.*
+**/deploy.env
+**/__pycache__
+web/node_modules
+jobifai
+data
+uploads
+job_applications
+tmp

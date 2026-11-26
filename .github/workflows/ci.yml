@@ -46,6 +46,9 @@ jobs:
         env:
           CI: "1"
 
+      - name: Build metadata regressions
+        run: python3 -m unittest discover -s scripts -p test_build_metadata.py
+
       - name: Lint
         run: |
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest

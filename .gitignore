@@ -17,6 +17,9 @@ debug_*.html
 # Go build cache
 *.test
 
+# Python test cache
+__pycache__/
+
 # Node
 node_modules/
 web/node_modules/

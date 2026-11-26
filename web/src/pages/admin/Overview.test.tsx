@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
@@ -13,7 +14,9 @@ import { apiGet } from '../../api/client'
 const OVERVIEW_FIXTURE = {
   system: {
     version: '1.0.0',
-    git_sha: 'abc1234',
+    git_sha: 'abcdef0123456789abcdef0123456789abcdef01',
+    build_time: '2026-11-26T01:00:00Z',
+    source_state: 'clean',
     migration_version: 49,
     uptime_seconds: 3600,
     environment: 'test',
@@ -70,6 +73,34 @@ beforeEach(() => {
     if (path === '/admin/overview') return Promise.resolve(OVERVIEW_FIXTURE)
     if (path === '/admin/health') return Promise.resolve(BASE_HEALTH)
     return Promise.reject(new Error(`unexpected: ${path}`))
+  })
+})
+
+describe('AdminOverviewPage build identity', () => {
+  it.each(['local', 'production'])('identifies the %s environment and exact built commit', async environment => {
+    vi.mocked(apiGet).mockImplementation((path: string) => {
+      if (path === '/admin/overview') return Promise.resolve({ ...OVERVIEW_FIXTURE, system: { ...OVERVIEW_FIXTURE.system, environment } })
+      return Promise.resolve(BASE_HEALTH)
+    })
+    renderPage()
+    await userEvent.setup().click(screen.getByText('System details'))
+    expect(await screen.findByText(environment, { selector: 'dd' })).toBeInTheDocument()
+    const commit = await screen.findByRole('link', { name: 'abcdef012345' })
+    expect(commit).toHaveAttribute('href', 'https://github.com/mmbspk/jobifai/commit/' + OVERVIEW_FIXTURE.system.git_sha)
+    expect(screen.getByText('1.0.0')).toBeInTheDocument()
+    expect(screen.getByText('2026-11-26 01:00:00 UTC')).toBeInTheDocument()
+    expect(screen.getByText('Clean checkout')).toBeInTheDocument()
+  })
+
+  it('makes modified local builds distinguishable from the clean release', async () => {
+    vi.mocked(apiGet).mockImplementation((path: string) => {
+      if (path === '/admin/overview') return Promise.resolve({ ...OVERVIEW_FIXTURE, system: { ...OVERVIEW_FIXTURE.system, version: '1.0.0-dirty', source_state: 'modified' } })
+      return Promise.resolve(BASE_HEALTH)
+    })
+    renderPage()
+    await userEvent.setup().click(screen.getByText('System details'))
+    expect(await screen.findByText('1.0.0-dirty')).toBeInTheDocument()
+    expect(screen.getByText('Uncommitted changes included')).toBeInTheDocument()
   })
 })
 

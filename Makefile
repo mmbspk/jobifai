@@ -12,12 +12,8 @@ GO_PACKAGES := $(shell go list ./... | grep -v node_modules)
 all: build
 
 ## build: compile the server binary
-VERSION_PKG := github.com/user/jobifai/internal/version
-GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS := -s -w -X $(VERSION_PKG).GitSHA=$(GIT_SHA) -X $(VERSION_PKG).Version=$(GIT_SHA)
-
 build:
-	go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) $(MAIN)
+	bash scripts/build.sh go build -trimpath -o $(BINARY) $(MAIN)
 
 ## web-dev: start Vite dev server (proxies /api → Go on :8081)
 web-dev:
@@ -36,12 +32,12 @@ run: web-build build
 ## start: run backend + frontend dev server together (Ctrl-C stops both)
 start:
 	@trap 'kill 0' INT; \
-	go run $(MAIN) & \
+	bash scripts/build.sh go run $(MAIN) & \
 	cd web && npm run dev & \
 	wait
 
 dev:
-	air
+	air --build.cmd "bash scripts/build.sh go build -o ./tmp/main $(MAIN)"
 
 ## test: run Go tests (race detector)
 test:
@@ -80,7 +76,7 @@ clean:
 
 ## docker: build the Docker image
 docker:
-	docker build -t $(IMAGE) .
+	bash scripts/build.sh docker -t $(IMAGE) .
 
 ## docker-run: run the Docker image with persistent volumes
 docker-run:
@@ -102,7 +98,7 @@ help:
 ## e2e-server: build Go binary and start server with a fresh test DB (used by Playwright webServer)
 e2e-server:
 	rm -f /tmp/e2e-test.db
-	go build -trimpath -o /tmp/jobifai-e2e $(MAIN)
+	bash scripts/build.sh go build -trimpath -o /tmp/jobifai-e2e $(MAIN)
 	JWT_SECRET=e2e-test-secret-do-not-use-in-prod JOBIFAI_E2E=1 /tmp/jobifai-e2e -db /tmp/e2e-test.db -addr :18081
 
 ## test-e2e: build frontend then run Playwright e2e tests

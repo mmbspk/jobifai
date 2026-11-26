@@ -12,6 +12,8 @@ type OverviewResp = {
   system: {
     version: string
     git_sha: string
+    build_time?: string
+    source_state?: string
     migration_version: number
     uptime_seconds: number
     environment: string
@@ -215,7 +217,12 @@ export function AdminOverviewPage() {
         <summary className="flex cursor-pointer items-center gap-2 font-semibold"><Database size={16} className="text-[var(--color-admin)]" aria-hidden="true" /> System details</summary>
         <dl className="mt-4 grid gap-4 border-t border-[var(--color-border-subtle)] pt-4 sm:grid-cols-2 xl:grid-cols-3">
           {[
-            ['Version', sys ? `${sys.version}${sys.git_sha ? ` (${sys.git_sha.slice(0, 7)})` : ''}` : '…'],
+            ['Environment', sys?.environment ?? '…'],
+            ['Version', sys?.version ?? '…'],
+            ['Git commit', sys ? (/^[a-f0-9]{40,64}$/i.test(sys.git_sha) ?
+              <a href={`https://github.com/mmbspk/jobifai/commit/${sys.git_sha}`} target="_blank" rel="noopener noreferrer" title={sys.git_sha} className="text-[var(--color-accent)] hover:underline">{sys.git_sha.slice(0, 12)}</a> : 'Not recorded') : '…'],
+            ['Built (UTC)', sys ? (sys.build_time ? sys.build_time.replace('T', ' ').replace(/Z$/, ' UTC') : 'Not recorded') : '…'],
+            ['Source', sys ? (sys.source_state === 'modified' ? 'Uncommitted changes included' : sys.source_state === 'clean' ? 'Clean checkout' : 'Not recorded') : '…'],
             ['DB migration', sys?.migration_version ?? '…'], ['Uptime', sys ? formatUptime(sys.uptime_seconds) : '…'],
             ['Server time (UTC)', sys?.server_time_utc?.slice(0, 19) ?? '…'],
             ['Global model', h ? `${h.provider} / ${h.global_model}` : '…'],
