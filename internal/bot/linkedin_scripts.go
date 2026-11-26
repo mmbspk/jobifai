@@ -231,6 +231,25 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  out.identity_verified=true;
  const observedTitles=[...new Set(all(root,'h1').filter(el=>visible(el)&&belongs(el)).map(el=>(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim()).filter(Boolean))];
  out.title=sduiPanes.get(root)?.title || (observedTitles.length===1?observedTitles[0]:'');
+ // The URL-only SDUI header may render its title as p, without a heading
+ // role. Document metadata is a hint only: the company and visible text
+ // must independently agree inside this already job-ID-verified header.
+ if(!out.title && !expectedTitle && company && /\s*\|\s*LinkedIn\s*$/i.test(document.title)) {
+   const titleText=s=>String(s||'').replace(/\s+/g,' ').trim();
+   const pageTitle=titleText(document.title).replace(/\s*\|\s*LinkedIn\s*$/i,'');
+   const divider=pageTitle.lastIndexOf('|');
+   const hintedCompany=divider<0?'':pageTitle.slice(divider+1).trim();
+   const hintedTitle=divider<0?'':pageTitle.slice(0,divider).trim().replace(/^\(\d+\)\s*/,'');
+   const ownedDescription=sduiPanes.get(root)?.description;
+   if(hintedTitle && companyName(hintedCompany)===companyName(company)) {
+     const matches=all(root,'h1,h2,p').filter(el=>visible(el)&&belongs(el)&&
+       !(ownedDescription&&ownedDescription.contains(el))&&
+       !el.closest('.jobs-description,.jobs-description-content__text,[data-job-description],form,dialog,[role="dialog"]')&&
+       normalized(el.innerText||el.textContent)===normalized(hintedTitle));
+     const values=[...new Set(matches.map(el=>titleText(el.innerText||el.textContent)).filter(Boolean))];
+     if(values.length===1)out.title=values[0];
+   }
+ }
  out.reason='control_not_found';
  // Read only a description inside this verified pane, never the whole page.
  const descriptionSelector='.jobs-description, .jobs-description-content__text, [data-job-description]';

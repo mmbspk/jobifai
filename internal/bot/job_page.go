@@ -10,6 +10,7 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog/log"
+	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
@@ -165,6 +166,30 @@ type capturedJobPage struct {
 	latest *jobpage.Snapshot
 }
 
+// Run bounded platform preparation inside the measured Known stage, once for
+// this read. A compatibility failure remains a typed reader/browser outcome.
+type preparedJobPage struct {
+	jobpage.Page
+	prepare  func(context.Context, jobpage.Target) error
+	prepared bool
+}
+
+func (p *preparedJobPage) Known(ctx context.Context, target jobpage.Target, limits jobpage.Limits) (jobpage.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return jobpage.Result{}, err
+	}
+	if !p.prepared {
+		p.prepared = true
+		if err := p.prepare(ctx, target); err != nil {
+			if ctx.Err() != nil {
+				return jobpage.Result{}, ctx.Err()
+			}
+			return jobpage.Result{}, &jobpage.ReadError{Code: jobpage.FailureBrowser, Cause: err}
+		}
+	}
+	return p.Page.Known(ctx, target, limits)
+}
+
 type readOnlyBrowserContextKey struct{}
 
 func readOnlyBrowserRequest(ctx context.Context) bool {
@@ -214,7 +239,16 @@ func (b *Bot) readJobPage(ctx context.Context, page *rod.Page, platform domain.P
 	if reader == nil {
 		reader = jobpage.NewReader(nil, nil, nil)
 	}
-	observed := &capturedJobPage{Page: jobpage.NewBrowserPage(page, baseline)}
+	var source jobpage.Page = jobpage.NewBrowserPage(page, baseline)
+	if platform == domain.PlatformSeek && page != nil {
+		source = &preparedJobPage{Page: source, prepare: func(ctx context.Context, target jobpage.Target) error {
+			if err := page.Context(ctx).WaitStable(500 * time.Millisecond); err != nil {
+				return err
+			}
+			return browser.RecoverSeekBrowserUpgrade(page.Context(ctx), target.URL)
+		}}
+	}
+	observed := &capturedJobPage{Page: source}
 	result, err := reader.Read(ctx, observed, target)
 	if err != nil && b.cfg.BrowserMeter != nil && b.cfg.BrowserMeter.Err() != nil {
 		err = b.cfg.BrowserMeter.Err()
