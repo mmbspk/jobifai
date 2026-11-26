@@ -30,6 +30,8 @@ func TestWS_Logs_UnauthorizedWithoutToken(t *testing.T) {
 
 func TestWS_Logs_DeliversUserScopedLogLine(t *testing.T) {
 	svc, _ := newTestServices(t)
+	logs := &registrationAwareLogBroadcaster{LogBroadcaster: svc.Logs, registered: make(chan struct{})}
+	svc.Logs = logs
 	router := handler.NewRouter(svc)
 	token := registerAndLogin(t, router, "ws-user@example.com", "password123")
 	userID := userIDFromToken(t, router, token)
@@ -42,6 +44,13 @@ func TestWS_Logs_DeliversUserScopedLogLine(t *testing.T) {
 	conn, _, err := websocket.Dial(ctx, wsURL(srv, "/ws/logs?token="+token), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.CloseNow() })
+	// The upgrade response can arrive before the handler registers the subscriber.
+	// Publish only after registration so scheduler timing cannot drop the message.
+	select {
+	case <-logs.registered:
+	case <-ctx.Done():
+		t.Fatal("log subscriber was not registered")
+	}
 
 	line, err := json.Marshal(map[string]string{
 		"level":   "info",
@@ -57,6 +66,16 @@ func TestWS_Logs_DeliversUserScopedLogLine(t *testing.T) {
 	var payload map[string]any
 	require.NoError(t, wsjson.Read(readCtx, conn, &payload))
 	assert.Equal(t, "automation heartbeat", payload["message"])
+}
+
+type registrationAwareLogBroadcaster struct {
+	handler.LogBroadcaster
+	registered chan struct{}
+}
+
+func (b *registrationAwareLogBroadcaster) Register(conn *websocket.Conn, userID string) {
+	b.LogBroadcaster.Register(conn, userID)
+	close(b.registered)
 }
 
 func wsURL(srv *httptest.Server, path string) string {
