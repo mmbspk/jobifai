@@ -75,7 +75,7 @@ func (c *jobSeenCache) load(db *sql.DB, userID string) (int, error) {
 	if err := loadIDs(`SELECT id FROM jobs_applied WHERE user_id = ?`, seenApplied, false); err != nil {
 		return 0, err
 	}
-	if err := loadIDs(`SELECT id FROM jobs_skipped WHERE user_id = ?`, seenSkipped, true); err != nil {
+	if err := loadIDs(`SELECT s.id FROM jobs_skipped s WHERE s.user_id = ? AND (s.failure_code<>'answer_confirmed' OR EXISTS (SELECT 1 FROM apply_attempts a WHERE a.user_id=s.user_id AND a.job_id=s.id AND a.outcome IN ('in_progress','submission_unknown','submitted_confirmed')))`, seenSkipped, true); err != nil {
 		return 0, err
 	}
 	if err := loadIDs(`SELECT job_id FROM jobs_pending_review WHERE user_id = ?`, seenPendingReview, true); err != nil {

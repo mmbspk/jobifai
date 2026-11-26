@@ -47,3 +47,9 @@ facts and submission_unknown holds. Final lint on both feature branches is clean
 The earlier full backend run describes the pre-main-integration reader snapshot.
 Fresh exact-head CI remains required for the final feature heads. PR 153 stays
 open for Claude Code review at the user's request. No feature PR was merged.
+
+The application-answer prerequisite is now integrated into the reader branch
+using the same service-wiring resolutions qualified in the isolated checkout.
+The earlier full Go race run passed, including bot1491.1s, handler435.1s,
+jobpage80.1s and DB20.0s. It covers the pre-upstream reader snapshot; the current
+combined source still requires fresh exact-head CI before release qualification.

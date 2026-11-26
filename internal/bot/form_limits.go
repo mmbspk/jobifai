@@ -46,14 +46,17 @@ const jsLinkedInTextFieldLimits = `(opts) => {
 ` + jsFormCharacterLimitFn + `
 
 	function questionFor(el) {
+		const label = el.id && allInDOM(container, 'label[for]').find(node => node.htmlFor === el.id);
+		if (label) return label.textContent.trim().replace(/\s+/g, ' ');
+		const ids = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+		const labelled = ids.map(id => document.getElementById(id)).filter(Boolean).map(node => node.textContent).join(' ').replace(/\s+/g, ' ').trim();
+		if (labelled) return labelled;
 		const aria = (el.getAttribute('aria-label') || '').trim();
 		if (aria) return aria;
-		const ids = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean);
-		for (const id of ids) {
-			const n = document.getElementById(id);
-			if (n && (n.textContent || '').trim()) return n.textContent.trim();
-		}
-		return el.placeholder || el.id || '';
+		const block = el.closest('[data-test-form-element], .artdeco-form-element, .fb-form-element, fieldset');
+		const nearby = block && block.querySelector('label, legend, .fb-form-element-label, span[data-test-form-element-label]');
+		if (nearby) return nearby.textContent.trim().replace(/\s+/g, ' ');
+		return el.placeholder || el.getAttribute('name') || (el.tagName === 'TEXTAREA' ? 'Additional details' : '');
 	}
 	function blockInvalid(el) {
 		if (el.getAttribute('aria-invalid') === 'true') return true;
@@ -162,6 +165,12 @@ func verifySalaryAssignment(page *rod.Page, id, answer string) bool {
 }
 
 func (b *Bot) answerSalaryFormField(ctx context.Context, lazy *lazyDocGen, control formField) (string, error) {
+	if answer, ok := preparedLegacyAnswer(lazy, control.Question, control.optionLabels()); ok {
+		if answer == "" {
+			return "", errAdaptiveQuestionReview
+		}
+		return salaryAnswerForControl(captureStepSnapshot([]formField{control}, nil, string(b.cfg.Platform), 0, "").Fields[0], answer)
+	}
 	snap := captureStepSnapshot([]formField{control}, nil, string(b.cfg.Platform), 0, "")
 	if lazy != nil {
 		scopeJobDependentFields(&snap, lazy.job)
@@ -235,6 +244,13 @@ func (b *Bot) refillLinkedInOverLimitFields(ctx context.Context, page *rod.Page,
 	}
 	var filled bool
 	for _, v := range violations {
+		if b.cfg.ApplicationAnswers != nil {
+			if err := b.refillReviewedLegacyField(ctx, page, lazy, v); err != nil {
+				return filled, err
+			}
+			filled = true
+			continue
+		}
 		max := v.MaxChars
 		salaryQuestion := isSalaryFormQuestion(v.Question)
 		if !salaryQuestion && max <= 0 && v.ValueLen > 0 {
@@ -269,9 +285,57 @@ func (b *Bot) refillLinkedInOverLimitFields(ctx context.Context, page *rod.Page,
 			(salaryQuestion && !verifySalaryAssignment(page, v.ID, answer)) {
 			return filled, fmt.Errorf("%w: repaired field was not accepted intact", errAdaptiveQuestionReview)
 		} else {
-			log.Info().Str("question", v.Question).Int("max_chars", max).Str("answer", answer).Msg("form: refilled within character limit")
+			log.Info().Str("question", v.Question).Int("max_chars", max).Msg("form: refilled within character limit")
 			filled = true
 		}
 	}
 	return filled, nil
+}
+
+// A changed declared limit gets a fresh field interpretation and fresh use
+// evidence. Never truncate a provisional assertion or overwrite its history.
+func (b *Bot) refillReviewedLegacyField(ctx context.Context, page *rod.Page, lazy *lazyDocGen, violation linkedInTextLimitViolation) error {
+	if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+		return err
+	}
+	fields, currentPage, err := b.scanAdaptiveStep(ctx, page)
+	if err != nil {
+		return err
+	}
+	var matches []formField
+	for _, field := range fields {
+		identity := violation.ID != "" && field.ID == violation.ID || violation.ID == "" && field.Index == violation.Index
+		if identity && normalizeLabel(field.Question) == normalizeLabel(violation.Question) {
+			matches = append(matches, field)
+		}
+	}
+	if len(matches) != 1 {
+		return fmt.Errorf("application limit retry could not bind one current field")
+	}
+	field := matches[0]
+	if field.MaxChars == 0 && violation.MaxChars > 0 {
+		field.MaxChars = violation.MaxChars
+	}
+	if err := b.prepareLegacyAnswers(ctx, lazy, []formField{field}); err != nil {
+		return err
+	}
+	resolution, ok := lazy.answerPlan[legacyFieldKey(field)]
+	current, found := lazy.answerSnapshot.FieldByRef(resolution.Ref)
+	if !ok || !found || resolution.Action != ActionFill || resolution.Value == "" {
+		return errAdaptiveQuestionReview
+	}
+	if currentPage == nil {
+		currentPage = page
+	}
+	if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+		return err
+	}
+	result := fillAdaptiveControl(ctx, currentPage, current, resolution.Value, b.currentProfile())
+	if result.Err != nil {
+		return result.Err
+	}
+	if !result.Filled {
+		return errAdaptiveQuestionReview
+	}
+	return b.markLegacyAnswerFilled(ctx, lazy, field, resolution.Value)
 }

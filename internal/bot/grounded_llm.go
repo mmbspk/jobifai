@@ -72,7 +72,7 @@ func prepareGroundedCandidate(profile *domain.ResumeProfile, snap StepSnapshot, 
 	} else if proposal.IntentType != FieldIntentLLM || proposal.BindingKey != "" {
 		return groundedVerificationCandidate{}, false
 	}
-	if strings.TrimSpace(value) == "" || !supportedProfileEvidence(profile, proposal.Evidence) || !evidenceCountryCompatible(profile, field, proposal.Evidence) || !educationEvidenceCompatible(field, proposal.Evidence) || !phoneCallingCodeEvidenceCompatible(field, profile, value, proposal.Evidence) ||
+	if strings.TrimSpace(value) == "" || !supportedProfileEvidence(profile, proposal.Evidence) || !customAnswerScopeCompatible(profile, snap, field, proposal.Evidence) || !evidenceCountryCompatible(profile, field, proposal.Evidence) || !educationEvidenceCompatible(field, proposal.Evidence) || !phoneCallingCodeEvidenceCompatible(field, profile, value, proposal.Evidence) ||
 		!sensitiveEvidenceCompatible(field, value, proposal.Evidence) || !currentWorkRightsTimeValid(profile, field, value, proposal.Evidence, time.Now()) || !groundedResolutionCompatible(field, proposal.BindingKey, value) {
 		return groundedVerificationCandidate{}, false
 	}

@@ -1567,6 +1567,7 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 		time.Sleep(300 * time.Millisecond)
 
 		// Fill any screening questions visible on the current page.
+		lazy.answerStepIndex = step
 		filled, hasFields, fillErr := b.fillFormStep(ctx, page, lazy)
 		if fillErr != nil {
 			if isFormFillFatalLLM(fillErr) {
@@ -1632,6 +1633,9 @@ func (b *Bot) seekApply(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (
 			}
 		}
 
+		if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+			return err
+		}
 		if err := actionBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
 			return fmt.Errorf("click %q step %d: %w", btnText, step+1, err)
 		}

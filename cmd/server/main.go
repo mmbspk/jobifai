@@ -14,6 +14,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"github.com/user/jobifai/internal/applicationanswers"
 	"github.com/user/jobifai/internal/auth"
 	"github.com/user/jobifai/internal/billing"
 	"github.com/user/jobifai/internal/bot"
@@ -189,6 +190,9 @@ func main() {
 	}
 	botMgr := bot.NewManager(shutdownCtx, database, cfgStore, secretsStore, sessionStore, botTailor, botScorer, botHalalChecker, botRenderer, "resume_markets")
 	botMgr.SetRunLogSink(runLogSink)
+	answerSvc := applicationanswers.NewService(database, cfgStore)
+	answerSvc.ConfirmMapping = bot.ConfirmFormMappingTx
+	botMgr.SetApplicationAnswers(answerSvc)
 
 	botMgr.SetSessionQuota(quotaSvc)
 	botMgr.SetLLMQuota(quotaSvc)
@@ -288,6 +292,7 @@ func main() {
 		JobPages:             pageStore,
 		FetchVerifiedJobPage: botMgr.FetchJobPage,
 		ReadJobPage:          botMgr.ReadJobPage,
+		ApplicationAnswers:   answerSvc,
 		MarketLoader: func(path, yamlFile string) (*domain.ResumeMarket, error) {
 			m, err := resume.LoadMarket(path)
 			if err != nil {

@@ -178,8 +178,9 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	// Set up the adaptive pipeline components.
 	profile := b.currentProfile()
 	si := &StepInterpreter{
-		LLM:     boundFormLLM(b.cfg.AdaptiveLLM),
-		Mapping: b.cfg.AdaptiveMapping,
+		KnownMissing: b.knownMissingChecker(lazy),
+		LLM:          boundFormLLM(b.cfg.AdaptiveLLM),
+		Mapping:      b.cfg.AdaptiveMapping,
 	}
 	guard := &SubmitGuard{
 		DB:        b.cfg.DB,
@@ -188,6 +189,9 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	}
 	se := NewStepExecutor(DefaultStepExecBounds(), guard)
 	se.BeforeSideEffect = func(ctx context.Context) error {
+		if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+			return err
+		}
 		if err := b.checkAdaptiveSideEffect(); err != nil {
 			return err
 		}
@@ -265,12 +269,20 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 
 		if interp.Paused {
 			recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
-			log.Warn().Int("step", stepIdx).Str("reason", string(interp.PauseReason)).Msg("adaptive: step paused, needs human review")
+			if _, err := b.prepareAnswerReviews(ctx, lazy, snap, interp, profile); err != nil {
+				return err
+			}
+			log.Warn().Int("step", stepIdx).Str("reason", string(interp.PauseReason)).Msg("adaptive: this application was deferred for answer confirmation")
 			return fmt.Errorf("%w: step %d (%s)", errAdaptiveQuestionReview, stepIdx, interp.PauseReason)
 		}
 
 		// Execute: fill fields + navigate.
 		recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
+		reviewIDs, reviewErr := b.prepareAnswerReviews(ctx, lazy, snap, interp, profile)
+		if reviewErr != nil {
+			return reviewErr
+		}
+		se.AfterFieldFill = b.answerFillRecorder(reviewIDs)
 		result, err := se.ExecuteStep(ctx, snap, interp, filler)
 		verifiedRefs := writeVerifiedFilledStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		invalidateFailedMappings(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
@@ -670,8 +682,9 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 
 	profile := b.currentProfile()
 	si := &StepInterpreter{
-		LLM:     boundFormLLM(b.cfg.AdaptiveLLM),
-		Mapping: b.cfg.AdaptiveMapping,
+		KnownMissing: b.knownMissingChecker(lazy),
+		LLM:          boundFormLLM(b.cfg.AdaptiveLLM),
+		Mapping:      b.cfg.AdaptiveMapping,
 	}
 	guard := &SubmitGuard{
 		DB:        b.cfg.DB,
@@ -680,6 +693,9 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	}
 	se := NewStepExecutor(DefaultStepExecBounds(), guard)
 	se.BeforeSideEffect = func(ctx context.Context) error {
+		if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+			return err
+		}
 		if err := b.checkAdaptiveSideEffect(); err != nil {
 			return err
 		}
@@ -736,10 +752,18 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 		}
 		if interp.Paused {
 			recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
+			if _, err := b.prepareAnswerReviews(ctx, lazy, snap, interp, profile); err != nil {
+				return err
+			}
 			return fmt.Errorf("%w: step %d (%s)", errAdaptiveQuestionReview, stepIdx, interp.PauseReason)
 		}
 
 		recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
+		reviewIDs, reviewErr := b.prepareAnswerReviews(ctx, lazy, snap, interp, profile)
+		if reviewErr != nil {
+			return reviewErr
+		}
+		se.AfterFieldFill = b.answerFillRecorder(reviewIDs)
 		result, err := se.ExecuteStep(ctx, snap, interp, filler)
 		verifiedRefs := writeVerifiedFilledStep(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		invalidateFailedMappings(ctx, b.cfg.AdaptiveMapping, snap, interp, result)

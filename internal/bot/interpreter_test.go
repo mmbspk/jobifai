@@ -46,7 +46,7 @@ func basicProfile() *domain.ResumeProfile {
 }
 
 func textField(ref, label string) SnapField {
-	return SnapField{Ref: ref, Label: label, Type: SnapTypeText}
+	return SnapField{Ref: ref, Label: label, Type: SnapTypeText, Required: true}
 }
 
 func selectField(ref, label string, opts ...string) SnapField {
@@ -246,7 +246,9 @@ func TestInterpreter_UnknownSponsorshipRequiresCandidateFact(t *testing.T) {
 	profile := basicProfile()
 	profile.ApplicationDefaults.RequiresSponsorship = nil
 	delegate := &stubLLM{}
-	result, err := (&StepInterpreter{LLM: delegate}).InterpretStep(context.Background(), makeSnap(radioField("f0", "Require Sponsorship", "Yes", "No")), profile)
+	field := radioField("f0", "Require Sponsorship", "Yes", "No")
+	field.Required = true
+	result, err := (&StepInterpreter{LLM: delegate}).InterpretStep(context.Background(), makeSnap(field), profile)
 	require.NoError(t, err)
 	require.True(t, result.Paused)
 	require.Equal(t, PendingMissingProfile, result.Fields[0].Reason)
@@ -380,15 +382,13 @@ func TestInterpreter_LLMNil_AllPending(t *testing.T) {
 	assert.True(t, interp.Paused)
 }
 
-func TestInterpreter_LLMError_AllPending(t *testing.T) {
+func TestInterpreter_LLMError_RemainsOperational(t *testing.T) {
 	llm := &stubLLM{err: ErrLLMUnavailable}
 	si := &StepInterpreter{LLM: llm}
 	snap := makeSnap(textField("f0", "Cover Letter"))
 	interp, err := si.InterpretStep(context.Background(), snap, basicProfile())
-	require.NoError(t, err)
-	r := resFor(t, interp, "f0")
-	assert.True(t, r.Pending)
-	assert.Equal(t, PendingLLMUnavailable, r.Reason)
+	require.ErrorIs(t, err, ErrLLMUnavailable)
+	assert.Empty(t, interp.Fields)
 	assert.False(t, interp.LLMUsed)
 }
 
@@ -397,19 +397,17 @@ func TestInterpreter_LLMLimitExceeded(t *testing.T) {
 	si := &StepInterpreter{LLM: llm}
 	snap := makeSnap(textField("f0", "Cover Letter"))
 	interp, err := si.InterpretStep(context.Background(), snap, basicProfile())
-	require.NoError(t, err)
-	r := resFor(t, interp, "f0")
-	assert.Equal(t, PendingLimitExceeded, r.Reason)
+	require.ErrorIs(t, err, ErrLLMLimitExceeded)
+	assert.Empty(t, interp.Fields)
 }
 
-func TestInterpreter_LLMWrappedError_MapsToUnavailable(t *testing.T) {
+func TestInterpreter_LLMWrappedError_Preserved(t *testing.T) {
 	llm := &stubLLM{err: errors.New("connection reset")}
 	si := &StepInterpreter{LLM: llm}
 	snap := makeSnap(textField("f0", "Cover Letter"))
 	interp, err := si.InterpretStep(context.Background(), snap, basicProfile())
-	require.NoError(t, err)
-	r := resFor(t, interp, "f0")
-	assert.Equal(t, PendingLLMUnavailable, r.Reason)
+	require.ErrorIs(t, err, llm.err)
+	assert.Empty(t, interp.Fields)
 }
 
 // ── validation ────────────────────────────────────────────────────────────────

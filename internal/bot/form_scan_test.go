@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/stretchr/testify/require"
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/documents"
@@ -46,19 +45,7 @@ const htmlFinalReviewPage = `<!DOCTYPE html><html><body>
 
 func rodTestPage(t *testing.T, html string) *rod.Page {
 	t.Helper()
-	url, err := launcher.New().
-		Headless(true).
-		Leakless(false).
-		NoSandbox(true).
-		Launch()
-	if err != nil {
-		t.Skipf("chrome unavailable for DOM fixture test: %v", err)
-	}
-	browser := rod.New().ControlURL(url)
-	if err := browser.Connect(); err != nil {
-		t.Skipf("chrome connect failed: %v", err)
-	}
-	t.Cleanup(func() { _ = browser.Close() })
+	browser := launchTestBrowser(t)
 	page := browser.MustPage("")
 	require.NoError(t, page.SetDocumentContent(html))
 	return page

@@ -80,6 +80,7 @@ type SnapField struct {
 	JobContext        string        `json:"job_context,omitempty"`
 	ProfileRecordPath string        `json:"profile_record_path,omitempty"`
 	JobTitle          string        `json:"job_title,omitempty"`
+	JobID             string        `json:"job_id,omitempty"`
 	JobLocation       string        `json:"job_location,omitempty"`
 	ValidationErr     string        `json:"validation_err,omitempty"`
 	Filled            bool          `json:"filled,omitempty"` // current value present (privacy: value not stored)
@@ -181,6 +182,7 @@ func scopeJobDependentFields(snap *StepSnapshot, job linkedInJob) {
 		// All questions receive the verified listing context so country-scoped
 		// candidate facts can be checked even for generic question wording.
 		f.JobTitle = job.Title
+		f.JobID = job.ID
 		f.JobLocation = job.Location
 		question := f.Label + " " + f.Group + " " + f.HelpText
 		// Eligibility and sponsorship answers can depend on the vacancy's

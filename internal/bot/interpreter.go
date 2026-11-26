@@ -149,8 +149,9 @@ func (nopMappingLookup) LookupField(_, _ string) (FieldResolution, bool) {
 
 // StepInterpreter drives the three-pass resolution pipeline.
 type StepInterpreter struct {
-	LLM     StepInterpreterLLM // nil → all ambiguous fields become review
-	Mapping MappingLookup      // nil → no mapping lookups
+	LLM          StepInterpreterLLM // nil → all ambiguous fields become review
+	Mapping      MappingLookup      // nil → no mapping lookups
+	KnownMissing func(context.Context, StepSnapshot, SnapField, *domain.ResumeProfile) (bool, error)
 }
 
 // InterpretStep resolves all fields in snap against profile.
@@ -170,7 +171,19 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 	snap.Fields = append([]SnapField(nil), snap.Fields...)
 
 	var toLLM []string // refs of fields that need LLM resolution
+	var missingLookupErr error
 	queueForLLM := func(index int, field SnapField) {
+		if si.KnownMissing != nil && field.Required {
+			known, err := si.KnownMissing(ctx, snap, field, profile)
+			if err != nil {
+				missingLookupErr = err
+				return
+			}
+			if known {
+				result.Fields = append(result.Fields, FieldResolution{Ref: field.Ref, Source: SourceReview, Action: ActionSkip, Pending: true, Reason: PendingMissingProfile})
+				return
+			}
+		}
 		if field.Truncated {
 			expanded, ok := expandInterpretationOptions(field)
 			if !ok {
@@ -301,6 +314,9 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 	}
 
 	// Pass 3: batch LLM for remaining fields.
+	if missingLookupErr != nil {
+		return result, missingLookupErr
+	}
 	if len(toLLM) > 0 {
 		if si.LLM == nil {
 			// No LLM configured — route everything to review.
@@ -316,24 +332,25 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 		} else {
 			proposals, err := si.LLM.InterpretFields(ctx, profile, snap, toLLM)
 			if err != nil {
-				reason := pendingReasonFromErr(err)
-				for _, ref := range toLLM {
-					result.Fields = append(result.Fields, FieldResolution{
-						Ref:     ref,
-						Source:  SourceReview,
-						Action:  ActionSkip,
-						Pending: true,
-						Reason:  reason,
-					})
-				}
-			} else {
-				llmResolutions := validateLLMProposals(proposals, toLLM, snap, profile)
-				result.Fields = append(result.Fields, llmResolutions...)
-				result.LLMUsed = true
+				// Provider, quota and cancellation failures are operational failures.
+				// They cannot become a request for candidate answer confirmation.
+				return result, err
 			}
+			llmResolutions := validateLLMProposals(proposals, toLLM, snap, profile)
+			result.Fields = append(result.Fields, llmResolutions...)
+			result.LLMUsed = true
 		}
 	}
 
+	// A genuinely missing optional fact can remain blank. Structural/provider
+	// failures still retain their operational handling.
+	for i := range result.Fields {
+		r := &result.Fields[i]
+		if f, ok := snap.FieldByRef(r.Ref); ok && !f.Required && r.Pending && r.Reason == PendingMissingProfile {
+			r.Pending = false
+			r.Action = ActionSkip
+		}
+	}
 	// Set Paused if any field is pending.
 	for _, r := range result.Fields {
 		if r.Pending {
@@ -657,6 +674,11 @@ func validateLLMProposals(proposals []LLMFieldProposal, toLLM []string, snap Ste
 }
 
 func modelBindingNeedsReview(field SnapField, binding string) bool {
+	// These open-ended facts need a checked question meaning and qualifiers,
+	// even when a proposed answer exactly matches the saved scalar.
+	if binding == "application_defaults.travel_conditions" || binding == "application_defaults.working_hours" || binding == "application_defaults.commute_conditions" {
+		return true
+	}
 	contextText := strings.ToLower(field.Label + " " + field.Group + " " + field.HelpText)
 	if isJobDependentQuestion(contextText) {
 		return true
@@ -695,7 +717,7 @@ var ErrLLMUnavailable = errors.New("interpreter: LLM unavailable")
 
 // ErrLLMLimitExceeded signals the request exceeded the LLM's budget or token limit.
 var ErrLLMLimitExceeded = errors.New("interpreter: LLM limit exceeded")
-var errAdaptiveQuestionReview = errors.New("application question needs your review in Settings → Profile → Application question mappings")
+var errAdaptiveQuestionReview = errors.New("application deferred: an answer needs confirmation in Settings → Profile → Application answers")
 
 func pendingReasonFromErr(err error) PendingReason {
 	if errors.Is(err, ErrLLMLimitExceeded) {

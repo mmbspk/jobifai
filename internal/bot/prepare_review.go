@@ -113,6 +113,9 @@ func (b *Bot) scanApplyStepsForPrepare(ctx context.Context, page *rod.Page, lazy
 		if err := verifyJobIdentity(page, expectedPath); err != nil {
 			return err
 		}
+		if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+			return err
+		}
 		navLabel, clicked, clickErr := b.clickEasyApplyNavigation(page)
 		if clickErr != nil {
 			return fmt.Errorf("prepare: scan incomplete — navigation click failed: %w", clickErr)
@@ -358,7 +361,7 @@ func (m *Manager) prepareSeekReviewDocuments(ctx context.Context, b *Bot, page *
 	}
 	for step := 0; step < 10; step++ {
 		_, _, fillErr := b.fillFormStep(ctx, page, lazy)
-		if fillErr != nil && isFormFillFatalLLM(fillErr) {
+		if fillErr != nil {
 			return fillErr
 		}
 		lazy.applyCaps(probeApplyFormCaps(page))
@@ -369,6 +372,9 @@ func (m *Manager) prepareSeekReviewDocuments(ctx context.Context, b *Bot, page *
 		if isSubmit {
 			lazy.prepareScanComplete = true
 			break
+		}
+		if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+			return err
 		}
 		if err := actionBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
 			return fmt.Errorf("prepare: scan incomplete — could not advance at step %d: %w", step+1, err)

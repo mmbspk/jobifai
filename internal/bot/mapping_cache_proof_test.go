@@ -187,14 +187,21 @@ func TestMappingCache_PendingResolutions_NotReusable(t *testing.T) {
 		{Type: "text", Question: "Portfolio URL", InputType: "text"},
 	}, nil, "linkedin", 0, "Profile")
 
-	// First run: LLM unavailable → field pending.
+	// Provider failures remain operational and grant no cache authority.
 	interp, err := si.InterpretStep(context.Background(), snap, basicProfile())
-	require.NoError(t, err, "interpreter must not error when LLM is unavailable — returns pending")
+	require.ErrorIs(t, err, llm.err)
+	require.NoError(t, store.Write(context.Background(), snap, interp.Fields))
+
+	// A missing required candidate answer is pending and also cannot be reused.
+	llm.err = nil
+	snap.Fields[0].Required = true
+	interp, err = si.InterpretStep(context.Background(), snap, basicProfile())
+	require.NoError(t, err)
+	require.True(t, interp.Paused)
 	require.NoError(t, reviewFixtureMappings(t, store, snap, interp.Fields))
 
 	// Verify pending resolution was NOT written.
-	f0PortfolioField := SnapField{Ref: "f0", Label: "Portfolio URL", Type: SnapTypeText}
-	_, ok := store.LookupField(f0PortfolioField.FieldSignature("linkedin"), "")
+	_, ok := store.LookupField(snap.Fields[0].FieldSignature("linkedin"), "")
 	require.False(t, ok, "pending resolution must not be stored in the mapping cache")
 
 	// Second run with model back online: LLM must be called (cache is empty).

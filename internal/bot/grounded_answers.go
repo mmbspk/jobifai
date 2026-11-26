@@ -377,6 +377,9 @@ func sensitiveEvidenceCompatible(field SnapField, answer string, evidence []Prof
 	if matchesAny(question, "sponsor") && !matchesAny(sources, "requires_sponsorship", "sponsor") {
 		return false
 	}
+	if matchesAny(question, "sponsor") && !sponsorshipEvidenceCompatible(field, evidence) {
+		return false
+	}
 	if matchesAny(question, "salary", "compensation", "remuneration") && !matchesAny(sources, "salary_expectation", "salary", "compensation", "remuneration") {
 		return false
 	}
@@ -399,7 +402,7 @@ func validGroundedProof(proof *groundedAnswerProof, profile *domain.ResumeProfil
 	return proof != nil && proof.profileDigest != "" && proof.profileDigest == profileDigest(profile) &&
 		proof.platform == snap.Platform && proof.employer == snap.EmployerKey && proof.fieldSig == field.FieldSignature(snap.Platform) &&
 		proof.answerDigest == groundedAnswerDigest(intent, binding, value) &&
-		supportedProfileEvidence(profile, proof.evidence) && evidenceCountryCompatible(profile, field, proof.evidence) && educationEvidenceCompatible(field, proof.evidence) && phoneCallingCodeEvidenceCompatible(field, profile, value, proof.evidence) && sensitiveEvidenceCompatible(field, value, proof.evidence) && currentWorkRightsTimeValid(profile, field, value, proof.evidence, time.Now())
+		supportedProfileEvidence(profile, proof.evidence) && customAnswerScopeCompatible(profile, snap, field, proof.evidence) && evidenceCountryCompatible(profile, field, proof.evidence) && educationEvidenceCompatible(field, proof.evidence) && phoneCallingCodeEvidenceCompatible(field, profile, value, proof.evidence) && sensitiveEvidenceCompatible(field, value, proof.evidence) && currentWorkRightsTimeValid(profile, field, value, proof.evidence, time.Now())
 }
 
 func groundedResolutionCompatible(field SnapField, binding, value string) bool {
@@ -414,7 +417,7 @@ func groundedResolutionCompatible(field SnapField, binding, value string) bool {
 
 func directBindingIndependentOfValue(field SnapField, binding string) bool {
 	binding = normalizeProfileBindingKey(binding)
-	return knownProfileBinding(binding) && binding != "application_defaults.salary_expectation" && binding != "application_defaults.requires_sponsorship" &&
+	return knownProfileBinding(binding) && binding != "application_defaults.salary_expectation" && binding != "application_defaults.requires_sponsorship" && binding != "application_defaults.future_requires_sponsorship" &&
 		!modelBindingNeedsReview(field, binding) && !isWorkAuthorizationQuestion(field.Label+" "+field.Group+" "+field.HelpText)
 }
 
@@ -430,5 +433,26 @@ func reusableGroundedCacheAt(record *groundedCacheRecord, profile *domain.Resume
 	if record.ProfileDigest == "" {
 		return r.IntentType == FieldIntentProfile && directBindingIndependentOfValue(field, r.BindingKey)
 	}
-	return record.ProfileDigest == profileDigest(profile) && supportedProfileEvidence(profile, record.Evidence) && evidenceCountryCompatible(profile, field, record.Evidence) && educationEvidenceCompatible(field, record.Evidence) && phoneCallingCodeEvidenceCompatible(field, profile, r.Value, record.Evidence) && sensitiveEvidenceCompatible(field, r.Value, record.Evidence) && currentWorkRightsTimeValid(profile, field, r.Value, record.Evidence, now)
+	return record.ProfileDigest == profileDigest(profile) && supportedProfileEvidence(profile, record.Evidence) && customAnswerScopeCompatible(profile, snap, field, record.Evidence) && evidenceCountryCompatible(profile, field, record.Evidence) && educationEvidenceCompatible(field, record.Evidence) && phoneCallingCodeEvidenceCompatible(field, profile, r.Value, record.Evidence) && sensitiveEvidenceCompatible(field, r.Value, record.Evidence) && currentWorkRightsTimeValid(profile, field, r.Value, record.Evidence, now)
+}
+
+func customAnswerScopeCompatible(profile *domain.ResumeProfile, snap StepSnapshot, field SnapField, evidence []ProfileEvidence) bool {
+	const prefix = "/application_defaults/custom_answers/"
+	for _, e := range evidence {
+		if !strings.HasPrefix(e.Path, prefix) {
+			continue
+		}
+		index, err := strconv.Atoi(strings.Split(strings.TrimPrefix(e.Path, prefix), "/")[0])
+		if err != nil || profile == nil || index < 0 || index >= len(profile.ApplicationDefaults.CustomAnswers) {
+			return false
+		}
+		a := profile.ApplicationDefaults.CustomAnswers[index]
+		if a.Employer != "" && !strings.EqualFold(a.Employer, snap.EmployerKey) {
+			return false
+		}
+		if a.JobID != "" && (field.JobID == "" || a.JobID != field.JobID) {
+			return false
+		}
+	}
+	return true
 }

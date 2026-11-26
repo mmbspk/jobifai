@@ -20,6 +20,7 @@ const keyApplyEngineConfig = "apply_engine_config"
 // configureApplyEngine is shared by batch workers and single-job submissions.
 // Keep mapping lookup available even when the model is disabled.
 func (m *Manager) configureApplyEngine(cfg *Config, client *llm.Client) {
+	cfg.ApplicationAnswers = m.applicationAnswers
 	cfg.EngineStore = m.cfgStore
 	cfg.EngineMode = pinnedEngine(m.cfgStore, cfg.UserID, cfg.Platform)
 	if m.cfgStore != nil {
@@ -39,6 +40,9 @@ func (m *Manager) configureApplyEngine(cfg *Config, client *llm.Client) {
 // applyAttempt is the only engine dispatch used by batch, queue and direct apply.
 // The pinned attempt selects the executor; a rollback never switches executors.
 func (b *Bot) applyAttempt(ctx context.Context, page *rod.Page, lazy *lazyDocGen, ac *AttemptContext) error {
+	if lazy != nil {
+		lazy.answerProfileDigest = ""
+	}
 	platform := b.cfg.Platform
 	if ac != nil && ac.Platform != "" {
 		if platform != "" && platform != domain.Platform(ac.Platform) {

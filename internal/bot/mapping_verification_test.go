@@ -121,6 +121,7 @@ func TestMappingVerification_ReviewedAnswerFillsMissingSponsorshipFact(t *testin
 	profile := basicProfile()
 	profile.ApplicationDefaults.RequiresSponsorship = nil
 	snap := makeSnap(radioField("f0", "Require Sponsorship", "Yes", "No"))
+	snap.Fields[0].Required = true
 	snap.EmployerKey = "employer"
 	scopeJobDependentFields(&snap, linkedInJob{ID: "123", URL: "https://www.linkedin.com/jobs/view/123", Title: "Coordinator", Location: "Sydney, Australia"})
 	cold, err := (&StepInterpreter{Mapping: store}).InterpretStep(context.Background(), snap, profile)
@@ -139,6 +140,7 @@ func TestMappingVerification_ReviewedAnswerFillsMissingSponsorshipFact(t *testin
 	require.Equal(t, SourceMapping, warm.Fields[0].Source)
 	require.Equal(t, "No", warm.Fields[0].Value)
 	other := makeSnap(radioField("f0", "Require Sponsorship", "Yes", "No"))
+	other.Fields[0].Required = true
 	other.EmployerKey = snap.EmployerKey
 	scopeJobDependentFields(&other, linkedInJob{ID: "456", URL: "https://www.linkedin.com/jobs/view/456", Title: "Coordinator", Location: "Seattle, USA"})
 	elsewhere, err := (&StepInterpreter{Mapping: store}).InterpretStep(context.Background(), other, profile)
