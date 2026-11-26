@@ -1,5 +1,6 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { AlertCircle, Play } from 'lucide-react'
 import { CannotApplyJobItem } from '../components/jobs/cannot-apply-job-item'
 import {
@@ -27,6 +28,7 @@ const PLATFORMS = [
 
 export function JobsCannotApply() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [platform, setPlatform] = useState('')
 
@@ -42,10 +44,6 @@ export function JobsCannotApply() {
       last.length === PAGE_SIZE ? all.flat().length : undefined,
   })
 
-  const retry = useMutation({
-    mutationFn: jobsApi.retryCannotApply,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs-cannot-apply'] }),
-  })
   const retryAll = useMutation({
     mutationFn: () => jobsApi.retryAllCannotApply(platform || undefined),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs-cannot-apply'] }),
@@ -70,7 +68,7 @@ export function JobsCannotApply() {
       )
     : all
 
-  const actionPending = retry.isPending || markApplied.isPending || deleteMutation.isPending
+  const actionPending = markApplied.isPending || deleteMutation.isPending
 
   return (
     <JobListPage
@@ -81,7 +79,8 @@ export function JobsCannotApply() {
         <AlertCircle size={18} className="shrink-0 text-[var(--color-warn)] mt-0.5" />
         <span>
           Automation could not complete or verify these listings. The reason on each job explains what happened.
-          Re-evaluate checks the listing and suitability again on the next run. Check uncertain submissions manually before retrying.
+          Re-evaluate opens this listing in AI Apply. It stays here until you complete a new attempt.
+          Check uncertain submissions manually before retrying. Retry all queues listings for the next automation run.
         </span>
       </InfoBanner>
 
@@ -114,7 +113,7 @@ export function JobsCannotApply() {
             key={job.id}
             job={job}
             halalEnabled={halalEnabled}
-            onRetry={id => retry.mutate(id)}
+            onRetry={() => navigate('/generate?' + new URLSearchParams({ tab: 'apply', url: job.link }).toString())}
             onMarkApplied={id => markApplied.mutate(id)}
             onDelete={id => deleteMutation.mutate(id)}
             actionPending={actionPending}

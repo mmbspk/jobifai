@@ -198,6 +198,45 @@ test('legacy description pane wins over condensed sibling',()=>{
  finally{p.dom.window.close()}
 });
 
+const explicitHeader='<section data-job-id="'+target+'"><h1>Coordinator</h1><a aria-label="Company, Acme.">Acme</a><button>Easy Apply</button></section>';
+const explicitDescription='<section id="JobDetails_AboutTheJob_'+target+'">Verified responsibilities for the intended job.</section>';
+for(const [name,html,description] of [
+ ['matching sibling section','<main>'+explicitHeader+explicitDescription+'</main>',true],
+ ['external sibling section','<main>'+explicitHeader.replace('<button>Easy Apply</button>',external)+explicitDescription+'</main>',true],
+ ['recommendations excluded','<main>'+explicitHeader+explicitDescription+'<aside><section id="JobDetails_AboutTheJob_999">Wrong recommendation description</section><button>Easy Apply</button></aside></main>',true],
+ ['wrong description job','<main>'+explicitHeader+explicitDescription.replaceAll(target,other)+'</main>',false],
+ ['conflicting description ancestor','<main>'+explicitHeader+'<div data-job-id="'+other+'">'+explicitDescription+'</div></main>',false],
+ ['conflicting shared owner','<main data-job-id="'+other+'">'+explicitHeader+explicitDescription+'</main>',false],
+ ['duplicate description sections','<main>'+explicitHeader+explicitDescription+explicitDescription+'</main>',false],
+ ['ambiguous sibling headers','<main>'+explicitHeader+explicitHeader+explicitDescription+'</main>',false],
+ ['page-level description',explicitHeader+explicitDescription,false],
+ ['hidden description','<main>'+explicitHeader+explicitDescription.replace('<section id=','<section style="display:none" id=')+'</main>',false],
+]) test('explicit job header associates only its description: '+name,()=>{
+ const p=page(html);
+ try {
+  const r=p.resolve(false,{title:'Coordinator',company:'Acme'});
+  assert.equal(r.description.includes('Verified responsibilities'),description);
+  assert.ok(!r.description.includes('Wrong recommendation'));
+ }finally{p.dom.window.close()}
+});
+test('matching description never lends its application control to the header',()=>{
+ const p=page('<main>'+explicitHeader.replace('<button>Easy Apply</button>','')+explicitDescription.replace('</section>','<button>Easy Apply</button></section>')+'</main>');
+ try {
+  let clicks=0;p.dom.window.document.addEventListener('click',()=>clicks++);
+  const r=p.resolve(true,{title:'Coordinator',company:'Acme'});
+  assert.equal(r.kind,'unknown');assert.equal(r.action,'');assert.equal(clicks,0);
+  assert.ok(r.description.includes('Verified responsibilities'));
+ }finally{p.dom.window.close()}
+});
+test('explicit job description can be an empty lazy section before hydration',()=>{
+ const p=page('<main>'+explicitHeader+explicitDescription+'</main>');
+ try {
+  p.dom.window.document.querySelector('[id^=JobDetails_AboutTheJob_]').getBoundingClientRect=()=>({width:120,height:0});
+  const r=p.resolve(false,{title:'Coordinator',company:'Acme'});
+  assert.equal(r.identity_verified,true);assert.ok(r.description.includes('Verified responsibilities'));
+ }finally{p.dom.window.close()}
+});
+
 // Execute the production SERP parser rather than a copied skip expression.
 const searchScript=source.match(/const jsLinkedInSearchJobs = `([\s\S]*?)`\n/)[1];
 for(const salary of ['$80K–$120K','$190K/yr - $260K/yr','A$80/hr - A$100/hr','137.8K AUD/yr – 147.4K AUD/yr','A$137,800 – A$147,400','AUD 137,800 - AUD 147,400','USD 80,000 — USD 120,000']){

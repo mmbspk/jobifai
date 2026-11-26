@@ -55,7 +55,14 @@ func TestLLMConnectionTest_ProductionDependencies(t *testing.T) {
 				require.NoError(t, quotaSvc.InitTrial(context.Background(), userID))
 				_, err = sqldb.Exec(`UPDATE user_quota SET trial_remaining_micro = 0 WHERE user_id = ?`, userID)
 				require.NoError(t, err)
-				require.NoError(t, cfgStore.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{Model: model}))
+				// Imported local account settings must not replace the deployment proxy.
+				require.NoError(t, cfgStore.Set(userID, config.KeyGeneralSettings, domain.GeneralSettings{
+					LLM: domain.LLMConfig{UseProxy: true, ProxyURL: "http://localhost:6655/anthropic"},
+				}))
+				useProxy := true
+				require.NoError(t, cfgStore.Set(userID, config.KeyLLMOverrides, domain.LLMOverrides{
+					Model: model, UseProxy: &useProxy, ProxyURL: "http://localhost:6655/anthropic",
+				}))
 			}
 
 			var providerCalls atomic.Int32
@@ -64,8 +71,9 @@ func TestLLMConnectionTest_ProductionDependencies(t *testing.T) {
 				providerCalls.Add(1)
 				assert.Equal(t, key, r.Header.Get("x-api-key"))
 				var req struct {
-					Model     string `json:"model"`
-					MaxTokens int    `json:"max_tokens"`
+					Model     string        `json:"model"`
+					MaxTokens int           `json:"max_tokens"`
+					Messages  []llm.Message `json:"messages"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Error(err)
@@ -73,7 +81,9 @@ func TestLLMConnectionTest_ProductionDependencies(t *testing.T) {
 					return
 				}
 				assert.Equal(t, model, req.Model)
-				assert.LessOrEqual(t, req.MaxTokens, 32, "connection probes should request only a short reply")
+				if len(req.Messages) > 0 && req.Messages[0].Content == "Respond with the word OK and nothing else." {
+					assert.LessOrEqual(t, req.MaxTokens, 32, "connection probes should request only a short reply")
+				}
 				if rejectKey.Load() {
 					http.Error(w, "invalid API key", http.StatusUnauthorized)
 					return
@@ -132,6 +142,15 @@ func TestLLMConnectionTest_ProductionDependencies(t *testing.T) {
 				var exceeded *quota.ExceededError
 				require.ErrorAs(t, err, &exceeded, "normal calls must still enforce quota")
 				assert.EqualValues(t, 3, providerCalls.Load())
+
+				// A normal billed call also uses the deployment endpoint once quota is available.
+				_, err = sqldb.Exec(`UPDATE user_quota SET trial_remaining_micro = 1000000 WHERE user_id = ?`, userID)
+				require.NoError(t, err)
+				rejectKey.Store(false)
+				response, err := client.Chat(ctx, []llm.Message{{Role: "user", Content: "hello"}})
+				require.NoError(t, err)
+				assert.Equal(t, "OK", response)
+				assert.EqualValues(t, 4, providerCalls.Load())
 			}
 		})
 	}

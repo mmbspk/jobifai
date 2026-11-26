@@ -137,6 +137,10 @@ func NewRouter(svc *Services) *chi.Mux {
 			r.Post("/review/{job_id}/approve", botH.ReviewApprove)
 			r.Post("/review/{job_id}/reject", botH.ReviewReject)
 			r.Post("/apply-url", botH.ApplyURL)
+			r.Post("/apply-tasks", botH.StartApplyTask)
+			r.Get("/apply-tasks/current", botH.CurrentApplyTask)
+			r.Get("/apply-tasks/{task_id}", botH.GetApplyTask)
+			r.Post("/apply-tasks/{task_id}/cancel", botH.CancelApplyTask)
 		})
 
 		// ── Jobs ─────────────────────────────────────────────────────────

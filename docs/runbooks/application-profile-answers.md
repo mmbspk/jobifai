@@ -74,7 +74,7 @@ location/relocation. Sources checked on 23 November 2026.
 
 ## Migration and rollback
 
-Migration 061 adds answer-source, import-evidence, review, encounter and grouped
+Migration 062 adds answer-source, import-evidence, review, encounter and grouped
 notification records. Migration 060 is the existing registered Go repair.
 No existing profile, mapping or application table is reset. Legacy sponsorship
 boolean/null requests remain compatible with current/future object updates.
@@ -91,7 +91,7 @@ policies remain as configured.
 Review follow-up: topic edits during confirmation invalidate affected reviews and
 rebase unrelated active items without rewriting encounter evidence. The review
 being explicitly confirmed is exempt from this invalidation. Shared mapping
-reviews retain their conflict guard. Migration 062 records the exact confirmed
+reviews retain their conflict guard. Migration 063 records the exact confirmed
 answer and post-confirmation factual revision; an identical scoped re-encounter
 at that revision stays resolved, while a changed answer or facts reopens review.
 Legacy resolved rows with no stored confirmation are conservatively reviewed again.

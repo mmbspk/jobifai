@@ -188,6 +188,8 @@ For any tab that takes a job as input, you can provide:
 
 **Optional overrides** (collapsed by default): upload a different resume file, add LinkedIn/GitHub URLs, or add free-text instructions to steer the LLM (e.g. "emphasise project management experience").
 
+The LinkedIn and GitHub icons beside the Generate heading copy the links saved in your Profile. Hover over an icon for "Click to copy the link". A greyed-out icon means the link is missing; its tooltip explains that you can set it up in Profile. These shortcuts are available on every Generate tab.
+
 **Target Market**: select a market preset (e.g. Australia) to apply region-specific resume formatting and prompting rules.
 
 Successful resume and cover-letter generation automatically saves the content and PDF as a version in **Documents**. Click **Saved to Documents** to find it again, preview or download it, or explicitly choose it as a default. Saving does not run AI a second time. The Generate page's Download button remains available.
@@ -212,7 +214,7 @@ For the Questions tab, type each question into a field (add more with the **+** 
 |---|---|
 | Provider | `Claude (Anthropic)`, `OpenAI`, or `Ollama (local)` |
 | Model | Model name, e.g. `claude-sonnet-4-6` |
-| Use Proxy | Route LLM calls through a proxy URL |
+| Use Proxy | Deployment setting under Admin → AI provider. Controls routing for all accounts; enable it locally for Hyperspace and leave it off in production for direct API calls. |
 | Max Tokens | Maximum output tokens per call (0 = model default) |
 
 **Per-Task Model Overrides** — assign a different model to individual tasks (suitability scoring, halal filter, resume tailoring, cover letter, form Q&A, interview questions). Useful for cost optimisation: lightweight models for scoring, more capable models for writing.

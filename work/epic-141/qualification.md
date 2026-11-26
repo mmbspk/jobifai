@@ -5,7 +5,7 @@ Scope: guided Profile onboarding, background confirmation and preserved PR #138 
 ## Behavior covered
 
 - Five core topics by default; five optional topics and custom answers remain collapsed. Additional answers support search and pages of 20, preserving hidden edits and employer/job scope. Imported clear facts are editable before an explicit combined profile-and-answers save. Initial profile loading, tab switching, refetches, concurrent saves, pending saves and invalid pay drafts preserve edits.
-- Legacy values, false/null, country/pay qualifiers, custom scopes and learned cache rows survive migration 061 and partial saves. Current/future sponsorship remains separate. Explicit null clears supplied date/text topics without erasing other facts. Metadata does not affect factual hashes or warm reuse.
+- Legacy values, false/null, country/pay qualifiers, custom scopes and learned cache rows survive migration 062 and partial saves. Current/future sponsorship remains separate. Explicit null clears supplied date/text topics without erasing other facts. Metadata does not affect factual hashes or warm reuse.
 - Clear quoted CV facts prefill drafts through the existing single extraction call; ambiguous, stale and absent facts do not become assertions. Owned import tokens attach minimized source evidence only on matching explicit saves; canonical YAML stays zero-call.
 - Durably recorded supported descriptive composition can proceed. Missing required facts defer one application while the next eligible job continues. Provider, quota, browser, identity, profile-read and persistence failures remain operational. Fact deferrals preserve the operational retry count.
 - Repeated/dismissed questions stay quiet when facts and proposals are unchanged. Warm derived reuse records separate immutable attempt-use history with zero additional provider requests.
@@ -41,3 +41,5 @@ For UI rollback, retain the compatible backend/schema and candidate/history reco
 - Input errors are distinct from internal errors; encounter ID collision handling
   is user scoped and rolls back without creating another user's review.
 - UI conflicts retain drafts and require refresh; transient failures remain retryable.
+
+Upstream integration on 26 November: main owns migration 061_apply_url_tasks.sql. Unreleased answer metadata/confirmation migrations are now 062/063. Both deployed task storage and candidate answer storage are retained. New-head CI must pass before merge.

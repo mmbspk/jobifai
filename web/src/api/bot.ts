@@ -11,6 +11,18 @@ export interface ApplyURLResponse {
   role?: string
 }
 
+export interface ApplyTask {
+  id: string
+  url: string
+  market: string
+  force: boolean
+  state: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted'
+  response?: ApplyURLResponse
+  error?: string
+  started_at: string
+  finished_at?: string
+}
+
 export interface ReviewDocumentChoice {
   version_id: string
   document_id: string
@@ -75,6 +87,10 @@ export const botApi = {
   reviewPrepare: (jobId: string) => apiPost<void>(`/bot/review/${jobId}/prepare`, undefined, { timeoutMs: 4.5 * 60 * 1000 }),
   reviewApprove: (jobId: string) => apiPost<void>(`/bot/review/${jobId}/approve`, undefined, { timeoutMs: 4.5 * 60 * 1000 }),
   reviewReject: (jobId: string) => apiPost<void>(`/bot/review/${jobId}/reject`),
+  startApplyTask: (id: string, url: string, market: string, force = false) =>
+    apiPost<ApplyTask>('/bot/apply-tasks', { id, url, market, force }),
+  currentApplyTask: () => apiGet<{ task: ApplyTask | null }>('/bot/apply-tasks/current'),
+  cancelApplyTask: (id: string) => apiPost<void>('/bot/apply-tasks/' + encodeURIComponent(id) + '/cancel'),
   applyFromURL: (url: string, market: string, force = false, opts?: Pick<ApiRequestOpts, 'signal'>) =>
     apiPost<ApplyURLResponse>('/bot/apply-url', { url, market, force }, {
       timeoutMs: 4.5 * 60 * 1000,

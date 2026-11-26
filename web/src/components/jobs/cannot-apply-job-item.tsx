@@ -56,7 +56,7 @@ export function CannotApplyJobItem({
             <Button variant="ghost" size="sm" leftIcon={<CheckCheck size={12} />} disabled={actionPending} onClick={() => onMarkApplied(job.id)}>
               Mark applied
             </Button>
-            <Button variant="ghost" size="sm" leftIcon={<Play size={12} />} disabled={actionPending || submissionUnknown} onClick={() => onRetry(job.id)} title="Recheck the listing and suitability before applying">
+            <Button variant="ghost" size="sm" leftIcon={<Play size={12} />} disabled={actionPending || submissionUnknown || !job.link} onClick={() => onRetry(job.id)} title="Open this job in AI Apply to recheck suitability">
               Re-evaluate
             </Button>
             {confirmDelete ? (

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,9 +22,24 @@ import (
 )
 
 // BotHandlers groups bot lifecycle and review-gate handlers.
-type BotHandlers struct{ svc *Services }
+type BotHandlers struct {
+	svc          *Services
+	applyMu      sync.Mutex
+	applyCancels map[string]context.CancelFunc
+}
 
-func NewBotHandlers(svc *Services) *BotHandlers { return &BotHandlers{svc: svc} }
+func NewBotHandlers(svc *Services) *BotHandlers {
+	h := &BotHandlers{svc: svc, applyCancels: make(map[string]context.CancelFunc)}
+	// Never replay an application whose server stopped before recording its result.
+	if svc.DB != nil {
+		_, err := svc.DB.Exec("UPDATE apply_url_tasks SET state='interrupted', error=?, finished_at=? WHERE state='running'",
+			"The server restarted during AI Apply. Check the job site's application status before retrying.", time.Now().UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			log.Error().Err(err).Msg("AI Apply recovery failed")
+		}
+	}
+	return h
+}
 
 const msgBotNotInit = "bot not initialised"
 

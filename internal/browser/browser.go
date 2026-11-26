@@ -261,6 +261,14 @@ func (m *Manager) Launch(userID, platform, profilePath string, useProfile bool, 
 		_ = b.Close()
 		return "", fmt.Errorf("browser: navigate to %s: %w", loginURL, navErr)
 	}
+	if platform == "seek" {
+		_ = page.Timeout(15 * time.Second).WaitLoad()
+		_ = page.Timeout(3 * time.Second).WaitStable(500 * time.Millisecond)
+		if err := RecoverSeekBrowserUpgrade(page, loginURL); err != nil {
+			_ = b.Close()
+			return "", err
+		}
+	}
 
 	sess := &Session{
 		ID:        uuid.New().String(),
