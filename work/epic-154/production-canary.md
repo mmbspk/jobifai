@@ -128,7 +128,11 @@ hidden templates, busy-content waiting, semantic line breaks and clipped tails.
 Independent review reproductions now pass with no remaining actionable findings.
 Local qualification: full shared-reader race suite 111.535s; affected native
 resolver/expansion/ownership race suite 109.543s; final ownership/native-pointer
-race subset 19.887s after invocation-local heading-cache refinement. Captured
+race subset 22.921s after invocation-local heading-cache refinement. Captured
 scoring/submission guards passed in 68.096s, worker reader hooks in 57.857s,
 and the final shared clipping/performance subset in 17.434s. Go lint reports
 zero issues. These are fixture results; the new code has not run in production.
+The standalone production-script DOM suite also passes all 91 checks. Its lazy
+fixture now verifies empty pre-hydration identity/incompleteness and subsequent
+rendered text, rather than accepting text from a zero-height section. Historical
+recovery/build metadata checks pass (nine Python tests), and web lint passes.
