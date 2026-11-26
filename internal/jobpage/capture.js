@@ -71,6 +71,8 @@
     }
     return !/(apply|submit|upload|resume|sign in|log in|accept|consent)/i.test(norm(el.getAttribute('aria-label') || el.textContent));
   };
+  const authRequired=Array.from(document.querySelectorAll('form[action*="login"],input[type="password"], [data-testid="login-form"]')).some(visible);
+  if(authRequired) return {failure:'authentication_required',nodes:[],candidates:[],allowed_actions:[]};
   const roots = Array.from(document.querySelectorAll('main,[role="main"],.jobs-details__main-content,[data-testid="lazy-column"],[data-testid="job-details"],[data-automation="job-detail"]')).filter(el=>!excluded(el));
   const minimalRoots = roots.filter(el => !roots.some(other => other !== el && el.contains(other) && (idsFor(other).includes(wanted) || other.querySelector('[id^="JobDetails_ManageJobBanner_"],[data-job-id="'+wanted+'"]'))));
   const actualRoots = (minimalRoots.length ? minimalRoots : roots).filter(el=>visible(el) && (idsFor(el).includes(wanted) || Array.from(el.querySelectorAll('[id],[data-job-id],[data-job-detail-id],[data-entity-urn]')).some(n=>!excluded(n) && idsFor(n).includes(wanted)) || opts.trusted_verified || !!document.querySelector('script[type="application/ld+json"]')));
@@ -115,7 +117,6 @@
   if(!subjectFound && !metadata) return {failure:'identity_unverified',nodes:[],candidates:[],allowed_actions:[]};
   const headerEls=[...titles,...relevantCompanies.map(row=>row.el)];
   const statusText=Array.from(scope.querySelectorAll('[data-automation*="status"],[data-testid*="status"],[role="alert"]')).filter(el=>!excluded(el)&&visible(el)).map(el=>norm(el.textContent)).join(' ');
-  const authRequired=Array.from(document.querySelectorAll('form[action*="login"],input[type="password"], [data-testid="login-form"]')).some(visible) || /\/login|\/checkpoint|\/authwall/.test(location.pathname);
   const expired=/(job (?:has )?expired|no longer (?:available|accepting applications)|job is closed|position (?:has been )?filled)/i.test(statusText);
   const loading=Array.from(scope.querySelectorAll('[aria-busy="true"],[role="progressbar"],[data-testid*="loading"],[data-testid*="skeleton"]')).some(el=>!excluded(el)&&visible(el));
   const elements=[scope];

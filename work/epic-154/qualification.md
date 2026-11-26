@@ -59,3 +59,10 @@ including the race where another browser starts between preflight and launch.
 A real Chromium fixture verifies both LinkedIn and SEEK reads leave the active
 application browser alive, while managed reader-session reuse and prepaid quota
 regressions pass. Final combined-tree lint is clean.
+
+Authentication qualification now covers SEEK's trusted login.seek.com broker,
+owned sign-in/checkpoint paths, foreign login-like URLs, tracking queries that
+contain /login, and an inline login gate without listing identity. Authentication
+is classified from observed trusted routes/gates; no fields or candidate nodes
+from login pages reach interpretation. The complete reader race suite passed
+(58.2s) after these changes; final lint reports zero issues.

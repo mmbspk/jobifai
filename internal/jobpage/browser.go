@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +71,7 @@ func (p *BrowserPage) checkTarget(ctx context.Context, target Target) (Target, S
 	if err != nil {
 		return target, scope, browserError(ctx, err)
 	}
-	if strings.Contains(info.URL, "/login") || strings.Contains(info.URL, "/checkpoint") || strings.Contains(info.URL, "/authwall") {
+	if authenticationURL(info.URL, scope) {
 		return target, scope, &ReadError{Code: FailureAuth}
 	}
 	current, currentScope, err := NormalizeTarget(Target{URL: info.URL})
@@ -81,6 +82,35 @@ func (p *BrowserPage) checkTarget(ctx context.Context, target Target) (Target, S
 		return target, scope, &ReadError{Code: FailureDrift}
 	}
 	return target, scope, nil
+}
+
+func authenticationURL(raw string, scope Scope) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") {
+		return false
+	}
+	if scope.Platform == "seek" && strings.EqualFold(u.Hostname(), "login.seek.com") {
+		return true
+	}
+	path := strings.ToLower(u.Path)
+	auth := false
+	for _, prefix := range []string{"/login", "/uas/login", "/checkpoint", "/authwall", "/signin", "/sign-in", "/oauth/login", "/oauth/authorize"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			auth = true
+			break
+		}
+	}
+	if !auth {
+		return false
+	}
+	probe := *u
+	probe.Path = "/jobs/view/0/"
+	if scope.Platform == "seek" {
+		probe.Path = "/job/0"
+	}
+	probe.RawPath, probe.RawQuery, probe.Fragment = "", "", ""
+	_, origin, err := NormalizeTarget(Target{URL: probe.String()})
+	return err == nil && origin == scope
 }
 
 func browserError(ctx context.Context, err error) error {
