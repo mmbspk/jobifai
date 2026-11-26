@@ -69,10 +69,12 @@ known/cold/warm/current-text, concurrent misses, cancellation, rollback, live
 proof, persistence and invalidation. Model fixtures use local HTTP providers to
 measure actual usage without paid calls.
 
-Before merge/deployment, land PR #153 (migrations 062 and 063) and rebase so migration 064
-deploys in order. Keep rollout off until exact-head CI, offline replay and the
-**new code in the production worker** canary pass. A logged-in dashboard alone
-does not qualify the new reader or explain a historical worker failure.
+PR #153 is merged, and its migrations 062/063 are integrated before reader
+migration 064. Require exact-head CI and offline replay before reader deployment.
+Deploy with recovery/reuse off, then qualify the **new code in the production
+worker** through the operator's bounded pilot. Keep broad rollout off until the
+canary passes. A logged-in dashboard alone does not qualify the new reader or
+explain a historical worker failure.
 
 Start production qualification with both switches off. Read the failed listing
 in Admin → Automation; record identity, characters, source/failure and metrics.

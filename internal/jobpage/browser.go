@@ -81,6 +81,18 @@ func (p *BrowserPage) checkTarget(ctx context.Context, target Target) (Target, S
 	if current.JobID != target.JobID || currentScope != scope {
 		return target, scope, &ReadError{Code: FailureDrift}
 	}
+	// A trusted listing route can render an inline sign-in gate without
+	// navigating. Classify it before baseline/verifier callbacks need identity.
+	gate, err := p.page.Context(ctx).Eval(`()=>{
+ const visible=el=>{for(let node=el;node;node=node.parentElement){const style=getComputedStyle(node);if(node.hidden||node.getAttribute('aria-hidden')==='true'||style.display==='none'||style.visibility==='hidden'||style.opacity==='0')return false;}const rect=el.getBoundingClientRect();return rect.width>0&&rect.height>0;};
+ return Array.from(document.querySelectorAll('form[action*="login"],input[type="password"],[data-testid="login-form"]')).some(el=>visible(el)||Array.from(el.querySelectorAll('*')).slice(0,500).some(visible));
+}`)
+	if err != nil {
+		return target, scope, browserError(ctx, err)
+	}
+	if gate.Value.Bool() {
+		return target, scope, &ReadError{Code: FailureAuth}
+	}
 	return target, scope, nil
 }
 
@@ -121,7 +133,11 @@ func browserError(ctx context.Context, err error) error {
 }
 
 func (p *BrowserPage) options(ctx context.Context, target Target, limits Limits) (map[string]any, error) {
-	opts := map[string]any{"job_id": target.JobID, "title": target.Title, "company": target.Company, "max_nodes": limits.MaxNodes, "max_text_chars": limits.MaxTextChars}
+	_, scope, err := NormalizeTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	opts := map[string]any{"platform": target.Platform, "origin": scope.Origin, "job_id": target.JobID, "title": target.Title, "company": target.Company, "max_nodes": limits.MaxNodes, "max_text_chars": limits.MaxTextChars}
 	if p.baseline.Verify != nil {
 		identity, err := p.baseline.Verify(ctx, target)
 		if err != nil {
@@ -212,20 +228,24 @@ func (p *BrowserPage) Known(ctx context.Context, target Target, limits Limits) (
 		if _, _, err := p.checkTarget(ctx, target); err != nil {
 			return Result{}, err
 		}
-		// A legacy reader may retain full text on an explicitly closed listing.
-		// Status is a separate live boundary from description extraction.
-		status, err := p.page.Context(ctx).Eval(`()=>{const main=document.querySelector('main,[role="main"]');if(!main)return '';return Array.from(main.querySelectorAll('[role="alert"],[data-testid*="status"],[data-automation*="status"]')).filter(n=>!n.closest('aside,nav,form,dialog,[role="dialog"]')&&n.getClientRects().length).map(n=>n.textContent||'').join(' ')}`)
-		if err != nil {
-			return Result{}, browserError(ctx, err)
-		}
-		closed := strings.ToLower(status.Value.Str())
-		for _, marker := range []string{"job has expired", "job expired", "no longer available", "no longer accepting applications", "job is closed", "position has been filled"} {
-			if strings.Contains(closed, marker) {
-				return Result{}, &ReadError{Code: FailureExpired}
-			}
-		}
 		if !r.Identity.Verified || r.Identity.JobID != target.JobID || (target.Title != "" && normalizeText(target.Title) != normalizeText(r.Identity.Title)) || (target.Company != "" && normalizeText(target.Company) != normalizeText(r.Identity.Company)) {
 			return Result{}, &ReadError{Code: FailureIdentity}
+		}
+		// Native extraction proves identity and reads its own layout. Recheck
+		// owned status without imposing the adaptive snapshot's text/node caps.
+		_, scope, _ := NormalizeTarget(target)
+		status, err := p.eval(ctx, map[string]any{"mode": "status", "platform": target.Platform, "origin": scope.Origin, "job_id": target.JobID, "trusted_verified": true})
+		if err != nil {
+			return Result{}, err
+		}
+		if _, _, err := p.checkTarget(ctx, target); err != nil {
+			return Result{}, err
+		}
+		if status.Expired {
+			return Result{}, &ReadError{Code: FailureExpired}
+		}
+		if status.Loading {
+			return Result{}, &ReadError{Code: FailureThin}
 		}
 		if err := validDescription(r.Description, limits); err != nil {
 			return Result{}, err
@@ -270,6 +290,9 @@ func (p *BrowserPage) Known(ctx context.Context, target Target, limits Limits) (
 // candidate regions require independent semantic verification in the reader.
 func knownPlan(s Snapshot) (Plan, error) {
 	plan := Plan{Version: SnapshotVersion, SnapshotID: s.ID}
+	if s.Loading {
+		return plan, &ReadError{Code: FailureThin}
+	}
 	for _, ref := range s.Candidates {
 		n, ok := s.Node(ref)
 		if !ok || n.Context != ContextDescription {
@@ -309,9 +332,15 @@ func (p *BrowserPage) Read(ctx context.Context, target Target, s Snapshot, plan 
 	if fresh.ID != s.ID {
 		return Result{}, &ReadError{Code: FailureStale}
 	}
+	if fresh.Loading {
+		return Result{}, &ReadError{Code: FailureThin}
+	}
 	var texts []string
 	for _, ref := range plan.DescriptionRefs {
-		n, _ := fresh.Node(ref)
+		n, ok := fresh.Node(ref)
+		if !ok {
+			return Result{}, &ReadError{Code: FailureStale}
+		}
 		if n.Truncated || n.Collapsed || !n.Visible {
 			return Result{}, &ReadError{Code: FailureThin}
 		}

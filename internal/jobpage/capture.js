@@ -16,10 +16,31 @@
     if (id) out.push(id[1]);
     return out;
   };
+  const linkedJob = link => {
+    try {
+      const url=new URL(link.getAttribute('href') || '',location.href),host=url.hostname.toLowerCase();
+      if(url.protocol!=='https:' && url.protocol!=='http:') return null;
+      if(host==='linkedin.com' || host==='www.linkedin.com') {
+        const match=url.pathname.match(/^\/jobs\/view\/(\d+)(?:\/|$)/);
+        const id=match ? match[1] : (url.pathname.startsWith('/jobs/search') ? url.searchParams.get('currentJobId') : '');
+        return id && /^\d+$/.test(id) ? {platform:'linkedin',id,origin:'https://www.linkedin.com'} : null;
+      }
+      if(['au.seek.com','nz.seek.com','seek.com.au','www.seek.com.au','seek.co.nz','www.seek.co.nz'].includes(host)) {
+        const match=url.pathname.match(/^\/job\/(\d+)(?:\/|$)/);
+        const origin=['nz.seek.com','seek.co.nz','www.seek.co.nz'].includes(host) ? 'https://www.seek.co.nz' : 'https://www.seek.com.au';
+        return match ? {platform:'seek',id:match[1],origin} : null;
+      }
+    } catch(e) {}
+    return null;
+  };
   const foreign = el => {
     for (let n = el; n && n !== document.body; n = n.parentElement) {
       const ids = idsFor(n);
       if (ids.some(id => id !== wanted)) return true;
+      if(n.matches('section,article,li,[role="article"]')) {
+        const links=Array.from(n.querySelectorAll('h1 a[href],h2 a[href],h3 a[href]')).filter(link=>link.closest('section,article,li,[role="article"]')===n);
+        if(links.some(link=>{const job=linkedJob(link);return job && (job.id!==wanted || job.platform!==opts.platform || job.origin!==opts.origin);})) return true;
+      }
     }
     return false;
   };
@@ -79,6 +100,10 @@
   const distinctRoots=actualRoots.filter(el=>!actualRoots.some(other=>other!==el && other.contains(el)));
   if (distinctRoots.length!==1) return {failure:distinctRoots.length>1?'description_ambiguous':'identity_unverified',nodes:[],candidates:[],allowed_actions:[]};
   const scope=distinctRoots[0];
+  const statusText=Array.from(scope.querySelectorAll('[data-automation*="status"],[data-testid*="status"],[role="alert"]')).filter(el=>!excluded(el)&&visible(el)).map(el=>norm(el.textContent)).join(' ');
+  const expired=/(job (?:has )?expired|no longer (?:available|accepting applications)|job is closed|position (?:has been )?filled)/i.test(statusText);
+  const loading=[scope,...Array.from(scope.querySelectorAll('[aria-busy="true"],[role="progressbar"],[data-testid*="loading"],[data-testid*="skeleton"]'))].some(el=>el.matches('[aria-busy="true"],[role="progressbar"],[data-testid*="loading"],[data-testid*="skeleton"]')&&!excluded(el)&&visible(el));
+  if(opts.mode==='status') return {expired,loading};
   let metadata=null;
   for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
     try {
@@ -116,9 +141,6 @@
   const subjectFound=idsFor(scope).includes(wanted) || Array.from(scope.querySelectorAll('[id],[data-job-id],[data-job-detail-id],[data-entity-urn]')).some(el=>!excluded(el) && idsFor(el).includes(wanted));
   if(!subjectFound && !metadata) return {failure:'identity_unverified',nodes:[],candidates:[],allowed_actions:[]};
   const headerEls=[...titles,...relevantCompanies.map(row=>row.el)];
-  const statusText=Array.from(scope.querySelectorAll('[data-automation*="status"],[data-testid*="status"],[role="alert"]')).filter(el=>!excluded(el)&&visible(el)).map(el=>norm(el.textContent)).join(' ');
-  const expired=/(job (?:has )?expired|no longer (?:available|accepting applications)|job is closed|position (?:has been )?filled)/i.test(statusText);
-  const loading=Array.from(scope.querySelectorAll('[aria-busy="true"],[role="progressbar"],[data-testid*="loading"],[data-testid*="skeleton"]')).some(el=>!excluded(el)&&visible(el));
   const elements=[scope];
   const contexts=[{el:scope,context:'listing_scope',text:''}];
   for(const el of headerEls) if(!elements.includes(el)) {elements.push(el);contexts.push({el,context:'header',text:norm(el.textContent)});}
@@ -154,7 +176,7 @@
     if(node.can_scroll) actions.push({kind:'scroll',ref:node.ref,amount:500});
   }
   const headerRefs=nodes.filter(n=>n.context==='header').map(n=>n.ref);
-  const result={identity:{job_id:wanted,title:titleValues[0],company,verified:headerRefs.length>0,header_refs:headerRefs,evidence:[subjectFound?'subject_attribute':'job_posting_identifier','primary_header']},nodes,candidates,allowed_actions:actions,loading:loading || readingRegions.some(row=>!row.text || /^loading(?:\s|\.|$)/i.test(row.text)),authentication_required:authRequired,expired,truncated};
+  const result={identity:{job_id:wanted,title:titleValues[0],company,verified:headerRefs.length>0,header_refs:headerRefs,evidence:[subjectFound?'subject_attribute':'job_posting_identifier','primary_header']},nodes,candidates,allowed_actions:actions,loading:loading || readingRegions.some(row=>!row.text || (Array.from(row.text).length<100 && /^loading(?:\s|\.|$)/i.test(row.text))),authentication_required:authRequired,expired,truncated};
   // DOM object tokens stay in the runtime and make replacing an identical
   // element invalidate a plan. They never become recipe or model attributes.
   const epochKey=Symbol.for('jobifai.jobpage.nodes');

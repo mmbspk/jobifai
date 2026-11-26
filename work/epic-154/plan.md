@@ -1,6 +1,9 @@
 # Epic 154 — adaptive job-page reading
 
-Baseline: main e921ccb includes merged PR 152. Epic 141 is qualified in PR 153 (121892d; test/e2e CI green) and remains available for review in its own worktree.
+Current prerequisite: PR 153 is merged on main at e8d2d8b and its reviewed source
+is already integrated into the reader branch. PR 163 implements this epic and
+remains open for review. The latest checkpoint below supersedes older status
+and migration notes retained in this work log.
 
 ## Delivery
 
@@ -18,7 +21,7 @@ Use an independent internal/jobpage core, preserving the form engine and candida
 
 ## Coordination and storage
 
-Settle core DTO/API contracts before parallel contract/recovery, model/budget and recipe/admin implementation. Root assembles caller integration and qualification. Main currently has migration 060; PR 153 adds 061 and 062. Reserve 063 for reader storage and preserve deployment order/compatible candidate history. No automatic merge or deployment is part of implementation.
+Settle core DTO/API contracts before parallel contract/recovery, model/budget and recipe/admin implementation. Root assembles caller integration and qualification. Main's background-task storage uses 061; merged PR 153 uses 062/063. Reader storage uses 064, preserving deployed history. No automatic merge or deployment is part of implementation.
 
 ## Evidence
 
@@ -87,3 +90,14 @@ Integrated main into both feature branches and reserved answer metadata at
 retention passed migration upgrade fixtures. Both branch lints are clean. User
 explicitly keeps PR153 open for Claude Code review. Do not merge either feature
 PR or deploy without approval; final CI and production canary remain gates.
+
+## Latest checkpoint — 26 November 2026
+
+PR 153 has merged; no additional prerequisite merge is needed. PR 163 is open
+for review, and test/e2e CI passed on 02c317e. Additional reader guards now cover
+inline/passwordless auth, foreign heading-link issuers with matching numeric
+IDs, and loading completeness through the real LinkedIn native adapter. The
+reader race suite, affected worker checks and Go lint pass on the latest source.
+See qualification.md for measurements. Commit/push these guards and qualify
+the resulting CI head. Reader release approval and the production-worker
+read-only canary remain outstanding; #161/#154 must stay open until it passes.

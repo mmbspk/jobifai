@@ -1,6 +1,7 @@
 package jobpage
 
 import (
+	"context"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
@@ -37,6 +38,31 @@ func TestBrowserAuthenticationRequiresTrustedOriginAndRealPath(t *testing.T) {
 	}
 }
 
+func TestBrowserInlineLoginBlocksTrustedBaselineAndVerifier(t *testing.T) {
+	browser := readerFixtureBrowser(t)
+	target, _, err := NormalizeTarget(Target{URL: "https://www.linkedin.com/jobs/view/123/", Title: "Engineer", Company: "Acme"})
+	require.NoError(t, err)
+	reader, _ := readerFixture(t, browser, target, "<form action='/login'><input type='password'></form>")
+	baselineCalls, verifyCalls := 0, 0
+	reader.baseline = Baseline{
+		Known: func(context.Context, Target, Limits) (Result, error) {
+			baselineCalls++
+			return Result{}, &ReadError{Code: FailureIdentity}
+		},
+		Verify: func(context.Context, Target) (Identity, error) {
+			verifyCalls++
+			return Identity{}, &ReadError{Code: FailureIdentity}
+		},
+	}
+	_, err = reader.Known(t.Context(), target, DefaultLimits())
+	require.Equal(t, FailureAuth, ErrorCode(err))
+	snapshot, err := reader.Capture(t.Context(), target, DefaultLimits())
+	require.Equal(t, FailureAuth, ErrorCode(err))
+	require.Empty(t, snapshot.Nodes)
+	require.Zero(t, baselineCalls)
+	require.Zero(t, verifyCalls)
+}
+
 func TestBrowserInlineLoginCannotBorrowMissingListingIdentity(t *testing.T) {
 	browser := readerFixtureBrowser(t)
 	target := Target{URL: "https://www.seek.com.au/job/123"}
@@ -45,4 +71,28 @@ func TestBrowserInlineLoginCannotBorrowMissingListingIdentity(t *testing.T) {
 	require.Equal(t, FailureAuth, ErrorCode(err))
 	require.Empty(t, snapshot.Nodes)
 	require.Empty(t, snapshot.Candidates)
+}
+
+func TestBrowserPasswordlessInlineLoginWithDisplayContentsBlocksCallbacks(t *testing.T) {
+	browser := readerFixtureBrowser(t)
+	target := fixtureTarget()
+	reader, _ := readerFixture(t, browser, target, "<div data-testid='login-form' style='display:contents'><button>Sign in to view job</button></div>")
+	baselineCalls, verifyCalls := 0, 0
+	reader.baseline = Baseline{
+		Known: func(context.Context, Target, Limits) (Result, error) {
+			baselineCalls++
+			return Result{}, &ReadError{Code: FailureIdentity}
+		},
+		Verify: func(context.Context, Target) (Identity, error) {
+			verifyCalls++
+			return Identity{}, &ReadError{Code: FailureIdentity}
+		},
+	}
+	_, err := reader.Known(t.Context(), target, DefaultLimits())
+	require.Equal(t, FailureAuth, ErrorCode(err))
+	snapshot, err := reader.Capture(t.Context(), target, DefaultLimits())
+	require.Equal(t, FailureAuth, ErrorCode(err))
+	require.Empty(t, snapshot.Nodes)
+	require.Zero(t, baselineCalls)
+	require.Zero(t, verifyCalls)
 }

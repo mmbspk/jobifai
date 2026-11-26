@@ -14,7 +14,7 @@ func TestBrowserKnownPreservesExpiredAndHydrationBoundaries(t *testing.T) {
 	t.Run("expired baseline", func(t *testing.T) {
 		p, _ := readerFixture(t, b, target, fixtureHTML("<div role=\"alert\">This job is no longer accepting applications.</div><section data-testid=\"job-description\">"+fixtureText()+"</section>"))
 		p.baseline.Known = func(context.Context, Target, Limits) (Result, error) {
-			return Result{Target: target, Identity: fixtureSnapshot().Identity, Description: fixtureText()}, nil
+			return Result{Target: target, Identity: Identity{JobID: target.JobID, Title: target.Title, Company: target.Company, Verified: true}, Description: fixtureText()}, nil
 		}
 		_, err := p.Known(ctx, target, limits)
 		require.Equal(t, FailureExpired, ErrorCode(err))

@@ -258,6 +258,9 @@ func (r *Reader) Read(ctx context.Context, page Page, target Target) (out Result
 	if len(snap.Candidates) == 0 {
 		return out, &ReadError{Code: FailureMissing}
 	}
+	if snap.Loading {
+		return out, &ReadError{Code: FailureThin, Cause: errors.New("listing content is still loading")}
+	}
 	if r.NewModel == nil {
 		return out, &ReadError{Code: FailureProvider, Cause: errors.New("job-page model unavailable")}
 	}
