@@ -543,7 +543,7 @@ func (b *Bot) scrapeSeekJobs(ctx context.Context, page *rod.Page, keyword, resol
 		return nil, fmt.Errorf("wait load: %w", err)
 	}
 	_ = page.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
-	if err := browser.CheckSeekBrowser(page); err != nil {
+	if err := browser.RecoverSeekBrowserUpgrade(page.Context(ctx), searchURL); err != nil {
 		return nil, err
 	}
 	b.log.Info().Str("keyword", keyword).Msg("seek: page loaded, scraping cards")

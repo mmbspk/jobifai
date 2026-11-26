@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -36,9 +37,8 @@ type JobEvaluator interface {
 
 // Services is the dependency bag threaded into each handler group.
 type Services struct {
-	JobPages             *jobpage.SQLStore
-	FetchVerifiedJobPage func(context.Context, string, string) (string, error)
-	ReadJobPage          func(context.Context, string, string) (jobpage.Result, error)
+	// Serializes browser-session changes against direct-apply claims for each user.
+	browserWork          sync.Map
 	DB                   *sql.DB
 	Config               ConfigStore
 	Secrets              SecretsStore
@@ -54,6 +54,9 @@ type Services struct {
 	Users                *auth.UserStore
 	TokenManager         *auth.TokenManager
 	Google               GoogleOAuthHandler
+	JobPages             *jobpage.SQLStore
+	FetchVerifiedJobPage func(context.Context, string, string) (string, error)
+	ReadJobPage          func(context.Context, string, string) (jobpage.Result, error)
 	// LLMFactory builds a fresh Extractor+Tailor for the given user from the
 	// current stored config/secrets. Called per-request so changes take effect
 	// immediately without a server restart.
@@ -112,6 +115,13 @@ type Services struct {
 	// Returns (provider, model, latencyMS, err). Used by admin AI Provider test and tester
 	// personal provider test. Pass domain.SystemUserID for the system provider check.
 	LLMConnectionTester func(ctx context.Context, userID string) (provider, model string, latencyMS int64, err error)
+}
+
+func (s *Services) lockBrowserWork(userID string) func() {
+	v, _ := s.browserWork.LoadOrStore(userID, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // GoogleOAuthHandler handles the Google OAuth2 redirect + callback.

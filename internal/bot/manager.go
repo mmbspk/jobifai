@@ -896,7 +896,7 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings, conte
 	}
 	_ = warmPage.Timeout(30 * time.Second).WaitLoad()
 	_ = warmPage.Timeout(5 * time.Second).WaitStable(2 * time.Second)
-	if err := browser.CheckSeekBrowser(warmPage); err != nil {
+	if err := browser.RecoverSeekBrowserUpgrade(warmPage, "https://au.seek.com/jobs"); err != nil {
 		_ = br.Close()
 		return nil, err
 	}
@@ -1507,6 +1507,16 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 
 	// Validate we actually landed on a job page. LinkedIn may redirect when the
 	// session is expired or bot-detection kicks in.
+	if platform == domain.PlatformSeek {
+		if browserErr := browser.RecoverSeekBrowserUpgrade(jobPage.Context(ctx), jobURL); browserErr != nil {
+			finishAttempt(m.db, ac, OutcomeBlocked, "browser", "seek_browser_unsupported", browserErr.Error())
+			_ = jobPage.Close()
+			if ownsBr {
+				_ = br.Close()
+			}
+			return ApplyFromURLResult{}, browserErr
+		}
+	}
 	if platform == domain.PlatformLinkedIn {
 		if cu, cuErr := jobPage.Eval(`() => window.location.href`); cuErr == nil {
 			cu := cu.Value.String()

@@ -23,8 +23,8 @@ behavior, not production pricing or historic production-worker failure evidence.
 
 ## Storage and release
 
-Reader migration is 063_job_page_reader.sql. PR 153 now owns migrations 061 and
-062 and must land before reader deployment. PR 153 test/e2e CI passed on 05c4433.
+Reader migration is 064_job_page_reader.sql. PR 153 now owns migrations 062 and
+063 and must land before reader deployment. PR 153 test/e2e CI passed on 05c4433.
 No persistent production database received the former reader migration 062. Old
 isolated reader fixtures must be recreated rather than reused after renumbering.
 
