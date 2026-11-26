@@ -79,3 +79,11 @@ cold-warm-changed replay coverage; focused browser and boundary tests passed.
 Full backend race checks and final lint continue. Qualification details are in
 work/epic-154/qualification.md. Await explicit prerequisite merge approval; do not
 merge/deploy automatically. Production-worker canary remains required for release.
+
+Main subsequently added PR 162 and deployed migration 061_apply_url_tasks.sql.
+Integrated main into both feature branches and reserved answer metadata at
+062/063 and reader storage at064. The latest isolated combined checks passed
+417 frontend tests and affected Go race suites; deployed task/fact/unknown-submit
+retention passed migration upgrade fixtures. Both branch lints are clean. User
+explicitly keeps PR153 open for Claude Code review. Do not merge either feature
+PR or deploy without approval; final CI and production canary remain gates.

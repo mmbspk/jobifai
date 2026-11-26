@@ -32,3 +32,18 @@ Recovery and reuse default off. Draft PR 163 remains open. Exact-head CI, merged
 prerequisite integration and the new-code read-only production-worker canary are
 still gates. No merge, deployment, paid model call or live job application is
 claimed by the offline results.
+
+## Main-branch integration
+
+Main added PR 162 after the initial reader qualification, introducing deployed
+migration 061_apply_url_tasks.sql. Both feature branches now include main.
+Application-answer migrations are 062/063; reader storage is 064. An isolated
+combined checkout passed 417 frontend tests, frontend build/lint, and the affected
+Go race suites for answers, readers, background Apply, browser compatibility,
+handlers and server assembly. The deployed-061 upgrade fixture passed both with
+and without the answer migrations, preserving background task results, candidate
+facts and submission_unknown holds. Final lint on both feature branches is clean.
+
+The earlier full backend run describes the pre-main-integration reader snapshot.
+Fresh exact-head CI remains required for the final feature heads. PR 153 stays
+open for Claude Code review at the user's request. No feature PR was merged.
