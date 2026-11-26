@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -265,15 +264,7 @@ func TestClassifyAndTenant_DifferentDomainAfterRedirect(t *testing.T) {
 // request URL is passed to dispatch, which returns the HTML to serve.
 func ghHijackPage(t *testing.T, dispatch func(url string) string) *rod.Page {
 	t.Helper()
-	launchURL, err := launcher.New().Headless(true).Leakless(false).NoSandbox(true).Launch()
-	if err != nil {
-		t.Skipf("chrome unavailable for Greenhouse browser test: %v", err)
-	}
-	browser := rod.New().ControlURL(launchURL)
-	if err := browser.Connect(); err != nil {
-		t.Skipf("chrome connect failed: %v", err)
-	}
-	t.Cleanup(func() { _ = browser.Close() })
+	browser := launchTestBrowser(t)
 	page := browser.MustPage("")
 	router := page.HijackRequests()
 	t.Cleanup(func() { router.MustStop() })

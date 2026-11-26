@@ -29,6 +29,12 @@ type ResumeExtractor interface {
 	ExtractFromText(ctx context.Context, text string) (*domain.ResumeProfile, error)
 }
 
+// ResumeEvidenceExtractor returns validated upload suggestions beside the
+// factual profile while using the same metered extraction call.
+type ResumeEvidenceExtractor interface {
+	ExtractWithEvidence(context.Context, string) (*domain.ResumeProfile, []domain.CVAnswerPrefill, error)
+}
+
 // JobEvaluator scores how well a candidate profile matches a job description.
 type JobEvaluator interface {
 	EvaluateJob(ctx context.Context, profile *domain.ResumeProfile, jobDesc string) (domain.JobScore, error)
@@ -37,22 +43,23 @@ type JobEvaluator interface {
 // Services is the dependency bag threaded into each handler group.
 type Services struct {
 	// Serializes browser-session changes against direct-apply claims for each user.
-	browserWork  sync.Map
-	DB           *sql.DB
-	Config       ConfigStore
-	Secrets      SecretsStore
-	Extractor    ResumeExtractor
-	Tailor       ResumeTailor
-	Renderer     ResumeRenderer
-	BrowserMgr   BrowserManager
-	SessionStore PlatformSessionStore
-	Logs         LogBroadcaster
-	Bot          BotController
-	MarketDir    string // directory containing market_*.yaml files
-	StylesDir    string // directory containing style_*.css files
-	Users        *auth.UserStore
-	TokenManager *auth.TokenManager
-	Google       GoogleOAuthHandler
+	browserWork        sync.Map
+	DB                 *sql.DB
+	Config             ConfigStore
+	Secrets            SecretsStore
+	Extractor          ResumeExtractor
+	Tailor             ResumeTailor
+	Renderer           ResumeRenderer
+	BrowserMgr         BrowserManager
+	SessionStore       PlatformSessionStore
+	Logs               LogBroadcaster
+	Bot                BotController
+	MarketDir          string // directory containing market_*.yaml files
+	StylesDir          string // directory containing style_*.css files
+	Users              *auth.UserStore
+	TokenManager       *auth.TokenManager
+	Google             GoogleOAuthHandler
+	ApplicationAnswers ApplicationAnswersService
 	// LLMFactory builds a fresh Extractor+Tailor for the given user from the
 	// current stored config/secrets. Called per-request so changes take effect
 	// immediately without a server restart.
@@ -181,6 +188,20 @@ type TransactionalConfigStore interface {
 	ConfigStore
 	GetTx(context.Context, *sql.Tx, string, string, any) error
 	SetTx(context.Context, *sql.Tx, string, string, any) error
+}
+
+// ApplicationAnswersService owns facts, source metadata and later review.
+type ApplicationAnswersService interface {
+	Get(context.Context, string) (domain.ApplicationAnswersView, error)
+	Patch(context.Context, string, domain.ApplicationAnswersPatch) (domain.ApplicationAnswersView, error)
+	ListReviews(context.Context, string, string, string, int) (domain.ApplicationAnswerReviewPage, error)
+	GetReview(context.Context, string, string) (domain.ApplicationAnswerReview, error)
+	Confirm(context.Context, string, string, domain.ApplicationAnswerConfirmation) (domain.ApplicationAnswersView, error)
+	Dismiss(context.Context, string, string, int64) error
+	MarkRead(context.Context, string) error
+	SaveProfile(context.Context, string, *domain.ResumeProfile, string) error
+	SaveProfileWithImport(context.Context, string, *domain.ResumeProfile, string, string) error
+	CaptureImport(context.Context, string, *domain.ResumeProfile, []domain.CVAnswerPrefill) (string, error)
 }
 
 // SecretsStore is the minimal interface handlers need for secret management.

@@ -58,8 +58,8 @@ const SETTINGS_TABS = [
 
 function SettingsLayout() {
   return (
-    <div className="grid gap-6 lg:grid-cols-[190px_minmax(0,1fr)] lg:items-start">
-      <div className="lg:sticky lg:top-8">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[190px_minmax(0,1fr)] lg:items-start">
+      <div className="min-w-0 lg:sticky lg:top-8">
         <SettingsTabNav tabs={SETTINGS_TABS} />
       </div>
       <div className="min-w-0">

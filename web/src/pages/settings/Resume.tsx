@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type SetStateAction } from 'react'
 import { Check, Plus, Trash2, Upload, Download, ChevronDown, FileText, X, Loader2, Sparkles } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
 import { cn } from '../../lib'
@@ -7,9 +7,13 @@ import { Button } from '../../components/Button'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { TagInput } from '../../components/TagInput'
 import { OpenProfileLink } from '../../components/profile/OpenProfileLink'
-import { FormMappingReview } from '../../components/settings/FormMappingReview'
-import { ApplicationDefaultsEditor } from '../../components/settings/ApplicationDefaultsEditor'
-import { mergeApplicationDefaults, validateApplicationDefaults } from '../../lib/applicationDefaults'
+import * as Tabs from '@radix-ui/react-tabs'
+import { useSearchParams } from 'react-router-dom'
+import { ApplicationAnswers } from '../../components/settings/ApplicationAnswers'
+import type { CVAnswerPrefill } from '../../api/settings'
+import { validateApplicationDefaults } from '../../lib/applicationDefaults'
+import { mergeExtractedProfile } from '../../lib/profileDraft'
+import { mergeApplicationFactDraft } from '../../lib/applicationFactDraft'
 import type {
   ResumeProfile, EducationDetail, ExperienceDetail, Language,
   Project, Certification, Publication, Presentation, Grant,
@@ -81,10 +85,30 @@ function genKeys(n: number): string[] {
 
 export function Resume() {
   const qc = useQueryClient()
-  const { data } = useQuery({ queryKey: ['settings-resume'], queryFn: settingsApi.resume.get })
-  const [form, setForm] = useState<ResumeProfile>({})
+  const { data, isLoading: profileLoading } = useQuery({ queryKey: ['settings-resume'], queryFn: settingsApi.resume.get })
+  const answersQuery = useQuery({ queryKey: ['application-answers'], queryFn: settingsApi.applicationAnswers.get })
+  const [form, applyForm] = useState<ResumeProfile>({})
   const [saved, setSaved] = useState(false)
+  const [profileRevision, setProfileRevision] = useState('')
+  const [importId, setImportId] = useState<string | undefined>()
+  const [importedDraft, setImportedDraft] = useState(false)
+  const [factConflicts, setFactConflicts] = useState<string[]>([])
+  const [loadedProfile, setLoadedProfile] = useState(false)
+  const baseline = useRef<ResumeProfile>({})
+  const rebasedRevision = useRef('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [profileView, setProfileView] = useState(searchParams.get('view') === 'application-answers' ? 'answers' : 'cv')
+  useEffect(() => { setProfileView(searchParams.get('view') === 'application-answers' ? 'answers' : 'cv') }, [searchParams])
+  function changeProfileView(value: string) {
+    setProfileView(value)
+    setSearchParams(current => { const next = new URLSearchParams(current); if (value === 'answers') next.set('view', 'application-answers'); else { next.delete('view'); next.delete('answers') }; return next }, { replace: true })
+  }
+  const initialized = useRef(false)
+  const draftVersion = useRef(0)
+  const appliedVersion = useRef(0)
+  function setForm(next: SetStateAction<ResumeProfile>) { draftVersion.current++; applyForm(next) }
   const applicationErrors = validateApplicationDefaults(form.application_defaults)
+  const profileDraftActive = importedDraft || (!loadedProfile && draftVersion.current > appliedVersion.current)
 
   // Stable keys for list sections — prevents React from misaligning input state on delete/reorder
   const [eduKeys, setEduKeys] = useState<string[]>([])
@@ -102,12 +126,18 @@ export function Resume() {
   const [extractStep, setExtractStep] = useState(0)
   const [extractError, setExtractError] = useState<string | null>(null)
   const [extractSuccess, setExtractSuccess] = useState(false)
+  const [prefill, setPrefill] = useState<CVAnswerPrefill[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
   const stepTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
-    if (data) {
-      setForm(data)
+    if (data && ((!initialized.current && draftVersion.current === 0) || draftVersion.current === appliedVersion.current)) {
+      initialized.current = true
+      const { profile_revision, ...profile } = data
+      applyForm(profile)
+      baseline.current = profile
+      setLoadedProfile(true)
+      setProfileRevision(profile_revision ?? '')
       setEduKeys(genKeys((data.education_details ?? []).length))
       setExpKeys(genKeys((data.experience_details ?? []).length))
       setProjectKeys(genKeys((data.projects ?? []).length))
@@ -120,14 +150,57 @@ export function Resume() {
     }
   }, [data])
 
+  useEffect(() => {
+    const latest = answersQuery.data
+    if (!data && latest?.profile_revision) {
+      // The initial empty profile also has a revision. Keep that snapshot for
+      // the first save instead of allowing a later onboarding tab to overwrite.
+      setProfileRevision(current => current || latest.profile_revision!)
+    }
+    if (!loadedProfile || !data || !latest || rebasedRevision.current === latest.revision) return
+    rebasedRevision.current = latest.revision
+    const remote = { ...baseline.current, ...latest.profile, application_defaults: latest.application_defaults }
+    const facts = mergeApplicationFactDraft(baseline.current.application_defaults, form.application_defaults, latest.application_defaults)
+    const next = mergeExtractedProfile(form, baseline.current, remote)
+    applyForm({ ...next, application_defaults: facts.value })
+    baseline.current = remote
+    setProfileRevision(latest.profile_revision ?? data.profile_revision ?? '')
+    setFactConflicts(facts.conflicts)
+  }, [answersQuery.data, data, form, loadedProfile])
+
   const save = useMutation({
-    mutationFn: () => settingsApi.resume.set(form),
-    onSuccess: () => {
+    mutationFn: async () => {
+      const version = draftVersion.current
+      await settingsApi.resume.set({ ...form, ...(profileRevision && { profile_revision: profileRevision }), ...(importId && { import_id: importId }) })
+      return version
+    },
+    onSuccess: (version) => {
+      appliedVersion.current = version
+      setImportId(undefined)
+      if (draftVersion.current === version) { setImportedDraft(false); setPrefill([]) }
       qc.invalidateQueries({ queryKey: ['settings-resume'] })
+      void qc.invalidateQueries({ queryKey: ['application-answers'] })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     },
   })
+  const reload = useMutation({ mutationFn: async () => {
+    const [profile, answers] = await Promise.all([settingsApi.resume.get(), settingsApi.applicationAnswers.get()])
+    return { profile, answers }
+  }, onSuccess: ({ profile: response, answers }) => {
+    const { profile_revision, ...profile } = response
+    const facts = mergeApplicationFactDraft(baseline.current.application_defaults, form.application_defaults, profile.application_defaults)
+    applyForm({ ...mergeExtractedProfile(form, baseline.current, profile), application_defaults: facts.value })
+    baseline.current = profile
+    initialized.current = true
+    rebasedRevision.current = answers.revision
+    setLoadedProfile(true)
+    setProfileRevision(profile_revision ?? answers.profile_revision ?? '')
+    setFactConflicts(facts.conflicts)
+    qc.setQueryData(['settings-resume'], response)
+    qc.setQueryData(['application-answers'], answers)
+    save.reset()
+  } })
 
   // ── personal info ──────────────────────────────────────────────────────────
   function pi<K extends keyof NonNullable<ResumeProfile['personal_information']>>(key: K, value: string) {
@@ -276,15 +349,16 @@ export function Resume() {
 
   async function handleExtract() {
     if (!selectedFile) return
+    const started = form
     setExtracting(true); setExtractError(null); setExtractSuccess(false); setExtractStep(0)
     stepTimerRef.current = setInterval(() => { setExtractStep(s => Math.min(s + 1, EXTRACT_STEPS.length - 1)) }, 1200)
     try {
-      const profile = await settingsApi.resume.upload(selectedFile)
-      setForm(current => ({
-        ...current, ...profile,
-        personal_information: { ...current.personal_information, ...profile.personal_information },
-        application_defaults: mergeApplicationDefaults(current.application_defaults, profile.application_defaults),
-      }))
+      const { application_answer_prefill, profile_revision, import_id, ...profile } = await settingsApi.resume.upload(selectedFile)
+      if (profile_revision) setProfileRevision(current => current || profile_revision)
+      setImportId(import_id)
+      setPrefill(application_answer_prefill ?? [])
+      setForm(current => mergeExtractedProfile(current, started, profile))
+      setImportedDraft(true)
       if (profile.education_details) setEduKeys(genKeys(profile.education_details.length))
       if (profile.experience_details) setExpKeys(genKeys(profile.experience_details.length))
       if (profile.projects) setProjectKeys(genKeys(profile.projects.length))
@@ -304,6 +378,12 @@ export function Resume() {
     }
   }
 
+  // Do not expose an empty editor before the initial saved profile is hydrated.
+  // Existing drafts remain mounted during background refetches.
+  if (draftVersion.current === 0 && (profileLoading || (!!data && !loadedProfile))) {
+    return <div className="space-y-6"><PageHeader title="Profile" description="Your experience and contact details — used for scoring, tailoring, and form filling." /><p role="status" className="text-sm text-[var(--color-text-dim)]">Loading your profile…</p></div>
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -311,6 +391,12 @@ export function Resume() {
         description="Your experience and contact details — used for scoring, tailoring, and form filling."
       />
 
+      <Tabs.Root value={profileView} onValueChange={changeProfileView}>
+        <Tabs.List aria-label="Profile views" className="mb-6 flex gap-6 border-b border-[var(--color-border)]">
+          <Tabs.Trigger value="cv" className="min-h-11 border-b-2 border-transparent pb-3 text-sm text-[var(--color-text-dim)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] data-[state=active]:border-[var(--color-accent)] data-[state=active]:text-[var(--color-text)]">CV &amp; profile</Tabs.Trigger>
+          <Tabs.Trigger value="answers" className="min-h-11 border-b-2 border-transparent pb-3 text-sm text-[var(--color-text-dim)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] data-[state=active]:border-[var(--color-accent)] data-[state=active]:text-[var(--color-text)]">Application answers</Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="cv" forceMount hidden={profileView !== 'cv'} className="space-y-6 outline-none">
       {/* Import / Export */}
       <div className="rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-surface)] p-4 space-y-3 shadow-[var(--shadow-sm)]">
         <div className="flex items-center justify-between">
@@ -367,6 +453,7 @@ export function Resume() {
         {extractError && (
           <div className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-400">{extractError}</div>
         )}
+        {extractSuccess && <div className="space-y-2"><p className="text-xs text-[var(--color-text-dim)]">Review common application answers before saving your profile. Missing or uncertain facts stay unspecified.</p><Button variant="secondary" onClick={() => changeProfileView('answers')}>Review application answers</Button></div>}
       </div>
 
       {/* Personal Information */}
@@ -387,14 +474,6 @@ export function Resume() {
           <Field label="LinkedIn URL"><Input value={p.linkedin ?? ''} onChange={v => pi('linkedin', v)} /><OpenProfileLink value={p.linkedin} /></Field>
           <Field label="GitHub URL"><Input value={p.github ?? ''} onChange={v => pi('github', v)} /><OpenProfileLink value={p.github} /></Field>
         </div>
-      </Section>
-
-      <Section title="Application answers">
-        <ApplicationDefaultsEditor
-          value={form.application_defaults}
-          onChange={application_defaults => setForm(current => ({ ...current, application_defaults }))}
-          errors={applicationErrors}
-        />
       </Section>
 
       {/* Professional Summary */}
@@ -620,18 +699,29 @@ export function Resume() {
       </Section>
 
       {applicationErrors.length > 0 && <p role="alert" className="text-sm text-red-400">Check Application answers before saving: {applicationErrors.join(' ')}</p>}
-      {save.isError && <p role="alert" className="text-sm text-red-400">{save.error instanceof Error ? save.error.message : 'Could not save profile.'}</p>}
+      {factConflicts.length > 0 && <div className="space-y-3"><p role="alert" className="text-sm text-red-400">Saved application answers also changed: {factConflicts.map(key => key.replaceAll('_', ' ')).join(', ')}. Your reviewed CV answers are still in this draft.</p><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => setFactConflicts([])}>Keep my reviewed CV answers</Button><Button variant="secondary" onClick={() => { setForm(current => ({ ...current, application_defaults: answersQuery.data?.application_defaults })); setFactConflicts([]) }}>Use the latest saved application answers</Button></div></div>}
+      {save.isError && <div className="space-y-3"><p role="alert" className="text-sm text-red-400">{save.error instanceof Error ? save.error.message : 'Could not save profile.'} Your draft is still here.</p><Button variant="secondary" loading={reload.isPending} onClick={() => reload.mutate()}>Load latest profile and keep my edits</Button></div>}
+      {reload.isError && <p role="alert" className="text-sm text-red-400">Could not load the latest profile. Your draft is still here.</p>}
       <Button
         variant="primary"
         fullWidth
         loading={save.isPending}
-        disabled={applicationErrors.length > 0}
+        disabled={applicationErrors.length > 0 || factConflicts.length > 0 || (!data && !profileRevision)}
         leftIcon={saved ? <Check size={14} /> : undefined}
-        onClick={() => { if (applicationErrors.length === 0) save.mutate() }}
+        onClick={() => { if (applicationErrors.length === 0 && factConflicts.length === 0) save.mutate() }}
       >
         {saved ? 'Saved' : 'Save changes'}
       </Button>
-      <FormMappingReview />
+        </Tabs.Content>
+        <Tabs.Content value="answers" forceMount hidden={profileView !== 'answers'} className="outline-none">
+          <ApplicationAnswers initialView={searchParams.get('answers') ?? 'common'} reviewId={searchParams.get('review') ?? undefined} onEditProfile={() => changeProfileView('cv')} onDraftChange={value => setForm(current => ({ ...current, application_defaults: value }))} profileDraft={profileDraftActive ? {
+            value: form.application_defaults ?? {}, prefill, certifications: form.certifications,
+            onSave: () => save.mutateAsync(), saving: save.isPending,
+            disabled: applicationErrors.length > 0 || factConflicts.length > 0 || (!data && !profileRevision),
+            error: factConflicts.length > 0 ? 'Saved application answers also changed. Review the competing facts in CV & profile before saving.' : save.isError ? 'Profile could not be saved. Review the error in CV & profile.' : undefined,
+          } : undefined} />
+        </Tabs.Content>
+      </Tabs.Root>
     </div>
   )
 }

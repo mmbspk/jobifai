@@ -40,6 +40,7 @@ func NewRouter(svc *Services) *chi.Mux {
 	ws := NewWSHandlers(svc)
 	users := NewUserHandlers(svc, svc.Users, svc.TokenManager, svc.DB)
 	usage := NewUsageHandlers(svc)
+	answers := NewApplicationAnswerHandlers(svc)
 	quotaH := NewQuotaHandlers(svc)
 	billingH := NewBillingHandlers(svc)
 	verifyH := NewVerificationHandlers(svc)
@@ -191,6 +192,13 @@ func NewRouter(svc *Services) *chi.Mux {
 
 		// ── Settings ─────────────────────────────────────────────────
 		r.Route("/api/settings", func(r chi.Router) {
+			r.Get("/application-answers", answers.Get)
+			r.Patch("/application-answers", answers.Patch)
+			r.Get("/application-answers/reviews", answers.List)
+			r.Post("/application-answers/reviews/read", answers.Read)
+			r.Get("/application-answers/reviews/{id}", answers.Detail)
+			r.Post("/application-answers/reviews/{id}/confirm", answers.Confirm)
+			r.Post("/application-answers/reviews/{id}/dismiss", answers.Dismiss)
 			r.Get("/resume", settings.ResumeGet)
 			r.Get("/form-mappings", settings.FormMappings)
 			r.Post("/form-mappings/{id}/confirm", settings.ConfirmFormMapping)

@@ -332,9 +332,8 @@ func TestGroundedAnswers_VerificationCountsAgainstAttemptBudget(t *testing.T) {
 	snap.Fields = snap.Fields[:1]
 	ctx := context.WithValue(context.Background(), adaptiveBudgetKey{}, &adaptiveRunBudget{maxCalls: 1})
 	result, err := (&StepInterpreter{LLM: boundFormLLM(NewLLMFormInterpreter(server.newClient(t)))}).InterpretStep(ctx, snap, groundedFixtureProfile())
-	require.NoError(t, err)
-	assert.True(t, result.Paused)
-	assert.Equal(t, PendingLimitExceeded, result.PauseReason)
+	require.ErrorIs(t, err, ErrLLMLimitExceeded)
+	assert.False(t, result.Paused, "a budget failure does not become candidate uncertainty")
 	assert.Equal(t, int32(1), server.requests.Load())
 	_, err = NewLLMFormInterpreter(nil).InterpretFields(context.Background(), groundedFixtureProfile(), snap, []string{"f0"})
 	assert.True(t, errors.Is(err, ErrLLMUnavailable))

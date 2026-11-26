@@ -1929,6 +1929,10 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 	}
 
 	lazy.applyCaps(capsFromFormFields(fields))
+	if err := b.prepareLegacyAnswers(ctx, lazy, fields); err != nil {
+		return filled, true, err
+	}
+	defer func() { lazy.answerActiveKey = "" }()
 	siteMode := b.policies().ResumeMode == domain.ResumeDocumentModeSiteHosted
 	for _, f := range fields {
 		if f.Type != "file" {
@@ -1952,6 +1956,11 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 
 	for _, f := range fields {
 		b.shortPause() // human-like pause before each field interaction
+		if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+			return filled, true, err
+		}
+		usedAnswer := ""
+		lazy.answerActiveKey = legacyFieldKey(f)
 		switch f.Type {
 
 		case "file":
@@ -2127,6 +2136,9 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				continue
 			}
 			raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())
+			if raw == "" && qErr == nil && !f.Required {
+				continue
+			}
 			answer, qErr := resolveFormFieldAnswer(raw, qErr, "")
 			if qErr != nil {
 				return filled, true, qErr
@@ -2158,11 +2170,15 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			if !radioOK {
 				return filled, true, fmt.Errorf("%w: radio selection failed", errAdaptiveQuestionReview)
 			}
-			log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: radio answered")
+			log.Info().Str("question", f.Question).Msg("form: radio answered")
+			usedAnswer = answer
 			filled = true
 
 		case "checkbox":
 			raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, f.optionLabels())
+			if raw == "" && qErr == nil && !f.Required {
+				continue
+			}
 			answer, qErr := resolveFormFieldAnswer(raw, qErr, "")
 			if qErr != nil {
 				return filled, true, qErr
@@ -2181,7 +2197,8 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			if result, err := page.Eval(jsFillCheckbox, targetID); err != nil || result == nil || !result.Value.Bool() {
 				return filled, true, fmt.Errorf("%w: checkbox selection failed", errAdaptiveQuestionReview)
 			}
-			log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: checkbox answered")
+			log.Info().Str("question", f.Question).Msg("form: checkbox answered")
+			usedAnswer = answer
 			filled = true
 
 		case "select":
@@ -2194,12 +2211,16 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					return filled, true, qErr
 				}
 				if ok := b.fillOpenEndedNearSelect(page, f, answer); ok {
+					usedAnswer = answer
 					filled = true
 					break
 				}
 				log.Warn().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Str("url", lazy.job.URL).Str("question", f.Question).Msg("form: open-ended question has no textarea to fill")
 			}
 			raw, qErr := b.answerFormQuestion(ctx, lazy, f.Question, labels)
+			if raw == "" && qErr == nil && !f.Required {
+				continue
+			}
 			answer, qErr := resolveFormFieldAnswer(raw, qErr, "")
 			if qErr != nil {
 				return filled, true, qErr
@@ -2209,9 +2230,11 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					if result, err := page.Eval(jsFillSelect, f.ID, chosen); err != nil || result == nil || !result.Value.Bool() {
 						return filled, true, fmt.Errorf("%w: select assignment failed", errAdaptiveQuestionReview)
 					}
-					log.Info().Str("question", f.Question).Str("answer", chosen).Msg("form: select filled")
+					log.Info().Str("question", f.Question).Msg("form: select filled")
+					usedAnswer = answer
 					filled = true
 				} else if ok := b.fillOpenEndedNearSelect(page, f, answer); ok {
+					usedAnswer = answer
 					// LLM returned prose that doesn't match dropdown options — try textarea.
 					filled = true
 				} else {
@@ -2225,7 +2248,11 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 			answer := ""
 			var answerErr error
-			if isSalaryFormQuestion(f.Question) {
+			if planned, ok := preparedLegacyAnswer(lazy, f.Question, f.optionLabels()); ok {
+				answer = planned
+			} else if lazy.answerPlan != nil {
+				answerErr = errAdaptiveQuestionReview
+			} else if isSalaryFormQuestion(f.Question) {
 				answer, answerErr = b.answerSalaryFormField(ctx, lazy, f)
 			} else if profile := b.currentProfile(); profile != nil {
 				answer = profileContactAnswer(f.Question, f.InputType, &profile.PersonalInformation)
@@ -2261,6 +2288,25 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			}
 
 			if f.Typeahead {
+				if b.cfg.ApplicationAnswers != nil && lazy.answerPlan != nil {
+					resolution, ok := lazy.answerPlan[legacyFieldKey(f)]
+					field, found := lazy.answerSnapshot.FieldByRef(resolution.Ref)
+					if !ok || !found {
+						return filled, true, errAdaptiveQuestionReview
+					}
+					result := fillAdaptiveControl(ctx, page, field, answer, b.currentProfile())
+					if result.Err != nil {
+						return filled, true, result.Err
+					}
+					if !result.Filled {
+						return filled, true, errAdaptiveQuestionReview
+					}
+					if err := b.markLegacyAnswerFilled(ctx, lazy, f, answer); err != nil {
+						return filled, true, err
+					}
+					filled = true
+					continue
+				}
 				// LinkedIn city/location combobox fields require isTrusted=true keyboard
 				// events to trigger the autocomplete API.  JS-dispatched events have
 				// isTrusted=false and are ignored by LinkedIn.  We use CDP
@@ -2281,7 +2327,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 					_ = proto.InputDispatchKeyEvent{Type: proto.InputDispatchKeyEventTypeKeyUp, Key: ch, NativeVirtualKeyCode: vk, WindowsVirtualKeyCode: vk}.Call(page)
 					time.Sleep(50 * time.Millisecond)
 				}
-				log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: typeahead typed via CDP")
+				log.Info().Str("question", f.Question).Msg("form: typeahead typed via CDP")
 
 				// Poll for the suggestion dropdown to appear.
 				// LinkedIn does NOT reliably set aria-expanded="true" on the combobox,
@@ -2308,7 +2354,7 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 							_ = proto.InputDispatchKeyEvent{Type: proto.InputDispatchKeyEventTypeKeyDown, Key: "Enter", Code: "Enter", WindowsVirtualKeyCode: 13, NativeVirtualKeyCode: 13}.Call(page)
 							time.Sleep(100 * time.Millisecond)
 							_ = proto.InputDispatchKeyEvent{Type: proto.InputDispatchKeyEventTypeKeyUp, Key: "Enter", Code: "Enter", WindowsVirtualKeyCode: 13, NativeVirtualKeyCode: 13}.Call(page)
-							log.Info().Str("question", f.Question).Str("answer", answer).Msg("form: typeahead confirmed via ArrowDown+Enter fallback")
+							log.Info().Str("question", f.Question).Msg("form: typeahead confirmed via ArrowDown+Enter fallback")
 							confirmed = true
 						}
 						break
@@ -2324,6 +2370,9 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				}
 				if confirmed {
 					filled = true
+					if err := b.markLegacyAnswerFilled(ctx, lazy, f, answer); err != nil {
+						return filled, true, err
+					}
 				}
 				continue
 			}
@@ -2335,8 +2384,12 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 			if isSalaryFormQuestion(f.Question) && !verifySalaryAssignment(page, f.ID, answer) {
 				return filled, true, fmt.Errorf("%w: salary was not accepted intact", errAdaptiveQuestionReview)
 			}
-			log.Info().Str("question", f.Question).Str("answer", answer).Str("inputType", f.InputType).Msg("form: text filled")
+			log.Info().Str("question", f.Question).Str("inputType", f.InputType).Msg("form: text filled")
+			usedAnswer = answer
 			filled = true
+		}
+		if err := b.markLegacyAnswerFilled(ctx, lazy, f, usedAnswer); err != nil {
+			return filled, true, err
 		}
 	}
 
@@ -2877,6 +2930,9 @@ func linkedInWaitForResumeAcceptedPoll(ctx context.Context, page *rod.Page, file
 }
 
 func (b *Bot) fillFormStepFromVision(ctx context.Context, page *rod.Page, lazy *lazyDocGen) (filled bool, err error) {
+	if b.cfg.ApplicationAnswers != nil {
+		return b.fillRecoveredLegacyControls(ctx, page, lazy)
+	}
 	if b.cfg.Tailor == nil || page == nil {
 		return false, nil
 	}
@@ -2927,6 +2983,15 @@ func (b *Bot) fillFormStepFromVision(ctx context.Context, page *rod.Page, lazy *
 // work rights and experience durations need independently grounded answers;
 // sponsorship and career totals cannot establish those facts.
 func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question string, options []string) (string, error) {
+	if answer, ok := preparedLegacyAnswer(lazy, question, options); ok {
+		return answer, nil
+	}
+	if b.cfg.ApplicationAnswers != nil {
+		return "", errUnresolvedLegacyControl
+	}
+	if lazy != nil && lazy.answerPlan != nil && lazy.answerActiveKey != "" {
+		return "", errAdaptiveQuestionReview
+	}
 	if manualDeclaration(SnapField{Label: question}) {
 		return "", errAdaptiveQuestionReview
 	}
@@ -2934,7 +2999,7 @@ func (b *Bot) answerFormQuestion(ctx context.Context, lazy *lazyDocGen, question
 	if len(options) == 0 {
 		if profile := b.currentProfile(); profile != nil {
 			if ans := profileContactAnswer(question, inferContactInputType(question), &profile.PersonalInformation); ans != "" {
-				log.Info().Str("question", question).Str("answer", ans).Msg("form: answered via heuristic (contact info)")
+				log.Info().Str("question", question).Msg("form: answered via heuristic (contact info)")
 				return sanitizeContactFieldAnswer(ans, question, inferContactInputType(question)), nil
 			}
 		}

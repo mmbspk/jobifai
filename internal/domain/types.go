@@ -333,17 +333,21 @@ type Language struct {
 type ApplicationDefaults struct {
 	// FormAnswers are explicitly reviewed candidate facts, kept with the profile
 	// rather than copied into the reusable form mapping cache.
-	FormAnswers         map[string]string       `json:"form_answers,omitempty" yaml:"form_answers,omitempty"`
-	RequiresSponsorship *bool                   `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
-	NoticePeriod        string                  `json:"notice_period,omitempty" yaml:"notice_period,omitempty"`           // e.g. "2 weeks", "1 month", "Immediately"
-	SalaryExpectation   string                  `json:"salary_expectation,omitempty" yaml:"salary_expectation,omitempty"` // e.g. "90000" or "90,000 AUD"
-	Availability        string                  `json:"availability,omitempty" yaml:"availability,omitempty"`
-	EarliestStartDate   string                  `json:"earliest_start_date,omitempty" yaml:"earliest_start_date,omitempty"`
-	SalaryRange         *ApplicationSalaryRange `json:"salary_range,omitempty" yaml:"salary_range,omitempty"`
-	WorkRights          []ApplicationWorkRight  `json:"work_rights,omitempty" yaml:"work_rights,omitempty"`
-	Relocation          *ApplicationRelocation  `json:"relocation,omitempty" yaml:"relocation,omitempty"`
-	AdditionalDetails   string                  `json:"additional_details,omitempty" yaml:"additional_details,omitempty"`
-	CustomAnswers       []ApplicationAnswer     `json:"custom_answers,omitempty" yaml:"custom_answers,omitempty"`
+	FormAnswers               map[string]string       `json:"form_answers,omitempty" yaml:"form_answers,omitempty"`
+	RequiresSponsorship       *bool                   `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
+	FutureRequiresSponsorship *bool                   `json:"future_requires_sponsorship,omitempty" yaml:"future_requires_sponsorship,omitempty"`
+	NoticePeriod              string                  `json:"notice_period,omitempty" yaml:"notice_period,omitempty"`           // e.g. "2 weeks", "1 month", "Immediately"
+	SalaryExpectation         string                  `json:"salary_expectation,omitempty" yaml:"salary_expectation,omitempty"` // e.g. "90000" or "90,000 AUD"
+	Availability              string                  `json:"availability,omitempty" yaml:"availability,omitempty"`
+	EarliestStartDate         string                  `json:"earliest_start_date,omitempty" yaml:"earliest_start_date,omitempty"`
+	SalaryRange               *ApplicationSalaryRange `json:"salary_range,omitempty" yaml:"salary_range,omitempty"`
+	WorkRights                []ApplicationWorkRight  `json:"work_rights,omitempty" yaml:"work_rights,omitempty"`
+	Relocation                *ApplicationRelocation  `json:"relocation,omitempty" yaml:"relocation,omitempty"`
+	AdditionalDetails         string                  `json:"additional_details,omitempty" yaml:"additional_details,omitempty"`
+	CustomAnswers             []ApplicationAnswer     `json:"custom_answers,omitempty" yaml:"custom_answers,omitempty"`
+	TravelConditions          string                  `json:"travel_conditions,omitempty" yaml:"travel_conditions,omitempty"`
+	WorkingHours              string                  `json:"working_hours,omitempty" yaml:"working_hours,omitempty"`
+	CommuteConditions         string                  `json:"commute_conditions,omitempty" yaml:"commute_conditions,omitempty"`
 }
 
 // ApplicationSalaryRange keeps pay units and benefits explicit; absent metadata
@@ -362,13 +366,14 @@ type ApplicationSalaryRange struct {
 // ApplicationWorkRight belongs only to its named country. A missing sponsorship
 // answer remains unknown, independently of the legacy general sponsorship fact.
 type ApplicationWorkRight struct {
-	Country             string `json:"country,omitempty" yaml:"country,omitempty"`
-	Status              string `json:"status,omitempty" yaml:"status,omitempty"`
-	RequiresSponsorship *bool  `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
-	VisaType            string `json:"visa_type,omitempty" yaml:"visa_type,omitempty"`
-	VisaExpiryDate      string `json:"visa_expiry_date,omitempty" yaml:"visa_expiry_date,omitempty"`
-	WorkRestrictions    string `json:"work_restrictions,omitempty" yaml:"work_restrictions,omitempty"`
-	Details             string `json:"details,omitempty" yaml:"details,omitempty"`
+	Country                   string `json:"country,omitempty" yaml:"country,omitempty"`
+	Status                    string `json:"status,omitempty" yaml:"status,omitempty"`
+	RequiresSponsorship       *bool  `json:"requires_sponsorship,omitempty" yaml:"requires_sponsorship,omitempty"`
+	FutureRequiresSponsorship *bool  `json:"future_requires_sponsorship,omitempty" yaml:"future_requires_sponsorship,omitempty"`
+	VisaType                  string `json:"visa_type,omitempty" yaml:"visa_type,omitempty"`
+	VisaExpiryDate            string `json:"visa_expiry_date,omitempty" yaml:"visa_expiry_date,omitempty"`
+	WorkRestrictions          string `json:"work_restrictions,omitempty" yaml:"work_restrictions,omitempty"`
+	Details                   string `json:"details,omitempty" yaml:"details,omitempty"`
 }
 
 type ApplicationRelocation struct {
@@ -382,6 +387,8 @@ type ApplicationAnswer struct {
 	Question string `json:"question,omitempty" yaml:"question,omitempty"`
 	Answer   string `json:"answer,omitempty" yaml:"answer,omitempty"`
 	Country  string `json:"country,omitempty" yaml:"country,omitempty"`
+	Employer string `json:"employer,omitempty" yaml:"employer,omitempty"`
+	JobID    string `json:"job_id,omitempty" yaml:"job_id,omitempty"`
 }
 
 type ResumeProfile struct {

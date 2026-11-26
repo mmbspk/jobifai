@@ -31,19 +31,12 @@ func (h *SettingsHandlers) ConfirmFormMapping(w http.ResponseWriter, r *http.Req
 		writeJSON(w, 400, map[string]string{"message": "explicit question and answer confirmation is required"})
 		return
 	}
-	items, err := bot.ListFormMappingReviews(r.Context(), h.svc.DB, userID)
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"message": "could not load form mappings"})
+	var found int
+	if err := h.svc.DB.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM form_field_mappings WHERE id=? AND user_id=? AND schema_version=4`, id, userID).Scan(&found); err != nil {
+		writeJSON(w, 500, map[string]string{"message": "could not load form mapping"})
 		return
 	}
-	found := false
-	for _, item := range items {
-		if item.ID == id {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if found != 1 {
 		writeJSON(w, 404, map[string]string{"message": "mapping not found"})
 		return
 	}

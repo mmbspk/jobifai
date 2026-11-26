@@ -43,6 +43,18 @@ var profileBindings = map[string]func(*domain.ResumeProfile) string{
 	"application_defaults.availability":        func(p *domain.ResumeProfile) string { return p.ApplicationDefaults.Availability },
 	"application_defaults.earliest_start_date": func(p *domain.ResumeProfile) string { return p.ApplicationDefaults.EarliestStartDate },
 	"application_defaults.additional_details":  func(p *domain.ResumeProfile) string { return p.ApplicationDefaults.AdditionalDetails },
+	"application_defaults.travel_conditions":   func(p *domain.ResumeProfile) string { return p.ApplicationDefaults.TravelConditions },
+	"application_defaults.working_hours":       func(p *domain.ResumeProfile) string { return p.ApplicationDefaults.WorkingHours },
+	"application_defaults.commute_conditions":  func(p *domain.ResumeProfile) string { return p.ApplicationDefaults.CommuteConditions },
+	"application_defaults.future_requires_sponsorship": func(p *domain.ResumeProfile) string {
+		if p.ApplicationDefaults.FutureRequiresSponsorship == nil {
+			return ""
+		}
+		if *p.ApplicationDefaults.FutureRequiresSponsorship {
+			return "Yes"
+		}
+		return "No"
+	},
 	"application_defaults.relocation.willing": func(p *domain.ResumeProfile) string {
 		if p.ApplicationDefaults.Relocation == nil || p.ApplicationDefaults.Relocation.Willing == nil {
 			return ""

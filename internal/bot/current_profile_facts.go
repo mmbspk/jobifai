@@ -68,6 +68,64 @@ func currentSalaryExpectation(profile *domain.ResumeProfile) string {
 // Select a declared country exception only from the question/vacancy context.
 // An unknown jurisdiction cannot borrow a conflicting general default.
 func currentSponsorship(field SnapField, profile *domain.ResumeProfile) (*bool, int, bool) {
+	timing := sponsorshipTiming(field)
+	if timing == "both" {
+		now, ni, nok := scopedSponsorship(field, profile, false)
+		future, fi, fok := scopedSponsorship(field, profile, true)
+		if !nok || !fok {
+			return nil, -1, false
+		}
+		value := *now || *future
+		if ni != fi {
+			return &value, -1, true
+		}
+		return &value, ni, true
+	}
+	return scopedSponsorship(field, profile, timing == "future")
+}
+
+func sponsorshipTiming(field SnapField) string {
+	text := strings.ToLower(field.Label + " " + field.HelpText)
+	future := matchesAny(text, "future", "will you", "at any time", "eventually")
+	if future && matchesAny(text, "now", "current", "presently", "today") {
+		return "both"
+	}
+	if future {
+		return "future"
+	}
+	return "current"
+}
+
+func sponsorshipEvidenceCompatible(field SnapField, evidence []ProfileEvidence) bool {
+	current, future := false, false
+	for _, e := range evidence {
+		if strings.HasSuffix(e.Path, "/future_requires_sponsorship") {
+			future = true
+			continue
+		}
+		if strings.HasSuffix(e.Path, "/requires_sponsorship") {
+			current = true
+			continue
+		}
+		quote := strings.ToLower(e.Quote)
+		if !strings.Contains(quote, "sponsor") {
+			continue
+		}
+		scope := sponsorshipTiming(SnapField{Label: quote})
+		current = current || scope == "current" || scope == "both"
+		future = future || scope == "future" || scope == "both"
+	}
+	switch sponsorshipTiming(field) {
+	case "both":
+		return current && future
+	case "future":
+		return future
+	default:
+		return current
+	}
+}
+
+func scopedSponsorship(field SnapField, profile *domain.ResumeProfile, future bool) (*bool, int, bool) {
 	if profile == nil {
 		return nil, -1, false
 	}
@@ -81,10 +139,19 @@ func currentSponsorship(field SnapField, profile *domain.ResumeProfile) (*bool, 
 		}
 		index = i
 	}
-	if index >= 0 && profile.ApplicationDefaults.WorkRights[index].RequiresSponsorship != nil {
-		return profile.ApplicationDefaults.WorkRights[index].RequiresSponsorship, index, true
+	valueFor := func(row domain.ApplicationWorkRight) *bool {
+		if future {
+			return row.FutureRequiresSponsorship
+		}
+		return row.RequiresSponsorship
+	}
+	if index >= 0 && valueFor(profile.ApplicationDefaults.WorkRights[index]) != nil {
+		return valueFor(profile.ApplicationDefaults.WorkRights[index]), index, true
 	}
 	general := profile.ApplicationDefaults.RequiresSponsorship
+	if future {
+		general = profile.ApplicationDefaults.FutureRequiresSponsorship
+	}
 	if general == nil {
 		return nil, -1, false
 	}
@@ -94,7 +161,7 @@ func currentSponsorship(field SnapField, profile *domain.ResumeProfile) (*bool, 
 	}
 	if !knownCountry {
 		for _, row := range profile.ApplicationDefaults.WorkRights {
-			if row.RequiresSponsorship != nil && *row.RequiresSponsorship != *general {
+			if value := valueFor(row); value != nil && *value != *general {
 				return nil, -1, false
 			}
 		}
@@ -104,8 +171,12 @@ func currentSponsorship(field SnapField, profile *domain.ResumeProfile) (*bool, 
 
 func resolveProfileBindingForField(key string, profile *domain.ResumeProfile, field SnapField) (string, bool) {
 	key = normalizeProfileBindingKey(key)
-	if key != "application_defaults.requires_sponsorship" {
+	if key != "application_defaults.requires_sponsorship" && key != "application_defaults.future_requires_sponsorship" {
 		return resolveProfileBinding(key, profile)
+	}
+	// An old current-sponsorship mapping never authorizes a future declaration.
+	if key == "application_defaults.future_requires_sponsorship" && sponsorshipTiming(field) == "current" {
+		return "", false
 	}
 	value, _, ok := currentSponsorship(field, profile)
 	if !ok {
@@ -119,21 +190,33 @@ func resolveProfileBindingForField(key string, profile *domain.ResumeProfile, fi
 
 func bindingEvidenceForField(profile *domain.ResumeProfile, binding string, field SnapField) []ProfileEvidence {
 	binding = normalizeProfileBindingKey(binding)
-	if binding == "application_defaults.requires_sponsorship" {
-		_, index, ok := currentSponsorship(field, profile)
+	if binding == "application_defaults.requires_sponsorship" || binding == "application_defaults.future_requires_sponsorship" {
+		_, _, ok := currentSponsorship(field, profile)
 		if !ok {
 			return nil
 		}
-		if index >= 0 {
-			base := fmt.Sprintf("/application_defaults/work_rights/%d/", index)
-			var evidence []ProfileEvidence
-			for _, key := range []string{"country", "requires_sponsorship"} {
-				if value, exists := profileScalar(profile, base+key); exists {
-					evidence = append(evidence, ProfileEvidence{Path: base + key, Quote: value})
+		var evidence []ProfileEvidence
+		for _, future := range []bool{false, true} {
+			timing := sponsorshipTiming(field)
+			if timing == "future" && !future || timing == "current" && future {
+				continue
+			}
+			_, index, _ := scopedSponsorship(field, profile, future)
+			key, base := "requires_sponsorship", "/application_defaults/"
+			if future {
+				key = "future_requires_sponsorship"
+			}
+			if index >= 0 {
+				base = fmt.Sprintf("/application_defaults/work_rights/%d/", index)
+				if value, exists := profileScalar(profile, base+"country"); exists {
+					evidence = append(evidence, ProfileEvidence{Path: base + "country", Quote: value})
 				}
 			}
-			return evidence
+			if value, exists := profileScalar(profile, base+key); exists {
+				evidence = append(evidence, ProfileEvidence{Path: base + key, Quote: value})
+			}
 		}
+		return evidence
 	}
 	if binding == "application_defaults.salary_expectation" && profile != nil && profile.ApplicationDefaults.SalaryRange != nil {
 		var evidence []ProfileEvidence
@@ -179,5 +262,5 @@ func currentWorkRightsTimeValid(profile *domain.ResumeProfile, field SnapField, 
 }
 
 func currentFactPromptNote() string {
-	return "Current date (UTC): " + time.Now().UTC().Format("2006-01-02") + ". Structured salary_range is authoritative over legacy salary_expectation when supplied. Country-specific sponsorship answers override the general default for that country. Do not claim current work authorization from an expired visa or invent a missing expiry. Preserve currency, pay period, base/total and benefit qualifiers.\n\n"
+	return "Current date (UTC): " + time.Now().UTC().Format("2006-01-02") + ". Structured salary_range is authoritative over legacy salary_expectation when supplied. Country-specific sponsorship answers override the general default for that country. Current and future sponsorship are distinct facts; neither implies the other. Do not claim current work authorization from an expired visa or invent a missing expiry. Preserve currency, pay period, base/total and benefit qualifiers.\n\n"
 }

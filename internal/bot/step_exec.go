@@ -148,6 +148,8 @@ type StepExecutor struct {
 	NoProgress *noProgressTracker
 	// BeforeSideEffect rechecks attempt policy at every fill, navigation and submit.
 	BeforeSideEffect func(context.Context) error
+	// AfterFieldFill persists exact use evidence before navigation or Submit.
+	AfterFieldFill func(context.Context, SnapField, FieldResolution) error
 }
 
 // NewStepExecutor creates a StepExecutor with the given bounds and submit guard.
@@ -230,6 +232,12 @@ func (se *StepExecutor) ExecuteStep(ctx context.Context, snap StepSnapshot, inte
 		}
 
 		if fillResult.Filled {
+			if se.AfterFieldFill != nil {
+				if err := se.AfterFieldFill(ctx, f, res); err != nil {
+					result.Outcome, result.Err = StepOutcomeError, err
+					return result, err
+				}
+			}
 			filledThisStep++
 			result.FieldsFilled++
 			result.FilledRefs = append(result.FilledRefs, res.Ref)

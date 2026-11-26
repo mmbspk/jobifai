@@ -343,8 +343,9 @@ func (b *Bot) greenhouseApply(ctx context.Context, page *rod.Page, lazy *lazyDoc
 	// Set up the adaptive pipeline for the Greenhouse form.
 	profile := b.currentProfile()
 	si := &StepInterpreter{
-		LLM:     boundFormLLM(b.cfg.AdaptiveLLM),
-		Mapping: b.cfg.AdaptiveMapping,
+		KnownMissing: b.knownMissingChecker(lazy),
+		LLM:          boundFormLLM(b.cfg.AdaptiveLLM),
+		Mapping:      b.cfg.AdaptiveMapping,
 	}
 	guard := &SubmitGuard{
 		DB:        b.cfg.DB,
@@ -353,6 +354,9 @@ func (b *Bot) greenhouseApply(ctx context.Context, page *rod.Page, lazy *lazyDoc
 	}
 	se := NewStepExecutor(DefaultStepExecBounds(), guard)
 	se.BeforeSideEffect = func(ctx context.Context) error {
+		if err := b.ensureAnswerFactsCurrent(lazy); err != nil {
+			return err
+		}
 		if err := b.checkAdaptiveSideEffect(); err != nil {
 			return err
 		}
@@ -401,10 +405,18 @@ func (b *Bot) greenhouseApply(ctx context.Context, page *rod.Page, lazy *lazyDoc
 		}
 		if interp.Paused {
 			recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
+			if _, err := b.prepareAnswerReviews(ctx, lazy, snap, interp, profile); err != nil {
+				return err
+			}
 			return fmt.Errorf("%w: step %d (%s)", errAdaptiveQuestionReview, stepIdx, interp.PauseReason)
 		}
 
 		recordAdaptiveProposals(ctx, b.cfg.AdaptiveMapping, snap, interp)
+		reviewIDs, reviewErr := b.prepareAnswerReviews(ctx, lazy, snap, interp, profile)
+		if reviewErr != nil {
+			return reviewErr
+		}
+		se.AfterFieldFill = b.answerFillRecorder(reviewIDs)
 		result, err := se.ExecuteStep(ctx, snap, interp, filler)
 		invalidateFailedMappings(ctx, b.cfg.AdaptiveMapping, snap, interp, result)
 		if err != nil && result.Outcome != StepOutcomeSubmitted {
