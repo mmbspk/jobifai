@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
 	"github.com/stretchr/testify/require"
 	"github.com/user/jobifai/internal/browser"
 	"github.com/user/jobifai/internal/config"
@@ -11,6 +13,7 @@ import (
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/jobpage"
 	"github.com/user/jobifai/internal/quota"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -212,4 +215,47 @@ func TestJobPageBrowserLockWaitHonorsCancellation(t *testing.T) {
 	cancel()
 	_, err := m.getSeekBrowser(pageTestUser, domain.GeneralSettings{}, ctx)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestJobPageReadDoesNotKillAnActiveApplicationProfile(t *testing.T) {
+	profile := t.TempDir()
+	launch := launcher.New().Headless(true).UserDataDir(profile).NoSandbox(os.Getenv("CI") != "")
+	if bin := os.Getenv("ROD_BROWSER_BIN"); bin != "" {
+		launch = launch.Bin(bin)
+	}
+	endpoint, err := launch.Launch()
+	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("Chromium required: %v", err)
+		}
+		t.Skipf("Chromium unavailable: %v", err)
+	}
+	active := rod.New().ControlURL(endpoint)
+	require.NoError(t, active.Connect())
+	t.Cleanup(func() { _ = active.Close(); launch.Cleanup() })
+	require.True(t, browser.ProfileInUse(profile))
+	db := pageHookDB(t)
+	manager := pageHookManager(t, db)
+	settings := manager.cfgStore.(*config.Store)
+	general := domain.GeneralSettings{}
+	general.Browser.ChromeProfilePath = profile
+	require.NoError(t, settings.Set(domain.SystemUserID, "general_settings", general))
+	for _, board := range []struct{ platform, url string }{
+		{"seek", "https://au.seek.com/job/22345678"},
+		{"linkedin", "https://www.linkedin.com/jobs/view/12345678"},
+	} {
+		t.Run(board.platform, func(t *testing.T) {
+			require.NoError(t, manager.sessions.Save(pageTestUser, board.platform, "fixture", []byte("[]")))
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			_, err := manager.ReadJobPage(ctx, pageTestUser, board.url)
+			require.ErrorContains(t, err, "profile is already active")
+			require.Equal(t, jobpage.FailureBrowser, jobpage.ErrorCode(err))
+			_, err = active.Pages()
+			require.NoError(t, err, "read-only page loading must preserve the active browser")
+			require.True(t, browser.ProfileInUse(profile))
+		})
+	}
+	require.Empty(t, manager.seekBrowsers)
+	require.Empty(t, manager.linkedInBrowsers)
 }

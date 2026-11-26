@@ -863,10 +863,16 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings, conte
 	}
 
 	dir := browser.ProfileDir(userID, "seek", gs.Browser.ChromeProfilePath)
+	if readOnlyBrowserRequest(ctx) && browser.ProfileInUse(dir) {
+		return nil, errors.New("jobsite browser profile is already active; retry the read after current work finishes")
+	}
 	browser.PrepareChromeProfileDir(dir)
 	l := browser.NewLauncher().Context(ctx).Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
 	wsURL, launchErr := l.Launch()
 	if launchErr != nil && strings.Contains(launchErr.Error(), "SingletonLock") {
+		if readOnlyBrowserRequest(ctx) {
+			return nil, fmt.Errorf("jobsite browser profile became active during the read: %w", launchErr)
+		}
 		log.Warn().Err(launchErr).Str("dir", dir).Msg("seek: profile locked, force-unlocking and retrying")
 		if old := m.seekBrowsers[userID]; old != nil {
 			_ = old.Close()
@@ -1008,10 +1014,16 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings, c
 	}
 
 	dir := browser.ProfileDir(userID, "linkedin", gs.Browser.ChromeProfilePath)
+	if readOnlyBrowserRequest(ctx) && browser.ProfileInUse(dir) {
+		return nil, errors.New("jobsite browser profile is already active; retry the read after current work finishes")
+	}
 	browser.PrepareChromeProfileDir(dir)
 	l := browser.NewLauncher().Context(ctx).Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
 	wsURL, launchErr := l.Launch()
 	if launchErr != nil && strings.Contains(launchErr.Error(), "SingletonLock") {
+		if readOnlyBrowserRequest(ctx) {
+			return nil, fmt.Errorf("jobsite browser profile became active during the read: %w", launchErr)
+		}
 		log.Warn().Err(launchErr).Str("dir", dir).Msg("linkedin: profile locked, force-unlocking and retrying")
 		if old := m.linkedInBrowsers[userID]; old != nil {
 			_ = old.Close()

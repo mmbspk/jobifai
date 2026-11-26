@@ -149,6 +149,13 @@ type capturedJobPage struct {
 	latest *jobpage.Snapshot
 }
 
+type readOnlyBrowserContextKey struct{}
+
+func readOnlyBrowserRequest(ctx context.Context) bool {
+	value, _ := ctx.Value(readOnlyBrowserContextKey{}).(bool)
+	return value
+}
+
 func (p *capturedJobPage) Capture(ctx context.Context, t jobpage.Target, l jobpage.Limits) (jobpage.Snapshot, error) {
 	s, e := p.Page.Capture(ctx, t, l)
 	if e == nil {
@@ -288,6 +295,7 @@ func (m *Manager) ReadJobPage(ctx context.Context, userID, rawURL string) (jobpa
 		}
 	}
 	var br *rod.Browser
+	ctx = context.WithValue(ctx, readOnlyBrowserContextKey{}, true)
 	if target.Platform == "seek" {
 		br, err = m.getSeekBrowser(userID, gs, ctx)
 	} else {

@@ -53,3 +53,9 @@ using the same service-wiring resolutions qualified in the isolated checkout.
 The earlier full Go race run passed, including bot1491.1s, handler435.1s,
 jobpage80.1s and DB20.0s. It covers the pre-upstream reader snapshot; the current
 combined source still requires fresh exact-head CI before release qualification.
+
+Read-only browser startup now refuses to force-unlock an active Chrome profile,
+including the race where another browser starts between preflight and launch.
+A real Chromium fixture verifies both LinkedIn and SEEK reads leave the active
+application browser alive, while managed reader-session reuse and prepaid quota
+regressions pass. Final combined-tree lint is clean.
