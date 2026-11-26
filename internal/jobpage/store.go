@@ -69,7 +69,7 @@ func (s *SQLStore) Lookup(ctx context.Context, scope Scope, signature string) ([
 	if err != nil {
 		return nil, persistence(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := []Recipe{}
 	for rows.Next() {
 		r, err := scanRecipe(rows)
@@ -97,7 +97,7 @@ func (s *SQLStore) ListRecipes(ctx context.Context, state RecipeState, limit int
 	if err != nil {
 		return nil, persistence(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := []Recipe{}
 	for rows.Next() {
 		r, err := scanRecipe(rows)
@@ -172,7 +172,7 @@ func (s *SQLStore) RetireRecipe(ctx context.Context, actor, id string) error {
 	if err != nil {
 		return persistence(err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := requireAdmin(ctx, tx, actor); err != nil {
 		return err
 	}

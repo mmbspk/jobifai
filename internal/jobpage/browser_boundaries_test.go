@@ -39,8 +39,11 @@ func TestBrowserKnownPreservesExpiredAndHydrationBoundaries(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, expected.JobID, result.Identity.JobID)
 	})
- t.Run("company introduction inside owned description",func(t *testing.T){
-  p,_:=readerFixture(t,b,target,fixtureHTML("<section data-testid=\"job-description\"><h2>About us</h2><p>We are the hiring team.</p><h2>Responsibilities</h2><p>"+fixtureText()+"</p></section>"))
-  result,err:=p.Known(ctx,target,limits);require.NoError(t,err);require.Contains(t,result.Description,"Responsibilities");require.Contains(t,result.Description,"hiring team")
- })
+	t.Run("company introduction inside owned description", func(t *testing.T) {
+		p, _ := readerFixture(t, b, target, fixtureHTML("<section data-testid=\"job-description\"><h2>About us</h2><p>We are the hiring team.</p><h2>Responsibilities</h2><p>"+fixtureText()+"</p></section>"))
+		result, err := p.Known(ctx, target, limits)
+		require.NoError(t, err)
+		require.Contains(t, result.Description, "Responsibilities")
+		require.Contains(t, result.Description, "hiring team")
+	})
 }

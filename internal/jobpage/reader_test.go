@@ -239,9 +239,10 @@ func TestReaderConcurrentColdMissesShareLearningWithoutSharingVacancyText(t *tes
 		case o := <-results:
 			require.NoError(t, o.err)
 			require.Equal(t, o.text, o.result.Description)
-			if o.result.Source == SourceModel {
+			switch o.result.Source {
+			case SourceModel:
 				modelReads++
-			} else if o.result.Source == SourceRecipe {
+			case SourceRecipe:
 				warmReads++
 			}
 		case <-time.After(5 * time.Second):

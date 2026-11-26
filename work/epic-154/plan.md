@@ -18,8 +18,64 @@ Use an independent internal/jobpage core, preserving the form engine and candida
 
 ## Coordination and storage
 
-Settle core DTO/API contracts before parallel contract/recovery, model/budget and recipe/admin implementation. Root assembles caller integration and qualification. Main currently has migration 060; PR 153 adds 061. Reserve 062 for reader storage and preserve deployment order/compatible candidate history. No automatic merge or deployment is part of implementation.
+Settle core DTO/API contracts before parallel contract/recovery, model/budget and recipe/admin implementation. Root assembles caller integration and qualification. Main currently has migration 060; PR 153 adds 061 and 062. Reserve 063 for reader storage and preserve deployment order/compatible candidate history. No automatic merge or deployment is part of implementation.
 
 ## Evidence
 
 Retain sanitized sibling/lazy/display:contents, expansion replacement, sticky/duplicate header, conflicting ID, recommendation, auth/expired/absent, hostile proposal, concurrency/restart, persistence, rollback and cancellation fixtures. Measure real baseline/cold/warm/drift requests, latency, tokens/cost and browser time. Browser success in another session is not historical production-worker proof.
+
+## Checkpoint — 2026-11-25
+
+Draft PR #163: https://github.com/mmbspk/jobifai/pull/163, head 706f733.
+Core implementation is committed/pushed. Final caller fixes/tests may remain as
+uncommitted changes in manager.go and job_page_test.go; preserve and verify them.
+Reader/model race suites and Chromium replay passed. Frontend 396 tests, build
+and lint passed. Full backend regression run remains in progress in
+/private/tmp/epic154-integration-go.log. Final admin E2E/lint need a rerun after
+the integration reviewer finishes its changes; prior runs raced mid-edit.
+The mobile layout assertion now waits for the existing padding transition.
+
+Pending qualification: finish active production-hook fixtures, review final
+caller changes, run final checks, commit/push fixes, and check exact-head CI.
+Release canary remains pending because production does not run the new reader
+yet. Merge prerequisite PR153/migration061 before deploying this migration063.
+Keep recovery/reuse off until pilot qualification. Do not merge/deploy or declare
+Epic154 complete automatically. No live application or paid model calls were
+performed in this implementation phase.
+
+User is considering pausing to preserve today's Codex quota; wait for their
+pause/continue choice before starting more qualification work.
+
+## Paused at user's request
+
+User explicitly paused work and will trigger resumption tomorrow. Do not resume
+automatically or create reminders. Draft PR163 remains at 706f733; subsequent
+caller fixtures/fixes and lint fixes are preserved uncommitted in this worktree.
+No deployment, merge, live applications or paid Jobifai model calls were done.
+
+Latest verification: frontend build + all396 unit tests + lint pass; full app
+E2E86/86 pass; Go lint0 issues. Full earlier backend run completed: handler and
+server passed; bot failed TestEvaluationFailuresContinueUntilThreeDistinctJobs
+and TestEvaluationSuccessResetsFailureStreakIncludingLowScore. Investigate whether
+new jobpage.ErrorCode context/deadline classification is leaking into ordinary
+scoring failures in listingFailureMessage, which must retain their previous
+evaluation_failed handling. DB version assertion failure is from the older test
+snapshot; its newer isolated DB suite passed after assertion correction.
+
+At resume inspect /private/tmp/epic154-page-final.log for the last page suite's
+result, finish the remaining regressions, run required final checks, then commit
+and push all remaining changes to PR163 and qualify exact-head CI. Production
+worker canary is still pending and requires new code running after PR153's
+migration061 prerequisite. Do not claim Epic154 complete yet.
+
+## Resumed — 26 November 2026
+
+User explicitly resumed the task. PR 153 fixes at 05c4433 have green test/e2e CI.
+Fixed scoring-vs-reading failure classification and nested company-panel leakage,
+verified the preserved caller/meter/cancellation changes, and renumbered reader
+storage to 063 to avoid PR 153 migration 062. Full browser suite86/86 and frontend
+unit tests396 passed; frontend lint/build passed. Added live-DOM/HTTP-model/SQL
+cold-warm-changed replay coverage; focused browser and boundary tests passed.
+Full backend race checks and final lint continue. Qualification details are in
+work/epic-154/qualification.md. Await explicit prerequisite merge approval; do not
+merge/deploy automatically. Production-worker canary remains required for release.

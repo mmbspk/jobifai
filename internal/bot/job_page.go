@@ -66,6 +66,17 @@ func activateReadMeter(ctx context.Context, meter BrowserUsageMeter, jobID strin
 	return meter.BillingCtx(), nil
 }
 
+func (m *Manager) alignReadRunMeter(b *Bot) {
+	if m.browserMeterSvc == nil {
+		return
+	}
+	inc, err := m.browserMeterSvc.BrowserIncrementDuration()
+	if err != nil || inc <= 0 {
+		inc = 30 * time.Second
+	}
+	b.cfg.BrowserMeter = NewLiveBrowserMeter(m.browserMeterSvc, b.cfg.UserID, b.cfg.AutomationRunID, inc, nil)
+}
+
 func (m *Manager) browserContext(contexts []context.Context) context.Context {
 	if len(contexts) > 0 && contexts[0] != nil {
 		return contexts[0]
@@ -184,6 +195,16 @@ func (b *Bot) readJobPage(ctx context.Context, page *rod.Page, platform domain.P
 	result, err := reader.Read(ctx, observed, target)
 	if err != nil && b.cfg.BrowserMeter != nil && b.cfg.BrowserMeter.Err() != nil {
 		err = b.cfg.BrowserMeter.Err()
+	}
+	if err != nil {
+		var readErr *jobpage.ReadError
+		if !errors.As(err, &readErr) {
+			code := jobpage.ErrorCode(err)
+			if code == "" {
+				code = jobpage.FailureVerification
+			}
+			err = &jobpage.ReadError{Code: code, Cause: err}
+		}
 	}
 	if b.cfg.JobPageStore != nil {
 		_, scope, _ := jobpage.NormalizeTarget(target)

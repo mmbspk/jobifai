@@ -69,7 +69,7 @@ known/cold/warm/current-text, concurrent misses, cancellation, rollback, live
 proof, persistence and invalidation. Model fixtures use local HTTP providers to
 measure actual usage without paid calls.
 
-Before merge/deployment, land PR #153 (migration 061) and rebase so migration 062
+Before merge/deployment, land PR #153 (migrations 061 and 062) and rebase so migration 063
 deploys in order. Keep rollout off until exact-head CI, offline replay and the
 **new code in the production worker** canary pass. A logged-in dashboard alone
 does not qualify the new reader or explain a historical worker failure.

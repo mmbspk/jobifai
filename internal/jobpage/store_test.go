@@ -43,7 +43,7 @@ func TestRecipeStoreRestartAndConcurrentLearningAreIdempotent(t *testing.T) {
 	require.Equal(t, 1, count)
 	db, err := appdb.Open(path)
 	require.NoError(t, err)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	reopened := NewSQLStore(db)
 	rows, err := reopened.Lookup(ctx, s.Scope, s.LayoutSignature)
 	require.NoError(t, err)

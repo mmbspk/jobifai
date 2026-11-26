@@ -2,6 +2,7 @@
   const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
   const lower = s => norm(s).toLowerCase();
   const wanted = String(opts.job_id || '');
+  const descriptionSelector='[data-automation="jobAdDetails"],[data-testid="job-description"],[data-testid="jobDescriptionText"],[itemprop="description"],.jobs-description-content__text,.jobs-description__content,.jobs-box__html-content,[id^="JobDetails_AboutTheJob_"]';
   const excludedSelector = 'nav,aside,[role="navigation"],[role="complementary"],[role="dialog"],dialog,form,input,textarea,select,[data-testid*="messag"],[data-automation*="messag"],[class*="messaging"],[class*="msg-overlay"],[id*="SimilarJobs"],[id*="Recommendations"],[data-testid*="recommend"],[data-automation*="recommend"],[class*="jobs-similar"],[class*="job-card"],[data-testid*="company-profile"],[data-automation*="company-profile"]';
   const idsFor = el => {
     const out = [];
@@ -25,7 +26,7 @@
   const excluded = el => {
     if(!el) return false;
     if(el.closest(excludedSelector) || foreign(el)) return true;
-    for(let n=el;n && n!==document.body;n=n.parentElement) if(companyHeading(n)) return true;
+    for(let n=el;n && n!==document.body;n=n.parentElement) if(companyHeading(n) && !knownDescription(n)) return true;
     return false;
   };
   const rectFor = el => {
@@ -51,7 +52,7 @@
       const parent=node.parentElement;
       if (!parent || excluded(parent) || !visible(parent) || parent.closest('script,style,noscript,svg,button,[role="button"]')) continue;
       const block=parent.closest('section,article');
-      if (block && companyHeading(block) && !parent.closest('[data-automation="jobAdDetails"],[data-testid="job-description"],[data-testid="jobDescriptionText"],[itemprop="description"],.jobs-description-content__text,.jobs-description__content,.jobs-box__html-content,[id^="JobDetails_AboutTheJob_"]')) continue;
+      if (block && companyHeading(block) && !knownDescription(block)) continue;
       parts.push(node.textContent || '');
     }
     return norm(parts.join(' '));
@@ -61,7 +62,7 @@
     const heading=el.matches('h1,h2,h3,h4') ? el : (first && first.matches('h1,h2,h3,h4') ? first : null);
     return !!heading && /^(about (?:the )?company|company (?:profile|overview|information)|about us|similar jobs|more jobs|recommended)/i.test(norm(heading.textContent));
   };
-  const knownDescription = el => el.matches('[data-automation="jobAdDetails"],[data-testid="job-description"],[data-testid="jobDescriptionText"],[itemprop="description"],.jobs-description-content__text,.jobs-description__content,.jobs-box__html-content,[id^="JobDetails_AboutTheJob_"]');
+  const knownDescription = el => el.matches(descriptionSelector);
   const expandLabel = el => /^(?:show|see|read|view) (?:more|full description)|^(?:…|\.\.\.)?\s*more$/i.test(norm(el.getAttribute('aria-label') || el.textContent)) || el.getAttribute('data-testid')==='expandable-text-button';
   const safeExpand = el => {
     if (!el.matches('button,[role="button"],a') || !expandLabel(el) || !visible(el) || el.getAttribute('aria-expanded')==='true' || el.disabled) return false;

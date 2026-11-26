@@ -101,7 +101,7 @@ func (s *SQLStore) RecordRead(ctx context.Context, e ReadEvent, capture *Snapsho
 	if err != nil {
 		return 0, persistence(err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UTC()
 	res, err := tx.ExecContext(ctx, "INSERT INTO job_page_read_events(user_id,run_id,attempt_id,record_id,platform,origin,source,failure_code,recipe_id,metrics_json,created_at_ns) VALUES (?,?,?,?,?,?,?,?,?,?,?)", e.UserID, e.RunID, e.AttemptID, e.RecordID, e.Scope.Platform, e.Scope.Origin, e.Source, e.Failure, e.RecipeID, string(raw), now.UnixNano())
 	if err != nil {
@@ -161,7 +161,7 @@ func (s *SQLStore) ListReadEvents(ctx context.Context, userID string, limit int)
 	if err != nil {
 		return nil, persistence(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := []ReadEvent{}
 	for rows.Next() {
 		var e ReadEvent

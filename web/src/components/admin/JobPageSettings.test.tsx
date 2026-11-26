@@ -16,9 +16,9 @@ function show() {render(<QueryClientProvider client={new QueryClient({ defaultOp
 it('saves recovery separately from reuse with the observed revision', async () => {
  show();const user=userEvent.setup()
  await user.selectOptions(await screen.findByLabelText('Page recovery'), 'pilot')
- await user.type(screen.getByLabelText('Reader pilot account IDs'), 'pilot-account')
+ await user.type(screen.getByLabelText('Reader pilot account IDs'), 'pilot-account{Enter}second-account')
  await user.click(screen.getByRole('button', { name: 'Save reader settings' }))
- await waitFor(() => expect(jobPagesApi.set).toHaveBeenCalledWith(expect.objectContaining({ recovery: 'pilot', reuse: 'off', pilot_users: ['pilot-account'], revision: 'original' })))
+ await waitFor(() => expect(jobPagesApi.set).toHaveBeenCalledWith(expect.objectContaining({ recovery: 'pilot', reuse: 'off', pilot_users: ['pilot-account', 'second-account'], revision: 'original' })))
 })
 it('shows verified worker extraction without starting automation', async () => {
  vi.mocked(jobPagesApi.canary).mockResolvedValue({ success: true, description_characters: 200, result: { identity: { title: 'Engineer', company: 'Fixture', verified: true }, description: 'Current job description', source: 'verified_recipe', metrics: {} as never } })

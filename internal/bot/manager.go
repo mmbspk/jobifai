@@ -493,6 +493,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	defer cleanupRun()
 	if acquiredRunID != b.cfg.AutomationRunID {
 		b.cfg.AutomationRunID = acquiredRunID
+		m.alignReadRunMeter(b)
 		b.log = log.Logger.With().
 			Str("user_id", userID).Str("automation_run_id", acquiredRunID).Logger().
 			Hook(logIDHook{})
@@ -913,6 +914,10 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings, conte
 	// Persist warm-up rotated tokens so the next server restart loads a valid
 	// (unconsumed) refresh token — getSeekBrowser rotates on navigate but unlike
 	// launchBrowser it must save explicitly here.
+	if err := ctx.Err(); err != nil {
+		_ = br.Close()
+		return nil, err
+	}
 	m.saveBrowserCookies(warmPage, userID, "seek")
 
 	_ = warmPage.Close()
@@ -1047,6 +1052,10 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings, c
 	}
 
 	// Persist updated cookies so the next call starts with a fresh session.
+	if err := ctx.Err(); err != nil {
+		_ = br.Close()
+		return nil, err
+	}
 	m.saveBrowserCookies(warmPage, userID, "linkedin")
 
 	_ = warmPage.Close()

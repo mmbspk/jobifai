@@ -135,7 +135,14 @@ func validateRecipe(r Recipe) error {
 			}
 		}
 		for k, v := range q.SubjectAttributes {
-			if !((k == "data-job-id" && v == "job_id") || (k == "data-entity-urn" && r.Scope.Platform == "linkedin" && v == "linkedin_job_urn")) {
+			allowed := false
+			switch k {
+			case "data-job-id":
+				allowed = v == "job_id"
+			case "data-entity-urn":
+				allowed = r.Scope.Platform == "linkedin" && v == "linkedin_job_urn"
+			}
+			if !allowed {
 				return &ReadError{Code: FailurePlan}
 			}
 		}

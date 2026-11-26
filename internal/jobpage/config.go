@@ -150,7 +150,7 @@ func (s *SQLStore) SetConfig(ctx context.Context, actor, expectedRevision string
 	if err != nil {
 		return c, persistence(err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UTC().UnixNano()
 	res, err := tx.ExecContext(ctx, "INSERT INTO job_page_config(singleton,config_json,revision,updated_at_ns) SELECT 1,?,?,? WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND is_admin=1) AND (EXISTS(SELECT 1 FROM job_page_config WHERE singleton=1) OR ?=?) ON CONFLICT(singleton) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,updated_at_ns=excluded.updated_at_ns WHERE job_page_config.revision=?", string(raw), c.Revision, now, actor, expectedRevision, defaults.Revision, expectedRevision)
 	if err != nil {
@@ -194,7 +194,7 @@ func (s *SQLStore) ListAudit(ctx context.Context, limit int) ([]AuditEntry, erro
 	if err != nil {
 		return nil, persistence(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := []AuditEntry{}
 	for rows.Next() {
 		var e AuditEntry

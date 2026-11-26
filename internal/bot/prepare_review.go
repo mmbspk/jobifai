@@ -199,6 +199,7 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 	}
 	defer cleanupRun()
 	b.cfg.AutomationRunID = runID
+	m.alignReadRunMeter(b)
 	b.log = log.Logger.With().
 		Str("user_id", userID).Str("automation_run_id", runID).
 		Str("job_id", jobID).Str("prep_id", prepID).Logger().

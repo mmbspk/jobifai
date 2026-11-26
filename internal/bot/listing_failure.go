@@ -16,7 +16,16 @@ var errJobScorerUnavailable = errors.New("suitability evaluation is unavailable"
 var errJobEvaluationFailed = errors.New("suitability evaluation could not be completed")
 
 func listingFailureMessage(err error) (code, message string) {
-	if c := jobpage.ErrorCode(err); c != "" {
+	// The caller's evaluation phase owns its failure even when a dependency
+	// returns a more specific typed error as the nested cause.
+	if errors.Is(err, errJobEvaluationFailed) {
+		return "evaluation_failed", "AI evaluation could not be completed. Check the AI service before retrying."
+	}
+	// ErrorCode also classifies raw context/provider errors. Only the reader's
+	// typed boundary establishes that they occurred while reading a listing.
+	var readErr *jobpage.ReadError
+	if errors.As(err, &readErr) {
+		c := jobpage.ErrorCode(err)
 		switch c {
 		case jobpage.FailureAuth:
 			return string(c), "The jobsite session needs refreshing. Suitability has not been evaluated."
@@ -37,8 +46,6 @@ func listingFailureMessage(err error) (code, message string) {
 		return "description_unavailable", "The full job description could not be read. Suitability has not been evaluated."
 	case errors.Is(err, errJobScorerUnavailable):
 		return "scoring_unavailable", "Suitability evaluation is unavailable. Check the AI configuration before retrying."
-	case errors.Is(err, errJobEvaluationFailed):
-		return "evaluation_failed", "AI evaluation could not be completed. Check the AI service before retrying."
 	default:
 		return "control_unrecognized", "The application button could not be verified. Retry after the issue is resolved, or open the listing manually."
 	}
