@@ -9,6 +9,7 @@ import { Switch } from '../../components/ui/switch'
 import { inputClassName } from '../../components/ui/input'
 import type { BrowserConfig, HumanBehaviorConfig } from '../../types'
 import { ApplyEngineSettings } from '../../components/admin/ApplyEngineSettings'
+import { JobPageSettings } from '../../components/admin/JobPageSettings'
 
 export function AdminAutomationPage() {
   const qc = useQueryClient()
@@ -41,6 +42,7 @@ export function AdminAutomationPage() {
       />
 
       <ApplyEngineSettings />
+      <JobPageSettings />
 
       <SettingsSection title="Browser">
         <Switch

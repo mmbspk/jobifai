@@ -18,6 +18,7 @@ import (
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/jobpage"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/scraper"
 )
@@ -916,9 +917,13 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 		return false
 	}
 
-	details := b.fetchSeekJobDetails(ctx, br, &job)
+	var listingReadErr error
+	details := b.fetchSeekJobDetails(ctx, br, &job, &listingReadErr)
 	if b.isSeekSessionExpired() {
 		b.log.Error().Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msgf("seek: aborting %q @ %s — session expired", job.Title, job.Company)
+		return false
+	}
+	if listingReadErr != nil {
 		return false
 	}
 	// Detail page may have updated AlreadyApplied (covers manual applications).
@@ -1044,9 +1049,21 @@ func (b *Bot) checkSeekScore(ctx context.Context, job seekJob, jobDesc string) (
 // fetchSeekJobDetails opens the job page via the rod browser (bypassing Seek's HTTP
 // bot-detection) and extracts description, due date, posted date, and company name.
 // Falls back to listing-card data when the page can't be opened or yields too little text.
-func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *seekJob) scraper.JobDetails {
+func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *seekJob, readFailures ...*error) scraper.JobDetails {
+	failure := func(err error) scraper.JobDetails {
+		for _, out := range readFailures {
+			if out != nil {
+				*out = err
+			}
+		}
+		b.recordListingFailure(ctx, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company, Location: job.Location}, 0, "", nil, err)
+		return scraper.JobDetails{PostedDate: job.PostedDate}
+	}
 	page, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
 	if err != nil {
+		if b.cfg.JobPageReader != nil {
+			return failure(&jobpage.ReadError{Code: jobpage.FailureBrowser, Cause: err})
+		}
 		b.log.Warn().Str("error", sanitizeErr(err)).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Msg("seek: open job page for details")
 		return scraper.JobDetails{PostedDate: job.PostedDate}
 	}
@@ -1054,7 +1071,13 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 	page = page.Timeout(30 * time.Second)
 
 	if err := page.WaitLoad(); err != nil {
-		return scraper.JobDetails{PostedDate: job.PostedDate}
+		if b.cfg.JobPageReader == nil {
+			return scraper.JobDetails{PostedDate: job.PostedDate}
+		}
+		if ctx.Err() != nil {
+			return failure(ctx.Err())
+		}
+		b.log.Debug().Msg("seek: load event unavailable; verifying live listing DOM")
 	}
 	_ = page.WaitStable(500 * time.Millisecond)
 
@@ -1130,6 +1153,26 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 				}
 			}
 		}
+	}
+
+	if b.cfg.JobPageReader != nil {
+		result, readErr := b.readJobPage(ctx, page, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company})
+		if readErr != nil {
+			for _, readFailure := range readFailures {
+				if readFailure != nil {
+					*readFailure = readErr
+				}
+			}
+			b.recordListingFailure(ctx, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company, Location: job.Location}, 0, "", nil, readErr)
+			return scraper.JobDetails{PostedDate: job.PostedDate}
+		}
+		job.Company = result.Identity.Company
+		job.EasyApply = detectSeekEasyApply(page)
+		posted := result.PostedDate
+		if posted == "" {
+			posted = job.PostedDate
+		}
+		return scraper.JobDetails{Description: result.Description, PostedDate: posted, DueDate: result.DueDate}
 	}
 
 	// Authoritative Quick Apply detection on the detail page.
@@ -1254,9 +1297,20 @@ func (b *Bot) processTopMatchesQuickApply(ctx context.Context, br *rod.Browser, 
 		}
 		b.log.Info().Msgf("seek: top-matches recheck: Quick Apply confirmed for %q @ %s, attempting apply", p.role, p.company)
 
-		rawHTML, _ := page.HTML()
+		var jobDetails scraper.JobDetails
+		if b.cfg.JobPageReader != nil {
+			result, readErr := b.readJobPage(ctx, page, domain.PlatformSeek, linkedInJob{ID: p.jobID, URL: p.link, Title: p.role, Company: p.company})
+			if readErr != nil {
+				_ = page.Close()
+				b.recordListingFailure(ctx, domain.PlatformSeek, linkedInJob{ID: p.jobID, URL: p.link, Title: p.role, Company: p.company}, 0, "", nil, readErr)
+				continue
+			}
+			jobDetails.Description = result.Description
+		} else {
+			rawHTML, _ := page.HTML()
+			jobDetails = scraper.ParseHTML(rawHTML)
+		}
 		_ = page.Close()
-		jobDetails := scraper.ParseHTML(rawHTML)
 
 		job := seekJob{ID: p.jobID, Company: p.company, Title: p.role, Location: p.location, URL: p.link, EasyApply: true}
 		lazy := &lazyDocGen{b: b, ctx: ctx, job: linkedInJob{ID: p.jobID, Company: p.company, Title: p.role, URL: p.link, Location: p.location}, jobDesc: jobDetails.Description}

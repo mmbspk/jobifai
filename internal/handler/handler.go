@@ -19,6 +19,7 @@ import (
 	"github.com/user/jobifai/internal/bot"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/jobpage"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
 	"github.com/user/jobifai/internal/retention"
@@ -43,23 +44,26 @@ type JobEvaluator interface {
 // Services is the dependency bag threaded into each handler group.
 type Services struct {
 	// Serializes browser-session changes against direct-apply claims for each user.
-	browserWork        sync.Map
-	DB                 *sql.DB
-	Config             ConfigStore
-	Secrets            SecretsStore
-	Extractor          ResumeExtractor
-	Tailor             ResumeTailor
-	Renderer           ResumeRenderer
-	BrowserMgr         BrowserManager
-	SessionStore       PlatformSessionStore
-	Logs               LogBroadcaster
-	Bot                BotController
-	MarketDir          string // directory containing market_*.yaml files
-	StylesDir          string // directory containing style_*.css files
-	Users              *auth.UserStore
-	TokenManager       *auth.TokenManager
-	Google             GoogleOAuthHandler
-	ApplicationAnswers ApplicationAnswersService
+	browserWork          sync.Map
+	DB                   *sql.DB
+	Config               ConfigStore
+	Secrets              SecretsStore
+	Extractor            ResumeExtractor
+	Tailor               ResumeTailor
+	Renderer             ResumeRenderer
+	BrowserMgr           BrowserManager
+	SessionStore         PlatformSessionStore
+	Logs                 LogBroadcaster
+	Bot                  BotController
+	MarketDir            string // directory containing market_*.yaml files
+	StylesDir            string // directory containing style_*.css files
+	Users                *auth.UserStore
+	TokenManager         *auth.TokenManager
+	Google               GoogleOAuthHandler
+	JobPages             *jobpage.SQLStore
+	FetchVerifiedJobPage func(context.Context, string, string) (string, error)
+	ReadJobPage          func(context.Context, string, string) (jobpage.Result, error)
+	ApplicationAnswers   ApplicationAnswersService
 	// LLMFactory builds a fresh Extractor+Tailor for the given user from the
 	// current stored config/secrets. Called per-request so changes take effect
 	// immediately without a server restart.

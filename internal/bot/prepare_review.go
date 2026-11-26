@@ -202,17 +202,25 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 	}
 	defer cleanupRun()
 	b.cfg.AutomationRunID = runID
+	m.alignReadRunMeter(b)
 	b.log = log.Logger.With().
 		Str("user_id", userID).Str("automation_run_id", runID).
 		Str("job_id", jobID).Str("prep_id", prepID).Logger().
 		Hook(logIDHook{})
 	b.log.Info().Msg("prepare: run started")
+	if b.cfg.BrowserMeter != nil {
+		defer b.cfg.BrowserMeter.Stop()
+		err = preflightReadMeter(ctx, b.cfg.BrowserMeter)
+		if err != nil {
+			return err
+		}
+	}
 
 	jobPage, ownsBr, err := m.openReviewJobPage(ctx, b, gs, userID, req)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = jobPage.Close() }()
+	defer func() { _ = jobPage.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
 	if ownsBr {
 		defer func() {
 			if br := jobPage.Browser(); br != nil {
@@ -221,7 +229,12 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 		}()
 	}
 
-	lazy := managerLazyForSubmit(b, m.ctx, req, jobPage)
+	ctx, err = activateReadMeter(ctx, b.cfg.BrowserMeter, jobID)
+	if err != nil {
+		return err
+	}
+	jobPage = jobPage.Context(ctx)
+	lazy, readErr := managerLazyWithReadError(b, ctx, req, jobPage)
 	lazy.reviewPrepareOnly = true
 	defer func() { lazy.reviewPrepareOnly = false }()
 
@@ -240,7 +253,9 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 	}()
 
 	var prepErr error
-	if req.Platform == "seek" {
+	if readErr != nil {
+		prepErr = readErr
+	} else if req.Platform == "seek" {
 		prepErr = m.prepareSeekReviewDocuments(ctx, b, jobPage, lazy, req.Link)
 	} else {
 		prepErr = b.easyApply(ctx, jobPage, lazy)

@@ -18,6 +18,7 @@ import (
 	"github.com/user/jobifai/internal/config"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/jobpage"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/llmpolicy"
 	"github.com/user/jobifai/internal/llmreuse"
@@ -50,6 +51,8 @@ type botEntry struct {
 // Manager is the long-lived bot controller exposed to HTTP handlers.
 // It supports concurrent bots, one per user, and satisfies handler.BotController.
 type Manager struct {
+	pageReader         *jobpage.Reader
+	pageStore          *jobpage.SQLStore
 	mu                 sync.Mutex
 	bots               map[string]*botEntry // key = userID
 	db                 *sql.DB
@@ -76,12 +79,12 @@ type Manager struct {
 	retention          retentionAfterSubmit
 	llmReuse           *llmreuse.Store
 	formLearning       *FormLearningCoordinator
-	applicationAnswers ApplicationAnswerRecorder
 	submitWorkGuard    documents.UserWorkGuard
 	userTypeChecker    func(userID string) (isAdmin, isTester bool) // optional; enables personal provider for testers
 	browserMeterSvc    MeterService                                 // optional browser automation billing service
 	runLogSink         *RunLogSink                                  // optional; persists dashboard-visible log lines
 	activePrepares     sync.Map                                     // userID+jobID -> prepID; in-process prepare exclusivity
+	applicationAnswers ApplicationAnswerRecorder
 }
 
 type retentionAfterSubmit interface {
@@ -491,6 +494,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	defer cleanupRun()
 	if acquiredRunID != b.cfg.AutomationRunID {
 		b.cfg.AutomationRunID = acquiredRunID
+		m.alignReadRunMeter(b)
 		b.log = log.Logger.With().
 			Str("user_id", userID).Str("automation_run_id", acquiredRunID).Logger().
 			Hook(logIDHook{})
@@ -535,6 +539,18 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		return fmt.Errorf("application has already been attempted twice — it has been moved to Cannot Apply")
 	}
 
+	submitCtx := m.ctx
+	if submitCtx == nil {
+		submitCtx = ctx
+	}
+	if b.cfg.BrowserMeter != nil {
+		defer b.cfg.BrowserMeter.Stop()
+		meterErr := preflightReadMeter(submitCtx, b.cfg.BrowserMeter)
+		if meterErr != nil {
+			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", meterErr.Error())
+			return meterErr
+		}
+	}
 	// Seek: reuse a persistent browser per user so auth0 session state (including
 	// the post-PKCE cookies from each Quick Apply) is preserved naturally between
 	// consecutive approvals — no token-rotation issues.
@@ -543,13 +559,13 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	var jobPage *rod.Page
 	ownsBr := false
 	if req.Platform == "seek" && gs.Browser.RemoteDebugPort == 0 {
-		seekBr, brErr := m.getSeekBrowser(userID, gs)
+		seekBr, brErr := m.getSeekBrowser(userID, gs, submitCtx)
 		if brErr != nil {
 			log.Error().Err(brErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("role", req.Role).Msg("approve: seek browser")
 			finishAttempt(m.db, ac, classifyApplyOutcome(brErr), "browser", "seek_browser_error", brErr.Error())
 			return brErr
 		}
-		p, pageErr := seekBr.Page(proto.TargetCreateTarget{URL: req.Link})
+		p, pageErr := seekBr.Context(submitCtx).Page(proto.TargetCreateTarget{URL: req.Link})
 		if pageErr != nil {
 			m.InvalidateSeekBrowser(userID)
 			log.Error().Str("error", sanitizeErr(pageErr)).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("role", req.Role).Msg("approve: open seek job tab")
@@ -558,7 +574,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		}
 		br, jobPage = seekBr, p
 	} else {
-		newBr, newPage, launchErr := b.launchBrowser(m.ctx)
+		newBr, newPage, launchErr := b.launchBrowser(submitCtx)
 		if launchErr != nil {
 			log.Error().Err(launchErr).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("role", req.Role).Msg("approve: launch browser")
 			finishAttempt(m.db, ac, classifyApplyOutcome(launchErr), "browser", "launch_failed", launchErr.Error())
@@ -567,7 +583,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		if gs.Browser.RemoteDebugPort == 0 {
 			ownsBr = true
 		}
-		if navErr := newPage.Navigate(req.Link); navErr != nil {
+		if navErr := newPage.Context(submitCtx).Navigate(req.Link); navErr != nil {
 			log.Error().Str("error", sanitizeErr(navErr)).Str("attempt_id", ac.AttemptID).Str("job_id", req.JobID).Str("url", redactURL(req.Link)).Str("role", req.Role).Msg("approve: navigate to job")
 			_ = newPage.Close()
 			if ownsBr {
@@ -578,10 +594,16 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		}
 		br, jobPage = newBr, newPage
 	}
-	defer func() { _ = jobPage.Close() }()
+	defer func() { _ = jobPage.Context(context.WithoutCancel(submitCtx)).Timeout(3 * time.Second).Close() }()
 	if ownsBr {
 		defer func() { _ = br.Close() }()
 	}
+	submitCtx, err = activateReadMeter(submitCtx, b.cfg.BrowserMeter, req.JobID)
+	if err != nil {
+		finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", err.Error())
+		return err
+	}
+	jobPage = jobPage.Context(submitCtx)
 
 	var score int
 	var halalVerdict string
@@ -596,26 +618,18 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		_ = jobPage.Timeout(30 * time.Second).WaitLoad()
 		_ = jobPage.Timeout(5 * time.Second).WaitStable(500 * time.Millisecond)
 	}
-	managerLazy := managerLazyForSubmit(b, m.ctx, req, jobPage)
+	managerLazy, readErr := managerLazyWithReadError(b, submitCtx, req, jobPage)
+	if readErr != nil {
+		m.persistSubmissionReadHold(submitCtx, userID, req, readErr)
+		finishAttempt(m.db, ac, OutcomeBlocked, "extraction", string(jobpage.ErrorCode(readErr)), readErr.Error())
+		return readErr
+	}
 	managerLazy.attemptID = ac.AttemptID
 
 	// Extract location from the job page; fall back to the value stored in pending_review.
 	location := extractJobLocation(jobPage, domain.Platform(req.Platform))
 	if location == "" {
 		location = req.Location
-	}
-
-	// Activate browser billing. SetJobID correlates billing events with this job.
-	// Use m.ctx (not the HTTP request ctx) so billing and automation share the same
-	// lifecycle — an HTTP disconnect does not leave automation running unmetered.
-	// ErrExceeded returns immediately — job stays in pending_review for retry after top-up.
-	if b.cfg.BrowserMeter != nil {
-		b.cfg.BrowserMeter.SetJobID(req.JobID)
-		defer b.cfg.BrowserMeter.Stop()
-		if meterErr := b.cfg.BrowserMeter.Activate(m.ctx); meterErr != nil {
-			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", meterErr.Error())
-			return meterErr
-		}
 	}
 
 	var applyErr error
@@ -626,7 +640,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		finishAttempt(m.db, ac, OutcomeCancelled, "engine_switch", "kill_switch_reverted", ksErr.Error())
 		return ksErr
 	}
-	applyErr = b.applyAttempt(m.ctx, jobPage, managerLazy, ac)
+	applyErr = b.applyAttempt(submitCtx, jobPage, managerLazy, ac)
 	if applyErr != nil {
 		if errors.Is(applyErr, errLinkedInSubmissionUnknown) && domain.Platform(req.Platform) == domain.PlatformLinkedIn {
 			if linkedInSubmitReconciled(jobPage, req.Link, req.Company, req.Role) {
@@ -815,12 +829,15 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 // checkLiveBrowser returns the browser for userID from store if it still responds to
 // br.Pages(). If the browser is dead, it is removed from the map and nil is returned.
 // Caller must hold m.browserMu.
-func (m *Manager) checkLiveBrowser(store map[string]*rod.Browser, userID string) *rod.Browser {
+func (m *Manager) checkLiveBrowser(store map[string]*rod.Browser, userID string, ctx context.Context) *rod.Browser {
 	br, ok := store[userID]
 	if !ok {
 		return nil
 	}
-	if _, err := br.Pages(); err != nil {
+	if _, err := br.Context(ctx).Pages(); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		delete(store, userID)
 		return nil
 	}
@@ -830,12 +847,18 @@ func (m *Manager) checkLiveBrowser(store map[string]*rod.Browser, userID string)
 // getSeekBrowser returns the persistent Seek browser for userID, creating it if needed.
 // The browser is kept alive across consecutive SubmitNow calls so auth0 session state
 // (including post-PKCE cookies) is preserved naturally — no token rotation issues.
-func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod.Browser, error) {
-	m.browserMu.Lock()
+func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings, contexts ...context.Context) (*rod.Browser, error) {
+	ctx := m.browserContext(contexts)
+	if err := m.lockBrowserContext(ctx); err != nil {
+		return nil, err
+	}
 	defer m.browserMu.Unlock()
 
-	if br := m.checkLiveBrowser(m.seekBrowsers, userID); br != nil {
+	if br := m.checkLiveBrowser(m.seekBrowsers, userID, ctx); br != nil {
 		return br, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	log.Info().Str("user_id", userID).Msg("seek: persistent browser was dead or missing, recreating")
 
@@ -845,17 +868,23 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 	}
 
 	dir := browser.ProfileDir(userID, "seek", gs.Browser.ChromeProfilePath)
+	if readOnlyBrowserRequest(ctx) && browser.ProfileInUse(dir) {
+		return nil, errors.New("jobsite browser profile is already active; retry the read after current work finishes")
+	}
 	browser.PrepareChromeProfileDir(dir)
-	l := browser.NewLauncher().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
+	l := browser.NewLauncher().Context(ctx).Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
 	wsURL, launchErr := l.Launch()
 	if launchErr != nil && strings.Contains(launchErr.Error(), "SingletonLock") {
+		if readOnlyBrowserRequest(ctx) {
+			return nil, fmt.Errorf("jobsite browser profile became active during the read: %w", launchErr)
+		}
 		log.Warn().Err(launchErr).Str("dir", dir).Msg("seek: profile locked, force-unlocking and retrying")
 		if old := m.seekBrowsers[userID]; old != nil {
 			_ = old.Close()
 			delete(m.seekBrowsers, userID)
 		}
 		browser.ForceUnlockChromeProfile(dir)
-		wsURL, launchErr = browser.NewLauncher().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
+		wsURL, launchErr = browser.NewLauncher().Context(ctx).Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
 	}
 	if launchErr != nil {
 		return nil, errors.New("launch chrome: " + launchErr.Error())
@@ -865,7 +894,7 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 		return nil, errors.New("connect chrome: " + connErr.Error())
 	}
 
-	warmPage, pageErr := br.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	warmPage, pageErr := br.Context(ctx).Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if pageErr != nil {
 		_ = br.Close()
 		return nil, errors.New("open warm-up page: " + pageErr.Error())
@@ -897,6 +926,10 @@ func (m *Manager) getSeekBrowser(userID string, gs domain.GeneralSettings) (*rod
 	// Persist warm-up rotated tokens so the next server restart loads a valid
 	// (unconsumed) refresh token — getSeekBrowser rotates on navigate but unlike
 	// launchBrowser it must save explicitly here.
+	if err := ctx.Err(); err != nil {
+		_ = br.Close()
+		return nil, err
+	}
 	m.saveBrowserCookies(warmPage, userID, "seek")
 
 	_ = warmPage.Close()
@@ -965,12 +998,18 @@ func (m *Manager) saveBrowserCookies(page *rod.Page, userID, platform string) {
 // Mirrors getSeekBrowser: cookies are loaded, a warm-up page is navigated to linkedin.com
 // (so LinkedIn sets fresh session cookies), then the warm-up tab is closed and the browser
 // is stored for reuse. Each AI Apply call opens a new tab in this browser.
-func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (*rod.Browser, error) {
-	m.browserMu.Lock()
+func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings, contexts ...context.Context) (*rod.Browser, error) {
+	ctx := m.browserContext(contexts)
+	if err := m.lockBrowserContext(ctx); err != nil {
+		return nil, err
+	}
 	defer m.browserMu.Unlock()
 
-	if br := m.checkLiveBrowser(m.linkedInBrowsers, userID); br != nil {
+	if br := m.checkLiveBrowser(m.linkedInBrowsers, userID, ctx); br != nil {
 		return br, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	log.Info().Str("user_id", userID).Msg("linkedin: persistent browser was dead or missing, recreating")
 
@@ -980,17 +1019,23 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (
 	}
 
 	dir := browser.ProfileDir(userID, "linkedin", gs.Browser.ChromeProfilePath)
+	if readOnlyBrowserRequest(ctx) && browser.ProfileInUse(dir) {
+		return nil, errors.New("jobsite browser profile is already active; retry the read after current work finishes")
+	}
 	browser.PrepareChromeProfileDir(dir)
-	l := browser.NewLauncher().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
+	l := browser.NewLauncher().Context(ctx).Headless(!gs.Browser.ShowBrowser).UserDataDir(dir)
 	wsURL, launchErr := l.Launch()
 	if launchErr != nil && strings.Contains(launchErr.Error(), "SingletonLock") {
+		if readOnlyBrowserRequest(ctx) {
+			return nil, fmt.Errorf("jobsite browser profile became active during the read: %w", launchErr)
+		}
 		log.Warn().Err(launchErr).Str("dir", dir).Msg("linkedin: profile locked, force-unlocking and retrying")
 		if old := m.linkedInBrowsers[userID]; old != nil {
 			_ = old.Close()
 			delete(m.linkedInBrowsers, userID)
 		}
 		browser.ForceUnlockChromeProfile(dir)
-		wsURL, launchErr = browser.NewLauncher().Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
+		wsURL, launchErr = browser.NewLauncher().Context(ctx).Headless(!gs.Browser.ShowBrowser).UserDataDir(dir).Launch()
 	}
 	if launchErr != nil {
 		return nil, errors.New("launch chrome: " + launchErr.Error())
@@ -1000,7 +1045,7 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (
 		return nil, errors.New("connect chrome: " + connErr.Error())
 	}
 
-	warmPage, pageErr := br.Page(proto.TargetCreateTarget{URL: "about:blank"})
+	warmPage, pageErr := br.Context(ctx).Page(proto.TargetCreateTarget{URL: "about:blank"})
 	if pageErr != nil {
 		_ = br.Close()
 		return nil, errors.New("open warm-up page: " + pageErr.Error())
@@ -1025,6 +1070,10 @@ func (m *Manager) getLinkedInBrowser(userID string, gs domain.GeneralSettings) (
 	}
 
 	// Persist updated cookies so the next call starts with a fresh session.
+	if err := ctx.Err(); err != nil {
+		_ = br.Close()
+		return nil, err
+	}
 	m.saveBrowserCookies(warmPage, userID, "linkedin")
 
 	_ = warmPage.Close()
@@ -1132,6 +1181,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		EngineStore:  m.cfgStore,
 	}
 	m.configureApplyEngine(cfg, formAnswerC)
+	cfg.JobPageReader, cfg.JobPageStore = m.pageReader, m.pageStore
 
 	if platform == domain.PlatformSeek {
 		if raw, err := m.secrets.Get(userID, "cred:seek"); err == nil {
@@ -1306,6 +1356,7 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 	}
 
 	m.configureApplyEngine(&cfg, formAnswerC)
+	cfg.JobPageReader, cfg.JobPageStore = m.pageReader, m.pageStore
 
 	if m.browserMeterSvc != nil {
 		inc, incErr := m.browserMeterSvc.BrowserIncrementDuration()
@@ -1639,6 +1690,18 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 		jobDesc = resolved.Description
 		linkedInResolved = resolved
 		isEasyApply = resolved.Kind == "native"
+	} else if b.cfg.JobPageReader != nil {
+		result, readErr := b.readJobPage(ctx, jobPage, platform, job)
+		if readErr != nil {
+			b.recordListingFailure(ctx, platform, job, 0, "", nil, readErr)
+			finishAttempt(m.db, ac, OutcomeBlocked, "extraction", "listing_unverified", readErr.Error())
+			_ = jobPage.Close()
+			if ownsBr {
+				_ = br.Close()
+			}
+			return ApplyFromURLResult{JobID: jobID}, readErr
+		}
+		jobDesc = result.Description
 	} else if rawHTML, htmlErr := jobPage.HTML(); htmlErr == nil {
 		jobDesc = scraper.ParseHTML(rawHTML).Description
 	}

@@ -1,0 +1,27 @@
+import { test, expect } from '@playwright/test'
+import { registerAdminAndInjectTokens } from './helpers/auth'
+
+test('reader rollout is independent, durable and usable on mobile', async ({ page, request }) => {
+ await registerAdminAndInjectTokens(page, request)
+ await page.goto('/admin/automation')
+ const recovery = page.getByLabel('Page recovery', { exact: true })
+ const reuse = page.getByLabel('Verified recipe reuse', { exact: true })
+ await expect(recovery).toHaveValue('off')
+ await expect(reuse).toHaveValue('off')
+ await recovery.selectOption('pilot')
+ await page.getByLabel('Reader pilot account IDs').fill('fixture-pilot')
+ await page.getByRole('button', { name: 'Save reader settings' }).click()
+ await expect(page.getByRole('status').filter({ hasText: 'Reader settings saved.' })).toBeVisible()
+ await page.reload()
+ await expect(recovery).toHaveValue('pilot')
+ await expect(reuse).toHaveValue('off')
+ await expect(page.getByLabel('Reader pilot account IDs')).toHaveValue('fixture-pilot')
+ await page.getByText('Test a listing in the worker', { exact: true }).click()
+ await expect(page.getByText('This reads the listing without submitting an application.', { exact: false })).toBeVisible()
+ await page.setViewportSize({ width: 390, height: 844 })
+ await expect(page.getByRole('button', { name: 'Read listing' })).toBeVisible()
+ await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+ await recovery.selectOption('off')
+ await page.getByRole('button', { name: 'Save reader settings' }).click()
+ await expect(page.getByRole('status').filter({ hasText: 'Reader settings saved.' })).toBeVisible()
+})

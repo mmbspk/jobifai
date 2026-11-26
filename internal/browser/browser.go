@@ -153,6 +153,13 @@ func PrepareChromeProfileDir(dir string) {
 	ClearStaleChromeProfileLocks(dir)
 }
 
+// ProfileInUse reports a live owner of Chrome's singleton lock. Read-only
+// consumers must not force-unlock an active application browser.
+func ProfileInUse(dir string) bool {
+	pid := chromeLockPID(dir)
+	return pid > 0 && processAlive(pid)
+}
+
 // ReleaseProfileForLaunch stops any Chrome still holding dir and clears singleton
 // files so a fresh visible window can open (Settings → Connect browser).
 func ReleaseProfileForLaunch(dir string) {

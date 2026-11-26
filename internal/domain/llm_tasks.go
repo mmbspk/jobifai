@@ -2,14 +2,15 @@ package domain
 
 // Stable machine identifiers for LLM billing and policy.
 const (
-	TaskResumeExtract         = "resume_extract"
-	TaskJobScoring            = "job_scoring"
-	TaskEmploymentEthics      = "employment_ethics"
-	TaskResumeTailoring       = "resume_tailoring"
-	TaskCoverLetter           = "cover_letter"
-	TaskFormAnswer            = "form_answer"
-	TaskFormVision            = "form_vision"
-	TaskApplicationQuestions  = "application_questions"
+	TaskResumeExtract        = "resume_extract"
+	TaskJobScoring           = "job_scoring"
+	TaskEmploymentEthics     = "employment_ethics"
+	TaskResumeTailoring      = "resume_tailoring"
+	TaskCoverLetter          = "cover_letter"
+	TaskFormAnswer           = "form_answer"
+	TaskFormVision           = "form_vision"
+	TaskApplicationQuestions = "application_questions"
+	TaskJobPageReading       = "job_page_reading"
 )
 
 // LegacyTaskModelKeys are keys stored in general_settings.llm.task_models JSON.

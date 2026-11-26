@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/jobpage"
 	"strings"
 )
 
@@ -15,6 +16,27 @@ var errJobScorerUnavailable = errors.New("suitability evaluation is unavailable"
 var errJobEvaluationFailed = errors.New("suitability evaluation could not be completed")
 
 func listingFailureMessage(err error) (code, message string) {
+	// The caller's evaluation phase owns its failure even when a dependency
+	// returns a more specific typed error as the nested cause.
+	if errors.Is(err, errJobEvaluationFailed) {
+		return "evaluation_failed", "AI evaluation could not be completed. Check the AI service before retrying."
+	}
+	// ErrorCode also classifies raw context/provider errors. Only the reader's
+	// typed boundary establishes that they occurred while reading a listing.
+	var readErr *jobpage.ReadError
+	if errors.As(err, &readErr) {
+		c := jobpage.ErrorCode(err)
+		switch c {
+		case jobpage.FailureAuth:
+			return string(c), "The jobsite session needs refreshing. Suitability has not been evaluated."
+		case jobpage.FailureExpired:
+			return string(c), "The listing has expired. Suitability has not been evaluated."
+		case jobpage.FailureIdentity, jobpage.FailureDrift, jobpage.FailureOrigin:
+			return string(c), "The displayed listing could not be verified. Suitability has not been evaluated."
+		default:
+			return string(c), "The full description could not be verified. Suitability has not been evaluated."
+		}
+	}
 	switch {
 	case isCandidateDeferral(err):
 		return "answer_confirmation", "This application needs a supplied fact. Other eligible jobs can continue; review Application answers in Profile."
@@ -26,8 +48,6 @@ func listingFailureMessage(err error) (code, message string) {
 		return "description_unavailable", "The full job description could not be read. Suitability has not been evaluated."
 	case errors.Is(err, errJobScorerUnavailable):
 		return "scoring_unavailable", "Suitability evaluation is unavailable. Check the AI configuration before retrying."
-	case errors.Is(err, errJobEvaluationFailed):
-		return "evaluation_failed", "AI evaluation could not be completed. Check the AI service before retrying."
 	default:
 		return "control_unrecognized", "The application button could not be verified. Retry after the issue is resolved, or open the listing manually."
 	}

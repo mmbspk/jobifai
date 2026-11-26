@@ -215,9 +215,9 @@ func (h *ResumeHandlers) GenerateTailored(w http.ResponseWriter, r *http.Request
 
 	// Try to fetch job page content if no manual description provided
 	if jobDesc == "" && jobURL != "" && !skipFetch {
-		fetched, fetchErr := h.svc.FetchJobPage(r.Context(), jobURL)
+		fetched, fetchErr := h.fetchJobPage(r.Context(), jobURL)
 		if fetchErr != nil {
-			writeURLUnreachable(w)
+			writeJobPageFailure(w, fetchErr)
 			return
 		}
 		jobDesc = fetched
@@ -279,9 +279,9 @@ func (h *ResumeHandlers) EvaluateJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if jobDesc == "" && jobURL != "" && !skipFetch {
-		fetched, err := h.svc.FetchJobPage(r.Context(), jobURL)
+		fetched, err := h.fetchJobPage(r.Context(), jobURL)
 		if err != nil {
-			writeURLUnreachable(w)
+			writeJobPageFailure(w, err)
 			return
 		}
 		jobDesc = fetched
@@ -341,9 +341,9 @@ func (h *ResumeHandlers) GenerateCoverLetter(w http.ResponseWriter, r *http.Requ
 
 	// Try to fetch job page content if no manual description provided
 	if jobDesc == "" && jobURL != "" && !skipFetch {
-		fetched, fetchErr := h.svc.FetchJobPage(r.Context(), jobURL)
+		fetched, fetchErr := h.fetchJobPage(r.Context(), jobURL)
 		if fetchErr != nil {
-			writeURLUnreachable(w)
+			writeJobPageFailure(w, fetchErr)
 			return
 		}
 		jobDesc = fetched
@@ -407,9 +407,9 @@ func (h *ResumeHandlers) CheckHalal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if jobDesc == "" && jobURL != "" && !skipFetch {
-		fetched, err := h.svc.FetchJobPage(r.Context(), jobURL)
+		fetched, err := h.fetchJobPage(r.Context(), jobURL)
 		if err != nil {
-			writeURLUnreachable(w)
+			writeJobPageFailure(w, err)
 			return
 		}
 		jobDesc = fetched
@@ -460,9 +460,9 @@ func (h *ResumeHandlers) AnswerQuestions(w http.ResponseWriter, r *http.Request)
 
 	jobDesc := req.JobDesc
 	if jobDesc == "" && req.JobURL != "" {
-		fetched, err := h.svc.FetchJobPage(r.Context(), req.JobURL)
+		fetched, err := h.fetchJobPage(r.Context(), req.JobURL)
 		if err != nil {
-			writeURLUnreachable(w)
+			writeJobPageFailure(w, err)
 			return
 		}
 		jobDesc = fetched

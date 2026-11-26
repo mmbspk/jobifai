@@ -229,6 +229,8 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
    return true;
  };
  out.identity_verified=true;
+ const observedTitles=[...new Set(all(root,'h1').filter(el=>visible(el)&&belongs(el)).map(el=>(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim()).filter(Boolean))];
+ out.title=sduiPanes.get(root)?.title || (observedTitles.length===1?observedTitles[0]:'');
  out.reason='control_not_found';
  // Read only a description inside this verified pane, never the whole page.
  const descriptionSelector='.jobs-description, .jobs-description-content__text, [data-job-description]';

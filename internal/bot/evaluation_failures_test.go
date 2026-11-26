@@ -7,7 +7,18 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/jobpage"
 )
+
+func TestListingFailureClassificationRetainsOperationBoundary(t *testing.T) {
+	for _, cause := range []error{context.DeadlineExceeded, context.Canceled} {
+		code, _ := listingFailureMessage(fmt.Errorf("%w: %w", errJobEvaluationFailed, cause))
+		require.Equal(t, "evaluation_failed", code)
+		readErr := &jobpage.ReadError{Code: jobpage.FailureBrowser, Cause: cause}
+		code, _ = listingFailureMessage(fmt.Errorf("read listing: %w", readErr))
+		require.Equal(t, string(jobpage.ErrorCode(readErr)), code)
+	}
+}
 
 func TestEvaluationFailuresContinueUntilThreeDistinctJobs(t *testing.T) {
 	for _, platform := range []domain.Platform{domain.PlatformSeek, domain.PlatformLinkedIn} {

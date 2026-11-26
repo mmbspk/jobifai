@@ -11,8 +11,8 @@ import (
 	"github.com/user/jobifai/internal/eval/candidate"
 	"github.com/user/jobifai/internal/eval/engine"
 	"github.com/user/jobifai/internal/eval/policy"
-	"github.com/user/jobifai/internal/eval/recommend"
 	"github.com/user/jobifai/internal/eval/providers"
+	"github.com/user/jobifai/internal/eval/recommend"
 	"github.com/user/jobifai/internal/eval/runmeta"
 	"github.com/user/jobifai/internal/llmpolicy"
 	"github.com/user/jobifai/internal/pricing"
@@ -32,7 +32,7 @@ func (h *AdminHandlers) evalService(real bool) *engine.Service {
 		svc.Run = engine.ProviderRunner{Factory: &providers.Factory{
 			Catalog:     pricing.DefaultCatalog(),
 			EvalPricing: evalCat,
-			BaseLLM: gs.LLM,
+			BaseLLM:     gs.LLM,
 			KeyResolver: func(provider string) (string, bool) {
 				if provider == gs.LLM.Provider {
 					k, _, err := config.ResolveLLMAPIKey(h.svc.Secrets, "__default__", false, gs.LLM.UseProxy)
@@ -134,14 +134,14 @@ func (h *AdminHandlers) ModelsEvalGet(w http.ResponseWriter, r *http.Request) {
 }
 
 type evalStartBody struct {
-	Task           string           `json:"task"`
-	Dataset        string           `json:"dataset"`
-	DatasetSource  string           `json:"dataset_source"`
-	Purpose        string           `json:"purpose"`
-	UseFakeRunner  bool             `json:"use_fake_runner"`
-	MaxCostUSD     float64          `json:"max_cost_usd"`
-	Baseline       candidate.Spec   `json:"baseline"`
-	Candidates     []candidate.Spec `json:"candidates"`
+	Task          string           `json:"task"`
+	Dataset       string           `json:"dataset"`
+	DatasetSource string           `json:"dataset_source"`
+	Purpose       string           `json:"purpose"`
+	UseFakeRunner bool             `json:"use_fake_runner"`
+	MaxCostUSD    float64          `json:"max_cost_usd"`
+	Baseline      candidate.Spec   `json:"baseline"`
+	Candidates    []candidate.Spec `json:"candidates"`
 }
 
 // POST /api/admin/models/evals
@@ -287,11 +287,11 @@ func (h *AdminHandlers) ModelsCatalog(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"approved_source": "builtin",
+		"approved_source":  "builtin",
 		"discovery_source": source,
-		"last_refresh_at": refreshed,
-		"last_error": lastErr,
-		"candidates": candidates,
+		"last_refresh_at":  refreshed,
+		"last_error":       lastErr,
+		"candidates":       candidates,
 	})
 }
 
@@ -332,6 +332,7 @@ func (h *AdminHandlers) ModelsEffective(w http.ResponseWriter, r *http.Request) 
 		domain.TaskJobScoring, domain.TaskEmploymentEthics, domain.TaskResumeExtract,
 		domain.TaskResumeTailoring, domain.TaskCoverLetter, domain.TaskFormAnswer,
 		domain.TaskFormVision, domain.TaskApplicationQuestions,
+		domain.TaskJobPageReading,
 	}
 	type row struct {
 		Task       string  `json:"task"`

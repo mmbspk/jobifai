@@ -24,6 +24,7 @@ import (
 	appdb "github.com/user/jobifai/internal/db"
 	"github.com/user/jobifai/internal/documents"
 	"github.com/user/jobifai/internal/domain"
+	"github.com/user/jobifai/internal/jobpage"
 	"github.com/user/jobifai/internal/llm"
 	"github.com/user/jobifai/internal/quota"
 	"github.com/user/jobifai/internal/resume"
@@ -169,6 +170,8 @@ type JobHalalChecker interface {
 
 // Config bundles everything the bot needs to run.
 type Config struct {
+	JobPageReader   *jobpage.Reader
+	JobPageStore    *jobpage.SQLStore
 	OnApplied       func() // successful application persistence schedules retention reconciliation
 	Platform        domain.Platform
 	Settings        domain.GeneralSettings
@@ -1361,7 +1364,7 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	if resolution.Company != "" {
 		job.Company = resolution.Company
 	}
-	resolution, resolveErr = readLinkedInDescription(ctx, jobPage, job)
+	resolution, resolveErr = b.readAdaptiveLinkedInDescription(ctx, jobPage, job)
 	if resolveErr != nil {
 		_ = jobPage.Close()
 		if ctx.Err() == nil {
@@ -2612,7 +2615,17 @@ func (b *Bot) processApprovedQueue(ctx context.Context, br *rod.Browser, remaini
 			continue
 		}
 		queueDetails := scraper.JobDetails{Description: j.Role + " at " + j.Company}
-		if jobPlatform != string(domain.PlatformLinkedIn) {
+		if b.cfg.JobPageReader != nil {
+			_ = jobPage.Context(ctx).WaitLoad()
+			result, readErr := b.readJobPage(ctx, jobPage, domain.Platform(jobPlatform), linkedInJob{ID: j.JobID, URL: j.Link, Company: j.Company, Title: j.Role})
+			if readErr != nil {
+				_ = jobPage.Close()
+				finishAttempt(b.cfg.DB, ac, OutcomeBlocked, "extraction", "listing_unverified", readErr.Error())
+				b.recordListingFailure(ctx, domain.Platform(jobPlatform), linkedInJob{ID: j.JobID, URL: j.Link, Company: j.Company, Title: j.Role}, 0, "", nil, readErr)
+				continue
+			}
+			queueDetails.Description = result.Description
+		} else if jobPlatform != string(domain.PlatformLinkedIn) {
 			queueDetails = b.fetchJob(ctx, linkedInJob{ID: j.JobID, URL: j.Link, Company: j.Company, Title: j.Role})
 		}
 		queueLazy := &lazyDocGen{
