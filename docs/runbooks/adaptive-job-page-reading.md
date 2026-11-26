@@ -84,3 +84,12 @@ Changed-layout replay must invalidate only incompatible assumptions and re-enter
 recovery. If a case fails, preserve an opted-in owned capture, inspect its event
 and logs, fix/replay, then expand rollout. Roll back each switch independently.
 No real application submission is required for this epic.
+
+LinkedIn description disclosures use trusted pointer input with current owned
+control and hit-target rechecks after scroll/hover. The exact physical SDUI More
+button may carry aria-hidden on itself; hidden ancestors and application controls
+retain strict action checks. A marker alone cannot authorize a non-reading label.
+Native extraction accepts complete rendered evidence and excludes hidden, unrelated
+and foreign-listing descendants. Busy reading/header regions and real lazy
+placeholders block acceptance; unrelated widgets and hidden description templates
+do not. DOM-derived caches last only for one synchronous capture evaluation.

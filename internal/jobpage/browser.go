@@ -234,7 +234,7 @@ func (p *BrowserPage) Known(ctx context.Context, target Target, limits Limits) (
 		// Native extraction proves identity and reads its own layout. Recheck
 		// owned status without imposing the adaptive snapshot's text/node caps.
 		_, scope, _ := NormalizeTarget(target)
-		status, err := p.eval(ctx, map[string]any{"mode": "status", "platform": target.Platform, "origin": scope.Origin, "job_id": target.JobID, "trusted_verified": true})
+		status, err := p.eval(ctx, map[string]any{"mode": "status", "platform": target.Platform, "origin": scope.Origin, "job_id": target.JobID, "trusted_verified": true, "trusted_title": r.Identity.Title})
 		if err != nil {
 			return Result{}, err
 		}
@@ -384,6 +384,9 @@ func (p *BrowserPage) Act(ctx context.Context, target Target, s Snapshot, action
 	if fresh.ID != s.ID {
 		return &ReadError{Code: FailureStale}
 	}
+	if action.Kind == ActionExpand {
+		return p.expand(ctx, target, fresh, action, epoch.limits)
+	}
 	if action.Kind == ActionWait {
 		timer := time.NewTimer(time.Duration(action.Amount) * time.Millisecond)
 		defer timer.Stop()
@@ -404,6 +407,96 @@ func (p *BrowserPage) Act(ctx context.Context, target Target, s Snapshot, action
 	}
 	_, _, err = p.checkTarget(ctx, target)
 	return err
+}
+
+// Expansion uses native input because rendered SDUI controls can ignore a
+// synthetic click. Scrolling and hovering may hydrate the page, so the exact
+// observed element, current ownership and its hit target are checked again
+// immediately before the single press. No application control enters this path.
+func (p *BrowserPage) expand(ctx context.Context, target Target, snapshot Snapshot, action Action, limits Limits) error {
+	opts, err := p.options(ctx, snapshot.Target, limits)
+	if err != nil {
+		return err
+	}
+	opts["mode"], opts["action"], opts["ref"], opts["expected_epoch"] = "element", "expand", action.Ref, p.epochs[snapshot.ID].material
+	object, err := p.page.Context(ctx).Evaluate(rod.Eval(captureScript, opts).ByObject())
+	if err != nil {
+		return browserError(ctx, err)
+	}
+	if object.Subtype != proto.RuntimeRemoteObjectSubtypeNode {
+		if object.ObjectID != "" {
+			_ = (proto.RuntimeReleaseObject{ObjectID: object.ObjectID}).Call(p.page.Context(ctx))
+		}
+		return &ReadError{Code: FailureStale}
+	}
+	element, err := p.page.Context(ctx).ElementFromObject(object)
+	if err != nil {
+		return browserError(ctx, err)
+	}
+	defer func() { _ = element.Release() }()
+	if _, err := element.Context(ctx).Eval(`()=>this.scrollIntoView({block:'center',behavior:'instant'})`); err != nil {
+		return browserError(ctx, err)
+	}
+	point, err := p.expansionPoint(ctx, element, nil)
+	if err != nil {
+		return err
+	}
+	if err := (proto.InputDispatchMouseEvent{Type: proto.InputDispatchMouseEventTypeMouseMoved, X: point.X, Y: point.Y}).Call(p.page.Context(ctx)); err != nil {
+		return browserError(ctx, err)
+	}
+	fresh, raw, err := p.capture(ctx, target, limits)
+	if err != nil {
+		return err
+	}
+	if err := ValidateAction(fresh, action); err != nil {
+		return &ReadError{Code: FailureStale, Cause: err}
+	}
+	opts, err = p.options(ctx, fresh.Target, limits)
+	if err != nil {
+		return err
+	}
+	opts["mode"], opts["action"], opts["ref"], opts["expected_epoch"] = "element", "expand", action.Ref, raw.Epoch
+	if _, _, err := p.checkTarget(ctx, target); err != nil {
+		return err
+	}
+	point, err = p.expansionPoint(ctx, element, opts)
+	if err != nil {
+		return err
+	}
+	page := p.page.Context(ctx)
+	buttons := 1
+	if err := (proto.InputDispatchMouseEvent{Type: proto.InputDispatchMouseEventTypeMousePressed, X: point.X, Y: point.Y, Button: proto.InputMouseButtonLeft, Buttons: &buttons, ClickCount: 1}).Call(page); err != nil {
+		return browserError(ctx, err)
+	}
+	buttons = 0
+	if err := (proto.InputDispatchMouseEvent{Type: proto.InputDispatchMouseEventTypeMouseReleased, X: point.X, Y: point.Y, Button: proto.InputMouseButtonLeft, Buttons: &buttons, ClickCount: 1}).Call(page); err != nil {
+		return browserError(ctx, err)
+	}
+	_, _, err = p.checkTarget(ctx, target)
+	return err
+}
+
+func (p *BrowserPage) expansionPoint(ctx context.Context, element *rod.Element, opts map[string]any) (*proto.Point, error) {
+	value, err := element.Context(ctx).Eval(`(opts)=>{
+ if(opts && this!==(`+captureScript+`)(opts))return {failure:'stale_snapshot'};
+ if(!this.isConnected||this.disabled||this.getAttribute('aria-disabled')==='true')return {failure:'stale_snapshot'};
+ for(let n=this;n;n=n.parentElement){
+   const s=getComputedStyle(n),readingControl=n===this&&n.matches('button[data-testid="expandable-text-button"]');
+   if(n.hidden||n.inert||(!readingControl&&n.getAttribute('aria-hidden')==='true')||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||s.opacity==='0')return {failure:'stale_snapshot'};
+ }
+ const r=this.getBoundingClientRect(),left=Math.max(0,r.left),right=Math.min(innerWidth,r.right),top=Math.max(0,r.top),bottom=Math.min(innerHeight,r.bottom);
+ if(right-left<2||bottom-top<2)return {failure:'stale_snapshot'};
+ const x=(left+right)/2,y=(top+bottom)/2,hit=document.elementFromPoint(x,y);
+ if(!hit||(hit!==this&&!this.contains(hit)))return {failure:'browser_failed'};
+ return {x,y};
+}`, opts)
+	if err != nil {
+		return nil, browserError(ctx, err)
+	}
+	if code, ok := value.Value.Get("failure").Val().(string); ok && code != "" {
+		return nil, &ReadError{Code: FailureCode(code)}
+	}
+	return &proto.Point{X: value.Value.Get("x").Num(), Y: value.Value.Get("y").Num()}, nil
 }
 
 // ScreenshotFor omits the screenshot when unrelated private overlays touch

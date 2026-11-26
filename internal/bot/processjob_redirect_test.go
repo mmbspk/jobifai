@@ -20,6 +20,14 @@ type capturingScorer struct {
 	score   int
 }
 
+// Captured HTML contains the description but omits LinkedIn's runtime handlers.
+// Supply only the owned disclosure behavior used by these read-path fixtures.
+func capturedDescriptionFixture(raw []byte) string {
+	return string(raw) + `<script>
+for(const button of document.querySelectorAll('[id^="JobDetails_AboutTheJob_"] button[data-testid="expandable-text-button"]'))button.addEventListener('click',event=>{if(event.isTrusted)event.currentTarget.remove()});
+</script>`
+}
+
 func (s *capturingScorer) EvaluateJob(_ context.Context, _ *domain.ResumeProfile, desc string) (domain.JobScore, error) {
 	s.gotDesc = desc
 	score := s.score
@@ -132,7 +140,7 @@ func TestProcessJob_CapturedSDUIExternal_IsScored(t *testing.T) {
 	br := launchTestBrowser(t)
 	html, err := os.ReadFile(filepath.Join("testdata", "linkedin", "sdui-external.html"))
 	require.NoError(t, err)
-	srv := fixtureServer(t, "4479800927", "", string(html), "")
+	srv := fixtureServer(t, "4479800927", "", capturedDescriptionFixture(html), "")
 	db := testDB(t)
 	scorer := &capturingScorer{}
 	b := &Bot{cfg: Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer}, stopCh: make(chan struct{}), seenCache: newJobSeenCache()}
@@ -158,7 +166,7 @@ func TestEvaluationRetry_CapturedExternalRechecksAndScores(t *testing.T) {
 	br := launchTestBrowser(t)
 	html, err := os.ReadFile(filepath.Join("testdata", "linkedin", "sdui-external.html"))
 	require.NoError(t, err)
-	srv := fixtureServer(t, "4479800927", "", string(html), "")
+	srv := fixtureServer(t, "4479800927", "", capturedDescriptionFixture(html), "")
 	db := testDB(t)
 	scorer := &capturingScorer{}
 	b := New(Config{DB: db, UserID: "u1", Platform: domain.PlatformLinkedIn, Scorer: scorer})

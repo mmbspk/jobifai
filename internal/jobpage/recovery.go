@@ -56,7 +56,7 @@ func RecoverLocal(ctx context.Context, page Page, target Target, initial Snapsho
 				key := fmt.Sprintf("%s/%s/%s/%d", n.Context, n.Tag, n.Role, i)
 				// Bring a thin/empty/lazy section into view once. Full
 				// unfamiliar content goes straight to semantic verification.
-				if scrolled[key] || (n.Visible && n.TextLength >= 100 && !snapshot.Loading) {
+				if scrolled[key] || (n.Visible && n.TextLength >= 100) {
 					continue
 				}
 				scrolled[key] = true

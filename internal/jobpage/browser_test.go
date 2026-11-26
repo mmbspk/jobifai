@@ -100,9 +100,19 @@ func TestBrowserPageOwnedFixtures(t *testing.T) {
 		html, err := os.ReadFile("../bot/testdata/linkedin/sdui-native.html")
 		require.NoError(t, err)
 		target := Target{URL: "https://www.linkedin.com/jobs/view/4477930880/", Title: "Principal Software Engineer (EL2) | Federal Government | Contract", Company: "Exceed Global"}
-		p, _ := readerFixture(t, b, target, string(html))
-		r, err := p.Known(ctx, target, limits)
+		p, page := readerFixture(t, b, target, string(html))
+		_, err = p.Known(ctx, target, limits)
+		require.Equal(t, FailureThin, ErrorCode(err), "the captured physical More control is still collapsed")
+		// Static captured HTML has no LinkedIn event handlers. Model its owned
+		// disclosure only; the complete text is already present in this fixture.
+		_, err = page.Eval(`()=>document.querySelector('[id^="JobDetails_AboutTheJob_"] button[data-testid="expandable-text-button"]').addEventListener('click',event=>{if(event.isTrusted)event.currentTarget.remove()})`)
 		require.NoError(t, err)
+		snapshot, err := p.Capture(ctx, target, limits)
+		require.NoError(t, err)
+		_, r, metrics, err := RecoverLocal(ctx, p, target, snapshot, limits)
+		require.NoError(t, err)
+		require.NotNil(t, r)
+		require.Equal(t, 1, metrics.RecoveryActions)
 		require.Contains(t, r.Description, "Set standards for code quality")
 		require.NotContains(t, r.Description, "Tanda")
 	})
@@ -165,6 +175,20 @@ func TestBrowserPageRejectsUnsafeReads(t *testing.T) {
 		s, err := p.Capture(ctx, fixtureTarget(), limits)
 		require.NoError(t, err)
 		_, err = p.Read(ctx, fixtureTarget(), s, fixturePlan(s), limits)
+		require.Equal(t, FailureThin, ErrorCode(err))
+	})
+	t.Run("zero height clipped body cannot lend complete text", func(t *testing.T) {
+		p, _ := readerFixture(t, b, fixtureTarget(), fixtureHTML(`<section data-testid="job-description"><h2>Responsibilities</h2><div style="height:0;overflow:hidden"><p>`+fixtureText()+`</p></div></section>`))
+		_, err := p.Known(ctx, fixtureTarget(), limits)
+		require.Equal(t, FailureThin, ErrorCode(err))
+	})
+	t.Run("clipped tail beyond initial wrappers stays incomplete", func(t *testing.T) {
+		html := `<section data-testid="job-description">` + strings.Repeat(`<span>Owned requirement. </span>`, 520) + `<div style="height:0;overflow:hidden"><p>` + fixtureText() + `</p></div></section>`
+		p, _ := readerFixture(t, b, fixtureTarget(), fixtureHTML(html))
+		snapshot, err := p.Capture(ctx, fixtureTarget(), limits)
+		require.NoError(t, err)
+		require.False(t, snapshot.Truncated, "the clipping guard must fail independently of snapshot caps")
+		_, err = p.Known(ctx, fixtureTarget(), limits)
 		require.Equal(t, FailureThin, ErrorCode(err))
 	})
 	t.Run("snapshot text cap cannot pass as full content", func(t *testing.T) {

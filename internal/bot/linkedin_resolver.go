@@ -19,6 +19,7 @@ import (
 var errLinkedInIdentity = errors.New("job identity: LinkedIn listing could not be verified")
 var errLinkedInExternal = errors.New("LinkedIn listing requires external application")
 var errLinkedInUnknown = errors.New("LinkedIn application control could not be verified")
+var errJobDescriptionIncomplete = fmt.Errorf("%w: full rendered content not available", errJobDescriptionMissing)
 
 type linkedInResolution struct {
 	Title                 string `json:"title"`
@@ -34,6 +35,8 @@ type linkedInResolution struct {
 	DescriptionSource     string `json:"description_source"`
 	DescriptionCandidates int    `json:"description_candidates"`
 	DescriptionExpanded   bool   `json:"description_expanded"`
+	DescriptionExpandable bool   `json:"description_expandable"`
+	DescriptionIncomplete bool   `json:"description_incomplete"`
 	HeaderText            string `json:"header_text"`
 	Company               string `json:"company"`
 	Action                string `json:"action"`
@@ -229,9 +232,16 @@ func linkedInNativeClickPoint(ctx context.Context, button *rod.Element) (*proto.
 }
 
 func probeLinkedInNativeClickPoint(ctx context.Context, button *rod.Element) (*proto.Point, error) {
-	state, err := button.Context(ctx).Eval(`()=>{
+	return probeLinkedInControlClickPoint(ctx, button, false)
+}
+
+// LinkedIn renders its visible description disclosure with aria-hidden=true.
+// Only this exact disclosure may use physical hit testing; application controls
+// and accessibility-hidden ancestors retain their original strict checks.
+func probeLinkedInControlClickPoint(ctx context.Context, button *rod.Element, descriptionDisclosure bool) (*proto.Point, error) {
+	state, err := button.Context(ctx).Eval(`(descriptionDisclosure)=>{
   if(!this.isConnected||this.disabled||this.getAttribute('aria-disabled')==='true')return {verified:false,reason:'control_unavailable'};
-  for(let n=this;n;n=n.parentElement||(n.getRootNode&&n.getRootNode().host)){const s=getComputedStyle(n);if(n.hidden||n.inert||n.getAttribute('aria-hidden')==='true'||s.display==='none'||s.visibility==='hidden'||s.opacity==='0')return {verified:false,reason:'control_hidden'};}
+  for(let n=this;n;n=n.parentElement||(n.getRootNode&&n.getRootNode().host)){const s=getComputedStyle(n);if(n.hidden||n.inert||(n.getAttribute('aria-hidden')==='true'&&!(descriptionDisclosure&&n===this&&this.matches('button[data-testid="expandable-text-button"]')))||s.display==='none'||s.visibility==='hidden'||s.opacity==='0')return {verified:false,reason:'control_hidden'};}
   // Modal portals can disable pointer events on an ancestor and enable them
   // again on their controls. The live hit test below establishes whether this
   // exact control actually receives native input.
@@ -241,7 +251,7 @@ func probeLinkedInNativeClickPoint(ctx context.Context, button *rod.Element) (*p
   for(let i=0;hit&&hit.shadowRoot&&i<10;i++){const next=hit.shadowRoot.elementFromPoint(x,y);if(!next||next===hit)break;hit=next;}
   for(let n=hit;n;n=n.parentElement||(n.getRootNode&&n.getRootNode().host))if(n===this)return {verified:true,x,y};
   return {verified:false,reason:'unrelated_overlay'};
- }`)
+ }`, descriptionDisclosure)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +283,74 @@ func evalLinkedInJob(page *rod.Page, expectedID string, click, expand bool, job 
 	if err := json.Unmarshal([]byte(value.Value.String()), &result); err != nil {
 		return result, fmt.Errorf("%w: invalid browser evidence: %v", errLinkedInIdentity, err)
 	}
+	if expand && result.IdentityVerified && result.DescriptionExpandable {
+		// Lock the independently observed header while reacquiring the disclosure.
+		ownedJob := job
+		if result.Title != "" {
+			ownedJob.Title = result.Title
+		}
+		ownedJob.Company = result.Company
+		if err := expandLinkedInDescription(page, expectedID, ownedJob); err != nil {
+			return result, err
+		}
+		result.DescriptionExpanded = true
+	}
 	return result, nil
+}
+
+// Expand only the unique disclosure returned from the verified description.
+// Hover may hydrate a replacement; recheck identity and that exact fresh object
+// immediately before the single native press. No application action is granted.
+func expandLinkedInDescription(page *rod.Page, expectedID string, job linkedInJob) error {
+	ctx, cancel := context.WithTimeout(page.GetContext(), 15*time.Second)
+	defer cancel()
+	page = page.Context(ctx)
+	query := rod.Eval(jsLinkedInResolve, expectedID, false, false, job.Title, job.Company, false, true)
+	button, err := page.Sleeper(rod.NotFoundSleeper).ElementByJS(query)
+	if err != nil {
+		return fmt.Errorf("%w: locate description disclosure: %w", errJobDescriptionIncomplete, err)
+	}
+	if _, err := button.Eval(`()=>this.scrollIntoView({block:'center',behavior:'instant'})`); err != nil {
+		return err
+	}
+	point, err := probeLinkedInControlClickPoint(ctx, button, true)
+	if err != nil {
+		return fmt.Errorf("%w: description disclosure: %w", errJobDescriptionIncomplete, err)
+	}
+	if err := moveBoundedMouse(ctx, page, *point); err != nil {
+		return err
+	}
+	for refresh := 0; refresh < 3; refresh++ {
+		// The shared lookup independently rechecks identity and disclosure.
+		// Read full evidence only if lookup fails, to retain precise failures.
+		button, err = page.Sleeper(rod.NotFoundSleeper).ElementByJS(rod.Eval(jsLinkedInResolve, expectedID, false, false, job.Title, job.Company, false, true))
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			result, readErr := evalLinkedInJob(page, expectedID, false, false, job)
+			if readErr != nil {
+				return readErr
+			}
+			if !result.IdentityVerified {
+				return result.resolutionError()
+			}
+			return fmt.Errorf("%w: reacquire description disclosure: %w", errJobDescriptionIncomplete, err)
+		}
+		point, err = probeLinkedInControlClickPoint(ctx, button, true)
+		if err != nil {
+			return fmt.Errorf("%w: description disclosure moved: %w", errJobDescriptionIncomplete, err)
+		}
+		fresh, err := button.Eval(`(id,title,company)=>this===(`+jsLinkedInResolve+`)(id,false,false,title,company,false,true)`, expectedID, job.Title, job.Company)
+		if err != nil {
+			return err
+		}
+		if fresh == nil || !fresh.Value.Bool() {
+			continue
+		}
+		return clickBoundedMouse(ctx, page, *point)
+	}
+	return fmt.Errorf("%w: description disclosure kept rerendering", errJobDescriptionIncomplete)
 }
 
 // A badge stored by an older scraper is not a declared employer. The job ID
@@ -346,7 +423,10 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 	// Note: a collapsed preview can exceed the minimum usable length, so the
 	// first read is never sufficient on its own — expansion must be given time
 	// to settle before we select the final description.
-	bestDesc := r.Description
+	bestDesc := ""
+	if !r.DescriptionIncomplete && len([]rune(r.Description)) >= minDescLen {
+		bestDesc = r.Description
+	}
 	expanded := r.DescriptionExpanded
 	// Missing SDUI content may hydrate after several seconds in production.
 	// Usable, stable content still returns early; cancellation remains immediate.
@@ -360,7 +440,7 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 		case <-ctx.Done():
 			return r, ctx.Err()
 		case <-deadline.C:
-			if r.IdentityVerified && len([]rune(bestDesc)) >= minDescLen {
+			if r.IdentityVerified && !r.DescriptionIncomplete && len([]rune(bestDesc)) >= minDescLen {
 				r.Description = bestDesc
 				return r, nil
 			}
@@ -377,6 +457,10 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 			if !r.IdentityVerified {
 				return r, fmt.Errorf("%w: identity lost at deadline (best=%d chars)",
 					errLinkedInIdentity, len([]rune(bestDesc)))
+			}
+			if r.DescriptionIncomplete {
+				return r, fmt.Errorf("%w: description content not available after expand (best=%d chars)",
+					errJobDescriptionIncomplete, len([]rune(bestDesc)))
 			}
 			return r, fmt.Errorf("%w: description content not available after expand (best=%d chars)",
 				errJobDescriptionMissing, len([]rune(bestDesc)))
@@ -398,9 +482,14 @@ func readLinkedInDescription(ctx context.Context, page *rod.Page, job linkedInJo
 			stableCount = 0
 			continue
 		}
+		if r.DescriptionIncomplete {
+			stableCount = 0
+			lastDescLen = -1
+			continue
+		}
 		// Identity valid. Update best and track description stability.
 		currLen := len([]rune(r.Description))
-		if currLen > len([]rune(bestDesc)) {
+		if currLen >= minDescLen && currLen > len([]rune(bestDesc)) {
 			bestDesc = r.Description
 		}
 		if currLen == lastDescLen {

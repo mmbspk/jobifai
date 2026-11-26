@@ -74,7 +74,7 @@ func TestReadLinkedInDescription_LazyControlIsExpandedOnce(t *testing.T) {
 	html := `<main data-job-id="123"><h1>Coordinator</h1><button>Easy Apply</button><div data-job-description style="min-height:40px;margin-top:1500px">Loading</div></main><script>
  const desc=document.querySelector('[data-job-description]');
  const observer=new IntersectionObserver(entries=>{if(!entries.some(e=>e.isIntersecting))return;observer.disconnect();setTimeout(()=>{
-  const more=document.createElement('button');more.textContent='Show more';more.onclick=()=>{window.expands=(window.expands||0)+1;desc.firstChild.textContent='Verified complete responsibilities, qualifications and working arrangements. '.repeat(8);};desc.appendChild(more);
+  const more=document.createElement('button');more.textContent='Show more';more.onclick=()=>{window.expands=(window.expands||0)+1;desc.firstChild.textContent='Verified complete responsibilities, qualifications and working arrangements. '.repeat(8);more.remove();};desc.appendChild(more);
  },500);});observer.observe(desc);
  </script>`
 	srv := fixtureServer(t, "123", "", html, "")
