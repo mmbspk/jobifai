@@ -3,27 +3,27 @@ package bot
 // One resolver owns classification and live control lookup. It is given the intended
 // job ID, never inferred from whichever recommendation is currently selected.
 // No whole-document label, SDUI flag, or success-text fallback is authoritative.
-const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false, expectedTitle = '', expectedCompany = '', controlOnly = false) => {
+const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false, expectedTitle = '', expectedCompany = '', controlOnly = false, descriptionControlOnly = false) => {
  const out = {kind:'unknown', reason:'identity_unverified', expected_id:expectedID,
    observed_id:'', identity_verified:false, label:'', destination:'', url:location.origin+location.pathname,
-   description:'', description_source:'', description_candidates:0, header_text:'', company:'', action:''};
- const finish = () => controlOnly ? null : JSON.stringify(out);
+   description:'', description_source:'', description_candidates:0, description_incomplete:true, header_text:'', company:'', action:''};
+ const finish = () => controlOnly || descriptionControlOnly ? null : JSON.stringify(out);
  const pathID = u => { const m = u.pathname.match(/^\/jobs\/view\/([^/]+)/); return m ? m[1] : ''; };
  const current = new URL(location.href);
  if(!/(^|\.)linkedin\.com$/i.test(current.hostname) && !['localhost','127.0.0.1','[::1]'].includes(current.hostname)) {out.reason='unexpected_origin';return finish();}
  const currentID = pathID(current);
  out.observed_id = currentID;
  if (!expectedID || currentID !== expectedID) return finish();
- const displayed = el => {
+ const displayed = (el, disclosure = false) => {
    for(let n=el;n; n=n.parentElement || (n.getRootNode && n.getRootNode().host)) {
      const s = getComputedStyle(n);
-     if(s.display==='none' || s.visibility==='hidden' || s.visibility==='collapse' || s.opacity==='0') return false;
+     if(n.hidden || n.inert || (n.getAttribute('aria-hidden')==='true' && !(disclosure===true && n===el && el.matches('button[data-testid="expandable-text-button"]'))) || s.display==='none' || s.visibility==='hidden' || s.visibility==='collapse' || s.opacity==='0') return false;
    }
    return true;
  };
- const visible = el => {
+ const visible = (el, disclosure = false) => {
    const r = el.getBoundingClientRect();
-   return r.width >= 2 && r.height >= 2 && displayed(el);
+   return r.width >= 2 && r.height >= 2 && displayed(el, disclosure);
  };
  const all = (root, selector) => {
    const found = [...root.querySelectorAll(selector)];
@@ -33,6 +33,11 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  const parent = el => el.parentElement || (el.getRootNode && el.getRootNode().host);
  const excluded = el => {
    for(let n=el;n;n=parent(n)) if(n.matches && n.matches('aside, [class*="similar-job"], [class*="jobs-similar"], [class*="people-also-viewed"], [class*="scaffold-layout__aside"], [data-test-similar-jobs], [id^="JobDetailsSimilarJobsSlot_"], .jobs-discovery, .job-card-container, [data-occludable-job-id]')) return true;
+   return false;
+ };
+ const readingExcluded='nav,[role="navigation"],[role="complementary"],dialog,[role="dialog"],form,input,textarea,select,[data-testid*="messag"],[data-automation*="messag"],[class*="messaging"],[class*="msg-overlay"],[id*="SimilarJobs"],[id*="Recommendations"],[data-testid*="recommend"],[data-automation*="recommend"],[data-testid="competitive-jobs"],[class*="jobs-similar"],[class*="job-card"]';
+ const nonReadingPanel=el=>{
+   for(let n=el;n&&n!==document.body;n=parent(n))if(n.matches(readingExcluded))return true;
    return false;
  };
  // Current SDUI uses paragraph titles and opaque CSS classes. Find the smallest
@@ -47,6 +52,36 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
      if(u.origin!==location.origin && !/(^|\.)linkedin\.com$/i.test(u.hostname)) return '';
      return pathID(u);
    } catch {return '';}
+ };
+ // Heading links establish a local job boundary even when the numeric ID
+ // happens to equal this LinkedIn listing's ID on another issuer.
+ const headingBoundary='section,article,li,main,[role="article"],[role="main"]';
+ const linkedJobReference = link => {
+   try {
+     const u=new URL(link.getAttribute('href') || '',location.href),host=u.hostname.toLowerCase();
+     if(!['http:','https:'].includes(u.protocol))return null;
+     const localReference=u.origin===location.origin && ['localhost','127.0.0.1','[::1]'].includes(host);
+     if(['linkedin.com','www.linkedin.com'].includes(host) || localReference) {
+       const match=u.pathname.match(/^\/jobs\/view\/(\d+)(?:\/|$)/),id=match?match[1]:(u.pathname.startsWith('/jobs/search')?u.searchParams.get('currentJobId'):'');
+       return id && /^\d+$/.test(id)?{platform:'linkedin',id,trusted:!u.username&&!u.password&&((u.protocol==='https:'&&(!u.port||u.port==='443'))||localReference)}:null;
+     }
+     if(['au.seek.com','nz.seek.com','seek.com.au','www.seek.com.au','seek.co.nz','www.seek.co.nz'].includes(host)) {
+       const match=u.pathname.match(/^\/job\/(\d+)(?:\/|$)/);
+       return match?{platform:'seek',id:match[1],trusted:false}:null;
+     }
+   } catch {}
+   return null;
+ };
+ let foreignHeadingCache=new WeakMap();
+ const foreignHeadingJob = el => {
+   if(!el.matches(headingBoundary))return false;
+   if(foreignHeadingCache.has(el))return foreignHeadingCache.get(el);
+   const links=all(el,'h1 a[href],h2 a[href],h3 a[href]').filter(link=>{
+     let owner=parent(link);while(owner&&!owner.matches(headingBoundary))owner=parent(owner);
+     return owner===el && visible(link) && !excluded(link) && !nonReadingPanel(link);
+   });
+   const foreign=links.some(link=>{const ref=linkedJobReference(link);return ref && (ref.platform!=='linkedin'||ref.id!==expectedID||!ref.trusted);});
+   foreignHeadingCache.set(el,foreign);return foreign;
  };
  // A lazy section can have zero height until it is scrolled into view. Its
  // explicit ID and rendered ancestry establish candidacy; hidden sections do not.
@@ -136,13 +171,14 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
      if(v) return v.replace(/^urn:li:(?:fsd_)?jobPosting:/,'');
    }
    const urn=(el.getAttribute('data-entity-urn') || '').match(/^urn:li:(?:fsd_)?jobPosting:(\d+)$/);
-   return urn ? urn[1] : (sduiPanes.get(el) || {}).id || '';
+   const marker=(el.id || '').match(/^JobDetails_(?:ManageJobBanner|AboutTheJob)_(\d+)$/);
+   return urn ? urn[1] : marker ? marker[1] : (sduiPanes.get(el) || {}).id || '';
  };
  // A root must carry the intended ID or a job-title link identifying it. The
  // generic <main> container alone does not prove ownership of its descendants.
  const roots = [...new Set([...all(document, '.jobs-unified-top-card, .job-details-jobs-unified-top-card__container, .jobs-details__main-content, [data-job-id], [data-job-detail-id], main'), ...sduiPanes.keys()])];
  const verified = roots.filter(root => {
-   if(excluded(root) || !visible(root)) return false;
+   if(excluded(root) || !visible(root) || foreignHeadingJob(root) || root.closest('.jobs-description,.jobs-description-content__text,[data-job-description],[id^="JobDetails_AboutTheJob_"]')) return false;
    for(let n=parent(root);n;n=parent(n)) {const id=ownID(n);if(id && id!==expectedID) return false;}
    const id = ownID(root);
    if(id) return id === expectedID;
@@ -199,13 +235,15 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  }
  if(!scope) {out.reason='job_pane_not_unique'; return finish();}
  const root = scope;
+ const ownedDescriptionForHeader=sduiPanes.get(root)?.description;
+ const headerElement=el=>!el.closest('.jobs-description,.jobs-description-content__text,[data-job-description],[id^="JobDetails_AboutTheJob_"]') && !(ownedDescriptionForHeader&&ownedDescriptionForHeader.contains(el));
  const headerCopy=root.cloneNode(true);
  headerCopy.querySelectorAll('aside, [class*="similar-job"], [class*="jobs-similar"], [id^="JobDetailsSimilarJobsSlot_"], .jobs-description, .jobs-description-content__text, [data-job-description], [id^="JobDetails_AboutTheJob_"]').forEach(el=>el.remove());
  headerCopy.querySelectorAll('[data-job-id], [data-job-detail-id]').forEach(el=>{const id=(el.getAttribute('data-job-id') || el.getAttribute('data-job-detail-id') || '').replace(/^urn:li:(?:fsd_)?jobPosting:/,'');if(id && id!==expectedID) el.remove();});
  out.header_text=(headerCopy.textContent || '').replace(/\s+/g,' ').trim().slice(0,4000);
  const normalized=s=>(s||'').toLowerCase().replace(/(?:\.{3}|…)$/,'').replace(/\s+/g,' ').trim();
  const companyName=s=>normalized(s).replace(/\b(pty|ltd|limited|inc|llc)\b\.?/g,'').replace(/\s+/g,' ').trim();
- const companyNames=[...new Set(all(root,'[aria-label^="Company,"], .job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, [data-testid="job-detail-company-name"]').filter(el=>visible(el)&&belongs(el)).map(el=>{
+ const companyNames=[...new Set(all(root,'[aria-label^="Company,"], .job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, [data-testid="job-detail-company-name"]').filter(el=>headerElement(el)&&visible(el)&&belongs(el)).map(el=>{
    const label=el.getAttribute('aria-label')||'';
    return (/^Company,/i.test(label)?label.replace(/^Company,\s*/i,''):el.textContent||'').replace(/\s+/g,' ').replace(/[.,]\s*$/,'').trim();
  }).filter(Boolean))];
@@ -221,15 +259,12 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
    if(excluded(el)) return false;
    for(let n=el;n && n!==root;n=parent(n)) {
      const id=ownID(n); if(id && id!==expectedID) return false;
-     if(n.matches && n.matches('section, article, li')) {
-       const ids=[...n.querySelectorAll('h1 a[href], h2 a[href], h3 a[href]')].map(a=>{try{return pathID(new URL(a.href,location.href));}catch{return '';}}).filter(Boolean);
-       if(ids.some(id=>id!==expectedID)) return false;
-     }
+     if(foreignHeadingJob(n)) return false;
    }
    return true;
  };
  out.identity_verified=true;
- const observedTitles=[...new Set(all(root,'h1').filter(el=>visible(el)&&belongs(el)).map(el=>(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim()).filter(Boolean))];
+ const observedTitles=[...new Set(all(root,'h1').filter(el=>headerElement(el)&&visible(el)&&belongs(el)).map(el=>(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim()).filter(Boolean))];
  out.title=sduiPanes.get(root)?.title || (observedTitles.length===1?observedTitles[0]:'');
  // The URL-only SDUI header may render its title as p, without a heading
  // role. Document metadata is a hint only: the company and visible text
@@ -256,21 +291,42 @@ const jsLinkedInResolve = `(expectedID, click = false, expandDescription = false
  const descriptionRoot=verified.find(pane=>pane.contains(root) && pane.querySelector(descriptionSelector)) || root;
  const sdui=sduiPanes.get(root);
  const desc=sdui ? sdui.description : descriptionRoot.querySelector(descriptionSelector);
- if(desc && (sdui || belongs(desc))) {
+ if(desc && belongs(desc)) {
+   const readingOwned=el=>belongs(el) && !nonReadingPanel(el);
+   const contentRendered=el=>displayed(el) && (visible(el) || getComputedStyle(el).display==='contents' || all(el,'*').some(child=>readingOwned(child)&&visible(child)));
    out.description_source=sdui ? (sdui.source || 'sdui') : 'scoped_legacy';
-   if(expandDescription) {
+   if(expandDescription && readingOwned(desc) && displayed(desc)) {
      // Native SDUI descriptions can remain lazy placeholders until their
-     // verified component enters the viewport. Scroll only this owned block.
+     // verified component enters the viewport. Scroll only this owned block;
+     // the Go caller uses bounded native input for its expansion control.
      desc.scrollIntoView({block:'center',behavior:'instant'});
-     const more=all(desc,'button, [role="button"]').find(el=>visible(el) && !el.disabled &&
-       (el.getAttribute('data-testid')==='expandable-text-button' || /^(show|see|read) more|^…?\s*more$/i.test((el.innerText||el.textContent||'').trim())));
-     if(more) {more.click();out.description_expanded=true;}
+     // Scroll can change rendered heading visibility; discard pre-scroll
+     // boundary evidence before reading or discovering the disclosure.
+     foreignHeadingCache=new WeakMap();
    }
+   const expansionControls=all(desc,'button, [role="button"]').filter(el=>{
+     const label=(el.getAttribute('aria-label') || el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
+     if(!readingOwned(el) || !visible(el,true) || el.disabled || el.getAttribute('aria-disabled')==='true' || el.getAttribute('aria-expanded')==='true' || /apply|submit|upload|resume|sign in|log in|accept|consent|less|collapse|hide/i.test(label))return false;
+     return /^(?:(?:show|see|read|view) (?:more(?: (?:of )?(?:the )?(?:job )?(?:description|details))?|(?:the )?full (?:job )?description)|(?:…|\.\.\.)?\s*more)$/i.test(label);
+   });
+   out.description_expandable=expansionControls.length===1;
+   if(descriptionControlOnly)return expansionControls.length===1?expansionControls[0]:null;
+   const descriptionNodes=[desc,...all(desc,'*')];
+   const rendered=readingOwned(desc) && contentRendered(desc);
+   const clipped=descriptionNodes.some(el=>{const style=getComputedStyle(el);return readingOwned(el) && displayed(el) && /hidden|clip/.test(style.overflowY) && el.scrollHeight>el.clientHeight+2;});
+   const busy=descriptionNodes.some(el=>readingOwned(el) && (el===desc?rendered:visible(el)) && el.matches('[aria-busy="true"],[role="progressbar"],[data-testid*="loading"],[data-testid*="skeleton"]'));
+   out.description_incomplete=!rendered || expansionControls.length>0 || clipped || busy || desc.getAttribute('aria-expanded')==='false' || desc.getAttribute('data-collapsed')==='true';
    const text=desc.cloneNode(true);
-   text.querySelectorAll('button, [role="button"], svg, script, style').forEach(el=>el.remove());
+   // Evaluate ownership and visibility on live nodes, then prune the matching
+   // clone nodes. Cloned styles/attributes cannot prove current rendered text.
+   const sourceNodes=[...desc.querySelectorAll('*')],copyNodes=[...text.querySelectorAll('*')];
+   for(let i=0;i<sourceNodes.length;i++) {
+     const source=sourceNodes[i];
+     if(!readingOwned(source) || !displayed(source) || source.matches('button,[role="button"],svg,script,style,noscript'))copyNodes[i].remove();
+   }
    text.querySelectorAll('br').forEach(el=>el.replaceWith('\n'));
    text.querySelectorAll('p, li, div, h1, h2, h3').forEach(el=>el.append('\n'));
-   out.description=(text.textContent||'').replace(/[ \t]+/g,' ').replace(/\n\s*\n/g,'\n\n').trim();
+   out.description=rendered?(text.textContent||'').replace(/[ \t]+/g,' ').replace(/\n\s*\n/g,'\n\n').trim():'';
  }
  // Prior application evidence must belong to the verified job pane.
  const inDescription=el=>!!(el.closest('.jobs-description, .jobs-description-content__text, [data-job-description]') || (sdui&&sdui.description&&sdui.description.contains(el)));

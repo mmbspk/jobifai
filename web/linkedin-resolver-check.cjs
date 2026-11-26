@@ -231,9 +231,16 @@ test('matching description never lends its application control to the header',()
 test('explicit job description can be an empty lazy section before hydration',()=>{
  const p=page('<main>'+explicitHeader+explicitDescription+'</main>');
  try {
-  p.dom.window.document.querySelector('[id^=JobDetails_AboutTheJob_]').getBoundingClientRect=()=>({width:120,height:0});
+  const description=p.dom.window.document.querySelector('[id^=JobDetails_AboutTheJob_]');
+  description.textContent='';
+  description.getBoundingClientRect=()=>({width:120,height:0});
   const r=p.resolve(false,{title:'Coordinator',company:'Acme'});
-  assert.equal(r.identity_verified,true);assert.ok(r.description.includes('Verified responsibilities'));
+  assert.equal(r.identity_verified,true);assert.equal(r.description_incomplete,true);assert.equal(r.description,'');
+  description.textContent='Verified responsibilities for the intended job.';
+  description.getBoundingClientRect=()=>({width:120,height:40});
+  const hydrated=p.resolve(false,{title:'Coordinator',company:'Acme'});
+  assert.equal(hydrated.identity_verified,true);assert.equal(hydrated.description_incomplete,false);
+  assert.ok(hydrated.description.includes('Verified responsibilities'));
  }finally{p.dom.window.close()}
 });
 

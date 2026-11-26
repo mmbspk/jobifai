@@ -222,6 +222,8 @@ func (b *Bot) readJobPage(ctx context.Context, page *rod.Page, platform domain.P
 				code := jobpage.FailureMissing
 				if errors.Is(err, errLinkedInIdentity) {
 					code = jobpage.FailureIdentity
+				} else if errors.Is(err, errJobDescriptionIncomplete) {
+					code = jobpage.FailureThin
 				}
 				return result, &jobpage.ReadError{Code: code, Cause: err}
 			}

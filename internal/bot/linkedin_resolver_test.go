@@ -13,7 +13,7 @@ import (
 )
 
 func refreshedControlFixture(mutation string) string {
-	return `<main data-job-id="123"><h1>Role at Company</h1><button id="cta">Easy Apply</button><div data-job-description>` + strings.Repeat("Verified job responsibilities and requirements. ", 8) + `<button onclick="` + mutation + `">Show more</button></div></main>`
+	return `<main data-job-id="123"><h1>Role at Company</h1><button id="cta">Easy Apply</button><div data-job-description>` + strings.Repeat("Verified job responsibilities and requirements. ", 8) + `<button onclick="` + mutation + `;this.remove()">Show more</button></div></main>`
 }
 
 func TestLinkedInURLListing_UsesRefreshedControl(t *testing.T) {
@@ -349,6 +349,7 @@ document.querySelector('[data-testid="expandable-text-button"]').addEventListene
     var body=document.getElementById('jd-body-%s');
     setTimeout(function(){
       if(body){body.textContent=%q;}
+      document.querySelector('[data-testid="expandable-text-button"]').remove();
       el.style.display='block';
     },%d);
   }
@@ -384,6 +385,7 @@ func sduiCollapsedPreviewFixture(jobID string, delayMs int) string {
   setTimeout(function(){
     var el=document.getElementById('jd-body-%s');
     if(el){el.textContent=%q;}
+    document.querySelector('[data-testid="expandable-text-button"]').remove();
     window._contentArrived=true;
   },%d);
 });`, jobID, fullBody, delayMs)
@@ -416,6 +418,7 @@ func sduiShortThenCompleteFixture(jobID string, delayMs int) string {
   setTimeout(function(){
     var el=document.getElementById('jd-body-%s');
     if(el){el.textContent=%q;}
+    document.querySelector('[data-testid="expandable-text-button"]').remove();
     window._contentArrived=true;
   },%d);
 });`, jobID, fullBody, delayMs)
