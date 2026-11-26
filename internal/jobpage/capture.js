@@ -3,7 +3,7 @@
   const lower = s => norm(s).toLowerCase();
   const wanted = String(opts.job_id || '');
   const descriptionSelector='[data-automation="jobAdDetails"],[data-testid="job-description"],[data-testid="jobDescriptionText"],[itemprop="description"],.jobs-description-content__text,.jobs-description__content,.jobs-box__html-content,[id^="JobDetails_AboutTheJob_"]';
-  const excludedSelector = 'nav,aside,[role="navigation"],[role="complementary"],[role="dialog"],dialog,form,input,textarea,select,[data-testid*="messag"],[data-automation*="messag"],[class*="messaging"],[class*="msg-overlay"],[id*="SimilarJobs"],[id*="Recommendations"],[data-testid*="recommend"],[data-automation*="recommend"],[class*="jobs-similar"],[class*="job-card"],[data-testid*="company-profile"],[data-automation*="company-profile"]';
+  const excludedSelector = 'nav,aside,[role="navigation"],[role="complementary"],[role="dialog"],dialog,form,input,textarea,select,[data-testid*="messag"],[data-automation*="messag"],[class*="messaging"],[class*="msg-overlay"],[id*="SimilarJobs"],[id*="Recommendations"],[data-testid*="recommend"],[data-automation*="recommend"],[data-testid="competitive-jobs"],[class*="jobs-similar"],[class*="job-card"],[data-testid*="company-profile"],[data-automation*="company-profile"]';
   const idsFor = el => {
     const out = [];
     for (const key of ['data-job-id', 'data-job-detail-id']) {
@@ -84,6 +84,7 @@
     return !!heading && /^(about (?:the )?company|company (?:profile|overview|information)|about us|similar jobs|more jobs|recommended)/i.test(norm(heading.textContent));
   };
   const knownDescription = el => el.matches(descriptionSelector);
+  const inDescription = el => !!el.closest(descriptionSelector);
   const expandLabel = el => /^(?:show|see|read|view) (?:more|full description)|^(?:…|\.\.\.)?\s*more$/i.test(norm(el.getAttribute('aria-label') || el.textContent)) || el.getAttribute('data-testid')==='expandable-text-button';
   const safeExpand = el => {
     if (!el.matches('button,[role="button"],a') || !expandLabel(el) || !visible(el) || el.getAttribute('aria-expanded')==='true' || el.disabled) return false;
@@ -92,11 +93,29 @@
     }
     return !/(apply|submit|upload|resume|sign in|log in|accept|consent)/i.test(norm(el.getAttribute('aria-label') || el.textContent));
   };
+  // Client-rendered SEEK pages omit JobPosting JSON-LD. Corroborate the
+  // primary job reference with visible primary title/company fields. This
+  // establishes reading ownership only and grants no application action.
+  const seekSubject = root => {
+    if(opts.platform!=='seek')return false;
+    const primary=selector=>Array.from(root.querySelectorAll(selector)).filter(el=>!excluded(el)&&visible(el)&&!inDescription(el));
+    const titles=new Set(primary('[data-automation="job-detail-title"],[data-testid="job-detail-title"]').map(el=>lower(el.textContent)).filter(Boolean));
+    const companies=new Set(primary('[data-automation="advertiser-name"],[data-automation="job-detail-company-name"],[data-testid="job-detail-company-name"]').map(el=>lower(el.textContent)).filter(Boolean));
+    if(titles.size!==1||companies.size!==1)return false;
+    const refs=primary('[data-automation="job-detail-apply"],[data-testid="job-detail-apply"]').map(el=>el.closest('a[href]')).filter(el=>el&&root.contains(el));
+    return refs.length>0&&refs.every(el=>{
+      try{
+        const href=el.getAttribute('href'),url=new URL(href,location.href),job=linkedJob(el);
+        const explicitID=new URL(href,location.origin+'/').pathname.match(/^\/job\/(\d+)(?:\/|$)/);
+        return explicitID&&explicitID[1]===wanted&&url.protocol==='https:'&&!url.username&&!url.password&&(!url.port||url.port==='443')&&job&&job.platform==='seek'&&job.id===wanted&&job.origin===opts.origin;
+      }catch{return false;}
+    });
+  };
   const authRequired=Array.from(document.querySelectorAll('form[action*="login"],input[type="password"], [data-testid="login-form"]')).some(visible);
   if(authRequired) return {failure:'authentication_required',nodes:[],candidates:[],allowed_actions:[]};
   const roots = Array.from(document.querySelectorAll('main,[role="main"],.jobs-details__main-content,[data-testid="lazy-column"],[data-testid="job-details"],[data-automation="job-detail"]')).filter(el=>!excluded(el));
-  const minimalRoots = roots.filter(el => !roots.some(other => other !== el && el.contains(other) && (idsFor(other).includes(wanted) || other.querySelector('[id^="JobDetails_ManageJobBanner_"],[data-job-id="'+wanted+'"]'))));
-  const actualRoots = (minimalRoots.length ? minimalRoots : roots).filter(el=>visible(el) && (idsFor(el).includes(wanted) || Array.from(el.querySelectorAll('[id],[data-job-id],[data-job-detail-id],[data-entity-urn]')).some(n=>!excluded(n) && idsFor(n).includes(wanted)) || opts.trusted_verified || !!document.querySelector('script[type="application/ld+json"]')));
+  const minimalRoots = roots.filter(el => !roots.some(other => other !== el && el.contains(other) && (idsFor(other).includes(wanted) || other.querySelector('[id^="JobDetails_ManageJobBanner_"],[data-job-id="'+wanted+'"]') || seekSubject(other))));
+  const actualRoots = (minimalRoots.length ? minimalRoots : roots).filter(el=>visible(el) && (idsFor(el).includes(wanted) || Array.from(el.querySelectorAll('[id],[data-job-id],[data-job-detail-id],[data-entity-urn]')).some(n=>!excluded(n) && idsFor(n).includes(wanted)) || opts.trusted_verified || !!document.querySelector('script[type="application/ld+json"]') || seekSubject(el)));
   const distinctRoots=actualRoots.filter(el=>!actualRoots.some(other=>other!==el && other.contains(el)));
   if (distinctRoots.length!==1) return {failure:distinctRoots.length>1?'description_ambiguous':'identity_unverified',nodes:[],candidates:[],allowed_actions:[]};
   const scope=distinctRoots[0];
@@ -120,16 +139,16 @@
   const expectedTitle=norm(opts.title || opts.trusted_title || metadata?.title);
   if(metadata && expectedTitle && lower(metadata.title)!==lower(expectedTitle)) return {failure:'identity_unverified'};
   const titleSelector='[data-automation="job-detail-title"],[data-testid="job-title"],[data-testid="job-detail-title"],.job-details-jobs-unified-top-card__job-title,.jobs-unified-top-card__job-title,h1';
-  let titles=Array.from(scope.querySelectorAll(titleSelector)).filter(el=>!excluded(el) && visible(el) && !companyHeading(el) && !knownDescription(el.closest('section,article,[itemprop="description"]') || el));
+  let titles=Array.from(scope.querySelectorAll(titleSelector)).filter(el=>!excluded(el) && visible(el) && !companyHeading(el) && !inDescription(el));
   if(new Set(titles.map(el=>lower(el.textContent)).filter(Boolean)).size>1) return {failure:'identity_unverified'};
   if(expectedTitle) {
-    const exact=Array.from(scope.querySelectorAll('h1,h2,h3,p,span')).filter(el=>!excluded(el) && visible(el) && lower(el.textContent)===lower(expectedTitle));
+    const exact=Array.from(scope.querySelectorAll('h1,h2,h3,p,span')).filter(el=>!excluded(el) && visible(el) && !inDescription(el) && lower(el.textContent)===lower(expectedTitle));
     titles=exact.filter(el=>!exact.some(child=>child!==el && el.contains(child)));
   }
   const titleValues=Array.from(new Set(titles.map(el=>norm(el.textContent)).filter(Boolean)));
   if(titleValues.length!==1 || (expectedTitle && lower(titleValues[0])!==lower(expectedTitle))) return {failure:'identity_unverified',nodes:[],candidates:[],allowed_actions:[]};
   const companySelector='[data-automation="advertiser-name"],[data-automation="job-detail-company-name"],[data-testid="job-detail-company-name"],[data-testid="company-name"],.job-details-jobs-unified-top-card__company-name,.jobs-unified-top-card__company-name,[aria-label^="Company,"]';
-  const companies=Array.from(scope.querySelectorAll(companySelector)).filter(el=>!excluded(el) && visible(el)).map(el=>({el,text:norm((el.getAttribute('aria-label')||'').replace(/^Company,\s*/i,'').replace(/\.$/,'') || el.textContent)}));
+  const companies=Array.from(scope.querySelectorAll(companySelector)).filter(el=>!excluded(el) && visible(el) && !inDescription(el)).map(el=>({el,text:norm((el.getAttribute('aria-label')||'').replace(/^Company,\s*/i,'').replace(/\.$/,'') || el.textContent)}));
   if(new Set(companies.map(row=>lower(row.text)).filter(Boolean)).size>1) return {failure:'identity_unverified'};
   const expectedCompany=norm(opts.company || opts.trusted_company || metadata?.hiringOrganization?.name);
   if(metadata?.hiringOrganization?.name && expectedCompany && lower(metadata.hiringOrganization.name)!==lower(expectedCompany)) return {failure:'identity_unverified'};
@@ -139,7 +158,8 @@
   if(companyValues.length>1) return {failure:'identity_unverified',nodes:[],candidates:[],allowed_actions:[]};
   const company=companyValues[0] || norm(opts.trusted_company || metadata?.hiringOrganization?.name);
   const subjectFound=idsFor(scope).includes(wanted) || Array.from(scope.querySelectorAll('[id],[data-job-id],[data-job-detail-id],[data-entity-urn]')).some(el=>!excluded(el) && idsFor(el).includes(wanted));
-  if(!subjectFound && !metadata) return {failure:'identity_unverified',nodes:[],candidates:[],allowed_actions:[]};
+  const seekReference=seekSubject(scope);
+  if(!subjectFound && !metadata && !seekReference) return {failure:'identity_unverified',nodes:[],candidates:[],allowed_actions:[]};
   const headerEls=[...titles,...relevantCompanies.map(row=>row.el)];
   const elements=[scope];
   const contexts=[{el:scope,context:'listing_scope',text:''}];
@@ -176,7 +196,7 @@
     if(node.can_scroll) actions.push({kind:'scroll',ref:node.ref,amount:500});
   }
   const headerRefs=nodes.filter(n=>n.context==='header').map(n=>n.ref);
-  const result={identity:{job_id:wanted,title:titleValues[0],company,verified:headerRefs.length>0,header_refs:headerRefs,evidence:[subjectFound?'subject_attribute':'job_posting_identifier','primary_header']},nodes,candidates,allowed_actions:actions,loading:loading || readingRegions.some(row=>!row.text || (Array.from(row.text).length<100 && /^loading(?:\s|\.|$)/i.test(row.text))),authentication_required:authRequired,expired,truncated};
+  const result={identity:{job_id:wanted,title:titleValues[0],company,verified:headerRefs.length>0,header_refs:headerRefs,evidence:[subjectFound?'subject_attribute':seekReference?'job_detail_apply_reference':'job_posting_identifier','primary_header']},nodes,candidates,allowed_actions:actions,loading:loading || readingRegions.some(row=>!row.text || (Array.from(row.text).length<100 && /^loading(?:\s|\.|$)/i.test(row.text))),authentication_required:authRequired,expired,truncated};
   // DOM object tokens stay in the runtime and make replacing an identical
   // element invalidate a plan. They never become recipe or model attributes.
   const epochKey=Symbol.for('jobifai.jobpage.nodes');

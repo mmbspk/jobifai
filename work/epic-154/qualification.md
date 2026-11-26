@@ -1,5 +1,11 @@
 # Epic 154 qualification
 
+Current checkpoint: PR 163 merged and its final CI passed on 05d23ca (417 frontend
+tests, 92 browser tests, Go race/coverage and lint). The deployed 2dc48e8 reader
+has now undergone a real read-only worker canary. It exposed production gaps;
+see production-canary.md for observations, fixes and the remaining release gate.
+Older entries below retain their original qualification checkpoints.
+
 ## Offline checks — 26 November 2026
 
 - All 396 frontend unit tests passed. Frontend lint and production build passed.

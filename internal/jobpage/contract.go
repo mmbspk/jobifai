@@ -92,6 +92,8 @@ func ValidateSnapshot(s Snapshot, limits Limits) error {
 		switch e {
 		case "subject_attribute", "job_posting_identifier":
 			subject = true
+		case "job_detail_apply_reference":
+			subject = subject || scope.Platform == "seek"
 		case "primary_header":
 			header = true
 		}

@@ -20,7 +20,7 @@ func isSeekBrowserUpgrade(pageURL string) bool {
 		return false
 	}
 	host := strings.ToLower(u.Hostname())
-	return (host == "seek.com" || strings.HasSuffix(host, ".seek.com") || host == "seek.com.au" || strings.HasSuffix(host, ".seek.com.au")) && strings.TrimRight(u.Path, "/") == "/browser-upgrade"
+	return seekHost(host) && strings.TrimRight(u.Path, "/") == "/browser-upgrade"
 }
 
 // CheckSeekBrowser rejects SEEK's explicit unsupported-browser redirect.
@@ -43,7 +43,7 @@ func RecoverSeekBrowserUpgrade(page *rod.Page, intendedURL string) error {
 		return err
 	}
 	target, err := url.Parse(intendedURL)
-	if err != nil || target.Scheme != "https" || target.User != nil || !seekHost(target.Hostname()) {
+	if err != nil || seekIssuer(target) == "" {
 		return fmt.Errorf("%w: intended SEEK page is invalid", ErrSeekBrowserUnsupported)
 	}
 	info, err := page.Info()
@@ -54,14 +54,20 @@ func RecoverSeekBrowserUpgrade(page *rod.Page, intendedURL string) error {
 	if err != nil {
 		return err
 	}
+	if seekIssuer(notice) != seekIssuer(target) {
+		return fmt.Errorf("%w: compatibility notice belongs to another SEEK issuer", ErrSeekBrowserUnsupported)
+	}
 	if next := notice.Query().Get("continue"); next != "" {
 		nextURL, parseErr := url.Parse(next)
 		if parseErr != nil {
 			return ErrSeekBrowserUnsupported
 		}
 		nextURL = notice.ResolveReference(nextURL)
-		if nextURL.Scheme != "https" || nextURL.User != nil || !strings.EqualFold(nextURL.Hostname(), target.Hostname()) {
+		if seekIssuer(nextURL) != seekIssuer(target) {
 			return fmt.Errorf("%w: compatibility notice points outside the intended SEEK site", ErrSeekBrowserUnsupported)
+		}
+		if strings.HasPrefix(target.Path, "/job/") && strings.TrimRight(nextURL.Path, "/") != strings.TrimRight(target.Path, "/") {
+			return fmt.Errorf("%w: compatibility notice points to another listing", ErrSeekBrowserUnsupported)
 		}
 	}
 	page = page.Timeout(12 * time.Second)
@@ -91,5 +97,22 @@ func RecoverSeekBrowserUpgrade(page *rod.Page, intendedURL string) error {
 
 func seekHost(host string) bool {
 	host = strings.ToLower(host)
-	return host == "seek.com" || strings.HasSuffix(host, ".seek.com") || host == "seek.com.au" || strings.HasSuffix(host, ".seek.com.au")
+	return host == "seek.com" || strings.HasSuffix(host, ".seek.com") || host == "seek.com.au" || strings.HasSuffix(host, ".seek.com.au") || host == "seek.co.nz" || strings.HasSuffix(host, ".seek.co.nz")
+}
+
+// Canonical and regional host aliases may identify the same SEEK issuer.
+// Preserve strict TLS/origin boundaries and do not merge AU with NZ.
+func seekIssuer(u *url.URL) string {
+	if u == nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") || !seekHost(u.Hostname()) {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "au.seek.com", "seek.com.au", "www.seek.com.au":
+		return "seek-au"
+	case "nz.seek.com", "seek.co.nz", "www.seek.co.nz":
+		return "seek-nz"
+	default:
+		return host
+	}
 }
