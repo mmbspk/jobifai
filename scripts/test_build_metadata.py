@@ -58,6 +58,14 @@ class BuildMetadataTests(unittest.TestCase):
         self.git("tag", "v1.2.3")
         self.assertEqual("v1.2.3", self.metadata()["Version"])
 
+    def test_cloud_build_without_git_uses_the_provided_commit(self):
+        (self.root / ".git").rename(Path(self.work.name) / "saved-git")
+        result = self.build("metadata", extra={"JOBIFAI_BUILD_GIT_SHA": self.sha, "JOBIFAI_SOURCE_STATE": "clean"})
+        metadata = dict(line.split(": ", 1) for line in result.stdout.splitlines())
+        self.assertEqual(self.sha[:12], metadata["Version"])
+        self.assertEqual(self.sha, metadata["Commit"])
+        self.assertEqual("clean", metadata["Source"])
+
     def test_native_and_docker_receive_the_same_identity(self):
         extra = {"JOBIFAI_BUILD_TIME": "2026-11-26T01:00:00Z"}
         go_args = json.loads(self.build("go", "build", "-o", "binary", "./cmd/server", extra=extra).stdout)

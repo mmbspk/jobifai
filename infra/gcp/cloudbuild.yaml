@@ -1,15 +1,15 @@
-# Optional manual submit (triggered builds supply these substitutions automatically):
+# Optional manual submit from a clean checkout (triggers supply substitutions automatically):
 # gcloud builds submit --config=infra/gcp/cloudbuild.yaml --substitutions=COMMIT_SHA=$(git rev-parse HEAD),SHORT_SHA=$(git rev-parse --short HEAD) .
 steps:
   - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env:
+      - JOBIFAI_BUILD_GIT_SHA=$COMMIT_SHA
+      - JOBIFAI_BUILD_VERSION=$TAG_NAME
+      - JOBIFAI_SOURCE_STATE=clean
     args:
-      - build
-      - --build-arg
-      - BUILD_VERSION=$SHORT_SHA
-      - --build-arg
-      - BUILD_GIT_SHA=$COMMIT_SHA
-      - --build-arg
-      - BUILD_SOURCE_STATE=clean
+      - scripts/build.sh
+      - docker
       - -t
       - australia-southeast1-docker.pkg.dev/jobifai-494014/jobifai/jobifai:$SHORT_SHA
       - -t

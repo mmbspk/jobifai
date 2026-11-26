@@ -5,7 +5,11 @@ JOBIFAI_BUILD_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$JOBIFAI_BUILD_ROOT"
 
 JOBIFAI_BUILD_GIT_SHA="${JOBIFAI_BUILD_GIT_SHA:-$(git rev-parse HEAD 2>/dev/null || printf unknown)}"
-JOBIFAI_BUILD_VERSION="${JOBIFAI_BUILD_VERSION:-$(git describe --tags --always --abbrev=12 2>/dev/null || printf dev)}"
+JOBIFAI_FALLBACK_VERSION=dev
+if [[ "$JOBIFAI_BUILD_GIT_SHA" != unknown && ${#JOBIFAI_BUILD_GIT_SHA} -ge 12 ]]; then
+    JOBIFAI_FALLBACK_VERSION="${JOBIFAI_BUILD_GIT_SHA:0:12}"
+fi
+JOBIFAI_BUILD_VERSION="${JOBIFAI_BUILD_VERSION:-$(git describe --tags --always --abbrev=12 2>/dev/null || printf '%s' "$JOBIFAI_FALLBACK_VERSION")}"
 JOBIFAI_BUILD_TIME="${JOBIFAI_BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 if [[ -z "${JOBIFAI_SOURCE_STATE:-}" ]]; then
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
