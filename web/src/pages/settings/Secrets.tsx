@@ -92,17 +92,22 @@ function CredsForm({ platform, hasCreds }: { readonly platform: string; readonly
 }
 
 function VNCFrame() {
+  const [expanded, setExpanded] = useState(false)
   const token = getToken() ?? ''
   if (!token) return null
   const wsPath = encodeURIComponent(`novnc/websockify?token=${encodeURIComponent(token)}`)
   return (
-    <iframe
+    <div className={expanded ? 'fixed inset-3 z-50 bg-[var(--color-surface)] p-3 rounded-xl flex flex-col gap-2 shadow-xl' : 'space-y-2'}>
+      <Button type="button" variant="secondary" size="sm" onClick={() => setExpanded(v => !v)}>
+        {expanded ? 'Close expanded browser' : 'Expand browser'}
+      </Button>
+      <iframe
       src={`/novnc/vnc.html?path=${wsPath}&autoconnect=1&resize=scale`}
-      className="w-full rounded-lg border border-[var(--color-border)]"
-      style={{ height: '500px' }}
+      className={cn('w-full rounded-lg border border-[var(--color-border)]', expanded ? 'flex-1 min-h-0' : 'aspect-[8/5] min-h-[280px] max-h-[80dvh]')}
       title="Remote browser"
       sandbox="allow-scripts allow-same-origin allow-forms"
-    />
+      />
+    </div>
   )
 }
 

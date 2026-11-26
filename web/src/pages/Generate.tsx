@@ -3,7 +3,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { FileText, Download, Loader2, Upload, X, AlertTriangle, ChevronDown, ArrowRight, Plus, Trash2, Copy, Check } from 'lucide-react'
 import { cn, downloadBlob } from '../lib'
-import { isAbortError } from '../api/client'
+import { useAuth } from '../contexts/AuthContext'
 import { settingsApi } from '../api/settings'
 import { botApi } from '../api/bot'
 import type { ApplyURLResponse } from '../api/bot'
@@ -27,8 +27,6 @@ const TABS: { key: Tab; label: string; desc: string }[] = [
   { key: 'questions', label: 'Questions',     desc: 'Answer application or interview questions for a job' },
   { key: 'apply',     label: 'AI Apply',      desc: 'Apply directly from a job URL using Easy Apply / Quick Apply' },
 ]
-
-const APPLY_STEPS = ['Detecting platform…', 'Scoring job fit…', 'Verifying Easy Apply…', 'Submitting application…']
 
 const TAB_ACTIVE = 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] border border-[var(--color-accent)]/30'
 const TAB_IDLE = 'text-[var(--color-text-dim)] hover:text-[var(--color-text-muted)] border border-transparent'
@@ -63,11 +61,13 @@ const LOADING_PANEL = 'rounded-[var(--radius-lg)] border border-[var(--color-acc
 
 export function Generate() {
   const [searchParams] = useSearchParams()
+  const { user } = useAuth()
+  const applyStorageKey = 'jobifai:ai-apply:' + user?.id
   const [tab, setTab] = useState<Tab>(() => {
     const urlTab = searchParams.get('tab') as Tab | null
     if (urlTab && TABS.some(t => t.key === urlTab)) return urlTab
     try {
-      const saved = JSON.parse(localStorage.getItem('jobifai:ai-apply') ?? 'null') as { url?: string; response?: ApplyURLResponse } | null
+      const saved = JSON.parse(localStorage.getItem(applyStorageKey) ?? 'null') as { url?: string; response?: ApplyURLResponse } | null
       if (saved?.url || saved?.response) return 'apply'
     } catch { /* ignore */ }
     return 'evaluate'
@@ -98,23 +98,58 @@ export function Generate() {
   useEffect(() => {
     if (resumePdf || coverPdf) void qc.invalidateQueries({ queryKey: ['documents'] })
   }, [qc, resumePdf, coverPdf])
-  const [applyLoading, setApplyLoading] = useState(false)
-  const [applyStep, setApplyStep] = useState(0)
+  const [applyStarting, setApplyStarting] = useState(false)
   const [applyError, setApplyError] = useState<string | null>(null)
   const [applyUrl, setApplyUrl] = useState<string>(() => {
-    try { return (JSON.parse(localStorage.getItem('jobifai:ai-apply') ?? 'null') as { url: string } | null)?.url ?? '' } catch { return '' }
+    if (searchParams.get('url')) return searchParams.get('url')!
+    try { return (JSON.parse(localStorage.getItem(applyStorageKey) ?? 'null') as { url: string } | null)?.url ?? '' } catch { return '' }
   })
   const [applyResponse, setApplyResponse] = useState<ApplyURLResponse | null>(() => {
-    try { return (JSON.parse(localStorage.getItem('jobifai:ai-apply') ?? 'null') as { response: ApplyURLResponse } | null)?.response ?? null } catch { return null }
+    try { return (JSON.parse(localStorage.getItem(applyStorageKey) ?? 'null') as { response: ApplyURLResponse } | null)?.response ?? null } catch { return null }
   })
-  const applyAbortRef = useRef<AbortController | null>(null)
+  const applyTaskKey = ['ai-apply-task', user?.id]
+  const { data: applyTaskData, isPending: applyTaskPending, isError: applyTaskUnavailable, refetch: refreshApplyTask } = useQuery({
+    queryKey: applyTaskKey,
+    queryFn: botApi.currentApplyTask,
+    enabled: !!user && tab === 'apply',
+    refetchInterval: query => query.state.data?.task?.state === 'running' ? 2000 : false,
+    refetchOnWindowFocus: true,
+  })
+  const applyTask = applyTaskData?.task
+  const applyLoading = applyStarting || applyTask?.state === 'running'
+  const pendingApplyRequest = useRef<{ id: string; fingerprint: string } | null>(null)
+  useEffect(() => {
+    const urlTab = searchParams.get('tab') as Tab | null
+    if (urlTab && TABS.some(t => t.key === urlTab)) setTab(urlTab)
+    const incomingUrl = searchParams.get('url')
+    if (incomingUrl) {
+      setApplyUrl(incomingUrl)
+      setApplyResponse(null)
+      setApplyError(null)
+    }
+  }, [searchParams])
+  useEffect(() => {
+    if (!applyTask) return
+    if (!applyUrl && !searchParams.get('url')) setApplyUrl(applyTask.url)
+    if (applyTask.url === applyUrl || !applyUrl) {
+      setApplyResponse(applyTask.response ?? null)
+      setApplyError(applyTask.error ?? null)
+    }
+  }, [applyTask, applyUrl, searchParams])
+  useEffect(() => {
+    if (applyTask?.state && applyTask.state !== 'running') {
+      void qc.invalidateQueries({ queryKey: ['jobs-applied'] })
+      void qc.invalidateQueries({ queryKey: ['jobs-cannot-apply'] })
+      void qc.invalidateQueries({ queryKey: ['documents'] })
+    }
+  }, [applyTask?.id, applyTask?.state, qc])
   useEffect(() => {
     if (applyResponse || applyUrl) {
-      localStorage.setItem('jobifai:ai-apply', JSON.stringify({ response: applyResponse, url: applyUrl }))
+      localStorage.setItem(applyStorageKey, JSON.stringify({ response: applyResponse, url: applyUrl }))
     } else {
-      localStorage.removeItem('jobifai:ai-apply')
+      localStorage.removeItem(applyStorageKey)
     }
-  }, [applyResponse, applyUrl])
+  }, [applyResponse, applyUrl, applyStorageKey])
 
   const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
   const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
@@ -129,36 +164,31 @@ export function Generate() {
   }, [generalSettings?.default_resume_market, marketTouched, f.market])
 
   function cancelApply() {
-    applyAbortRef.current?.abort()
+    if (applyTask?.state === 'running' && !applyStarting) {
+      void botApi.cancelApplyTask(applyTask.id).then(() => refreshApplyTask()).catch((e: unknown) => {
+        setApplyError(e instanceof Error ? e.message : 'Cancellation failed')
+      })
+    }
   }
 
   async function runApply(force = false) {
-    applyAbortRef.current?.abort()
-    const controller = new AbortController()
-    applyAbortRef.current = controller
-
-    setApplyLoading(true)
+    if (applyLoading) return
+    setApplyStarting(true)
     setApplyError(null)
     if (!force) setApplyResponse(null)
-    setApplyStep(0)
-    const stepDelays = [0, 8000, 20000, 35000]
-    const stepTimers: ReturnType<typeof setTimeout>[] = []
-    APPLY_STEPS.forEach((_, i) => {
-      if (i > 0) stepTimers.push(setTimeout(() => setApplyStep(i), stepDelays[i]))
-    })
+    const fingerprint = JSON.stringify([applyUrl, f.market, force])
+    const id = pendingApplyRequest.current?.fingerprint === fingerprint ? pendingApplyRequest.current.id : crypto.randomUUID()
+    pendingApplyRequest.current = { id, fingerprint }
     try {
-      const res = await botApi.applyFromURL(applyUrl, f.market, force, { signal: controller.signal })
-      setApplyResponse(res)
-      if (res.status === 'applied' || (force && res.status === 'already_applied')) {
-        qc.invalidateQueries({ queryKey: ['jobs-applied'] })
-      }
+      const task = await botApi.startApplyTask(id, applyUrl, f.market, force)
+      pendingApplyRequest.current = null
+      qc.setQueryData(applyTaskKey, { task })
+      void refreshApplyTask()
     } catch (e: unknown) {
-      if (isAbortError(e) || controller.signal.aborted) return
       setApplyError(e instanceof Error ? e.message : 'Apply failed')
+      void refreshApplyTask()
     } finally {
-      stepTimers.forEach(clearTimeout)
-      if (applyAbortRef.current === controller) applyAbortRef.current = null
-      setApplyLoading(false)
+      setApplyStarting(false)
     }
   }
 
@@ -190,7 +220,7 @@ export function Generate() {
     tab !== 'apply' &&
     (!needsUrl || hasJobInput) &&
     (tab !== 'questions' || hasQuestions)
-  const canStartApply = !aiDisabled && !applyError && applyUrl.trim().startsWith('http')
+  const canStartApply = !aiDisabled && !applyLoading && !applyTaskPending && !applyTaskUnavailable && applyUrl.trim().startsWith('http')
   const filename = tab === 'cover' ? 'cover-letter.pdf' : 'resume.pdf'
 
   let tabDesc: string
@@ -479,7 +509,12 @@ export function Generate() {
             <p className="text-xs text-[var(--color-text-dim)] mb-2">
               Job Posting URL <span className="text-red-400">*</span>
             </p>
-            <input value={applyUrl} onChange={e => setApplyUrl(e.target.value)}
+            <input value={applyUrl} onChange={e => {
+              setApplyUrl(e.target.value)
+              setApplyResponse(null)
+              setApplyError(null)
+              pendingApplyRequest.current = null
+            }} disabled={applyLoading}
               placeholder="https://linkedin.com/jobs/view/… or https://seek.com.au/job/…"
               className={inputClassName.replace('py-2', 'py-2.5')}
             />
@@ -498,7 +533,7 @@ export function Generate() {
               AI Apply
             </Button>
             {applyLoading && (
-              <Button type="button" variant="secondary" size="lg" onClick={cancelApply} className="shrink-0">
+              <Button type="button" variant="secondary" size="lg" disabled={applyStarting || applyTask?.state !== 'running'} onClick={cancelApply} className="shrink-0">
                 Cancel
               </Button>
             )}
@@ -507,16 +542,18 @@ export function Generate() {
           {applyLoading && (
             <div className={LOADING_PANEL}>
               <Loader2 size={24} className="mx-auto text-[var(--color-accent)] animate-spin" />
-              <div className="text-sm text-[var(--color-text)]">{APPLY_STEPS[applyStep]}</div>
-              <div className="flex justify-center gap-1">
-                {APPLY_STEPS.map((label, i) => (
-                  <div key={label} className={cn('h-1 rounded-full transition-all',
-                    i <= applyStep ? 'w-6 bg-[var(--color-accent)]' : 'w-2 bg-[var(--color-accent)]/20')} />
-                ))}
-              </div>
-              <p className="text-[10px] text-[var(--color-text-dim)]">
-                Cancel stops the request; scoring or apply may already be in progress on the server briefly.
+              <div className="text-sm text-[var(--color-text)]">AI Apply is running</div>
+              {applyTask && <p className="text-xs break-all text-[var(--color-text-muted)]">{applyTask.url}</p>}
+              <p className="text-xs text-[var(--color-text-dim)]">
+                You can leave this page or refresh. Return here to see the result. Cancel requests a stop.
               </p>
+            </div>
+          )}
+
+          {applyTaskUnavailable && (
+            <div role="alert" className="text-sm text-[var(--color-warn)]">
+              Could not restore AI Apply status. Check it before starting another application.
+              <button type="button" onClick={() => void refreshApplyTask()} className="ml-2 underline">Refresh status</button>
             </div>
           )}
 
