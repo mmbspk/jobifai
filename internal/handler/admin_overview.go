@@ -100,6 +100,8 @@ func (h *AdminHandlers) Overview(w http.ResponseWriter, r *http.Request) {
 		"system": map[string]any{
 			"version":           version.Version,
 			"git_sha":           version.GitSHA,
+			"build_time":        version.BuildTime,
+			"source_state":      version.SourceState,
 			"migration_version": migVersion,
 			"uptime_seconds":    uptimeSec,
 			"environment":       env,
@@ -108,7 +110,7 @@ func (h *AdminHandlers) Overview(w http.ResponseWriter, r *http.Request) {
 		},
 		"ai_today": map[string]any{
 			"calls": aiCalls, "success_calls": aiSuccess,
-			"success_rate": pct(aiSuccess, aiCalls),
+			"success_rate":       pct(aiSuccess, aiCalls),
 			"raw_cost_usd_micro": aiRaw, "loaded_cost_usd_micro": aiLoaded,
 			"credits_burned": aiCredits, "avg_latency_ms": aiAvgLat,
 		},

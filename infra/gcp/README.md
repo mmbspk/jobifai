@@ -169,7 +169,7 @@ From repo root on your Mac:
 ```bash
 gcloud auth configure-docker australia-southeast1-docker.pkg.dev
 
-docker build -t australia-southeast1-docker.pkg.dev/jobifai-494014/jobifai/jobifai:latest .
+make docker IMAGE=australia-southeast1-docker.pkg.dev/jobifai-494014/jobifai/jobifai:latest
 docker push australia-southeast1-docker.pkg.dev/jobifai-494014/jobifai/jobifai:latest
 ```
 

@@ -122,7 +122,7 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
   else
     docker buildx create --name jobifai-builder --use
   fi
-  docker buildx build --platform linux/amd64 -t "$IMAGE" --push .
+  bash scripts/build.sh buildx --platform linux/amd64 -t "$IMAGE" --push .
   echo "==> Push complete"
 fi
 

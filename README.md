@@ -78,6 +78,14 @@ make test-e2e-ui    # open Playwright interactive UI (local dev only)
 
 For most changes, `make run` rebuilds both frontend and backend and restarts the server. No separate Vite dev server is required for testing.
 
+### Comparing local and production versions
+
+Open **Admin → System details** on each instance. **Environment** identifies local or production; **Version** identifies the release tag (when available) or commit-based build. **Git commit** links to the exact source revision. **Built (UTC)** records when the binary was built, and **Source** shows whether uncommitted changes were included. The same code can run locally and in production with the same version; a `-dirty` suffix identifies local modifications. **DB migration** identifies the schema separately.
+
+`make build`, `make run`, `make start`, `make dev`, `make docker`, and the GCP deploy script all stamp these fields through `scripts/build.sh`. Rebuild and restart to update the displayed version. Use `./jobifai -version` to inspect a binary without starting the server. Plain `go build` can recover its compiled Git revision, but `go run` without the wrapper may be unversioned.
+
+For a named release, build from a Git release tag or set `JOBIFAI_BUILD_VERSION=v1.2.3` for the build command. An ad-hoc `docker build` must receive `BUILD_VERSION`, `BUILD_GIT_SHA`, `BUILD_TIMESTAMP`, and `BUILD_SOURCE_STATE` build arguments; `make docker` supplies them automatically. These values are embedded in the image, not read from the checkout or environment when the server starts.
+
 ## Docker
 
 ```bash
@@ -100,7 +108,7 @@ make docker-run
 
 The container runs Chromium on a virtual display (Xvfb) and exposes a noVNC viewer embedded on **Settings → Platforms** when you use **Connect browser**. Do not run the bare `jobifai` binary on a headless Linux VPS without Xvfb — Chrome will fail with `Missing X server or $DISPLAY`.
 
-Browser launches prefer `ROD_BROWSER_BIN`, then Rod's explicit browser setting, then installed Chrome/Chromium. Rod's bundled browser is used only when no installed browser is found. Keep the selected browser updated. If SEEK shows “Browser Upgrade”, update Chrome locally or rebuild the Docker image with `docker build --pull --no-cache -t jobifai .` to refresh Chromium, then recreate the container and reconnect SEEK. You can select a specific executable with `ROD_BROWSER_BIN` (for example `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` on macOS or `/usr/bin/chromium` in Docker).
+Browser launches prefer `ROD_BROWSER_BIN`, then Rod's explicit browser setting, then installed Chrome/Chromium. Rod's bundled browser is used only when no installed browser is found. Keep the selected browser updated. If SEEK shows “Browser Upgrade”, update Chrome locally or rebuild the Docker image with `bash scripts/build.sh docker --pull --no-cache -t jobifai .` to refresh Chromium, then recreate the container and reconnect SEEK. You can select a specific executable with `ROD_BROWSER_BIN` (for example `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` on macOS or `/usr/bin/chromium` in Docker).
 
 **Connect browser on production:** use this Docker image (default `ENTRYPOINT` starts Xvfb and x11vnc). After **Connect browser**, sign in in the noVNC panel on the Platforms page, then **Save session**.
 

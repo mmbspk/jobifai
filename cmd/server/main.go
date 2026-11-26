@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -42,7 +43,15 @@ import (
 func main() {
 	addr := flag.String("addr", ":8081", "HTTP listen address")
 	dbPath := flag.String("db", "data/jobifai.db", "SQLite database path")
+	showVersion := flag.Bool("version", false, "print build metadata and exit")
 	flag.Parse()
+	if *showVersion {
+		if err := json.NewEncoder(os.Stdout).Encode(version.Current()); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Lifetime context cancelled on graceful shutdown; passed to long-running goroutines.
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
