@@ -1158,9 +1158,9 @@ func (b *Bot) fetchSeekJobDetails(ctx context.Context, br *rod.Browser, job *see
 	if b.cfg.JobPageReader != nil {
 		result, readErr := b.readJobPage(ctx, page, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company})
 		if readErr != nil {
-			for _, failure := range readFailures {
-				if failure != nil {
-					*failure = readErr
+			for _, readFailure := range readFailures {
+				if readFailure != nil {
+					*readFailure = readErr
 				}
 			}
 			b.recordListingFailure(ctx, domain.PlatformSeek, linkedInJob{ID: job.ID, URL: job.URL, Title: job.Title, Company: job.Company, Location: job.Location}, 0, "", nil, readErr)

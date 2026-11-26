@@ -114,10 +114,12 @@ func (b *stageBudget) BeforeRequest(ctx context.Context, o llm.RequestObservatio
 	if s.accountingErr != nil {
 		return s.accountingErr
 	}
-	reservedTokens, reservedCost := int64(0), int64(0)
-	for _, r := range s.reserved {
-		reservedTokens += r.tokens
-		reservedCost += r.cost
+	reservedTokens, reservedCost, err := s.reservedUsage()
+	if err != nil {
+		return err
+	}
+	if s.committedTokens < 0 || s.committedCost < 0 || s.committedTokens > s.limits.MaxTokens || reservedTokens > s.limits.MaxTokens-s.committedTokens || s.committedCost > s.limits.MaxCostMicroUSD || reservedCost > s.limits.MaxCostMicroUSD-s.committedCost {
+		return s.rejectAccounting("committed model usage exceeded limit")
 	}
 	if s.metrics.HTTPAttempts >= s.limits.MaxRequests || tokens > s.limits.MaxTokens-s.committedTokens-reservedTokens || cost > s.limits.MaxCostMicroUSD-s.committedCost-reservedCost {
 		return modelBudgetError("request, token or cost limit exceeded")
@@ -168,16 +170,30 @@ func (b *stageBudget) ObserveUsage(_ context.Context, o llm.UsageObservation) er
 		return s.rejectAccounting("provider cost accounting invalid")
 	}
 	s.metrics.CostMicroUSD += cost
+	if in+out > math.MaxInt64-s.committedTokens || cost > math.MaxInt64-s.committedCost {
+		return s.rejectAccounting("committed model accounting overflow")
+	}
 	s.committedTokens += in + out
 	s.committedCost += cost
 	delete(s.reserved, key)
-	reservedTokens, reservedCost := int64(0), int64(0)
-	for _, r := range s.reserved {
-		reservedTokens += r.tokens
-		reservedCost += r.cost
+	reservedTokens, reservedCost, err := s.reservedUsage()
+	if err != nil {
+		return err
 	}
-	if s.committedTokens+reservedTokens > s.limits.MaxTokens || s.committedCost+reservedCost > s.limits.MaxCostMicroUSD {
-		return modelBudgetError("reported model usage exceeded limit")
+	if s.committedTokens > s.limits.MaxTokens || reservedTokens > s.limits.MaxTokens-s.committedTokens || s.committedCost > s.limits.MaxCostMicroUSD || reservedCost > s.limits.MaxCostMicroUSD-s.committedCost {
+		return s.rejectAccounting("reported model usage exceeded limit")
 	}
 	return nil
+}
+
+// Called under mu; even corrupted accounting must not wrap signed headroom.
+func (s *ModelSession) reservedUsage() (tokens, cost int64, err error) {
+	for _, entry := range s.reserved {
+		if entry.tokens < 0 || entry.cost < 0 || entry.tokens > math.MaxInt64-tokens || entry.cost > math.MaxInt64-cost {
+			return 0, 0, s.rejectAccounting("reserved model accounting overflow")
+		}
+		tokens += entry.tokens
+		cost += entry.cost
+	}
+	return tokens, cost, nil
 }

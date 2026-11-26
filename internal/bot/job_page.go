@@ -66,9 +66,25 @@ func activateReadMeter(ctx context.Context, meter BrowserUsageMeter, jobID strin
 	return meter.BillingCtx(), nil
 }
 
+func preflightReadMeter(ctx context.Context, meter BrowserUsageMeter) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if meter == nil {
+		return nil
+	}
+	if preflight, ok := meter.(interface{ BeforeActivation(context.Context) error }); ok {
+		return preflight.BeforeActivation(ctx)
+	}
+	return meter.Err()
+}
+
 func (m *Manager) alignReadRunMeter(b *Bot) {
 	if m.browserMeterSvc == nil {
 		return
+	}
+	if b.cfg.BrowserMeter != nil {
+		b.cfg.BrowserMeter.Stop()
 	}
 	inc, err := m.browserMeterSvc.BrowserIncrementDuration()
 	if err != nil || inc <= 0 {
@@ -289,7 +305,7 @@ func (m *Manager) ReadJobPage(ctx context.Context, userID, rawURL string) (jobpa
 		}
 		b.cfg.BrowserMeter = NewLiveBrowserMeter(m.browserMeterSvc, userID, b.cfg.AutomationRunID, inc, nil)
 		defer b.cfg.BrowserMeter.Stop()
-		ctx, e = activateReadMeter(ctx, b.cfg.BrowserMeter, target.JobID)
+		e = preflightReadMeter(ctx, b.cfg.BrowserMeter)
 		if e != nil {
 			return jobpage.Result{}, e
 		}
@@ -309,6 +325,11 @@ func (m *Manager) ReadJobPage(ctx context.Context, userID, rawURL string) (jobpa
 		return jobpage.Result{}, &jobpage.ReadError{Code: jobpage.FailureBrowser, Cause: err}
 	}
 	defer func() { _ = page.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
+	ctx, err = activateReadMeter(ctx, b.cfg.BrowserMeter, target.JobID)
+	if err != nil {
+		return jobpage.Result{}, err
+	}
+	page = page.Context(ctx)
 	_ = page.Context(ctx).WaitLoad()
 	result, err := b.readJobPage(ctx, page, domain.Platform(target.Platform), linkedInJob{ID: target.JobID, URL: target.URL})
 	if err != nil {

@@ -45,6 +45,11 @@ func readerFixture(t *testing.T, b *rod.Browser, target Target, html string) (*B
 	t.Cleanup(func() { _ = router.Stop(); _ = page.Close() })
 	require.NoError(t, page.Navigate(target.URL))
 	require.NoError(t, page.Timeout(5*time.Second).WaitLoad())
+	// WaitLoad can observe the old about:blank document during a fast commit.
+	// Every non-empty fixture must be installed before a baseline callback runs.
+	if strings.TrimSpace(html) != "" {
+		require.NoError(t, page.Timeout(5*time.Second).Wait(rod.Eval("()=>document.body && document.body.innerHTML.trim().length > 0")))
+	}
 	return NewBrowserPage(page, Baseline{}), page
 }
 

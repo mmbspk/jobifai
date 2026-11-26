@@ -88,6 +88,24 @@ type liveBrowserMeter struct {
 	billingCancel context.CancelFunc
 }
 
+// BeforeActivation checks credit without reserving a bucket or starting a
+// ticker. Activation rechecks credit when browser setup succeeds.
+func (m *liveBrowserMeter) BeforeActivation(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	stopped, err := m.stopped, m.err
+	m.mu.Unlock()
+	if stopped {
+		return context.Canceled
+	}
+	if err != nil {
+		return err
+	}
+	return m.svc.BeforeBrowserIncrement(ctx, m.userID)
+}
+
 // Activate charges the current bucket (pre-paid) and starts the tick goroutine.
 // Safe to call multiple times on Pause/Resume cycles.
 func (m *liveBrowserMeter) Activate(ctx context.Context) error {

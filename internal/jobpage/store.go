@@ -14,6 +14,7 @@ import (
 
 var ErrConflict = errors.New("job page configuration revision changed")
 var ErrForbidden = errors.New("job page admin permission required")
+var ErrRecipeNotFound = errors.New("job page recipe not found")
 var ErrInactiveRecipe = errors.New("job page recipe has been retired or invalidated")
 
 type SQLStore struct{ DB *sql.DB }
@@ -83,6 +84,9 @@ func (s *SQLStore) Lookup(ctx context.Context, scope Scope, signature string) ([
 
 func (s *SQLStore) GetRecipe(ctx context.Context, id string) (Recipe, error) {
 	r, err := scanRecipe(s.DB.QueryRowContext(ctx, "SELECT "+recipeColumns+" FROM job_page_recipes WHERE id=?", id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, ErrRecipeNotFound
+	}
 	return r, persistence(err)
 }
 
@@ -128,16 +132,24 @@ func (s *SQLStore) SaveVerified(ctx context.Context, r Recipe) (Recipe, error) {
 	}
 	hash := fmt.Sprintf("%x", sha256.Sum256(raw))
 	now := time.Now().UTC().UnixNano()
-	_, err = s.DB.ExecContext(ctx, "INSERT INTO job_page_recipes ("+recipeColumns+") VALUES (?,?,?,?,?,?,?,?,?,'active','',?) ON CONFLICT(id) DO UPDATE SET definition_json=excluded.definition_json,definition_hash=excluded.definition_hash,verified_at_ns=excluded.verified_at_ns,state='active',state_reason='',updated_at_ns=excluded.updated_at_ns WHERE job_page_recipes.state!='retired' AND excluded.verified_at_ns>job_page_recipes.verified_at_ns AND (job_page_recipes.state='active' OR excluded.verified_at_ns>job_page_recipes.updated_at_ns)", r.ID, r.Scope.Platform, r.Scope.PageType, r.Scope.Origin, r.Scope.SnapshotVersion, r.LayoutSignature, string(raw), hash, r.VerifiedAt.UnixNano(), now)
+	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return Recipe{}, persistence(err)
 	}
-	stored, err := s.GetRecipe(ctx, r.ID)
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.ExecContext(ctx, "INSERT INTO job_page_recipes ("+recipeColumns+") VALUES (?,?,?,?,?,?,?,?,?,'active','',?) ON CONFLICT(id) DO UPDATE SET definition_json=excluded.definition_json,definition_hash=excluded.definition_hash,verified_at_ns=excluded.verified_at_ns,state='active',state_reason='',updated_at_ns=excluded.updated_at_ns WHERE job_page_recipes.state!='retired' AND excluded.verified_at_ns>job_page_recipes.verified_at_ns AND (job_page_recipes.state='active' OR excluded.verified_at_ns>job_page_recipes.updated_at_ns)", r.ID, r.Scope.Platform, r.Scope.PageType, r.Scope.Origin, r.Scope.SnapshotVersion, r.LayoutSignature, string(raw), hash, r.VerifiedAt.UnixNano(), now)
 	if err != nil {
-		return Recipe{}, err
+		return Recipe{}, persistence(err)
+	}
+	stored, err := scanRecipe(tx.QueryRowContext(ctx, "SELECT "+recipeColumns+" FROM job_page_recipes WHERE id=?", r.ID))
+	if err != nil {
+		return Recipe{}, persistence(err)
 	}
 	if stored.State != RecipeActive {
 		return stored, ErrInactiveRecipe
+	}
+	if err := tx.Commit(); err != nil {
+		return Recipe{}, persistence(err)
 	}
 	return stored, nil
 }

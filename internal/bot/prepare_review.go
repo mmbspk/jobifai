@@ -210,7 +210,7 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 	b.log.Info().Msg("prepare: run started")
 	if b.cfg.BrowserMeter != nil {
 		defer b.cfg.BrowserMeter.Stop()
-		ctx, err = activateReadMeter(ctx, b.cfg.BrowserMeter, jobID)
+		err = preflightReadMeter(ctx, b.cfg.BrowserMeter)
 		if err != nil {
 			return err
 		}
@@ -220,7 +220,7 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 	if err != nil {
 		return err
 	}
-	defer func() { _ = jobPage.Close() }()
+	defer func() { _ = jobPage.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
 	if ownsBr {
 		defer func() {
 			if br := jobPage.Browser(); br != nil {
@@ -229,6 +229,11 @@ func (m *Manager) PrepareReviewDocuments(ctx context.Context, userID, jobID, pre
 		}()
 	}
 
+	ctx, err = activateReadMeter(ctx, b.cfg.BrowserMeter, jobID)
+	if err != nil {
+		return err
+	}
+	jobPage = jobPage.Context(ctx)
 	lazy, readErr := managerLazyWithReadError(b, ctx, req, jobPage)
 	lazy.reviewPrepareOnly = true
 	defer func() { lazy.reviewPrepareOnly = false }()

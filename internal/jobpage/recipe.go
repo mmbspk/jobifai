@@ -151,7 +151,7 @@ func validateRecipe(r Recipe) error {
 }
 
 func selectorMatches(s Snapshot, q StructuralSelector, n Node) bool {
-	if !n.Owned || n.OwnerJobID != s.Target.JobID || n.Tag != q.Tag || n.Role != q.Role || n.Context != q.Context {
+	if !n.Visible || !n.Owned || n.OwnerJobID != s.Target.JobID || n.Tag != q.Tag || n.Role != q.Role || n.Context != q.Context {
 		return false
 	}
 	if q.ParentTag != "" {

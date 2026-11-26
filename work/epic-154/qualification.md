@@ -97,3 +97,23 @@ These checks cover the latest local reader source. Final pushed-head CI remains
 required; CI on 02c317e does not cover these additional guards. Production-worker
 qualification remains pending approved reader merge/deployment. Keep #161 and
 #154 open until that read-only canary passes.
+
+## Claude review follow-up
+
+- Recipe replay ignores invisible duplicates before testing uniqueness. A warm
+  regression keeps the recipe active and extracts current text without model calls.
+- Over-limit usage sets the explicit accounting gate. Reservation and committed
+  sums are checked before arithmetic can wrap; actual usage remains measurable.
+- Browser callers check quota before setup, then charge only after setup succeeds.
+  Failed setup across read, submission and preparation records no increment.
+  The billing context remains attached to subsequent browser work; replaced meters
+  are stopped before reassignment.
+- Recipe upsert/readback is transactional; failed readback rolls back promotion.
+  Missing recipe lookup is distinct from a persistence failure, and missing fresh
+  node refs surface as staleness rather than incomplete text.
+- Preserved and qualified the pending inline-authentication, foreign-heading and
+  loading-state hardening. Fixtures wait for their installed body before use.
+
+Targeted race regressions passed. Full affected race suites, final reader rerun
+and exact-head CI are the remaining verification gates for this follow-up.
+Production-worker canary and release approval remain pending.

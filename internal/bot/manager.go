@@ -545,8 +545,7 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 	}
 	if b.cfg.BrowserMeter != nil {
 		defer b.cfg.BrowserMeter.Stop()
-		var meterErr error
-		submitCtx, meterErr = activateReadMeter(submitCtx, b.cfg.BrowserMeter, req.JobID)
+		meterErr := preflightReadMeter(submitCtx, b.cfg.BrowserMeter)
 		if meterErr != nil {
 			finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", meterErr.Error())
 			return meterErr
@@ -595,10 +594,16 @@ func (m *Manager) runSubmit(ctx context.Context, userID string, req SubmitReques
 		}
 		br, jobPage = newBr, newPage
 	}
-	defer func() { _ = jobPage.Close() }()
+	defer func() { _ = jobPage.Context(context.WithoutCancel(submitCtx)).Timeout(3 * time.Second).Close() }()
 	if ownsBr {
 		defer func() { _ = br.Close() }()
 	}
+	submitCtx, err = activateReadMeter(submitCtx, b.cfg.BrowserMeter, req.JobID)
+	if err != nil {
+		finishAttempt(m.db, ac, OutcomeBlocked, "billing", "quota_exceeded", err.Error())
+		return err
+	}
+	jobPage = jobPage.Context(submitCtx)
 
 	var score int
 	var halalVerdict string
