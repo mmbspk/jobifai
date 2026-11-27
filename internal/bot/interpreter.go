@@ -28,6 +28,8 @@ const (
 	SourceDeterministic ResolutionSource = "deterministic"
 	// SourceProfile: resolved from candidate profile data directly.
 	SourceProfile ResolutionSource = "profile"
+	// SourcePreferences: resolved from the candidate's saved work preferences.
+	SourcePreferences ResolutionSource = "preferences"
 	// SourceMapping: resolved from a verified reuse mapping (story #137).
 	SourceMapping ResolutionSource = "mapping"
 	// SourceLLM: resolved by a batched LLM request.
@@ -66,6 +68,8 @@ const (
 	// BindingKey identifies which profile field to read at runtime, so the warm hit
 	// always reflects the candidate's current data even after a profile update.
 	FieldIntentProfile FieldIntentType = "profile"
+	// Preference bindings reread canonical settings, never a copied resume value.
+	FieldIntentPreferences FieldIntentType = "preferences"
 	// FieldIntentLLM: derived wording requires checked current-profile evidence
 	// and independent semantic verification before filling or reuse.
 	FieldIntentLLM FieldIntentType = "llm"
@@ -149,8 +153,9 @@ func (nopMappingLookup) LookupField(_, _ string) (FieldResolution, bool) {
 
 // StepInterpreter drives the three-pass resolution pipeline.
 type StepInterpreter struct {
-	LLM          StepInterpreterLLM // nil → all ambiguous fields become review
-	Mapping      MappingLookup      // nil → no mapping lookups
+	LLM          StepInterpreterLLM      // nil → all ambiguous fields become review
+	Mapping      MappingLookup           // nil → no mapping lookups
+	Preferences  *domain.WorkPreferences // canonical candidate work-arrangement facts
 	KnownMissing func(context.Context, StepSnapshot, SnapField, *domain.ResumeProfile) (bool, error)
 }
 
@@ -221,7 +226,10 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 
 		// Pass 1: deterministic
 		var missingLocal *FieldResolution
-		local, localOK := compositePhoneResolution(f, snap, profile)
+		local, localOK := workPreferenceResolution(f, si.Preferences, profile)
+		if !localOK {
+			local, localOK = compositePhoneResolution(f, snap, profile)
+		}
 		if !localOK {
 			local, localOK = deterministicResolve(f, profile)
 		}
@@ -257,10 +265,18 @@ func (si *StepInterpreter) InterpretStep(ctx context.Context, snap StepSnapshot,
 				queueForLLM(fieldIndex, f)
 				continue
 			}
-			usableIntent := res.IntentType == FieldIntentProfile || (res.IntentType == FieldIntentLLM && res.Provenance == ProvenanceVerifiedByModel)
+			usableIntent := res.IntentType == FieldIntentProfile || res.IntentType == FieldIntentPreferences || (res.IntentType == FieldIntentLLM && res.Provenance == ProvenanceVerifiedByModel)
 			if !usableIntent {
 				queueForLLM(fieldIndex, f)
 				continue
+			}
+			if res.IntentType == FieldIntentPreferences {
+				current, supported := workPreferenceResolution(f, si.Preferences, profile)
+				if !knownWorkPreferenceBinding(res.BindingKey) || !supported || current.BindingKey != res.BindingKey {
+					result.Fields = append(result.Fields, FieldResolution{Ref: f.Ref, Source: SourceReview, Action: ActionSkip, Pending: f.Required, Reason: PendingMissingProfile})
+					continue
+				}
+				res.Value = current.Value
 			}
 			if res.IntentType == FieldIntentProfile {
 				if !knownProfileBinding(res.BindingKey) {
@@ -728,6 +744,10 @@ func pendingReasonFromErr(err error) PendingReason {
 	}
 	var syntaxErr *json.SyntaxError
 	if errors.As(err, &syntaxErr) {
+		return PendingMalformedOutput
+	}
+	var valueTypeErr *json.UnmarshalTypeError
+	if errors.As(err, &valueTypeErr) {
 		return PendingMalformedOutput
 	}
 	return PendingLLMUnavailable

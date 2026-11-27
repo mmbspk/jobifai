@@ -78,6 +78,9 @@ func candidatePending(r FieldResolution) bool {
 // this execution; the recorder deduplicates retries and preserves all proposals.
 func (b *Bot) prepareAnswerReviews(ctx context.Context, lazy *lazyDocGen, snap StepSnapshot, interp StepInterpretation, profile *domain.ResumeProfile) (map[string]string, error) {
 	ids := map[string]string{}
+	if err := b.guardWorkPreferenceResolutions(lazy, snap, interp, profile); err != nil {
+		return nil, err
+	}
 	if b.cfg.ApplicationAnswers != nil && lazy != nil {
 		if lazy.answerProfileDigest == "" {
 			lazy.answerProfileDigest = profileDigest(profile)
@@ -320,7 +323,7 @@ func (b *Bot) prepareLegacyAnswers(ctx context.Context, lazy *lazyDocGen, fields
 	snap.EmployerKey = lazy.job.Company
 	profile := b.currentProfile()
 	lazy.answerProfileDigest = profileDigest(profile)
-	si := StepInterpreter{LLM: boundFormLLM(b.cfg.AdaptiveLLM), Mapping: b.cfg.AdaptiveMapping, KnownMissing: b.knownMissingChecker(lazy)}
+	si := StepInterpreter{LLM: boundFormLLM(b.cfg.AdaptiveLLM), Mapping: b.cfg.AdaptiveMapping, KnownMissing: b.knownMissingChecker(lazy), Preferences: b.currentPreferences()}
 	interp, err := si.InterpretStep(ctx, snap, profile)
 	if err != nil {
 		return err
@@ -376,7 +379,13 @@ func isCandidateDeferral(err error) bool {
 }
 
 func (b *Bot) ensureAnswerFactsCurrent(lazy *lazyDocGen) error {
-	if b.cfg.ApplicationAnswers == nil || lazy == nil || lazy.answerProfileDigest == "" {
+	if lazy != nil && lazy.answerPreferencesDigest != "" {
+		current := b.currentPreferences()
+		if current == nil || lazy.answerPreferencesDigest != workPreferenceDigest(current) {
+			return errors.New("work preferences changed during filling; retry this application with current facts")
+		}
+	}
+	if lazy == nil || lazy.answerProfileDigest == "" || b.cfg.ApplicationAnswers == nil && lazy.answerPreferencesDigest == "" {
 		return nil
 	}
 	current := b.cfg.Profile

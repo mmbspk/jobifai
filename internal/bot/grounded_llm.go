@@ -3,14 +3,11 @@ package bot
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/user/jobifai/internal/domain"
-	"github.com/user/jobifai/internal/llm"
-	"github.com/user/jobifai/internal/quota"
 )
 
 type groundedVerificationCandidate struct {
@@ -138,7 +135,7 @@ func (a *LLMFormInterpreter) verifyGroundedProposals(ctx context.Context, profil
 		return proposals, nil
 	}
 	if err := reserveGroundedVerification(ctx); err != nil {
-		return nil, err
+		return nil, &groundedVerificationError{cause: err}
 	}
 	profileJSON, err := json.Marshal(profile)
 	if err != nil {
@@ -153,7 +150,7 @@ func (a *LLMFormInterpreter) verifyGroundedProposals(ctx context.Context, profil
 		return nil, ErrLLMUnavailable
 	}
 	prompt := buildGroundedVerificationPrompt(profileJSON, candidatesJSON)
-	raw, err := a.client.ChatValidated(llm.WithTask(ctx, domain.TaskFormAnswer), []llm.Message{{Role: "user", Content: prompt}}, func(raw string) (string, error) {
+	raw, err := chatFormJSON(ctx, a.client, prompt, formJSONVerification, func(raw string) (string, error) {
 		text := extractJSONArray(raw)
 		var verdicts []groundedVerificationVerdict
 		if err := json.Unmarshal([]byte(text), &verdicts); err != nil {
@@ -162,14 +159,11 @@ func (a *LLMFormInterpreter) verifyGroundedProposals(ctx context.Context, profil
 		return text, nil
 	})
 	if err != nil {
-		if errors.Is(err, quota.ErrExceeded) {
-			return nil, ErrLLMLimitExceeded
-		}
-		return nil, fmt.Errorf("%w: semantic verification failed", ErrLLMUnavailable)
+		return nil, &groundedVerificationError{cause: err}
 	}
 	var verdicts []groundedVerificationVerdict
 	if err := json.Unmarshal([]byte(extractJSONArray(raw)), &verdicts); err != nil {
-		return nil, fmt.Errorf("%w: semantic verification response is malformed", ErrLLMUnavailable)
+		return nil, &groundedVerificationError{cause: err}
 	}
 	byRef := map[string]groundedVerificationVerdict{}
 	duplicates := map[string]bool{}
@@ -195,12 +189,15 @@ func (a *LLMFormInterpreter) verifyGroundedProposals(ctx context.Context, profil
 }
 
 func reserveGroundedVerification(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
 	}
 	if budget, ok := ctx.Value(adaptiveBudgetKey{}).(*adaptiveRunBudget); ok {
 		budget.mu.Lock()
 		defer budget.mu.Unlock()
+		if cause := context.Cause(ctx); cause != nil {
+			return cause
+		}
 		if budget.calls >= budget.maxCalls {
 			return ErrLLMLimitExceeded
 		}

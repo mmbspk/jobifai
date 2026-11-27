@@ -279,6 +279,23 @@ func evidenceCountryCompatible(profile *domain.ResumeProfile, field SnapField, e
 		if !exists || !questionCountryMatches(field, country) {
 			return false
 		}
+		if structuredPermanentResidentVisa(entry) {
+			// Legacy AU records may encode status=Yes and visa_type=PR. The
+			// abbreviation is meaningful only with current affirmative authority
+			// in that same country record, never a pending/negative visa claim.
+			status, known := profileScalar(profile, prefix+"/status")
+			visa, visaKnown := profileScalar(profile, prefix+"/visa_type")
+			quote := workRightWords(entry.Quote)
+			if !known || !compatibleResidentAuthorityStatus(status) || !visaKnown || !permanentResidentVisaValue(visa) || (quote == "pr" || quote == "p r") && !questionCountryMatches(field, "Australia") {
+				return false
+			}
+		}
+		if parts[1] == "work_rights" && parts[3] == "status" && typedWorkRightStatusQuote(entry.Quote) {
+			status, known := profileScalar(profile, prefix+"/status")
+			if !known || !sameWorkRightStatusFact(status, entry.Quote, field) {
+				return false
+			}
+		}
 	}
 	return true
 }
@@ -352,14 +369,17 @@ func sensitiveEvidenceCompatible(field SnapField, answer string, evidence []Prof
 			if strings.HasPrefix(e.Path, "/personal_information/") || e.Path == "/application_defaults/requires_sponsorship" {
 				continue
 			}
-			if matchesAny(strings.ToLower(e.Quote), "permanent resident", "citizen", "right to work", "work rights", "working rights", "work permit", "work visa", "work authori", "work restrictions") {
+			if matchesAny(strings.ToLower(e.Quote), "permanent resident", "citizen", "right to work", "work rights", "working rights", "work permit", "work visa", "work authori", "work restrictions") || structuredAuthorizationEvidence(e, field, answer, evidence) || structuredPermanentResidentVisa(e) && residentAnswerCompatible(field, answer, evidence) {
 				explicit = true
 			}
 		}
 		if !explicit {
 			return false
 		}
-		if strings.Contains(strings.ToLower(answer), "citizen") && (!strings.Contains(sources, "citizen") || matchesAny(sources, "not a citizen", "not an australian citizen", "not citizen")) {
+		if workRightAlternativeKind(field, answer) != "" && !supportedWorkRightAlternativeChoice(field, answer, evidence) || unsupportedResidentConjunction(field, answer, evidence) {
+			return false
+		}
+		if strings.Contains(strings.ToLower(answer), "citizen") && (!strings.Contains(sources, "citizen") || matchesAny(sources, "not a citizen", "not an australian citizen", "not citizen")) && !supportedWorkRightAlternativeChoice(field, answer, evidence) {
 			return false
 		}
 		// Visa subclasses, expiry dates and numeric restrictions cannot be added

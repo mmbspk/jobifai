@@ -20,14 +20,12 @@ package bot
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/user/jobifai/internal/domain"
 	"github.com/user/jobifai/internal/llm"
-	"github.com/user/jobifai/internal/quota"
 )
 
 // LLMFormInterpreter adapts *llm.Client to StepInterpreterLLM for the adaptive engine.
@@ -43,8 +41,8 @@ func NewLLMFormInterpreter(c *llm.Client) *LLMFormInterpreter {
 }
 
 // InterpretFields batches proposals and grounding verification for unresolved
-// fields. The current profile is included in both independent prompts. Errors are
-// mapped to ErrLLMLimitExceeded (quota) or ErrLLMUnavailable (all others).
+// fields. The current profile is included in both independent prompts. Errors
+// retain typed operational or malformed-output causes without exposing responses.
 func (a *LLMFormInterpreter) InterpretFields(ctx context.Context, profile *domain.ResumeProfile, snap StepSnapshot, fieldRefs []string) ([]LLMFieldProposal, error) {
 	if a != nil && a.learning != nil {
 		return a.learning.Interpret(ctx, a.scope, profile, snap, fieldRefs, a.interpretFields)
@@ -114,9 +112,7 @@ func (a *LLMFormInterpreter) interpretFields(ctx context.Context, profile *domai
 	}
 
 	prompt := buildBatchFormPrompt(profileJSON, fieldsJSON)
-	msgs := []llm.Message{{Role: "user", Content: prompt}}
-
-	raw, callErr := a.client.ChatValidated(ctx, msgs, func(raw string) (string, error) {
+	raw, callErr := chatFormJSON(ctx, a.client, prompt, formJSONProposal, func(raw string) (string, error) {
 		jsonText := extractJSONArray(raw)
 		var proposals []LLMFieldProposal
 		if err := json.Unmarshal([]byte(jsonText), &proposals); err != nil {
@@ -125,17 +121,14 @@ func (a *LLMFormInterpreter) interpretFields(ctx context.Context, profile *domai
 		return jsonText, nil
 	})
 	if callErr != nil {
-		if errors.Is(callErr, quota.ErrExceeded) {
-			return nil, ErrLLMLimitExceeded
-		}
-		return nil, fmt.Errorf("%w: %s", ErrLLMUnavailable, callErr.Error())
+		return nil, &groundedVerificationError{cause: callErr, phase: formJSONProposal}
 	}
 
 	// Extract JSON array from the response (may be wrapped in markdown code fences).
 	jsonText := extractJSONArray(raw)
 	var proposals []LLMFieldProposal
 	if err := json.Unmarshal([]byte(jsonText), &proposals); err != nil {
-		return nil, fmt.Errorf("%w: batch response parse error: %s", ErrLLMUnavailable, err.Error())
+		return nil, &groundedVerificationError{cause: err, phase: formJSONProposal}
 	}
 	return a.verifyGroundedProposals(ctx, profile, snap, fieldRefs, proposals)
 }

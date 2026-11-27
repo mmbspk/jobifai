@@ -35,45 +35,46 @@ import (
 // result. Generation only happens when the toggle is on and a file upload
 // field is actually encountered during form filling.
 type lazyDocGen struct {
-	b                     *Bot
-	ctx                   context.Context
-	job                   linkedInJob
-	jobDesc               string
-	attemptID             string // set by each entry point; empty in processApprovedQueue path
-	answerPlan            map[string]FieldResolution
-	answerReviewIDs       map[string]string
-	answerSnapshot        StepSnapshot
-	answerProfileDigest   string
-	answerActiveKey       string
-	answerStepIndex       int
-	once                  sync.Once
-	resume                string
-	cover                 string
-	formOnce              sync.Once
-	formJSON              []byte
-	resumeOverride        string // pre-generated resume path from a prior attempt; skips LLM if set
-	coverOverride         string // pre-generated cover letter path from a prior attempt; skips LLM if set
-	resumeVersionOverride string
-	coverVersionOverride  string
-	resumeUseSiteOverride bool
-	coverSkipOverride     bool
-	frozen                bool
-	formCaps              documents.FormDocumentCapabilities
-	holdReason            string
-	holdStage             string // stable stage code for an upload-verification hold (diagnostic)
-	holdFile              string // filename involved in an upload-verification hold (diagnostic)
-	resumeVersionID       string
-	coverVersionID        string
-	refsJSON              string
-	useSiteResume         bool
-	matMu                 sync.Mutex
-	materialized          bool
-	capsFingerprint       string
-	reviewPrepareOnly     bool
-	prepareScanComplete   bool
-	packRestored          bool
-	packMetaApplied       bool
-	pack                  documents.ApplicationDocumentPack
+	b                       *Bot
+	ctx                     context.Context
+	job                     linkedInJob
+	jobDesc                 string
+	attemptID               string // set by each entry point; empty in processApprovedQueue path
+	answerPlan              map[string]FieldResolution
+	answerReviewIDs         map[string]string
+	answerSnapshot          StepSnapshot
+	answerProfileDigest     string
+	answerPreferencesDigest string
+	answerActiveKey         string
+	answerStepIndex         int
+	once                    sync.Once
+	resume                  string
+	cover                   string
+	formOnce                sync.Once
+	formJSON                []byte
+	resumeOverride          string // pre-generated resume path from a prior attempt; skips LLM if set
+	coverOverride           string // pre-generated cover letter path from a prior attempt; skips LLM if set
+	resumeVersionOverride   string
+	coverVersionOverride    string
+	resumeUseSiteOverride   bool
+	coverSkipOverride       bool
+	frozen                  bool
+	formCaps                documents.FormDocumentCapabilities
+	holdReason              string
+	holdStage               string // stable stage code for an upload-verification hold (diagnostic)
+	holdFile                string // filename involved in an upload-verification hold (diagnostic)
+	resumeVersionID         string
+	coverVersionID          string
+	refsJSON                string
+	useSiteResume           bool
+	matMu                   sync.Mutex
+	materialized            bool
+	capsFingerprint         string
+	reviewPrepareOnly       bool
+	prepareScanComplete     bool
+	packRestored            bool
+	packMetaApplied         bool
+	pack                    documents.ApplicationDocumentPack
 }
 
 // get returns the generated resume and cover letter paths, generating them on
@@ -170,25 +171,26 @@ type JobHalalChecker interface {
 
 // Config bundles everything the bot needs to run.
 type Config struct {
-	JobPageReader   *jobpage.Reader
-	JobPageStore    *jobpage.SQLStore
-	OnApplied       func() // successful application persistence schedules retention reconciliation
-	Platform        domain.Platform
-	Settings        domain.GeneralSettings
-	Preferences     domain.WorkPreferences
-	Profile         *domain.ResumeProfile
-	ProfileLoader   func() *domain.ResumeProfile // if set, called per-job to get the latest profile
-	Cookies         []browser.Cookie
-	Tailor          ResumeTailor    // nil = no LLM tailoring
-	Scorer          JobScorer       // nil = evaluation unavailable; never a passing score
-	HalalChecker    JobHalalChecker // nil = halal filter disabled
-	CoverLetterTone string          // "" = default; see domain.GeneralSettings.CoverLetterTone
-	Renderer        ResumeRenderer
-	DB              *sql.DB
-	UserID          string // owner of this bot session
-	AutomationRunID string // one ID per automation session for LLM billing attribution
-	ApplicationID   string // set when applying to a specific application record
-	RequireReview   bool
+	JobPageReader     *jobpage.Reader
+	JobPageStore      *jobpage.SQLStore
+	OnApplied         func() // successful application persistence schedules retention reconciliation
+	Platform          domain.Platform
+	Settings          domain.GeneralSettings
+	Preferences       domain.WorkPreferences
+	PreferencesLoader func() *domain.WorkPreferences // latest canonical work-preference facts
+	Profile           *domain.ResumeProfile
+	ProfileLoader     func() *domain.ResumeProfile // if set, called per-job to get the latest profile
+	Cookies           []browser.Cookie
+	Tailor            ResumeTailor    // nil = no LLM tailoring
+	Scorer            JobScorer       // nil = evaluation unavailable; never a passing score
+	HalalChecker      JobHalalChecker // nil = halal filter disabled
+	CoverLetterTone   string          // "" = default; see domain.GeneralSettings.CoverLetterTone
+	Renderer          ResumeRenderer
+	DB                *sql.DB
+	UserID            string // owner of this bot session
+	AutomationRunID   string // one ID per automation session for LLM billing attribution
+	ApplicationID     string // set when applying to a specific application record
+	RequireReview     bool
 	// Logger is an optional run-scoped logger with user_id, automation_run_id,
 	// and log_id hook pre-wired. Nil means use the global log.Logger.
 	Logger           *zerolog.Logger

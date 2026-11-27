@@ -905,9 +905,9 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
-	// Card-level applied indicator.
+	// A card badge describes observed site state, not a new submission by this run.
 	if job.AlreadyApplied {
-		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
+		b.recordSeekSkipped(job, "already_applied_indicator", 0, "", nil)
 		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied badge on card: %q @ %s", job.Title, job.Company)
 		return false
 	}
@@ -928,7 +928,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 	}
 	// Detail page may have updated AlreadyApplied (covers manual applications).
 	if job.AlreadyApplied {
-		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
+		b.recordSeekSkipped(job, "already_applied_indicator", 0, "", nil)
 		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied (page indicator): %q @ %s", job.Title, job.Company)
 		return false
 	}

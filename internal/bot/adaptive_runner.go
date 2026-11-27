@@ -160,6 +160,7 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	profile := b.currentProfile()
 	si := &StepInterpreter{
 		KnownMissing: b.knownMissingChecker(lazy),
+		Preferences:  b.currentPreferences(),
 		LLM:          boundFormLLM(b.cfg.AdaptiveLLM),
 		Mapping:      b.cfg.AdaptiveMapping,
 	}
@@ -766,6 +767,7 @@ func (b *Bot) adaptiveSeekApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	profile := b.currentProfile()
 	si := &StepInterpreter{
 		KnownMissing: b.knownMissingChecker(lazy),
+		Preferences:  b.currentPreferences(),
 		LLM:          boundFormLLM(b.cfg.AdaptiveLLM),
 		Mapping:      b.cfg.AdaptiveMapping,
 	}

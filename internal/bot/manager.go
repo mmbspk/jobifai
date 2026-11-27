@@ -1149,7 +1149,14 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		Platform:    resolved,
 		Settings:    gs,
 		Preferences: prefs,
-		Profile:     &profile,
+		PreferencesLoader: func() *domain.WorkPreferences {
+			var preferences domain.WorkPreferences
+			if err := m.cfgStore.Get(userID, "work_preferences", &preferences); err != nil {
+				return nil
+			}
+			return &preferences
+		},
+		Profile: &profile,
 		ProfileLoader: func() *domain.ResumeProfile {
 			var p domain.ResumeProfile
 			if err := m.cfgStore.Get(userID, "resume_profile", &p); err != nil {

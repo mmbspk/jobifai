@@ -66,7 +66,7 @@ func (s *DBMappingStore) LookupField(fieldSig, employerKey string) (FieldResolut
 		WHERE field_sig = ?
 		  AND schema_version = 4
 		  AND (
-		    (provenance IN ('trusted_reference', 'confirmed_by_reviewer') AND intent_type = 'profile' AND binding_key <> '')
+		    (provenance IN ('trusted_reference', 'confirmed_by_reviewer') AND intent_type IN ('profile', 'preferences') AND binding_key <> '')
 		    OR (provenance = 'verified_by_model' AND user_id = ? AND user_id <> '' AND employer_key = ?
 		        AND verified_by = 'grounded-form-answer-v1' AND verified_at IS NOT NULL
 		        AND (intent_type = 'llm' OR (intent_type = 'profile' AND binding_key <> '')))
@@ -128,13 +128,17 @@ func (s *DBMappingStore) Write(ctx context.Context, snap StepSnapshot, resolutio
 			continue // already in the store; no-op
 		}
 		verified := r.Provenance == ProvenanceVerifiedByModel && r.grounded != nil
-		usableIntent := (r.IntentType == FieldIntentProfile && knownProfileBinding(r.BindingKey)) || (verified && r.IntentType == FieldIntentLLM && r.BindingKey == "")
+		preference := r.IntentType == FieldIntentPreferences && r.Source == SourcePreferences && knownWorkPreferenceBinding(r.BindingKey)
+		usableIntent := (r.IntentType == FieldIntentProfile && knownProfileBinding(r.BindingKey)) || preference || (verified && r.IntentType == FieldIntentLLM && r.BindingKey == "")
 		if r.Action != ActionFill || !usableIntent {
 			continue // applicant answers and navigation actions are never reusable mappings
 		}
 
 		f, ok := snap.FieldByRef(r.Ref)
 		if !ok {
+			continue
+		}
+		if preference && genericWorkArrangementBinding(f) != r.BindingKey {
 			continue
 		}
 		if verified && (r.grounded.profileDigest == "" || r.grounded.platform != snap.Platform || r.grounded.employer != snap.EmployerKey ||
@@ -150,7 +154,7 @@ func (s *DBMappingStore) Write(ctx context.Context, snap StepSnapshot, resolutio
 			intentType = string(FieldIntentLLM)
 		}
 		provenance := ProvenancePending
-		if r.Source == SourceProfile || r.Source == SourceDeterministic {
+		if r.Source == SourceProfile || r.Source == SourceDeterministic || r.Source == SourcePreferences {
 			provenance = ProvenanceTrustedReference
 		}
 		value, verifiedBy := "", ""
