@@ -491,6 +491,29 @@ const jsScanFieldsInner = `
 	}
 
 	// ── Checkbox groups (Lever ATS / LinkedIn consent questions) ─────────────
+	// Some native forms use a caption followed by separate option wrappers,
+	// without a fieldset. Locate the group's shared owner before reading its
+	// caption; an individual option label cannot name the whole question.
+	function checkboxGroupCaption(inputs) {
+		if (inputs.length < 2) return '';
+		const chosen = new Set(inputs);
+		let owner = inputs[0].parentElement;
+		while (owner && owner !== container && !inputs.every(input => owner.contains(input))) owner = owner.parentElement;
+		for (let depth = 0; depth < 3 && owner && owner !== container && owner !== document.body; depth++, owner = owner.parentElement) {
+			const controls = allInDOM(owner, 'input:not([type="hidden"]),select,textarea,button').filter(control =>
+				['checkbox','radio'].includes(control.type) ? isContainerVisible(control) : isVisible(control));
+			if (controls.some(control => !chosen.has(control))) return '';
+			const options = [...owner.children].filter(child => inputs.some(input => child.contains(input)));
+			if (!options.length) continue;
+			const first = [...owner.children].indexOf(options[0]);
+			const captions = [...owner.children].slice(0, first).filter(child => isVisible(child) && !child.querySelector('input,select,textarea,button'))
+				.map(child => child.textContent.trim().replace(/\s+/g, ' ')).filter(Boolean);
+			if (captions.length === 1) return captions[0];
+			if (captions.length > 1) return '';
+		}
+		return '';
+	}
+
 	// Group by shared fieldset. Skip LinkedIn's "follow company" checkbox.
 	const seenCb = new Set();
 	allInDOM(container, 'input[type="checkbox"]').filter(isContainerVisible).forEach(cb => {
@@ -524,6 +547,7 @@ const jsScanFieldsInner = `
 				if (leg) { question = leg.textContent.trim(); break; }
 			}
 		}
+		if (!question && all.length > 1) question = checkboxGroupCaption(all);
 		if (!question && groupEl) {
 			const fb = groupEl.querySelector('legend, span[class*="label"], div[class*="label"], label:not(:has(input))');
 			question = fb ? fb.textContent.trim() : (cb.name || cb.id || '');
