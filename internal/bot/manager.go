@@ -1150,11 +1150,7 @@ func (m *Manager) buildConfig(userID string, platform domain.Platform) (*Config,
 		Settings:    gs,
 		Preferences: prefs,
 		PreferencesLoader: func() *domain.WorkPreferences {
-			var preferences domain.WorkPreferences
-			if err := m.cfgStore.Get(userID, "work_preferences", &preferences); err != nil {
-				return nil
-			}
-			return &preferences
+			return m.loadCurrentWorkPreferences(userID)
 		},
 		Profile: &profile,
 		ProfileLoader: func() *domain.ResumeProfile {
@@ -1295,6 +1291,14 @@ func (m *Manager) taskClient(base *llm.Client, gs domain.GeneralSettings, task s
 	return llmpolicy.ApplyTask(base, gs.LLM, gs.LLM.TaskModels, pol, m.llmCatalog, task)
 }
 
+func (m *Manager) loadCurrentWorkPreferences(userID string) *domain.WorkPreferences {
+	var preferences domain.WorkPreferences
+	if err := m.cfgStore.Get(userID, "work_preferences", &preferences); err != nil {
+		return nil
+	}
+	return &preferences
+}
+
 // setupBot loads user config and returns a ready Bot plus the resolved GeneralSettings.
 // market overrides DefaultResumeMarket when non-empty (used by ApplyFromURL).
 func (m *Manager) setupBot(userID string, platform domain.Platform, market string) (*Bot, domain.GeneralSettings, error) {
@@ -1316,6 +1320,10 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 	var profile domain.ResumeProfile
 	if err := m.cfgStore.Get(userID, "resume_profile", &profile); err != nil {
 		return nil, gs, errors.New("no resume profile saved — add one at Settings first")
+	}
+	var preferences domain.WorkPreferences
+	if current := m.loadCurrentWorkPreferences(userID); current != nil {
+		preferences = *current
 	}
 
 	cookies, err := m.sessions.Load(userID, string(platform))
@@ -1348,6 +1356,10 @@ func (m *Manager) setupBot(userID string, platform domain.Platform, market strin
 		HalalChecker:    halal,
 		Renderer:        m.renderer,
 		Profile:         &profile,
+		Preferences:     preferences,
+		PreferencesLoader: func() *domain.WorkPreferences {
+			return m.loadCurrentWorkPreferences(userID)
+		},
 		ProfileLoader: func() *domain.ResumeProfile {
 			var latest domain.ResumeProfile
 			if err := m.cfgStore.Get(userID, "resume_profile", &latest); err != nil {
