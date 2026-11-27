@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test'
-import { registerAndInjectTokens } from './helpers/auth'
+import { registerAndInjectTokens, persistManualReview } from './helpers/auth'
 
 test.describe('Jobs pages — empty states', () => {
   test.beforeEach(async ({ page, request }) => {
-    await registerAndInjectTokens(page, request)
+    const user = await registerAndInjectTokens(page, request)
+    await persistManualReview(request, user, true)
   })
 
   test('/jobs/applied shows empty state', async ({ page }) => {

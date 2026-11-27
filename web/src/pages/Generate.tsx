@@ -5,6 +5,7 @@ import { FileText, Download, Loader2, Upload, X, AlertTriangle, ChevronDown, Arr
 import { cn, downloadBlob } from '../lib'
 import { useAuth } from '../contexts/AuthContext'
 import { settingsApi } from '../api/settings'
+import { useGeneralSettings } from '../hooks/useGeneralSettings'
 import { botApi } from '../api/bot'
 import type { ApplyURLResponse } from '../api/bot'
 import type { ResumeMarket } from '../types'
@@ -152,7 +153,7 @@ export function Generate() {
   }, [applyResponse, applyUrl, applyStorageKey])
 
   const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
-  const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
+  const { data: generalSettings } = useGeneralSettings()
   const { data: profile } = useQuery({ queryKey: ['settings-resume'], queryFn: settingsApi.resume.get })
   const { aiDisabled } = useQuota()
 

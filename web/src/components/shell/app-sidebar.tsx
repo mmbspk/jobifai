@@ -7,7 +7,7 @@ import {
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { cn } from '../../lib'
 import { useQuery } from '@tanstack/react-query'
-import { botApi } from '../../api/bot'
+import { useManualReview, usePendingReviews } from '../../hooks/useManualReview'
 import { usageApi } from '../../api/usage'
 import { useTheme } from '../../hooks/useTheme'
 import { useAuth } from '../../contexts/AuthContext'
@@ -115,11 +115,8 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const expanded = isLg && !collapsed
   const { user, logout } = useAuth()
   const isAdmin = user?.is_admin === true
-  const { data: pending } = useQuery({
-    queryKey: ['review-pending'],
-    queryFn: botApi.reviewPending,
-    refetchInterval: 30000,
-  })
+  const review = useManualReview()
+  const { data: pending } = usePendingReviews()
   const { data: usage } = useQuery({
     queryKey: ['usage-session'],
     queryFn: usageApi.session,
@@ -156,7 +153,7 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
 
         <nav className="flex-1 px-3 py-2 overflow-y-auto space-y-5">
           <div className="space-y-0.5">
-            {PRIMARY_NAV.map(item => (
+            {PRIMARY_NAV.filter(item => item.to !== '/review' || review.enabled).map(item => (
               <NavItem
                 key={item.to}
                 {...item}

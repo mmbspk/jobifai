@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect } from 'react'
 import { Check } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
+import { useGeneralSettings } from '../../hooks/useGeneralSettings'
 import { Button } from '../../components/Button'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { SettingsField, SettingsNumberInput, SettingsSection, SettingsSelect } from '../../components/settings/settings-ui'
@@ -20,7 +21,7 @@ const DEFAULT: GeneralSettings = {
 
 export function ApplicationSettingsPage() {
   const qc = useQueryClient()
-  const { data } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
+  const { data, queryKey, isPending } = useGeneralSettings()
   const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
   const [form, setForm] = useState<GeneralSettings>(DEFAULT)
   const [saved, setSaved] = useState(false)
@@ -29,8 +30,8 @@ export function ApplicationSettingsPage() {
 
   const save = useMutation({
     mutationFn: () => settingsApi.general.set(form),
-    onSuccess: () => {
-      qc.setQueryData(['settings-general'], form)
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey, exact: true }, { throwOnError: true })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     },
@@ -82,8 +83,12 @@ export function ApplicationSettingsPage() {
           label="Review before submission"
           helper="Require your approval before Jobifai submits an application."
           checked={form.require_review_before_submit ?? false}
+          disabled={isPending || save.isPending}
           onCheckedChange={v => set('require_review_before_submit', v)}
         />
+        <p className="text-xs text-[var(--color-text-dim)]">
+          Turning this off hides the approval queue. Existing queued applications stay saved and are not submitted automatically. Turn it on again to review them.
+        </p>
         <SettingsField
           label="Suitability threshold"
           sub={`Skip roles scoring below ${threshold}/10`}
@@ -203,6 +208,7 @@ export function ApplicationSettingsPage() {
         variant="primary"
         fullWidth
         loading={save.isPending}
+        disabled={!data || save.isPending}
         leftIcon={saved ? <Check size={14} /> : undefined}
         onClick={() => save.mutate()}
       >

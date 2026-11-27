@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { apiGet } from '../../api/client'
+import { useManualReview } from '../../hooks/useManualReview'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { StatCard } from '../../components/StatCard'
 import { ADMIN_PERIODS, type AdminPeriod } from '../../lib/adminFormat'
@@ -18,6 +19,7 @@ function scoreLabel(bucket: string): string {
 }
 
 export function AdminAuditErrorsPage() {
+  const review = useManualReview()
   const [period, setPeriod] = useState<AdminPeriod>('7d')
   const [selectedScore, setSelectedScore] = useState<Record<string, unknown> | null>(null)
 
@@ -57,13 +59,13 @@ export function AdminAuditErrorsPage() {
 
       <section className="space-y-3">
         <div><h2 className="text-base font-semibold">Job pipeline</h2><p className="text-sm text-[var(--color-text-muted)]">Application outcomes across all users.</p></div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className={review.enabled ? 'grid gap-3 sm:grid-cols-2 lg:grid-cols-4' : 'grid gap-3 sm:grid-cols-3'}>
           <StatCard label="Applied" value={js ? String(js.applied) : '…'} />
           <StatCard label="Skipped" value={js ? String(js.skipped) : '…'} />
           <StatCard label="Cannot apply" value={js ? String(js.cannot_apply) : '…'} />
-          <StatCard label="Pending review" value={js ? String(js.pending_review) : '…'} />
+          {review.enabled && <StatCard label="Pending review" value={js ? String(js.pending_review) : '…'} />}
         </div>
-        {js && <p className="text-xs text-[var(--color-text-muted)]">{js.top_matches ?? 0} top matches · {js.approved_queue ?? 0} approved and queued</p>}
+        {js && <p className="text-xs text-[var(--color-text-muted)]">{js.top_matches ?? 0} top matches{review.enabled && <> · {js.approved_queue ?? 0} approved and queued</>}</p>}
       </section>
 
       <section className="space-y-4">

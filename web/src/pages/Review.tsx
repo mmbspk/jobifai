@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -7,22 +7,19 @@ import { PageHeader } from '../components/shell/PageHeader'
 import { Button } from '../components/Button'
 import { botApi } from '../api/bot'
 import type { PendingReview } from '../types'
-import { settingsApi } from '../api/settings'
+import { useGeneralSettings } from '../hooks/useGeneralSettings'
+import { usePendingReviews } from '../hooks/useManualReview'
 
 export function Review() {
   const qc = useQueryClient()
   const [index, setIndex] = useState(0)
 
-  const { data: pending = [], isLoading } = useQuery({
-    queryKey: ['review-pending'],
-    queryFn: botApi.reviewPending,
-    refetchInterval: (query) => {
+  const { data: pending = [], isLoading } = usePendingReviews((query) => {
       const data = query.state.data as PendingReview[] | undefined
       const anyRunning = Array.isArray(data) && data.some((j) => j.prepare_status === 'running')
       return anyRunning ? 2000 : 10000
-    },
   })
-  const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
+  const { data: generalSettings } = useGeneralSettings()
   const halalEnabled = generalSettings?.halal_job_filter === true
 
   const prepare = useMutation({

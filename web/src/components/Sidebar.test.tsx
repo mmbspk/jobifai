@@ -40,6 +40,7 @@ const defaultProps = { collapsed: false, onToggle: vi.fn() }
 
 function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  qc.setQueryData(['settings-general', 'test-user'], { require_review_before_submit: true })
   return (
     <QueryClientProvider client={qc}>
       <MemoryRouter>{children}</MemoryRouter>
@@ -51,7 +52,7 @@ beforeEach(() => {
   mockedReviewPending.mockResolvedValue([])
   mockLogout.mockResolvedValue(undefined)
   mockUseAuth.mockReturnValue({
-    user: { email: 'test@example.com', display_name: 'Test User' },
+    user: { id: 'test-user', email: 'test@example.com', display_name: 'Test User' },
     logout: mockLogout,
   })
   Object.defineProperty(window, 'matchMedia', {

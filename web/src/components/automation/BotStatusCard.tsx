@@ -19,6 +19,7 @@ interface BotStatusCardProps {
   readonly onPlatformChange: (p: Platform) => void
   readonly startError: string | null
   readonly pendingReviewCount: number
+  readonly manualReviewEnabled: boolean
   readonly isActive: boolean
   readonly isRunning: boolean
   readonly isPaused: boolean
@@ -36,12 +37,12 @@ interface BotStatusCardProps {
   readonly quotaHint?: string
 }
 
-function stateLabel(state: BotState): string {
+function stateLabel(state: BotState, manualReviewEnabled: boolean): string {
   switch (state) {
     case 'idle': return 'Ready'
     case 'running': return 'Running'
     case 'paused': return 'Paused'
-    case 'pending_review': return 'Pending review'
+    case 'pending_review': return manualReviewEnabled ? 'Pending review' : 'Waiting'
     case 'stopped': return 'Stopped'
     case 'error': return 'Needs attention'
     case 'user_action_required': return 'Sign in required'
@@ -56,22 +57,22 @@ function stateBadgeVariant(state: BotState): 'accent' | 'warn' | 'danger' | 'mut
   return 'muted'
 }
 
-function stateHeadline(state: BotState): string {
+function stateHeadline(state: BotState, manualReviewEnabled: boolean): string {
   switch (state) {
     case 'idle': return 'Automation is ready'
     case 'running': return 'Searching for your next strong match'
     case 'paused': return 'Automation is paused'
-    case 'pending_review': return 'Waiting for your review'
+    case 'pending_review': return manualReviewEnabled ? 'Waiting for your review' : 'Automation is waiting'
     case 'error': return 'Automation needs attention'
     case 'stopped': return 'Automation has stopped'
     case 'user_action_required': return 'Sign in required to continue'
-    default: return stateLabel(state)
+    default: return stateLabel(state, manualReviewEnabled)
   }
 }
 
 export function BotStatusCard(props: BotStatusCardProps) {
   const {
-    status, state, platform, onPlatformChange, startError, pendingReviewCount,
+    status, state, platform, onPlatformChange, startError, pendingReviewCount, manualReviewEnabled,
     isActive, isRunning, isPaused,
     onStart, onStop, onPause, onResume,
     startPending, stopPending, pausePending, resumePending,
@@ -81,7 +82,7 @@ export function BotStatusCard(props: BotStatusCardProps) {
 
   const canStart = setupReady && !isActive && !aiDisabled
 
-  const pulse = state === 'running' || state === 'pending_review'
+  const pulse = state === 'running' || (state === 'pending_review' && manualReviewEnabled)
   const todayCount = status?.today_count ?? 0
   const dailyLimit = status?.daily_limit ?? 0
 
@@ -118,10 +119,10 @@ export function BotStatusCard(props: BotStatusCardProps) {
             </div>
             <div className="min-w-0">
               <div className="mb-1 flex flex-wrap items-center gap-2">
-                <Badge variant={stateBadgeVariant(state)}>{stateLabel(state)}</Badge>
+              <Badge variant={stateBadgeVariant(state)}>{stateLabel(state, manualReviewEnabled)}</Badge>
               </div>
               <h2 className="text-lg font-semibold tracking-tight text-[var(--color-text)]">
-                {stateHeadline(state)}
+                {stateHeadline(state, manualReviewEnabled)}
               </h2>
               {state === 'idle' && (
                 <>
@@ -162,13 +163,20 @@ export function BotStatusCard(props: BotStatusCardProps) {
           </div>
         )}
 
-        {state === 'pending_review' && pendingReviewCount > 0 && (
+        {manualReviewEnabled && state === 'pending_review' && pendingReviewCount > 0 && (
           <p className="text-sm text-[var(--color-text-muted)]">
             {pendingReviewCount} application{pendingReviewCount === 1 ? '' : 's'} need your review before submission.
             {' '}
             <Link to="/review" className="text-[var(--color-accent)] hover:underline font-medium">
               Review applications
             </Link>
+          </p>
+        )}
+        {!manualReviewEnabled && state === 'pending_review' && (
+          <p className="text-sm text-[var(--color-text-muted)]">
+            Automation is waiting on previously queued applications.{' '}
+            <Link to="/settings/application" className="text-[var(--color-accent)] hover:underline font-medium">Update application settings</Link>
+            {' '}to resolve them, or stop automation.
           </p>
         )}
 

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { JobsCannotApply } from './JobsCannotApply'
+vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 'test-user' }, loading: false }) }))
 import { jobsApi } from '../api/jobs'
 
 vi.mock('../api/settings', () => ({ settingsApi: { general: { get: vi.fn(async () => ({})) } } }))

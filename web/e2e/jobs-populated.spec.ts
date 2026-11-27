@@ -1,10 +1,11 @@
 import { test, expect } from '@playwright/test'
-import { registerAndInjectTokens } from './helpers/auth'
+import { registerAndInjectTokens, persistManualReview } from './helpers/auth'
 import { seedJobFixtures } from './helpers/fixtures'
 
 test.describe('Jobs pages — seeded data', () => {
   test.beforeEach(async ({ page, request }) => {
     const user = await registerAndInjectTokens(page, request)
+    await persistManualReview(request, user, true)
     await seedJobFixtures(request, user.accessToken)
   })
 

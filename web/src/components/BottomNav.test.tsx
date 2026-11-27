@@ -6,6 +6,8 @@ import { vi } from 'vitest'
 import { BottomNav } from './BottomNav'
 import { botApi } from '../api/bot'
 
+vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 'test-user' }, loading: false }) }))
+
 vi.mock('../api/bot', () => ({
   botApi: {
     reviewPending: vi.fn().mockResolvedValue([]),
@@ -16,6 +18,7 @@ const mockedReviewPending = vi.mocked(botApi.reviewPending)
 
 function Wrapper({ children }: Readonly<{ children: React.ReactNode }>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  qc.setQueryData(['settings-general', 'test-user'], { require_review_before_submit: true })
   return (
     <QueryClientProvider client={qc}>
       <MemoryRouter>{children}</MemoryRouter>

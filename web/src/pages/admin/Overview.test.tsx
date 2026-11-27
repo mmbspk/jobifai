@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { vi, beforeEach } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { AdminOverviewPage } from './Overview'
+vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 'test-admin' }, loading: false }) }))
 
 vi.mock('../../api/client', () => ({
   apiGet: vi.fn(),
@@ -70,10 +71,20 @@ function renderPage(client = makeClient()) {
 
 beforeEach(() => {
   vi.mocked(apiGet).mockImplementation((path: string) => {
+    if (path === '/settings/general') return Promise.resolve({ require_review_before_submit: false })
     if (path === '/admin/overview') return Promise.resolve(OVERVIEW_FIXTURE)
     if (path === '/admin/health') return Promise.resolve(BASE_HEALTH)
     return Promise.reject(new Error(`unexpected: ${path}`))
   })
+})
+
+it.each([false, true])('shows approval-only admin metrics only when saved review is %s', async enabled => {
+  const client = makeClient()
+  client.setQueryData(['settings-general', 'test-admin'], { require_review_before_submit: enabled })
+  renderPage(client)
+  await screen.findByText('Applications today')
+  expect(screen.queryByText('Pending review') !== null).toBe(enabled)
+  expect(screen.getByText('Users')).toBeInTheDocument()
 })
 
 describe('AdminOverviewPage build identity', () => {

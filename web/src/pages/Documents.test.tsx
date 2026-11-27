@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Documents } from './Documents'
+vi.mock('../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 'test-user' }, loading: false }) }))
 import { settingsApi } from '../api/settings'
 import { documentsApi } from '../api/documents'
 import type { DocumentsListResponse } from '../api/documents'
