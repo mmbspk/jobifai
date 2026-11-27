@@ -50,7 +50,12 @@ func bindingValueCompatible(field SnapField, binding, value string) bool {
 			}
 		}
 	}
-	if field.Type == SnapTypeSelect || field.Type == SnapTypeRadio || field.Type == SnapTypeCheckbox {
+	if field.Type == SnapTypeCheckbox {
+		if _, ok := checkboxSelections(field, value); !ok {
+			return false
+		}
+	}
+	if field.Type == SnapTypeSelect || field.Type == SnapTypeRadio {
 		choices := field.Options
 		if field.Truncated && field.BrowserField != nil {
 			choices = make([]string, len(field.BrowserField.Options))

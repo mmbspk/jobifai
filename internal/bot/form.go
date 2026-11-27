@@ -2221,9 +2221,24 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				return filled, true, qErr
 			}
 			var targetID string
+			checkboxField := captureStepSnapshot([]formField{f}, nil, string(b.cfg.Platform), 0, "").Fields[0]
+			selections, ok := checkboxSelections(checkboxField, answer)
+			if !ok {
+				return filled, true, fmt.Errorf("%w: checkbox answer has no unique current selections", errAdaptiveQuestionReview)
+			}
+			if len(selections) > 1 {
+				result := fillAdaptiveControl(ctx, page, checkboxField, answer, b.currentProfile())
+				if result.Err != nil {
+					return filled, true, fmt.Errorf("checkbox selections failed: %w", result.Err)
+				}
+				if !result.Filled {
+					return filled, true, fmt.Errorf("%w: checkbox selections failed", errAdaptiveQuestionReview)
+				}
+				usedAnswer, filled = answer, true
+				break
+			}
 			for _, opt := range f.Options {
-				if strings.EqualFold(strings.TrimSpace(opt.Label), strings.TrimSpace(answer)) ||
-					strings.EqualFold(strings.TrimSpace(opt.Value), strings.TrimSpace(answer)) {
+				if strings.EqualFold(strings.TrimSpace(opt.Label), strings.TrimSpace(selections[0])) {
 					targetID = opt.ID
 					break
 				}

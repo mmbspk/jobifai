@@ -153,7 +153,8 @@ For each field below, return ONE JSON object in a JSON array. Use this exact sch
  {"ref":"...","action":"fill"|"skip","intent_type":"profile"|"llm","binding_key":"...","value":"...","evidence":[{"path":"/profile/path","quote":"exact profile excerpt"}]}
 
 Rules:
-- action="fill" for text, radio, select, textarea and typeahead fields; action="skip" only if truly unanswerable.
+- action="fill" for text, radio, select, checkbox, textarea and typeahead fields; action="skip" only if truly unanswerable.
+- For a checkbox group, value is a JSON STRING containing supported current option labels separated by commas. Quote a CSV label if it contains a comma. Never return a JSON array as value. Every selected option needs current evidence; do not combine None/No with positive selections.
 - Typeahead values are search text from supported profile facts; the executor must verify an associated suggestion before accepting the selection.
 - If a field maps directly to a known profile binding key, set intent_type="profile", binding_key to the key, and value="" (the system resolves it at runtime from your profile).
 - Known binding keys:

@@ -61,7 +61,15 @@ func fillAdaptiveControl(ctx context.Context, page *rod.Page, field SnapField, v
 		}
 		return result
 	}
-	filled, err := page.Context(ctx).Eval(jsAdaptiveFillControl, currentField, value)
+	var selections []string
+	if field.Type == SnapTypeCheckbox {
+		var ok bool
+		selections, ok = checkboxSelections(field, value)
+		if !ok {
+			return FieldFillResult{Err: fmt.Errorf("adaptive: checkbox answer has no unique current selections")}
+		}
+	}
+	filled, err := page.Context(ctx).Eval(jsAdaptiveFillControl, currentField, value, selections)
 	if err != nil {
 		return FieldFillResult{Err: err}
 	}
@@ -231,28 +239,54 @@ const jsAdaptiveTypeaheadAccepted = `(field,value,country,selected)=>{` + jsAdap
  const el=inputFor(field);return !!el&&suggestionMatches(el.value,value,country)&&normalize(el.value)===normalize(selected||value)&&el.getAttribute('aria-invalid')!=='true'&&el.checkValidity()&&(el.getAttribute('aria-expanded')==='false'||!listsFor(el).some(list=>[...list.querySelectorAll('[role=option],.basic-typeahead__selectable,.search-typeahead-v2__hit')].some(visible)));
 }`
 
-const jsAdaptiveFillControl = `(field, value) => {` + jsLinkedInApplyContainerFn + `
+const jsAdaptiveFillControl = `(field, value, checkboxSelection) => {` + jsLinkedInApplyContainerFn + `
  const scope=resolveApplyContainer();
  if(!scope)return false;
  const normalized=s=>String(s||'').trim().toLowerCase();
  const byID=(selector,id)=>allInDOM(scope,selector).filter(el=>el.id===id);
  const fire=el=>{el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));el.dispatchEvent(new Event('blur',{bubbles:true}));};
- if(field.type==='radio'||field.type==='checkbox'){
+ if(field.type==='checkbox'){
+  const options=field.options||[];
+  const single=options.filter(opt=>normalized(opt.label)===normalized(value)||normalized(opt.value)===normalized(value));
+  const labels=Array.isArray(checkboxSelection)?checkboxSelection:(single.length===1?[single[0].label]:[]);
+  if(!labels.length||new Set(labels.map(normalized)).size!==labels.length)return false;
+  const selected=new Set();
+  for(const label of labels){const matches=options.map((opt,index)=>normalized(opt.label)===normalized(label)?index:-1).filter(index=>index>=0);if(matches.length!==1)return false;selected.add(matches[0]);}
+  const resolveGroup=()=>{
+   if(resolveApplyContainer()!==scope)return null;
+   const group=options.map(opt=>{
+    const controls=opt.id?byID('input[type=checkbox]',opt.id):allInDOM(scope,'input[type=checkbox]').filter(el=>el.name===field.name&&el.value===opt.value);
+    if(controls.length!==1)return null;
+    const control=controls[0];
+    if((control.value||control.id)!==opt.value||(control.name&&control.name!==field.name))return null;
+    const associated=control.id?allInDOM(scope,'label[for]').filter(el=>el.htmlFor===control.id):[];
+    if(associated.length>1)return null;
+    const caption=associated[0]||control.closest('label')||control.parentElement;
+    if(!caption||normalized(caption.textContent.replace(/\s+/g,' '))!==normalized(opt.label))return null;
+    return control;
+   });
+   if(group.some((control,index)=>!control||(control.disabled&&(selected.has(index)||control.checked))))return null;
+   return group;
+  };
+  if(!resolveGroup())return false;
+  for(let index=0;index<options.length;index++){
+   const group=resolveGroup();if(!group)return false;
+   const control=group[index];
+   if(control.checked!==selected.has(index)){control.click();fire(control);}
+  }
+  const group=resolveGroup();
+  return !!group&&group.every((control,index)=>control.checked===selected.has(index)&&control.checkValidity());
+ }
+ if(field.type==='radio'){
   const options=(field.options||[]).filter(opt=>normalized(opt.label)===normalized(value)||normalized(opt.value)===normalized(value));
   if(options.length!==1)return false;
   const option=options[0];
   const choices=option.id?byID('input[type="'+field.type+'"]',option.id):allInDOM(scope,'input[type="'+field.type+'"]').filter(el=>el.name===field.name&&el.value===option.value);
   if(choices.length!==1||choices[0].disabled)return false;
   const choice=choices[0];
-  let group=[choice];
-  if(field.type==='checkbox'){
-   group=(field.options||[]).map(opt=>{const controls=opt.id?byID('input[type=checkbox]',opt.id):allInDOM(scope,'input[type=checkbox]').filter(el=>el.name===field.name&&el.value===opt.value);return controls.length===1?controls[0]:null;});
-   if(group.some(el=>!el||(el!==choice&&el.checked&&el.disabled)))return false;
-   for(const other of group){if(other!==choice&&other.checked){other.click();fire(other);}}
-  }
   if(!choice.checked)choice.click();
   fire(choice);
-  return choice.checked&&group.every(el=>el.checkValidity()&&(field.type!=='checkbox'||el.checked===(el===choice)));
+  return choice.checked&&choice.checkValidity();
  }
  let candidates=field.id?byID('input,select,textarea',field.id):[];
  if(!field.id&&field.type==='text'){
