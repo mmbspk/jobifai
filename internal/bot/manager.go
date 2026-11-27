@@ -1624,6 +1624,11 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 	// Create the job ID now so all billing buckets from Activate onward carry the
 	// correct job_id correlation. SetJobID must be called before Activate.
 	jobID := newJobID()
+	if platform == domain.PlatformSeek {
+		// Native SEEK ownership compares the declared listing ID with both
+		// URLs. Use that same ID throughout AI Apply and its persisted records.
+		jobID = seekJobIDFromURL(jobURL)
+	}
 
 	// Page loaded and auth confirmed — activate browser billing for this apply run.
 	// Stop is deferred so billing terminates regardless of apply outcome.
@@ -1655,19 +1660,12 @@ func (m *Manager) ApplyFromURL(ctx context.Context, userID, jobURL, market strin
 			log.Warn().Err(err).Str("url", redactURL(jobURL)).Msg("ai apply: failed to check already-tracked status")
 		}
 		if alreadyTracked == 0 {
-			rid := newJobID()
-			if _, err := m.db.Exec(
-				`INSERT OR IGNORE INTO jobs_applied(id,user_id,platform,company,role,location,link,resume_path,cover_letter_path,suitability_score,halal_verdict,applied_at)
-				 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-				rid, userID, string(platform), company, role, location, jobURL, "", "", 0, "",
-				time.Now().UTC().Format(time.RFC3339),
-			); err != nil {
-				log.Error().Err(err).Str("url", redactURL(jobURL)).Msg("ai apply: failed to record manually-applied job")
-			} else if m.retention != nil {
-				m.retention.AfterSuccessfulSubmit(m.ctx, userID)
-			}
-			if _, err := m.db.Exec(`DELETE FROM jobs_pending_review WHERE user_id=? AND link=?`, userID, jobURL); err != nil {
-				log.Error().Err(err).Str("url", redactURL(jobURL)).Msg("ai apply: failed to delete pending review for manually-applied job")
+			// A site badge is not evidence of a new submission or its date.
+			observed := linkedInJob{ID: jobID, URL: jobURL, Title: role, Company: company, Location: location}
+			if platform == domain.PlatformSeek {
+				b.recordSeekSkipped(seekJob{ID: jobID, URL: jobURL, Title: role, Company: company, Location: location}, "already_applied_indicator", 0, "", nil)
+			} else {
+				b.recordSkipped(observed, "already_applied_indicator", 0, "", nil)
 			}
 		}
 		ac.Role = role
