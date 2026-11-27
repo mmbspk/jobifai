@@ -3,14 +3,12 @@ package bot
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/go-rod/rod"
 	"github.com/stretchr/testify/require"
 	"github.com/user/jobifai/internal/applicationanswers"
 	"github.com/user/jobifai/internal/browser"
@@ -19,23 +17,27 @@ import (
 )
 
 func TestApplicationAnswerManagerDeferralsPreserveOperationalRetryBudget(t *testing.T) {
-	_, endpoint := launchTestBrowserEndpoint(t)
+	fixtureBrowser, endpoint := launchTestBrowserEndpoint(t)
 	parsedEndpoint, err := url.Parse(endpoint)
 	require.NoError(t, err)
 	port, err := strconv.Atoi(parsedEndpoint.Port())
 	require.NoError(t, err)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, `<!DOCTYPE html><html><body>
+	// Keep the real native origin checks enabled while serving every browser
+	// request locally. A loopback URL correctly represents an external form.
+	router := fixtureBrowser.HijackRequests()
+	router.MustAdd("*", func(request *rod.Hijack) {
+		request.Response.SetHeader("Content-Type", "text/html; charset=utf-8")
+		request.Response.SetBody(`<!DOCTYPE html><html><body>
 <main><h1>Coordinator</h1><p>Fixture</p>
 <button data-automation="job-detail-apply" onclick="this.remove();document.getElementById('apply').style.display='block'">Quick Apply</button>
 <form id="apply" role="dialog" data-testid="quick-apply-form" style="display:none;padding:20px">
   <div data-test-form-element><label for="notice">Notice period</label><input id="notice" required></div>
   <button type="button" data-testid="continue-button">Continue</button>
 </form></main></body></html>`)
-	}))
-	t.Cleanup(server.Close)
+	})
+	go router.Run()
+	t.Cleanup(func() { router.MustStop() })
 	database := openMappingDB(t)
 	_, err = database.Exec("INSERT INTO users(id,email,password_hash) VALUES('candidate','candidate@fixture.test','fixture')")
 	require.NoError(t, err)
@@ -52,7 +54,7 @@ func TestApplicationAnswerManagerDeferralsPreserveOperationalRetryBudget(t *test
 	profile.ApplicationDefaults.FormAnswers = nil
 	require.NoError(t, cfg.Set("candidate", "resume_profile", profile))
 	const jobID = "123456789"
-	jobURL := server.URL + "/job/" + jobID
+	jobURL := "https://au.seek.com/job/" + jobID
 	_, err = database.Exec(`INSERT INTO jobs_pending_review(job_id,user_id,company,role,platform,link,attempt_count,resume_path,cover_letter_path,suitability_score) VALUES(?,'candidate','Fixture','Coordinator','seek',?,1,'/fixture/resume.pdf','/fixture/cover.pdf',8)`, jobID, jobURL)
 	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

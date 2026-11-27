@@ -3,6 +3,9 @@ BINARY  := ./$(APP)
 MAIN    := ./cmd/server
 IMAGE   := $(APP):latest
 DB      := data/$(APP).db
+# The complete Chromium regression suite can exceed 30 minutes under race
+# detection and coverage on CI. Keep one overridable budget for both targets.
+GO_TEST_TIMEOUT ?= 45m
 
 .PHONY: all build run dev start test test-web test-coverage test-all test-all-e2e lint clean docker docker-run web-dev web-build e2e-server test-e2e test-e2e-ui deploy-gcp deploy-gcp-rollout obs-up obs-down obs-logs
 
@@ -41,7 +44,7 @@ dev:
 
 ## test: run Go tests (race detector)
 test:
-	go test $(GO_PACKAGES) -race -count=1 -timeout 30m
+	go test $(GO_PACKAGES) -race -count=1 -timeout $(GO_TEST_TIMEOUT)
 
 ## test-web: run frontend unit tests (Vitest)
 test-web:
@@ -49,7 +52,7 @@ test-web:
 
 ## test-coverage: Go + frontend coverage reports (informational)
 test-coverage:
-	go test $(GO_PACKAGES) -race -count=1 -timeout 30m -coverprofile=coverage.out
+	go test $(GO_PACKAGES) -race -count=1 -timeout $(GO_TEST_TIMEOUT) -coverprofile=coverage.out
 	go tool cover -func=coverage.out | tail -1
 	cd web && npm run test:coverage
 
