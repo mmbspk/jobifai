@@ -7,6 +7,10 @@ import (
 
 var ErrApplicationAnswerConflict = errors.New("application answers changed; reload before saving")
 
+// Only this explicit missing-fact observation may suppress a repeated model
+// request. An ambiguous or incompatible proposal is not evidence of absence.
+const ApplicationAnswerMissingFactReason = "A required profile fact is missing; this application was deferred"
+
 // ApplicationAnswerTopic is a curated profile topic, never a learned variant.
 type ApplicationAnswerTopic struct {
 	ID    string `json:"id"`

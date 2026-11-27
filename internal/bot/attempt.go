@@ -22,17 +22,25 @@ func unresolvedSubmission(db *sql.DB, userID, jobID, jobURL, currentAttempt stri
 		return nil
 	}
 	// Manual URL entry uses internal IDs, and tracking/trailing-slash variants
-	// must not bypass an unresolved submission for the same LinkedIn job.
+	// must not bypass an unresolved submission for the same native listing.
 	canonicalID := func(raw string) string {
 		u, err := url.Parse(raw)
 		if err != nil {
 			return ""
 		}
 		host := strings.ToLower(u.Hostname())
+		if trustedSeekURL(raw) {
+			if id := seekJobIDFromURL(raw); id != "" {
+				return "seek:" + id
+			}
+		}
 		if host != "linkedin.com" && !strings.HasSuffix(host, ".linkedin.com") {
 			return ""
 		}
-		return linkedInExpectedID(raw)
+		if id := linkedInExpectedID(raw); id != "" {
+			return "linkedin:" + id
+		}
+		return ""
 	}
 	expectedID := canonicalID(jobURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

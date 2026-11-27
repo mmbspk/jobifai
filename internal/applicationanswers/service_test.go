@@ -307,6 +307,7 @@ func TestApplicationAnswerCommonCorrectionKeepsOtherMissingFactsActionable(t *te
 	require.NoError(t, cfg.Set("candidate", "resume_profile", p))
 	e := encounter(&p, "missing-work-rights", "rights", "Australia")
 	e.Status = "required"
+	e.Reason = domain.ApplicationAnswerMissingFactReason
 	e.ProposedAnswer = ""
 	e.TopicID = "work_rights"
 	id, err := svc.RecordEncounter(context.Background(), "candidate", e)

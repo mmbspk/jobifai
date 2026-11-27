@@ -35,45 +35,46 @@ import (
 // result. Generation only happens when the toggle is on and a file upload
 // field is actually encountered during form filling.
 type lazyDocGen struct {
-	b                     *Bot
-	ctx                   context.Context
-	job                   linkedInJob
-	jobDesc               string
-	attemptID             string // set by each entry point; empty in processApprovedQueue path
-	answerPlan            map[string]FieldResolution
-	answerReviewIDs       map[string]string
-	answerSnapshot        StepSnapshot
-	answerProfileDigest   string
-	answerActiveKey       string
-	answerStepIndex       int
-	once                  sync.Once
-	resume                string
-	cover                 string
-	formOnce              sync.Once
-	formJSON              []byte
-	resumeOverride        string // pre-generated resume path from a prior attempt; skips LLM if set
-	coverOverride         string // pre-generated cover letter path from a prior attempt; skips LLM if set
-	resumeVersionOverride string
-	coverVersionOverride  string
-	resumeUseSiteOverride bool
-	coverSkipOverride     bool
-	frozen                bool
-	formCaps              documents.FormDocumentCapabilities
-	holdReason            string
-	holdStage             string // stable stage code for an upload-verification hold (diagnostic)
-	holdFile              string // filename involved in an upload-verification hold (diagnostic)
-	resumeVersionID       string
-	coverVersionID        string
-	refsJSON              string
-	useSiteResume         bool
-	matMu                 sync.Mutex
-	materialized          bool
-	capsFingerprint       string
-	reviewPrepareOnly     bool
-	prepareScanComplete   bool
-	packRestored          bool
-	packMetaApplied       bool
-	pack                  documents.ApplicationDocumentPack
+	b                       *Bot
+	ctx                     context.Context
+	job                     linkedInJob
+	jobDesc                 string
+	attemptID               string // set by each entry point; empty in processApprovedQueue path
+	answerPlan              map[string]FieldResolution
+	answerReviewIDs         map[string]string
+	answerSnapshot          StepSnapshot
+	answerProfileDigest     string
+	answerPreferencesDigest string
+	answerActiveKey         string
+	answerStepIndex         int
+	once                    sync.Once
+	resume                  string
+	cover                   string
+	formOnce                sync.Once
+	formJSON                []byte
+	resumeOverride          string // pre-generated resume path from a prior attempt; skips LLM if set
+	coverOverride           string // pre-generated cover letter path from a prior attempt; skips LLM if set
+	resumeVersionOverride   string
+	coverVersionOverride    string
+	resumeUseSiteOverride   bool
+	coverSkipOverride       bool
+	frozen                  bool
+	formCaps                documents.FormDocumentCapabilities
+	holdReason              string
+	holdStage               string // stable stage code for an upload-verification hold (diagnostic)
+	holdFile                string // filename involved in an upload-verification hold (diagnostic)
+	resumeVersionID         string
+	coverVersionID          string
+	refsJSON                string
+	useSiteResume           bool
+	matMu                   sync.Mutex
+	materialized            bool
+	capsFingerprint         string
+	reviewPrepareOnly       bool
+	prepareScanComplete     bool
+	packRestored            bool
+	packMetaApplied         bool
+	pack                    documents.ApplicationDocumentPack
 }
 
 // get returns the generated resume and cover letter paths, generating them on
@@ -170,25 +171,26 @@ type JobHalalChecker interface {
 
 // Config bundles everything the bot needs to run.
 type Config struct {
-	JobPageReader   *jobpage.Reader
-	JobPageStore    *jobpage.SQLStore
-	OnApplied       func() // successful application persistence schedules retention reconciliation
-	Platform        domain.Platform
-	Settings        domain.GeneralSettings
-	Preferences     domain.WorkPreferences
-	Profile         *domain.ResumeProfile
-	ProfileLoader   func() *domain.ResumeProfile // if set, called per-job to get the latest profile
-	Cookies         []browser.Cookie
-	Tailor          ResumeTailor    // nil = no LLM tailoring
-	Scorer          JobScorer       // nil = evaluation unavailable; never a passing score
-	HalalChecker    JobHalalChecker // nil = halal filter disabled
-	CoverLetterTone string          // "" = default; see domain.GeneralSettings.CoverLetterTone
-	Renderer        ResumeRenderer
-	DB              *sql.DB
-	UserID          string // owner of this bot session
-	AutomationRunID string // one ID per automation session for LLM billing attribution
-	ApplicationID   string // set when applying to a specific application record
-	RequireReview   bool
+	JobPageReader     *jobpage.Reader
+	JobPageStore      *jobpage.SQLStore
+	OnApplied         func() // successful application persistence schedules retention reconciliation
+	Platform          domain.Platform
+	Settings          domain.GeneralSettings
+	Preferences       domain.WorkPreferences
+	PreferencesLoader func() *domain.WorkPreferences // latest canonical work-preference facts
+	Profile           *domain.ResumeProfile
+	ProfileLoader     func() *domain.ResumeProfile // if set, called per-job to get the latest profile
+	Cookies           []browser.Cookie
+	Tailor            ResumeTailor    // nil = no LLM tailoring
+	Scorer            JobScorer       // nil = evaluation unavailable; never a passing score
+	HalalChecker      JobHalalChecker // nil = halal filter disabled
+	CoverLetterTone   string          // "" = default; see domain.GeneralSettings.CoverLetterTone
+	Renderer          ResumeRenderer
+	DB                *sql.DB
+	UserID            string // owner of this bot session
+	AutomationRunID   string // one ID per automation session for LLM billing attribution
+	ApplicationID     string // set when applying to a specific application record
+	RequireReview     bool
 	// Logger is an optional run-scoped logger with user_id, automation_run_id,
 	// and log_id hook pre-wired. Nil means use the global log.Logger.
 	Logger           *zerolog.Logger
@@ -1342,6 +1344,7 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 		b.preserveLinkedInReview(ctx, job, 0, "Not scored: browser page could not be opened.", fmt.Errorf("%w: %v", errLinkedInUnknown, pageErr))
 		return false
 	}
+	defer func() { _ = jobPage.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
 	_ = jobPage.Timeout(30 * time.Second).WaitLoad()
 	resolution, resolveErr := waitLinkedInJob(ctx, jobPage, linkedInExpectedID(job.URL), job)
 	logLinkedInResolution(resolution, job, "", "classification")
@@ -1349,14 +1352,12 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	// that content normally, but never try to apply while the control is unknown.
 	controlUnverified := resolveErr != nil && resolution.IdentityVerified && errors.Is(resolveErr, errLinkedInUnknown)
 	if resolveErr != nil && !controlUnverified {
-		_ = jobPage.Close()
 		if ctx.Err() == nil {
 			b.preserveLinkedInReview(ctx, job, 0, "Listing identity or application control could not be verified; suitability has not been evaluated.", resolveErr)
 		}
 		return false
 	}
 	if resolution.Kind == "already_applied" {
-		_ = jobPage.Close()
 		b.recordSkipped(job, "already_applied_indicator", 0, "", nil)
 		return false
 	}
@@ -1366,7 +1367,6 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	}
 	resolution, resolveErr = b.readAdaptiveLinkedInDescription(ctx, jobPage, job)
 	if resolveErr != nil {
-		_ = jobPage.Close()
 		if ctx.Err() == nil {
 			b.preserveLinkedInReview(ctx, job, 0, "", resolveErr)
 		}
@@ -1377,7 +1377,6 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 		job.Company = resolution.Company
 	}
 	if resolution.Kind == "already_applied" {
-		_ = jobPage.Close()
 		b.recordSkipped(job, "already_applied_indicator", 0, "", nil)
 		return false
 	}
@@ -1386,7 +1385,6 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	if controlUnverified && controlError == nil {
 		controlError = resolution.resolutionError()
 	}
-	_ = jobPage.Close()
 	if err := listingEvaluationError(strings.TrimSpace(details.Description), b.cfg.Scorer); err != nil {
 		b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, 0, "", nil, err)
 		return false
@@ -1476,7 +1474,10 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 		return false
 	}
 
-	return b.submitEasyApply(ctx, br, job, lazy, score, reasoning, halalVerdict, llmBefore)
+	// Keep the independently read and evaluated page through application. A
+	// fresh navigation discards its hydrated UI state; native identity and
+	// document checks still revalidate this page before every application input.
+	return b.submitEasyApplyOnPage(ctx, br, jobPage, job, lazy, score, reasoning, halalVerdict, llmBefore)
 }
 
 // detectLinkedInEasyApply returns true when the job details pane shows LinkedIn's
@@ -1744,6 +1745,12 @@ func (b *Bot) queueForReview(ctx context.Context, p *domain.PendingReview) {
 }
 
 func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
+	return b.submitEasyApplyOnPage(ctx, br, nil, job, lazy, score, reasoning, halalVerdict, llmBefore)
+}
+
+// A caller-owned listing page stays with its caller. Other entry points retain
+// the existing fresh-tab behavior and close the tab they create here.
+func (b *Bot) submitEasyApplyOnPage(ctx context.Context, br *rod.Browser, jobPage *rod.Page, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
 	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformLinkedIn), job.ID, job.URL, job.Title, job.Company, "automated_linkedin", b.cfg.AutomationRunID)
 	ac.Engine = pinnedEngine(b.cfg.EngineStore, b.cfg.UserID, domain.PlatformLinkedIn)
 	beginAttempt(b.cfg.DB, ac)
@@ -1757,13 +1764,16 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	if lazy != nil {
 		lazy.attemptID = ac.AttemptID
 	}
-	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
-	if err != nil {
-		b.log.Error().Str("error", sanitizeErr(err)).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("linkedin: open job page")
-		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
-		return false
+	if jobPage == nil {
+		jobPage, err = br.Context(ctx).Page(proto.TargetCreateTarget{URL: job.URL})
+		if err != nil {
+			b.log.Error().Str("error", sanitizeErr(err)).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("linkedin: open job page")
+			finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
+			return false
+		}
+		defer func() { _ = jobPage.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
 	}
-	defer func() { _ = jobPage.Close() }()
+	jobPage = jobPage.Context(ctx)
 
 	if err := b.applyAttempt(ctx, jobPage, lazy, ac); err != nil {
 		if dir := saveAdaptiveDiagnostic(jobPage, "linkedin"); dir != "" {

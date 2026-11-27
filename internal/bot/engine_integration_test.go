@@ -25,6 +25,7 @@ func TestManagerBuildConfig_WiresEngineForBothWorkerTypes(t *testing.T) {
 			defer srv.Close()
 			mockllm.StoreUserLLMConfig(t, store, secrets, userID, srv.URL)
 			require.NoError(t, store.Set(userID, "resume_profile", basicProfile()))
+			require.NoError(t, store.Set(userID, "work_preferences", domain.WorkPreferences{Hybrid: true}))
 			require.NoError(t, store.Set(domain.SystemUserID, keyApplyEngineConfig, domain.ApplyEngineConfig{
 				Mode: domain.ApplyEngineAdaptive, PilotUserIDs: []string{userID}, ExternalATSEnabled: true,
 			}))
@@ -43,6 +44,16 @@ func TestManagerBuildConfig_WiresEngineForBothWorkerTypes(t *testing.T) {
 				assert.True(t, cfg.EnableExternalATS)
 				require.NotNil(t, cfg.AdaptiveLLM)
 				require.NotNil(t, cfg.AdaptiveMapping)
+				assert.True(t, cfg.Preferences.Hybrid)
+				require.NotNil(t, cfg.PreferencesLoader)
+				require.True(t, cfg.PreferencesLoader().Hybrid)
+			}
+			require.NoError(t, store.Set(userID, "work_preferences", domain.WorkPreferences{Remote: true}))
+			for _, cfg := range []*Config{batch, &single.cfg} {
+				current := cfg.PreferencesLoader()
+				require.NotNil(t, current)
+				assert.False(t, current.Hybrid, "both setup paths must reload current settings")
+				assert.True(t, current.Remote)
 			}
 		})
 	}

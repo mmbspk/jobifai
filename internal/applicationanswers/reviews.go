@@ -425,12 +425,14 @@ func encounterGroup(e domain.ApplicationAnswerEncounter) string {
 
 // KnownMissing matches an unchanged, exact scoped required question. It can
 // avoid another model request only when the fact digest and context match the
-// original missing observation. Rebased review metadata is not sufficient.
+// original explicit missing-fact observation. Ambiguous, invalid-choice and
+// legacy mixed observations cannot establish absence. Rebased review metadata
+// is not sufficient.
 func (s *Service) KnownMissing(ctx context.Context, userID string, e domain.ApplicationAnswerEncounter) (bool, error) {
 	if e.FieldSignature == "" || e.ProfileRevision == "" {
 		return false, nil
 	}
 	var count int
-	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM application_answer_reviews r JOIN application_answer_encounters e ON e.id=(SELECT id FROM application_answer_encounters WHERE user_id=r.user_id AND review_id=r.id ORDER BY seq DESC LIMIT 1) WHERE r.user_id=? AND r.group_key=? AND r.lifecycle IN ('active','dismissed') AND r.status='required' AND e.profile_revision=? AND e.proposed_answer=''`, userID, encounterGroup(e), e.ProfileRevision).Scan(&count)
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM application_answer_reviews r JOIN application_answer_encounters e ON e.id=(SELECT id FROM application_answer_encounters WHERE user_id=r.user_id AND review_id=r.id ORDER BY seq DESC LIMIT 1) WHERE r.user_id=? AND r.group_key=? AND r.lifecycle IN ('active','dismissed') AND r.status='required' AND e.profile_revision=? AND e.proposed_answer='' AND e.reason=?`, userID, encounterGroup(e), e.ProfileRevision, domain.ApplicationAnswerMissingFactReason).Scan(&count)
 	return count == 1, err
 }

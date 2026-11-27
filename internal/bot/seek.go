@@ -251,21 +251,26 @@ func isSeekLoginPage(u string) bool {
 // seekApplyBlockedReasonFromURL detects external ATS / bot-protection pages that
 // block automated Quick Apply. These are not Seek session expiry.
 func seekApplyBlockedReasonFromURL(u string) string {
-	lu := strings.ToLower(u)
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(parsed.Hostname())
+	belongsTo := func(domain string) bool { return host == domain || strings.HasSuffix(host, "."+domain) }
 	switch {
-	case strings.Contains(lu, "captcha-delivery.com"), strings.Contains(lu, "datadome"):
+	case belongsTo("captcha-delivery.com"), belongsTo("datadome.co"):
 		return "bot-protection captcha (DataDome) blocked automated apply — apply manually on Seek"
-	case strings.Contains(lu, "smartrecruiters.com"):
+	case belongsTo("smartrecruiters.com"):
 		return "SmartRecruiters-hosted Quick Apply cannot be automated — apply manually on Seek"
-	case strings.Contains(lu, "myworkdayjobs.com"):
+	case belongsTo("myworkdayjobs.com"):
 		return "Workday-hosted apply cannot be automated — apply manually on Seek"
-	case strings.Contains(lu, "greenhouse.io"):
+	case belongsTo("greenhouse.io"):
 		return "Greenhouse-hosted apply cannot be automated — apply manually on Seek"
-	case strings.Contains(lu, "lever.co"):
+	case belongsTo("lever.co"):
 		return "Lever-hosted apply cannot be automated — apply manually on Seek"
-	case strings.Contains(lu, "jobadder.com"):
+	case belongsTo("jobadder.com"):
 		return "JobAdder-hosted apply cannot be automated — apply manually on Seek"
-	case strings.HasPrefix(lu, "http") && !strings.Contains(lu, "seek.com") && !isSeekLoginPage(u):
+	case (parsed.Scheme == "http" || parsed.Scheme == "https") && host != "" && !trustedSeekURL(u):
 		return "Quick Apply redirected to an external site — apply manually on Seek"
 	}
 	return ""
@@ -905,9 +910,9 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip (%s): %q @ %s", reason, job.Title, job.Company)
 		return false
 	}
-	// Card-level applied indicator.
+	// A card badge describes observed site state, not a new submission by this run.
 	if job.AlreadyApplied {
-		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
+		b.recordSeekSkipped(job, "already_applied_indicator", 0, "", nil)
 		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied badge on card: %q @ %s", job.Title, job.Company)
 		return false
 	}
@@ -928,7 +933,7 @@ func (b *Bot) processSeekJobEvaluation(ctx context.Context, br *rod.Browser, job
 	}
 	// Detail page may have updated AlreadyApplied (covers manual applications).
 	if job.AlreadyApplied {
-		b.recordSeekApplied(job, "", "", "", "", "", 0, nil)
+		b.recordSeekSkipped(job, "already_applied_indicator", 0, "", nil)
 		b.log.Info().Str("job_id", job.ID).Msgf("seek: skip, already applied (page indicator): %q @ %s", job.Title, job.Company)
 		return false
 	}
@@ -1993,8 +1998,15 @@ func (b *Bot) seekWaitForApplyForm(page *rod.Page, timeout time.Duration) (found
 	deadline := time.Now().Add(timeout)
 	lastLog := time.Time{}
 	for time.Now().Before(deadline) {
-		if _, err := page.Timeout(3 * time.Second).Info(); err != nil {
+		info, err := page.Timeout(3 * time.Second).Info()
+		if err != nil {
 			return false, "browser page unavailable: " + sanitizeErr(err)
+		}
+		// External forms can contain the same upload/select controls as SEEK.
+		// Check the landed origin before accepting any native form resemblance.
+		if reason := seekApplyBlockedReasonFromURL(info.URL); reason != "" {
+			b.log.Warn().Str("reason", reason).Msg("seek: Quick Apply opened an external or blocked destination")
+			return false, reason
 		}
 		if b.seekApplyFormPresent(page) {
 			b.log.Info().Msg("seek: Quick Apply form visible")

@@ -53,7 +53,7 @@ func TestApplicationAnswerDismissedRepeatsStayQuietUntilFactsChange(t *testing.T
 	snap := makeSnap(SnapField{Ref: "f0", Label: "What are your preferred weekly hours?", Type: SnapTypeTextarea, Required: true})
 	snap.EmployerKey = "Fixture"
 	e := reviewEncounterIdentity(nil, snap, snap.Fields[0], profile, true)
-	e.ID, e.Status, e.Reason = newAttemptID(), "required", "Missing supplied hours"
+	e.ID, e.Status, e.Reason = newAttemptID(), "required", domain.ApplicationAnswerMissingFactReason
 	_, err = svc.RecordEncounter(ctx, "candidate", e)
 	require.NoError(t, err)
 	page, err := svc.ListReviews(ctx, "candidate", "", "active", 20)

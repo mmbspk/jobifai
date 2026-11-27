@@ -56,8 +56,9 @@ func wireShadowObserver(b *Bot, ac *AttemptContext, observations *[]ShadowObserv
 	}
 
 	si := &StepInterpreter{
-		LLM:     b.cfg.AdaptiveLLM,
-		Mapping: shadowMapping,
+		LLM:         b.cfg.AdaptiveLLM,
+		Mapping:     shadowMapping,
+		Preferences: b.currentPreferences(),
 	}
 	profile := b.currentProfile()
 

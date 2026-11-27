@@ -81,6 +81,9 @@ func ValidateSnapshot(s Snapshot, limits Limits) error {
 	if s.Expired {
 		return &ReadError{Code: FailureExpired}
 	}
+	if s.ActiveLoading && !s.Loading {
+		return &ReadError{Code: FailurePlan}
+	}
 	if s.Version != SnapshotVersion || s.Scope != scope || s.ID == "" || s.LayoutSignature == "" {
 		return &ReadError{Code: FailureStale}
 	}

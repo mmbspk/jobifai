@@ -159,8 +159,9 @@
   const intersects=(a,b)=>a===b || a.contains(b) || b.contains(a);
   // A populated explicit description lets unrelated widgets load independently.
   // Busy listing/header/description evidence and unknown layouts stay blocked.
-  const loading=[scope,...Array.from(scope.querySelectorAll(loadingSelector))].some(el=>el.matches(loadingSelector)&&!excluded(el)&&visible(el)&&(el===scope || !populatedDescription || explicitDescriptions.some(region=>intersects(el,region)) || loadingHeaders.some(region=>intersects(el,region)))) || loadingDescriptions.some(row=>!row.text || (row.text.length<100 && /^loading(?:\s|\.|$)/i.test(row.text)));
-  if(opts.mode==='status') return {expired,loading};
+  const activeLoading=[scope,...Array.from(scope.querySelectorAll(loadingSelector))].some(el=>el.matches(loadingSelector)&&!excluded(el)&&visible(el)&&(el===scope || !populatedDescription || explicitDescriptions.some(region=>intersects(el,region)) || loadingHeaders.some(region=>intersects(el,region)))) || loadingDescriptions.some(row=>row.text.length<100 && /^loading(?:\s|\.|$)/i.test(row.text));
+  const loading=activeLoading || loadingDescriptions.some(row=>!row.text);
+  if(opts.mode==='status') return {expired,loading,active_loading:activeLoading};
   let metadata=null;
   for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
     try {
@@ -234,7 +235,8 @@
     if(node.can_scroll) actions.push({kind:'scroll',ref:node.ref,amount:500});
   }
   const headerRefs=nodes.filter(n=>n.context==='header').map(n=>n.ref);
-  const result={identity:{job_id:wanted,title:titleValues[0],company,verified:headerRefs.length>0,header_refs:headerRefs,evidence:[subjectFound?'subject_attribute':seekReference?'job_detail_apply_reference':'job_posting_identifier','primary_header']},nodes,candidates,allowed_actions:actions,loading:loading || readingRegions.some(row=>!row.text || (Array.from(row.text).length<100 && /^loading(?:\s|\.|$)/i.test(row.text))),authentication_required:authRequired,expired,truncated};
+  const observedLoading=activeLoading || readingRegions.some(row=>Array.from(row.text).length<100 && /^loading(?:\s|\.|$)/i.test(row.text));
+  const result={identity:{job_id:wanted,title:titleValues[0],company,verified:headerRefs.length>0,header_refs:headerRefs,evidence:[subjectFound?'subject_attribute':seekReference?'job_detail_apply_reference':'job_posting_identifier','primary_header']},nodes,candidates,allowed_actions:actions,loading:loading || observedLoading || readingRegions.some(row=>!row.text),active_loading:observedLoading,authentication_required:authRequired,expired,truncated};
   // DOM object tokens stay in the runtime and make replacing an identical
   // element invalidate a plan. They never become recipe or model attributes.
   const epochKey=Symbol.for('jobifai.jobpage.nodes');

@@ -99,6 +99,27 @@ func TestEvaluationRetry_UnknownSubmissionCannotReachBrowser(t *testing.T) {
 	require.False(t, b.processEvaluationRetry(context.Background(), nil, j))
 }
 
+func TestUnresolvedSubmission_SeekAliasesPreserveLegacyIntent(t *testing.T) {
+	for _, outcome := range []AttemptOutcome{OutcomeInProgress, OutcomeSubmissionUnknown} {
+		t.Run(string(outcome), func(t *testing.T) {
+			db := testDB(t)
+			ac := newAttemptContext("u1", "seek", "legacy-internal-id", "https://au.seek.com/job/12345678", "Role", "Company", "test", "")
+			beginAttempt(db, ac)
+			if outcome == OutcomeSubmissionUnknown {
+				finishAttempt(db, ac, outcome, "confirmation", "unknown", "")
+			}
+			for _, variant := range []string{"https://www.seek.com.au/job/12345678", "https://seek.com.au/job/12345678/?tracking=fixture", "https://au.seek.com/job/12345678/apply"} {
+				require.Error(t, unresolvedSubmission(db, "u1", "12345678", variant, "new-attempt"))
+				require.NoError(t, unresolvedSubmission(db, "u2", "12345678", variant, "new-attempt"))
+				require.NoError(t, unresolvedSubmission(db, "u1", "12345678", variant, ac.AttemptID))
+			}
+			require.NoError(t, unresolvedSubmission(db, "u1", "other-id", "https://au.seek.com/job/22345678", ""))
+			require.NoError(t, unresolvedSubmission(db, "u1", "other-id", "https://www.linkedin.com/jobs/view/12345678", ""))
+			require.NoError(t, unresolvedSubmission(db, "u1", "other-id", "https://seek.com.au.example/job/12345678", ""))
+		})
+	}
+}
+
 func TestUnresolvedSubmission_BlocksOtherAttemptsAndMatchesURL(t *testing.T) {
 	db := testDB(t)
 	ac := newAttemptContext("u1", "linkedin", "legacy-id", "https://www.linkedin.com/jobs/view/123", "Role", "Company", "test", "")

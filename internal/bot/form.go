@@ -479,14 +479,48 @@ const jsScanFieldsInner = `
 		              group: sectionGroupFor(r), helpText: helpTextFor(r) });
 	});
 
+	// Account document preferences are not candidate answers. Keep the same
+	// exclusion for native inputs and SEEK's equivalent custom checkbox widgets.
+	function isSeekDefaultResumeControl(el) {
+		if (!isSeekApply) return false;
+		const associated = labelFor(el.id);
+		const enclosing = el.closest('label');
+		const caption = [associated && associated.textContent, enclosing && enclosing.textContent, el.getAttribute('aria-label'), el.textContent]
+			.map(text => (text || '').toLowerCase().replace(/\s+/g, ' ').trim()).find(Boolean) || '';
+		return /^make this my default (resume|resumé|résumé|cv)$/.test(caption);
+	}
+
 	// ── Checkbox groups (Lever ATS / LinkedIn consent questions) ─────────────
+	// Some native forms use a caption followed by separate option wrappers,
+	// without a fieldset. Locate the group's shared owner before reading its
+	// caption; an individual option label cannot name the whole question.
+	function checkboxGroupCaption(inputs) {
+		if (inputs.length < 2) return '';
+		const chosen = new Set(inputs);
+		let owner = inputs[0].parentElement;
+		while (owner && owner !== container && !inputs.every(input => owner.contains(input))) owner = owner.parentElement;
+		for (let depth = 0; depth < 3 && owner && owner !== container && owner !== document.body; depth++, owner = owner.parentElement) {
+			const controls = allInDOM(owner, 'input:not([type="hidden"]),select,textarea,button').filter(control =>
+				['checkbox','radio'].includes(control.type) ? isContainerVisible(control) : isVisible(control));
+			if (controls.some(control => !chosen.has(control))) return '';
+			const options = [...owner.children].filter(child => inputs.some(input => child.contains(input)));
+			if (!options.length) continue;
+			const first = [...owner.children].indexOf(options[0]);
+			const captions = [...owner.children].slice(0, first).filter(child => isVisible(child) && !child.querySelector('input,select,textarea,button'))
+				.map(child => child.textContent.trim().replace(/\s+/g, ' ')).filter(Boolean);
+			if (captions.length === 1) return captions[0];
+			if (captions.length > 1) return '';
+		}
+		return '';
+	}
+
 	// Group by shared fieldset. Skip LinkedIn's "follow company" checkbox.
 	const seenCb = new Set();
 	allInDOM(container, 'input[type="checkbox"]').filter(isContainerVisible).forEach(cb => {
 		const associatedLabel=labelFor(cb.id);
 		const cbLabel = ((associatedLabel&&associatedLabel.textContent) || (cb.closest('label') && cb.closest('label').textContent) || cb.getAttribute('aria-label') || '').toLowerCase().replace(/\s+/g, ' ').trim();
 		// A vacancy-tailored upload must not change the candidate's jobsite default.
-		if(isSeekApply && /^make this my default (resume|resumé|résumé|cv)$/.test(cbLabel))return;
+		if(isSeekDefaultResumeControl(cb))return;
 		if (cb.id === 'follow-company-checkbox' || (cb.name || '').includes('follow-company')) return;
 		if (/follow/.test(cbLabel) && (/compan|hiring|recruiter|poster|posting/.test(cbLabel) || cbLabel.includes('follow '))) return;
 		const groupEl = cb.closest('fieldset, [role="group"], [data-test-form-element], .artdeco-form-element, .fb-form-element')
@@ -513,6 +547,7 @@ const jsScanFieldsInner = `
 				if (leg) { question = leg.textContent.trim(); break; }
 			}
 		}
+		if (!question && all.length > 1) question = checkboxGroupCaption(all);
 		if (!question && groupEl) {
 			const fb = groupEl.querySelector('legend, span[class*="label"], div[class*="label"], label:not(:has(input))');
 			question = fb ? fb.textContent.trim() : (cb.name || cb.id || '');
@@ -532,7 +567,7 @@ const jsScanFieldsInner = `
 	if (isSeekApply) {
 		const applyRoot = container.closest("[data-testid='quick-apply-form'], [data-automation='apply-form']") || container;
 		allInDOM(applyRoot, '[role="checkbox"]').filter(el => {
-			return isContainerVisible(el) && el.getAttribute('aria-checked') !== 'true';
+			return isContainerVisible(el) && el.getAttribute('aria-checked') !== 'true' && !isSeekDefaultResumeControl(el);
 		}).forEach((w, i) => {
 			if (!w.id) w.setAttribute('data-seek-cb-id', 'seek-cb-' + i);
 			const wid = w.id || w.getAttribute('data-seek-cb-id');
@@ -580,8 +615,10 @@ const jsScanFieldsInner = `
 		// Exclude reCAPTCHA injected textareas (hidden by LinkedIn/Google on form pages).
 		if (el.name === 'g-recaptcha-response' || el.id === 'g-recaptcha-response') return false;
 		if (el.closest('[id*="recaptcha" i],[class*="recaptcha" i],[id*="captcha" i],[class*="captcha" i]')) return false;
-		// Textareas are often opacity/size-hidden until focused — use container visibility.
-		if (el.tagName === 'TEXTAREA') return isContainerVisible(el);
+		// SEEK retains its inactive cover editor beneath a visible document
+		// fieldset. Its own rendered box distinguishes it from the active mode.
+		// LinkedIn textareas can materialize through their visible container.
+		if (el.tagName === 'TEXTAREA') return isSeekApply ? isVisible(el) : isContainerVisible(el);
 		return isVisible(el);
 	}).forEach(el => {
 		// Detect typeahead FIRST, combobox fields may already have a typed value
@@ -2184,9 +2221,24 @@ func (b *Bot) fillFormStep(ctx context.Context, page *rod.Page, lazy *lazyDocGen
 				return filled, true, qErr
 			}
 			var targetID string
+			checkboxField := captureStepSnapshot([]formField{f}, nil, string(b.cfg.Platform), 0, "").Fields[0]
+			selections, ok := checkboxSelections(checkboxField, answer)
+			if !ok {
+				return filled, true, fmt.Errorf("%w: checkbox answer has no unique current selections", errAdaptiveQuestionReview)
+			}
+			if len(selections) > 1 {
+				result := fillAdaptiveControl(ctx, page, checkboxField, answer, b.currentProfile())
+				if result.Err != nil {
+					return filled, true, fmt.Errorf("checkbox selections failed: %w", result.Err)
+				}
+				if !result.Filled {
+					return filled, true, fmt.Errorf("%w: checkbox selections failed", errAdaptiveQuestionReview)
+				}
+				usedAnswer, filled = answer, true
+				break
+			}
 			for _, opt := range f.Options {
-				if strings.EqualFold(strings.TrimSpace(opt.Label), strings.TrimSpace(answer)) ||
-					strings.EqualFold(strings.TrimSpace(opt.Value), strings.TrimSpace(answer)) {
+				if strings.EqualFold(strings.TrimSpace(opt.Label), strings.TrimSpace(selections[0])) {
 					targetID = opt.ID
 					break
 				}
