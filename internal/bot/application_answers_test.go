@@ -303,7 +303,7 @@ func TestApplicationAnswerKnownMissingAvoidsUnchangedProviderCalls(t *testing.T)
 	e := reviewEncounterIdentity(nil, snap, snap.Fields[0], profile, true)
 	e.ID = newAttemptID()
 	e.Status = "required"
-	e.Reason = "Missing supplied hours"
+	e.Reason = domain.ApplicationAnswerMissingFactReason
 	_, err = svc.RecordEncounter(ctx, "candidate", e)
 	require.NoError(t, err)
 	providerErr := errors.New("provider must not be called on known missing fact")
@@ -322,4 +322,54 @@ func TestApplicationAnswerKnownMissingAvoidsUnchangedProviderCalls(t *testing.T)
 	known, err := b.knownMissingChecker(nil)(ctx, other, snap.Fields[0], profile)
 	require.NoError(t, err)
 	require.False(t, known)
+}
+
+func TestApplicationAnswerUnverifiedProposalCannotBecomeKnownMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reason    PendingReason
+		legacy    bool
+		wantCalls int
+	}{
+		{"ambiguous", PendingAmbiguous, false, 1},
+		{"invalid_choice", PendingInvalidOption, false, 1},
+		{"legacy_mixed_reason", PendingAmbiguous, true, 1},
+		{"explicit_missing_fact", PendingMissingProfile, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			database := openMappingDB(t)
+			_, err := database.Exec("INSERT INTO users(id,email,password_hash) VALUES('candidate','candidate@fixture.test','fixture')")
+			require.NoError(t, err)
+			profile := basicProfile()
+			cfg := config.NewStore(database)
+			require.NoError(t, cfg.Set("candidate", "resume_profile", profile))
+			svc := applicationanswers.NewService(database, cfg)
+			b := New(Config{UserID: "candidate", Profile: profile, ApplicationAnswers: svc})
+			snap := makeSnap(SnapField{Ref: "f0", Label: "What are your preferred weekly hours?", Type: SnapTypeTextarea, Required: true})
+			snap.EmployerKey = "Fixture"
+			if tc.legacy {
+				e := reviewEncounterIdentity(nil, snap, snap.Fields[0], profile, true)
+				e.ID, e.Status, e.Reason = newAttemptID(), "required", "A required fact is missing or cannot be verified; this application was deferred"
+				_, err = svc.RecordEncounter(ctx, "candidate", e)
+			} else {
+				interp := StepInterpretation{Fields: []FieldResolution{{Ref: "f0", Source: SourceReview, Action: ActionSkip, Pending: true, Reason: tc.reason}}}
+				_, err = b.prepareAnswerReviews(ctx, nil, snap, interp, profile)
+			}
+			require.NoError(t, err)
+			providerErr := errors.New("fixture fresh provider resolution")
+			delegate := &stubLLM{err: providerErr}
+			result, err := (&StepInterpreter{LLM: delegate, KnownMissing: b.knownMissingChecker(nil)}).InterpretStep(ctx, snap, profile)
+			if tc.wantCalls == 0 {
+				require.NoError(t, err)
+				require.True(t, result.Paused)
+			} else {
+				require.ErrorIs(t, err, providerErr)
+			}
+			require.Equal(t, tc.wantCalls, delegate.calls)
+			var used int
+			require.NoError(t, database.QueryRow("SELECT count(*) FROM application_answer_encounters WHERE use_status<>'not_used' OR answer_used<>''").Scan(&used))
+			require.Zero(t, used, "a retry allowance must not publish an unverified answer")
+		})
+	}
 }

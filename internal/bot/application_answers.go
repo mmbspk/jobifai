@@ -109,7 +109,14 @@ func (b *Bot) prepareAnswerReviews(ctx context.Context, lazy *lazyDocGen, snap S
 		if candidatePending(r) {
 			encounter.Status = "required"
 			encounter.ProposedAnswer = ""
-			encounter.Reason = "A required fact is missing or cannot be verified; this application was deferred"
+			switch r.Reason {
+			case PendingMissingProfile:
+				encounter.Reason = domain.ApplicationAnswerMissingFactReason
+			case PendingInvalidOption:
+				encounter.Reason = "The supported answer does not match the employer's available choices; this application was deferred"
+			default:
+				encounter.Reason = "The proposed answer could not be independently verified; this application was deferred"
+			}
 		}
 		if r.grounded != nil {
 			for _, entry := range r.grounded.evidence {
