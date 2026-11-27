@@ -1,5 +1,11 @@
 # Epic 154 — adaptive job-page reading
 
+Latest status: PRs 163, 166 and 167 are merged and the clean ee81432 build is
+deployed. Worker canaries and controlled runtime replays qualified the bounded
+operator pilot. The final caller tests and evidence are tracked in
+[production qualification](production-qualification-2026-11-26.md). The entries
+below preserve earlier implementation checkpoints.
+
 Current prerequisite: PR 153 is merged on main at e8d2d8b and its reviewed source
 is already integrated into the reader branch. PR 163 implements this epic and
 remains open for review. The latest checkpoint below supersedes older status

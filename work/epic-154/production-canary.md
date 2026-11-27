@@ -1,5 +1,12 @@
 # Epic 154 production canary — 26 November 2026
 
+Latest qualification: the clean PR 167 merge (ee81432) is deployed. The actual
+worker canary and the full shared-reader suite in its runtime passed qualification
+with the bounded operator pilot. See [production qualification](production-qualification-2026-11-26.md)
+for successful reads, the two native-only dentsu failures, actual rescan recovery,
+controlled cold/warm/changed-layout measurements, rollout and remaining limits.
+The entries below preserve earlier investigation checkpoints.
+
 Deployed build: 2dc48e8903ba557b0e5bd5af0e4fbf109cf6694e (merged PR 163
 plus build-version reporting). Its reader source matches qualified head 05d23ca.
 Operator: admin@jobifai.local. All tests below used the dedicated read-only
