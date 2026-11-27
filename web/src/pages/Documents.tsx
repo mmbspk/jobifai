@@ -9,6 +9,7 @@ import {
   type UserDocument,
 } from '../api/documents'
 import { settingsApi } from '../api/settings'
+import { useGeneralSettings } from '../hooks/useGeneralSettings'
 import { PageHeader } from '../components/shell/PageHeader'
 import { Button } from '../components/ui/button'
 import { DialogRoot, DialogContent } from '../components/ui/dialog'
@@ -33,10 +34,7 @@ export function Documents() {
     queryKey: ['documents'],
     queryFn: documentsApi.list,
   })
-  const { data: general } = useQuery({
-    queryKey: ['settings-general'],
-    queryFn: settingsApi.general.get,
-  })
+  const { data: general } = useGeneralSettings()
   const { data: styles = [] } = useQuery({
     queryKey: ['styles'],
     queryFn: settingsApi.styles.list,

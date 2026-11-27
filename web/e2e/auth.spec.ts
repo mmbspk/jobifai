@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { registerAndInjectTokens } from './helpers/auth'
+import { registerAndInjectTokens, persistManualReview } from './helpers/auth'
 
 test.describe('Auth flows', () => {
   test('register via UI → redirects to dashboard', async ({ page }) => {
@@ -55,6 +55,8 @@ test.describe('Auth flows', () => {
     await request.post('/auth/register', {
       data: { email, password: 'e2epassword1', display_name: 'Deep Link Test' },
     })
+    const login = await request.post('/auth/login', { data: { email, password: 'e2epassword1' } })
+    await persistManualReview(request, { email, password: 'e2epassword1', accessToken: (await login.json()).access_token }, true)
 
     await page.goto('/review')
     await expect(page).toHaveURL(/\/login/)

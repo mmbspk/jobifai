@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { BotStatusCard } from './BotStatusCard'
@@ -13,6 +13,7 @@ const DEFAULT_PROPS = {
   onPlatformChange: vi.fn(),
   startError: null,
   pendingReviewCount: 0,
+  manualReviewEnabled: true,
   isActive: false,
   isRunning: false,
   isPaused: false,
@@ -33,6 +34,30 @@ function renderCard(props: Partial<typeof DEFAULT_PROPS> & { setupReady?: boolea
     </MemoryRouter>,
   )
 }
+
+it('shows pending automation as waiting with review off, preserves Stop and removes queue controls', () => {
+  const { container } = renderCard({ state: 'pending_review', manualReviewEnabled: false, pendingReviewCount: 4, isActive: true })
+  expect(screen.getByText('Waiting')).toBeInTheDocument()
+  expect(screen.getByText('Automation is waiting')).toBeInTheDocument()
+  expect(screen.queryByRole('link', { name: 'Review applications' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument()
+  expect(container.querySelector('.animate-ping')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Stop automation' }))
+  expect(DEFAULT_PROPS.onStop).toHaveBeenCalled()
+})
+
+it('preserves pending review messaging and actions with review on', () => {
+  renderCard({ state: 'pending_review', pendingReviewCount: 4, isActive: true, isRunning: true })
+  expect(screen.getByText('Waiting for your review')).toBeInTheDocument()
+  expect(screen.getByRole('link', { name: 'Review applications' })).toHaveAttribute('href', '/review')
+  expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled()
+})
+
+it.each(['running', 'paused', 'user_action_required', 'error'] as BotState[])('keeps the normal %s state visible with review off', state => {
+  renderCard({ state, manualReviewEnabled: false, isActive: state !== 'error', isRunning: state === 'running', isPaused: state === 'paused' })
+  expect(screen.queryByText('Automation is waiting')).not.toBeInTheDocument()
+  expect(screen.getByRole('heading')).toHaveTextContent(state === 'running' ? 'Searching for your next strong match' : state === 'paused' ? 'Automation is paused' : state === 'error' ? 'Automation needs attention' : 'Sign in required to continue')
+})
 
 describe('BotStatusCard — credit disclosure', () => {
   it('shows credit disclosure when idle and setupReady=true (before Start)', () => {

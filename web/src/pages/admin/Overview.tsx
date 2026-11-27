@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { apiGet } from '../../api/client'
+import { useManualReview } from '../../hooks/useManualReview'
 import { PageHeader } from '../../components/shell/PageHeader'
 import { StatCard } from '../../components/StatCard'
 import { Badge } from '../../components/ui/badge'
@@ -79,6 +80,7 @@ function ResourceMeteringStatusRow({ rm }: { rm: ResourceMeteringReadiness }) {
 }
 
 export function AdminOverviewPage() {
+  const review = useManualReview()
   const overviewQ = useQuery({
     queryKey: ['admin-overview'],
     queryFn: () => apiGet<OverviewResp>('/admin/overview'),
@@ -113,10 +115,10 @@ export function AdminOverviewPage() {
         <p className="text-sm text-red-600 dark:text-red-400">Failed to load overview.</p>
       )}
 
-      <section aria-label="Key metrics" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <section aria-label="Key metrics" className={review.enabled ? 'grid gap-3 sm:grid-cols-2 xl:grid-cols-4' : 'grid gap-3 sm:grid-cols-3'}>
         <StatCard label="Users" value={sys ? sys.user_count.toLocaleString() : '…'} />
         <StatCard label="Applications today" value={String(auto.applications_today ?? '…')} />
-        <StatCard label="Pending review" value={String(auto.pending_review_count ?? '…')} />
+        {review.enabled && <StatCard label="Pending review" value={String(auto.pending_review_count ?? '…')} />}
         <StatCard label="AI cost today · USD" value={ai ? usdFromMicro(ai.loaded_cost_usd_micro) : '…'} />
       </section>
 

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect } from 'react'
 import { Check } from 'lucide-react'
 import { settingsApi } from '../../api/settings'
+import { useGeneralSettings } from '../../hooks/useGeneralSettings'
 import { Button } from '../../components/Button'
 import { cn } from '../../lib'
 import type { GeneralSettings, TaskModel } from '../../types'
@@ -93,7 +94,7 @@ const DEFAULT: GeneralSettings = {
 
 export function GeneralSettingsPage() {
   const qc = useQueryClient()
-  const { data } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
+  const { data, queryKey } = useGeneralSettings()
   const { data: markets = [] } = useQuery({ queryKey: ['markets'], queryFn: settingsApi.markets.list })
   const [form, setForm] = useState<GeneralSettings>(DEFAULT)
   const [saved, setSaved] = useState(false)
@@ -102,8 +103,8 @@ export function GeneralSettingsPage() {
 
   const save = useMutation({
     mutationFn: () => settingsApi.general.set(form),
-    onSuccess: () => {
-      qc.setQueryData(['settings-general'], form)
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey, exact: true }, { throwOnError: true })
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     },

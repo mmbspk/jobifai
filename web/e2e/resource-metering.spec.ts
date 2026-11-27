@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { registerAndInjectTokens, registerAdminAndInjectTokens } from './helpers/auth'
+import { registerAndInjectTokens, registerAdminAndInjectTokens, persistManualReview } from './helpers/auth'
 import { seedJobFixtures } from './helpers/fixtures'
 import {
   setupMetering,
@@ -145,6 +145,7 @@ test.describe('Resource Metering E2E — Story #86 Acceptance', () => {
 
   test('T3 — selecting existing document in review path creates no new render charge', async ({ page, request }) => {
     const user = await registerAndInjectTokens(page, request)
+    await persistManualReview(request, user, true)
     const userID = await getUserID(request, user.accessToken)
     await setUserCredits(request, adminToken, userID, 50)
     await setupProfile(request, user.accessToken)

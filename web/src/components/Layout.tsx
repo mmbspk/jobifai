@@ -9,8 +9,10 @@ import { JobifaiLogo } from './brand/JobifaiLogo'
 import { useTheme } from '../hooks/useTheme'
 import { EmailVerificationBanner } from './auth/EmailVerificationBanner'
 import { ApplicationAnswerNotice } from './settings/ApplicationAnswerNotice'
+import { useManualReview } from '../hooks/useManualReview'
 
 export function Layout({ children }: { readonly children?: ReactNode }) {
+  const review = useManualReview()
   const isAdmin = useLocation().pathname.startsWith('/admin')
   const { theme, toggle } = useTheme()
   const [collapsed, setCollapsed] = useState(
@@ -29,14 +31,14 @@ export function Layout({ children }: { readonly children?: ReactNode }) {
     <div className="min-h-dvh bg-[var(--color-background)]">
       <Sidebar collapsed={collapsed} onToggle={toggleCollapsed} />
       <BottomNav />
-      <header className="sticky top-0 z-30 grid h-[60px] grid-cols-[2.75rem_1fr_2.75rem] items-center border-b border-[var(--color-border)] bg-[var(--color-background)]/92 px-3 backdrop-blur-xl md:hidden">
+      <header className={cn('sticky top-0 z-30 grid h-[60px] items-center border-b border-[var(--color-border)] bg-[var(--color-background)]/92 px-3 backdrop-blur-xl md:hidden', review.enabled ? 'grid-cols-[2.75rem_1fr_2.75rem]' : 'grid-cols-[2.75rem_1fr]')}>
         <button type="button" onClick={toggle} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} className="flex h-11 w-11 items-center justify-center text-[var(--color-text-muted)]">
           {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
         </button>
         <JobifaiLogo markSize={25} className="justify-self-center text-[1.05rem]" />
-        <Link to="/review" aria-label="Open review queue" className="flex h-11 w-11 items-center justify-center text-[var(--color-text-muted)]">
+        {review.enabled && <Link to="/review" aria-label="Open review queue" className="flex h-11 w-11 items-center justify-center text-[var(--color-text-muted)]">
           <Bell size={18} />
-        </Link>
+        </Link>}
       </header>
       <main
         className={cn(

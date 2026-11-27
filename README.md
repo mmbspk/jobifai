@@ -7,7 +7,7 @@ AI-powered job application automation — searches supported platforms, scores l
 - Automated application submission on LinkedIn and Seek
 - AI-powered profile-to-role matching with a configurable suitability score threshold
 - Per-application resume and cover letter tailoring via LLM
-- Review queue: inspect and approve tailored documents before any application is submitted
+- Optional review queue: inspect and approve tailored documents before submission when **Settings → Application → Review before submission** is enabled. Disabling it hides the approval queue and preserves existing pending applications without submitting or deleting them. Enable it again to review those applications. An automation run already waiting on those items stays waiting; update the setting to resolve them, or stop the run.
 - Top Matches: track high-scoring roles that require manual application (non-Easy Apply)
 - Applied / Skipped / Cannot Apply history with search and filtering
 - Optional Islamic employment ethics filter (HalalJobFilter)

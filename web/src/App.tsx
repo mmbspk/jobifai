@@ -37,6 +37,7 @@ import { ResetPassword } from './pages/ResetPassword'
 import { Landing } from './pages/Landing'
 import { Pricing } from './pages/Pricing'
 import { PostAuthRedirect } from './components/auth/PostAuthRedirect'
+import { ManualReviewRoute } from './components/auth/ManualReviewRoute'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { hasStoredAuthCredentials } from './lib/authSession'
 import { resolvePostAuthDestination, savePostAuthRedirect } from './lib/postAuthRedirect'
@@ -190,7 +191,7 @@ function AppRoutes() {
         <Route path="/jobs/skipped"          element={<JobsSkipped />} />
         <Route path="/jobs/cannot-apply"     element={<JobsCannotApply />} />
         <Route path="/jobs/top-matches"      element={<TopMatches />} />
-        <Route path="/review"                element={<Review />} />
+        <Route path="/review"                element={<ManualReviewRoute><Review /></ManualReviewRoute>} />
         <Route path="/generate"              element={<Generate />} />
         <Route path="/documents"            element={<Documents />} />
         <Route path="/settings/*"            element={<SettingsLayout />} />

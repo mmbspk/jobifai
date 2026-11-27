@@ -6,6 +6,17 @@ export interface TestUser {
   accessToken: string
 }
 
+/** Persist the server's effective flag; individual tests choose their mode. */
+export async function persistManualReview(request: APIRequestContext, user: TestUser, enabled: boolean) {
+  const headers = { Authorization: 'Bearer ' + user.accessToken }
+  const current = await request.get('/api/settings/general', { headers })
+  expect(current.ok()).toBeTruthy()
+  const saved = await request.post('/api/settings/general', {
+    headers, data: { ...await current.json(), require_review_before_submit: enabled },
+  })
+  expect(saved.ok()).toBeTruthy()
+}
+
 /** Seeded on fresh DB via migration 010 + admin flag in 015. */
 const SEEDED_ADMIN = {
   email: 'admin@jobifai.local',

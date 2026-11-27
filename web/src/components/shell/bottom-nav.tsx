@@ -2,8 +2,7 @@ import { useState } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { LayoutDashboard, Briefcase, ClipboardCheck, Sparkles, Settings } from 'lucide-react'
 import { cn } from '../../lib'
-import { useQuery } from '@tanstack/react-query'
-import { botApi } from '../../api/bot'
+import { useManualReview, usePendingReviews } from '../../hooks/useManualReview'
 import { DialogRoot, DialogTrigger, DialogContent } from '../ui/dialog'
 
 const TABS = [
@@ -26,11 +25,8 @@ export function AppBottomNav() {
   const [jobsOpen, setJobsOpen] = useState(false)
   const location = useLocation()
   const navigate = useNavigate()
-  const { data: pending } = useQuery({
-    queryKey: ['review-pending'],
-    queryFn: botApi.reviewPending,
-    refetchInterval: 30000,
-  })
+  const review = useManualReview()
+  const { data: pending } = usePendingReviews()
   const pendingCount = pending?.length ?? 0
 
   const jobsActive = JOB_LINKS.some(j => location.pathname.startsWith(j.to))
@@ -41,7 +37,7 @@ export function AppBottomNav() {
       style={{ paddingBottom: 'max(10px, env(safe-area-inset-bottom))' }}
     >
       <div className="flex max-w-lg mx-auto">
-        {TABS.map(tab => {
+        {TABS.filter(tab => !('to' in tab) || tab.to !== '/review' || review.enabled).map(tab => {
           if ('key' in tab && tab.key === 'jobs') {
             return (
               <DialogRoot key="jobs" open={jobsOpen} onOpenChange={setJobsOpen}>

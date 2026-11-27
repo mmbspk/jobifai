@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SkippedJobItem } from '../components/jobs/skipped-job-item'
@@ -14,7 +14,7 @@ import {
   LoadMoreButton,
 } from '../components/jobs/job-list-shared'
 import { jobsApi } from '../api/jobs'
-import { settingsApi } from '../api/settings'
+import { useGeneralSettings } from '../hooks/useGeneralSettings'
 
 const PAGE_SIZE = 50
 
@@ -37,7 +37,7 @@ export function JobsSkipped() {
   const [platform, setPlatform] = useState('')
   const [skipReason, setSkipReason] = useState('')
 
-  const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get })
+  const { data: generalSettings } = useGeneralSettings()
   const halalEnabled = generalSettings?.halal_job_filter === true
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading } = useInfiniteQuery({

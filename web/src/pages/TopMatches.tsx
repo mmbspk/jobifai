@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { TrendingUp } from 'lucide-react'
 import { TopMatchJobItem } from '../components/jobs/top-match-job-item'
@@ -13,7 +13,7 @@ import {
   LoadMoreButton,
 } from '../components/jobs/job-list-shared'
 import { jobsApi } from '../api/jobs'
-import { settingsApi } from '../api/settings'
+import { useGeneralSettings } from '../hooks/useGeneralSettings'
 import type { PendingReview } from '../types'
 
 const PAGE_SIZE = 50
@@ -31,7 +31,7 @@ export function TopMatches() {
       last.length === PAGE_SIZE ? all.flat().length : undefined,
     staleTime: 60_000,
   })
-  const { data: generalSettings } = useQuery({ queryKey: ['settings-general'], queryFn: settingsApi.general.get, staleTime: 300_000 })
+  const { data: generalSettings } = useGeneralSettings(300_000)
   const halalEnabled = generalSettings?.halal_job_filter === true
 
   const all = useMemo(() => data?.pages.flat() ?? [], [data?.pages])

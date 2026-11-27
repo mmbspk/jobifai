@@ -1,9 +1,11 @@
 import { test, expect } from '@playwright/test'
-import { registerAndInjectTokens } from './helpers/auth'
+import { registerAndInjectTokens, persistManualReview } from './helpers/auth'
 
 test.describe('Sidebar navigation', () => {
   test.beforeEach(async ({ page, request }) => {
-    await registerAndInjectTokens(page, request)
+    const user = await registerAndInjectTokens(page, request)
+    await persistManualReview(request, user, true)
+    await page.goto('/')
     await expect(page.getByText('Automation is ready')).toBeVisible()
   })
 

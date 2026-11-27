@@ -11,7 +11,7 @@ import { PageHeader } from '../components/shell/PageHeader'
 import { dashboardGreeting } from '../lib/dashboardGreeting'
 import { Button } from '../components/Button'
 import { jobsApi } from '../api/jobs'
-import { botApi } from '../api/bot'
+import { useManualReview, usePendingReviews } from '../hooks/useManualReview'
 import type { Platform } from '../types'
 import { useAuth } from '../contexts/AuthContext'
 import { ScorePill } from '../components/ScorePill'
@@ -23,6 +23,7 @@ import { quotaBlockMessage } from '../lib/quotaMessages'
 export function Dashboard() {
   const navigate = useNavigate()
   const { user } = useAuth()
+  const review = useManualReview()
   const { status, start, stop, pause, resume, startError } = useBot()
   const setup = useSetupReadiness()
   const { aiDisabled, data: quota } = useQuota()
@@ -48,7 +49,7 @@ export function Dashboard() {
 
   const state = status?.state ?? 'idle'
   const isActive = state === 'running' || state === 'paused' || state === 'pending_review'
-  const isRunning = state === 'running' || state === 'pending_review'
+  const isRunning = state === 'running' || (state === 'pending_review' && review.enabled)
   const isPaused = state === 'paused'
 
   const { data: stats } = useQuery({
@@ -58,12 +59,7 @@ export function Dashboard() {
     refetchInterval: isActive ? 10_000 : false,
   })
 
-  const { data: pending } = useQuery({
-    queryKey: ['review-pending'],
-    queryFn: botApi.reviewPending,
-    staleTime: 30_000,
-    refetchInterval: isActive ? 30_000 : false,
-  })
+  const { data: pending } = usePendingReviews(isActive ? 30_000 : false)
   const { data: topMatches = [] } = useQuery({
     queryKey: ['jobs-top-matches', 'dashboard-preview'],
     queryFn: () => jobsApi.topMatches({ limit: 3, offset: 0 }),
@@ -75,13 +71,17 @@ export function Dashboard() {
   const firstName = user?.display_name?.trim().split(/\s+/)[0]
   const greeting = `${dashboardGreeting()}${firstName ? `, ${firstName}` : ''}`
 
-  const description = isRunning
+  const description = state === 'pending_review'
+    ? review.enabled
+      ? 'Automation is waiting for your review before submission.'
+      : 'Automation is waiting on previously queued applications. Your progress is preserved.'
+    : isRunning
     ? pendingCount > 0
       ? `Automation is working. ${pendingCount} application${pendingCount === 1 ? '' : 's'} need your review.`
       : 'Automation is working and your latest activity is shown below.'
     : pendingCount > 0
       ? `${pendingCount} application${pendingCount === 1 ? '' : 's'} need your review before submission.`
-      : 'Your search, applications, and review controls are ready.'
+      : review.enabled ? 'Your search, applications, and review controls are ready.' : 'Your search and application controls are ready.'
 
   return (
     <div className="space-y-8">
@@ -113,6 +113,7 @@ export function Dashboard() {
             onPlatformChange={setPlatform}
             startError={startError}
             pendingReviewCount={pendingCount}
+            manualReviewEnabled={review.enabled}
             isActive={isActive}
             isRunning={isRunning}
             isPaused={isPaused}
@@ -142,7 +143,7 @@ export function Dashboard() {
             <ChevronRight size={16} className="text-[var(--color-text-dim)]" />
           </Link>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className={review.enabled ? 'grid grid-cols-1 sm:grid-cols-2 gap-3' : 'grid grid-cols-1 sm:grid-cols-3 gap-3'}>
             <StatCard
               label="Applied today"
               value={stats?.applied_today ?? 0}
@@ -151,7 +152,7 @@ export function Dashboard() {
               tone="success"
               onClick={() => navigate('/jobs/applied?today=true')}
             />
-            <StatCard
+            {review.enabled && <StatCard
               label="Awaiting review"
               value={pendingCount}
               sub={pendingCount > 0 ? 'Ready for your decision' : 'Nothing waiting'}
@@ -159,7 +160,7 @@ export function Dashboard() {
               tone="accent"
               accent={pendingCount > 0}
               onClick={() => navigate('/review')}
-            />
+            />}
             <StatCard
               label="Top matches"
               value={stats?.top_matches_count ?? 0}
