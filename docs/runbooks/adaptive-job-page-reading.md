@@ -93,3 +93,18 @@ Native extraction accepts complete rendered evidence and excludes hidden, unrela
 and foreign-listing descendants. Busy reading/header regions and real lazy
 placeholders block acceptance; unrelated widgets and hidden description templates
 do not. DOM-derived caches last only for one synchronous capture evaluation.
+
+Local recovery distinguishes explicitly busy content from an empty collapsed
+description. It waits while loading markers are active, including a fresh check
+after hovering an expansion control; an empty owned description can still receive
+its required expansion. Both cases retain the existing bounded action budget and
+complete-content checks.
+
+The LinkedIn discovery worker retains its verified, evaluated listing page through
+application, with identity and document checks on the current page and bounded
+cleanup. A verified application introduction may contain only navigation; loading,
+unknown controls, conflicting subjects or employers cannot authorize advancement.
+SEEK's inactive zero-size cover editor is excluded until rendered, while active
+editors and screening consent remain application fields. Native and custom account
+default-résumé preferences are excluded consistently, including empty associated
+labels with a visible enclosing caption.

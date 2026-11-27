@@ -80,16 +80,19 @@ type Node struct {
 }
 
 type Snapshot struct {
-	Version                int       `json:"version"`
-	ID                     string    `json:"snapshot_id"`
-	Scope                  Scope     `json:"scope"`
-	Target                 Target    `json:"target"`
-	Identity               Identity  `json:"identity"`
-	Nodes                  []Node    `json:"nodes"`
-	Candidates             []string  `json:"description_candidates"`
-	AllowedActions         []Action  `json:"allowed_actions"`
-	LayoutSignature        string    `json:"layout_signature"`
-	Loading                bool      `json:"loading"`
+	Version         int      `json:"version"`
+	ID              string   `json:"snapshot_id"`
+	Scope           Scope    `json:"scope"`
+	Target          Target   `json:"target"`
+	Identity        Identity `json:"identity"`
+	Nodes           []Node   `json:"nodes"`
+	Candidates      []string `json:"description_candidates"`
+	AllowedActions  []Action `json:"allowed_actions"`
+	LayoutSignature string   `json:"layout_signature"`
+	Loading         bool     `json:"loading"`
+	// Empty collapsed content can be loading without an active request. Only
+	// observed busy markers or loading placeholders should suppress expansion.
+	ActiveLoading          bool      `json:"active_loading,omitempty"`
 	AuthenticationRequired bool      `json:"authentication_required"`
 	Expired                bool      `json:"expired"`
 	Truncated              bool      `json:"truncated"`

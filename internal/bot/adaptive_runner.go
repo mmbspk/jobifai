@@ -144,28 +144,9 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 
 	b.log.Info().Str("attempt_id", lazy.attemptID).Str("job_id", lazy.job.ID).Msg("adaptive: CTA clicked, waiting for modal")
 
-	// Wait for the modal to render (up to 20s): scan until at least one field appears.
-	var firstFields []formField
-	var firstPage *rod.Page
-	initialStepReady := false
-	modalDeadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(modalDeadline) {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		firstFields, firstPage, _ = b.scanAdaptiveStep(ctx, page)
-		if len(firstFields) > 0 {
-			initialStepReady = true
-			break
-		}
-		if _, kind, found, _, err := b.peekEasyApplyPrimary(page); err == nil && found && applyPrimaryIsSubmit(kind) {
-			initialStepReady = true
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	if !initialStepReady {
-		return fmt.Errorf("adaptive: modal did not render fields within timeout")
+	firstFields, firstPage, err := b.waitLinkedInInitialStep(ctx, page, lazy.job)
+	if err != nil {
+		return err
 	}
 	activePage := page
 	if firstPage != nil {
@@ -344,6 +325,108 @@ func (b *Bot) adaptiveEasyApply(ctx context.Context, page *rod.Page, lazy *lazyD
 	}
 
 	return fmt.Errorf("adaptive: exceeded max modal steps (%d)", maxModalSteps)
+}
+
+// Readiness does not perform input. Preserve failed scans as their actual typed
+// errors; a populated but ungroundable form is not an empty loading modal.
+func (b *Bot) waitLinkedInInitialStep(ctx context.Context, page *rod.Page, job linkedInJob) ([]formField, *rod.Page, error) {
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		fields, active, err := b.scanAdaptiveStep(ctx, page)
+		if err != nil {
+			return nil, nil, fmt.Errorf("adaptive: scan initial step: %w", err)
+		}
+		if len(fields) > 0 {
+			return fields, active, nil
+		}
+		_, kind, found, enabled, err := b.peekEasyApplyPrimary(page.Context(ctx))
+		if err != nil {
+			return nil, nil, fmt.Errorf("adaptive: read initial navigation: %w", err)
+		}
+		if found && applyPrimaryIsSubmit(kind) {
+			return nil, page, nil
+		}
+		if found && enabled && (kind == "next" || kind == "continue" || kind == "review") {
+			active, err := linkedInEmptyIntroPage(ctx, page, job)
+			if err != nil {
+				return nil, nil, fmt.Errorf("adaptive: verify initial navigation: %w", err)
+			}
+			if active != nil {
+				return nil, active, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return nil, nil, fmt.Errorf("adaptive: modal did not render fields within timeout")
+}
+
+// Only a known, uniquely owned application shell with no controls to answer
+// may begin with navigation. A visible Next alone cannot prove an empty form.
+const jsLinkedInEmptyIntroReady = `(expectedID, company) => {` + jsLinkedInApplyContainerFn + `
+ const scope=resolveApplyContainer();if(!scope||!expectedID||!company)return false;
+ const norm=s=>String(s||'').replace(/\s+/g,' ').trim().toLowerCase();
+ const branchVisible=e=>{for(let n=e;n;n=n.parentElement||(n.getRootNode&&n.getRootNode().host)){const s=getComputedStyle(n);if(n.hidden||n.inert||n.getAttribute('aria-hidden')==='true'||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity)===0)return false;}return true;};
+ const visible=e=>{const r=e.getBoundingClientRect();return r.width>2&&r.height>2&&branchVisible(e);};
+ const native=scope.matches('dialog[open]')&&scope.querySelector('[data-sdui-screen*="EasyApply"]');
+ const legacy=scope.matches('.jobs-easy-apply-content,.jobs-easy-apply-modal');
+ if((!native&&!legacy)||!visible(scope))return false;
+ const shells=[...document.querySelectorAll('dialog[open],.jobs-easy-apply-content,.jobs-easy-apply-modal')].filter(visible);
+ if(shells.some(e=>e!==scope&&!e.contains(scope)&&!scope.contains(e)))return false;
+ const headings=allInDOM(scope,'h1,h2,h3,[role="heading"]').filter(visible);
+ const companyCaption=s=>norm(s).replace(/[.,]$/,'');
+ if(!headings.some(e=>companyCaption(e.textContent)==='apply to '+companyCaption(company)))return false;
+ const owners=[scope,...allInDOM(scope,'[data-job-id],[data-job-detail-id],[data-entity-urn]')];
+ if(owners.some(e=>['data-job-id','data-job-detail-id','data-entity-urn'].some(k=>{const value=e.getAttribute(k)||'';if(k==='data-entity-urn'&&!/^urn:li:(?:fsd_)?jobPosting:/.test(value))return false;const id=value.replace(/^urn:li:(?:fsd_)?jobPosting:/,'');return id&&id!==expectedID;})))return false;
+ const busy=allInDOM(scope,'[aria-busy="true"],[role="progressbar"],[data-testid*="loading" i],[data-testid*="skeleton" i]');
+ if(scope.getAttribute('aria-busy')==='true'||busy.some(e=>{if(!visible(e))return false;if(e.getAttribute('aria-busy')==='true'||e.matches('[data-testid*="loading" i],[data-testid*="skeleton" i]')||e.getAttribute('role')!=='progressbar'||/\b(loading|uploading|processing)\b/.test(norm(e.getAttribute('aria-label')||e.textContent)))return true;const value=e.getAttribute('aria-valuenow')||e.getAttribute('value');return value===null||value.trim()===''||!Number.isFinite(Number(value));}))return false;
+ // Radio/file inputs may be visually hidden behind a native label. Their
+ // visible parent still establishes that this is not a field-free step.
+ const controls=allInDOM(scope,'input:not([type="hidden"]),select,textarea,[contenteditable]:not([contenteditable="false"]),[role="textbox"],[role="combobox"],[role="listbox"],[role="checkbox"],[role="radio"],[role="switch"],[role="slider"],[role="spinbutton"],[role="searchbox"],[tabindex]:not([tabindex="-1"]):not(button):not(a):not([role="button"])');
+ if(controls.some(e=>branchVisible(e.parentElement||e)))return false;
+ const buttons=allInDOM(scope,'button,[role="button"],a[role="button"]').filter(visible);
+ let forward=0;
+ for(const button of buttons){
+  const label=norm((button.getAttribute('aria-label')||'')+' '+(button.innerText||button.textContent||''));
+  const navigation=/^(next|continue|review)(?:\s|$)/.test(label);
+  if(navigation){if(button.disabled||button.getAttribute('aria-disabled')==='true')return false;forward++;}
+  else if(!/^(dismiss|cancel|close|back)(?:\s|$)/.test(label))return false;
+ }
+ return forward===1;
+}`
+
+func linkedInEmptyIntroPage(ctx context.Context, page *rod.Page, job linkedInJob) (*rod.Page, error) {
+	pages := []*rod.Page{page}
+	if frames, err := page.Context(ctx).Elements("iframe, frame"); err == nil {
+		for _, frame := range frames {
+			if active, err := frame.Frame(); err == nil && active != nil {
+				pages = append(pages, active)
+			}
+		}
+	}
+	var ready *rod.Page
+	for _, active := range pages {
+		result, err := active.Context(ctx).Timeout(3*time.Second).Eval(jsLinkedInEmptyIntroReady, linkedInExpectedID(job.URL), job.Company)
+		if err != nil {
+			return nil, err
+		}
+		if result.Value.Bool() {
+			if ready != nil {
+				return nil, nil
+			}
+			ready = active
+		}
+	}
+	return ready, nil
 }
 
 // scanAdaptiveStep runs jsScanFields on the page (and iframes) and returns

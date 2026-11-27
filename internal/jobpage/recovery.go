@@ -41,10 +41,15 @@ func RecoverLocal(ctx context.Context, page Page, target Target, initial Snapsho
 		var action Action
 		// Expansion is reacquired on every loop, including controls replaced by
 		// hydration. Application and upload controls are outside this contract.
-		for _, allowed := range snapshot.AllowedActions {
-			if allowed.Kind == ActionExpand {
-				action = allowed
-				break
+		// A disclosure can stay enabled while its previous expansion hydrates.
+		// Repeating it during observed loading can reset that work and spend the
+		// entire action budget. Let the same owned reading evidence settle first.
+		if !snapshot.ActiveLoading {
+			for _, allowed := range snapshot.AllowedActions {
+				if allowed.Kind == ActionExpand {
+					action = allowed
+					break
+				}
 			}
 		}
 		if action.Kind == "" {

@@ -479,6 +479,17 @@ const jsScanFieldsInner = `
 		              group: sectionGroupFor(r), helpText: helpTextFor(r) });
 	});
 
+	// Account document preferences are not candidate answers. Keep the same
+	// exclusion for native inputs and SEEK's equivalent custom checkbox widgets.
+	function isSeekDefaultResumeControl(el) {
+		if (!isSeekApply) return false;
+		const associated = labelFor(el.id);
+		const enclosing = el.closest('label');
+		const caption = [associated && associated.textContent, enclosing && enclosing.textContent, el.getAttribute('aria-label'), el.textContent]
+			.map(text => (text || '').toLowerCase().replace(/\s+/g, ' ').trim()).find(Boolean) || '';
+		return /^make this my default (resume|resumé|résumé|cv)$/.test(caption);
+	}
+
 	// ── Checkbox groups (Lever ATS / LinkedIn consent questions) ─────────────
 	// Group by shared fieldset. Skip LinkedIn's "follow company" checkbox.
 	const seenCb = new Set();
@@ -486,7 +497,7 @@ const jsScanFieldsInner = `
 		const associatedLabel=labelFor(cb.id);
 		const cbLabel = ((associatedLabel&&associatedLabel.textContent) || (cb.closest('label') && cb.closest('label').textContent) || cb.getAttribute('aria-label') || '').toLowerCase().replace(/\s+/g, ' ').trim();
 		// A vacancy-tailored upload must not change the candidate's jobsite default.
-		if(isSeekApply && /^make this my default (resume|resumé|résumé|cv)$/.test(cbLabel))return;
+		if(isSeekDefaultResumeControl(cb))return;
 		if (cb.id === 'follow-company-checkbox' || (cb.name || '').includes('follow-company')) return;
 		if (/follow/.test(cbLabel) && (/compan|hiring|recruiter|poster|posting/.test(cbLabel) || cbLabel.includes('follow '))) return;
 		const groupEl = cb.closest('fieldset, [role="group"], [data-test-form-element], .artdeco-form-element, .fb-form-element')
@@ -532,7 +543,7 @@ const jsScanFieldsInner = `
 	if (isSeekApply) {
 		const applyRoot = container.closest("[data-testid='quick-apply-form'], [data-automation='apply-form']") || container;
 		allInDOM(applyRoot, '[role="checkbox"]').filter(el => {
-			return isContainerVisible(el) && el.getAttribute('aria-checked') !== 'true';
+			return isContainerVisible(el) && el.getAttribute('aria-checked') !== 'true' && !isSeekDefaultResumeControl(el);
 		}).forEach((w, i) => {
 			if (!w.id) w.setAttribute('data-seek-cb-id', 'seek-cb-' + i);
 			const wid = w.id || w.getAttribute('data-seek-cb-id');
@@ -580,8 +591,10 @@ const jsScanFieldsInner = `
 		// Exclude reCAPTCHA injected textareas (hidden by LinkedIn/Google on form pages).
 		if (el.name === 'g-recaptcha-response' || el.id === 'g-recaptcha-response') return false;
 		if (el.closest('[id*="recaptcha" i],[class*="recaptcha" i],[id*="captcha" i],[class*="captcha" i]')) return false;
-		// Textareas are often opacity/size-hidden until focused — use container visibility.
-		if (el.tagName === 'TEXTAREA') return isContainerVisible(el);
+		// SEEK retains its inactive cover editor beneath a visible document
+		// fieldset. Its own rendered box distinguishes it from the active mode.
+		// LinkedIn textareas can materialize through their visible container.
+		if (el.tagName === 'TEXTAREA') return isSeekApply ? isVisible(el) : isContainerVisible(el);
 		return isVisible(el);
 	}).forEach(el => {
 		// Detect typeahead FIRST, combobox fields may already have a typed value

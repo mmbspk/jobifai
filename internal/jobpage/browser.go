@@ -41,6 +41,7 @@ type browserCapture struct {
 	Candidates             []string    `json:"candidates"`
 	Actions                []Action    `json:"allowed_actions"`
 	Loading                bool        `json:"loading"`
+	ActiveLoading          bool        `json:"active_loading"`
 	AuthenticationRequired bool        `json:"authentication_required"`
 	Expired                bool        `json:"expired"`
 	Truncated              bool        `json:"truncated"`
@@ -185,7 +186,7 @@ func (p *BrowserPage) capture(ctx context.Context, target Target, limits Limits)
 	if _, _, err := p.checkTarget(ctx, target); err != nil {
 		return Snapshot{}, raw, err
 	}
-	s := Snapshot{Version: SnapshotVersion, ID: fmt.Sprintf("%x", sha256.Sum256([]byte(raw.Epoch))), Scope: scope, Target: target, Identity: raw.Identity, Nodes: raw.Nodes, Candidates: raw.Candidates, AllowedActions: raw.Actions, Loading: raw.Loading, AuthenticationRequired: raw.AuthenticationRequired, Expired: raw.Expired, Truncated: raw.Truncated, CapturedAt: time.Now().UTC()}
+	s := Snapshot{Version: SnapshotVersion, ID: fmt.Sprintf("%x", sha256.Sum256([]byte(raw.Epoch))), Scope: scope, Target: target, Identity: raw.Identity, Nodes: raw.Nodes, Candidates: raw.Candidates, AllowedActions: raw.Actions, Loading: raw.Loading, ActiveLoading: raw.ActiveLoading, AuthenticationRequired: raw.AuthenticationRequired, Expired: raw.Expired, Truncated: raw.Truncated, CapturedAt: time.Now().UTC()}
 	s.LayoutSignature = StructuralSignature(s)
 	if err := ValidateSnapshot(s, limits); err != nil {
 		return s, raw, err
@@ -447,6 +448,11 @@ func (p *BrowserPage) expand(ctx context.Context, target Target, snapshot Snapsh
 	fresh, raw, err := p.capture(ctx, target, limits)
 	if err != nil {
 		return err
+	}
+	// Hover can start hydration without disabling the disclosure. The fresh
+	// loading signal revokes this press so bounded recovery can let it settle.
+	if fresh.ActiveLoading {
+		return &ReadError{Code: FailureStale}
 	}
 	if err := ValidateAction(fresh, action); err != nil {
 		return &ReadError{Code: FailureStale, Cause: err}

@@ -1342,6 +1342,7 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 		b.preserveLinkedInReview(ctx, job, 0, "Not scored: browser page could not be opened.", fmt.Errorf("%w: %v", errLinkedInUnknown, pageErr))
 		return false
 	}
+	defer func() { _ = jobPage.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
 	_ = jobPage.Timeout(30 * time.Second).WaitLoad()
 	resolution, resolveErr := waitLinkedInJob(ctx, jobPage, linkedInExpectedID(job.URL), job)
 	logLinkedInResolution(resolution, job, "", "classification")
@@ -1349,14 +1350,12 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	// that content normally, but never try to apply while the control is unknown.
 	controlUnverified := resolveErr != nil && resolution.IdentityVerified && errors.Is(resolveErr, errLinkedInUnknown)
 	if resolveErr != nil && !controlUnverified {
-		_ = jobPage.Close()
 		if ctx.Err() == nil {
 			b.preserveLinkedInReview(ctx, job, 0, "Listing identity or application control could not be verified; suitability has not been evaluated.", resolveErr)
 		}
 		return false
 	}
 	if resolution.Kind == "already_applied" {
-		_ = jobPage.Close()
 		b.recordSkipped(job, "already_applied_indicator", 0, "", nil)
 		return false
 	}
@@ -1366,7 +1365,6 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	}
 	resolution, resolveErr = b.readAdaptiveLinkedInDescription(ctx, jobPage, job)
 	if resolveErr != nil {
-		_ = jobPage.Close()
 		if ctx.Err() == nil {
 			b.preserveLinkedInReview(ctx, job, 0, "", resolveErr)
 		}
@@ -1377,7 +1375,6 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 		job.Company = resolution.Company
 	}
 	if resolution.Kind == "already_applied" {
-		_ = jobPage.Close()
 		b.recordSkipped(job, "already_applied_indicator", 0, "", nil)
 		return false
 	}
@@ -1386,7 +1383,6 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 	if controlUnverified && controlError == nil {
 		controlError = resolution.resolutionError()
 	}
-	_ = jobPage.Close()
 	if err := listingEvaluationError(strings.TrimSpace(details.Description), b.cfg.Scorer); err != nil {
 		b.recordListingFailure(ctx, domain.PlatformLinkedIn, job, 0, "", nil, err)
 		return false
@@ -1476,7 +1472,10 @@ func (b *Bot) processLinkedInJob(ctx context.Context, br *rod.Browser, job linke
 		return false
 	}
 
-	return b.submitEasyApply(ctx, br, job, lazy, score, reasoning, halalVerdict, llmBefore)
+	// Keep the independently read and evaluated page through application. A
+	// fresh navigation discards its hydrated UI state; native identity and
+	// document checks still revalidate this page before every application input.
+	return b.submitEasyApplyOnPage(ctx, br, jobPage, job, lazy, score, reasoning, halalVerdict, llmBefore)
 }
 
 // detectLinkedInEasyApply returns true when the job details pane shows LinkedIn's
@@ -1744,6 +1743,12 @@ func (b *Bot) queueForReview(ctx context.Context, p *domain.PendingReview) {
 }
 
 func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
+	return b.submitEasyApplyOnPage(ctx, br, nil, job, lazy, score, reasoning, halalVerdict, llmBefore)
+}
+
+// A caller-owned listing page stays with its caller. Other entry points retain
+// the existing fresh-tab behavior and close the tab they create here.
+func (b *Bot) submitEasyApplyOnPage(ctx context.Context, br *rod.Browser, jobPage *rod.Page, job linkedInJob, lazy *lazyDocGen, score int, reasoning string, halalVerdict []byte, llmBefore llm.UsageSnapshot) bool {
 	ac := newAttemptContext(b.cfg.UserID, string(domain.PlatformLinkedIn), job.ID, job.URL, job.Title, job.Company, "automated_linkedin", b.cfg.AutomationRunID)
 	ac.Engine = pinnedEngine(b.cfg.EngineStore, b.cfg.UserID, domain.PlatformLinkedIn)
 	beginAttempt(b.cfg.DB, ac)
@@ -1757,13 +1762,16 @@ func (b *Bot) submitEasyApply(ctx context.Context, br *rod.Browser, job linkedIn
 	if lazy != nil {
 		lazy.attemptID = ac.AttemptID
 	}
-	jobPage, err := br.Page(proto.TargetCreateTarget{URL: job.URL})
-	if err != nil {
-		b.log.Error().Str("error", sanitizeErr(err)).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("linkedin: open job page")
-		finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
-		return false
+	if jobPage == nil {
+		jobPage, err = br.Context(ctx).Page(proto.TargetCreateTarget{URL: job.URL})
+		if err != nil {
+			b.log.Error().Str("error", sanitizeErr(err)).Str("attempt_id", ac.AttemptID).Str("job_id", job.ID).Str("url", redactURL(job.URL)).Str("role", job.Title).Msg("linkedin: open job page")
+			finishAttempt(b.cfg.DB, ac, classifyApplyOutcome(err), "open_page", "browser_error", err.Error())
+			return false
+		}
+		defer func() { _ = jobPage.Context(context.WithoutCancel(ctx)).Timeout(3 * time.Second).Close() }()
 	}
-	defer func() { _ = jobPage.Close() }()
+	jobPage = jobPage.Context(ctx)
 
 	if err := b.applyAttempt(ctx, jobPage, lazy, ac); err != nil {
 		if dir := saveAdaptiveDiagnostic(jobPage, "linkedin"); dir != "" {
